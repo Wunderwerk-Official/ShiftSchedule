@@ -348,7 +348,7 @@ export default function WeeklySchedulePage({
   const [solverPhase, setSolverPhase] = useState<string | null>(null);
   const [solverHistory, setSolverHistory] = useState<SolverHistoryEntry[]>([]);
   const [solverInfoOpen, setSolverInfoOpen] = useState(false);
-  const [solverTimeoutSeconds, setSolverTimeoutSeconds] = useState(60);
+  const [solverTimeoutSeconds, setSolverTimeoutSeconds] = useState(1800);
   const [holidays, setHolidays] = useState<Holiday[]>(defaultAppState.holidays ?? []);
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
