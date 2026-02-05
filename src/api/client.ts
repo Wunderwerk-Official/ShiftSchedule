@@ -523,7 +523,13 @@ export type SolveRangeResult = {
 
 export async function solveRange(
   startISO: string,
-  options?: { endISO?: string; onlyFillRequired?: boolean; timeoutSeconds?: number; signal?: AbortSignal },
+  options?: {
+    endISO?: string;
+    onlyFillRequired?: boolean;
+    timeoutSeconds?: number;
+    signal?: AbortSignal;
+    useHeuristic?: boolean;
+  },
 ): Promise<SolveRangeResult> {
   const res = await fetch(`${API_BASE}/v1/solve/range`, {
     method: "POST",
@@ -533,6 +539,7 @@ export async function solveRange(
       endISO: options?.endISO,
       only_fill_required: options?.onlyFillRequired ?? false,
       timeout_seconds: options?.timeoutSeconds,
+      use_heuristic: options?.useHeuristic ?? false,
     }),
     signal: options?.signal,
   });

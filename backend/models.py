@@ -212,6 +212,7 @@ class SolveRangeRequest(BaseModel):
     endISO: Optional[str] = None
     only_fill_required: bool = False
     timeout_seconds: Optional[float] = None  # None means use default (60s)
+    use_heuristic: bool = False  # Use heuristic solver instead of CP-SAT
 
 
 class SolverDebugCheckpoint(BaseModel):

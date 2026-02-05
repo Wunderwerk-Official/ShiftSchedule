@@ -338,7 +338,16 @@ def _solver_subprocess_worker(
             except:
                 pass  # Queue full, skip
 
-        result = _solve_range_impl_subprocess(payload, mock_user, cancel_event, on_progress, start_time)
+        # Mode switch: use heuristic or CP-SAT solver
+        if payload.use_heuristic:
+            print(f"[SOLVER] Using HEURISTIC solver for {payload.startISO} to {payload.endISO}")
+            from .heuristic.solver import heuristic_solve_range
+            from .state import _load_state
+            state = _load_state(mock_user.username)
+            result = heuristic_solve_range(payload, state, cancel_event, on_progress, start_time)
+        else:
+            print(f"[SOLVER] Using CP-SAT solver for {payload.startISO} to {payload.endISO}")
+            result = _solve_range_impl_subprocess(payload, mock_user, cancel_event, on_progress, start_time)
 
         # Send result
         progress_queue.put({"type": "result", "data": result})
