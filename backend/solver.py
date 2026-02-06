@@ -462,6 +462,11 @@ DEFAULT_WEIGHT_WORKING_HOURS = 1
 # Extra capacity per slot in "Distribute All" mode (beyond required)
 EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL = 1
 
+# Early stopping: once the optimality gap drops below this threshold,
+# allow SOLVER_GAP_GRACE_SECONDS for further improvement, then stop.
+SOLVER_GAP_THRESHOLD = 0.05  # 5% relative gap
+SOLVER_GAP_GRACE_SECONDS = 20.0  # seconds to wait for more improvements
+
 
 def _get_day_type(date_iso: str, holidays: List[Holiday]) -> str:
     if any(holiday.dateISO == date_iso for holiday in holidays):
@@ -839,77 +844,92 @@ def _add_overlap_constraints(
     manual_by_clinician_date: Dict[str, Dict[str, List[Tuple[int, int, str]]]],
     day_index_by_iso: Dict[str, int],
 ) -> None:
-    """Block overlapping intervals and (optionally) multiple locations per day."""
+    """Block overlapping intervals and (optionally) multiple locations per day.
+
+    Uses CP-SAT IntervalVar + NoOverlap for O(n log n) propagation instead of
+    O(n²) pairwise boolean constraints.  A single NoOverlap per clinician
+    handles same-day overlaps, cross-day (midnight-spanning) overlaps, and
+    solver-vs-manual conflicts in one constraint.
+    """
     for cid, clinician_vars in vars_by_clinician_date.items():
         clinician_manual = manual_by_clinician_date.get(cid, {})
 
+        # --- Part 1: NoOverlap for all time-based conflicts ---
+        all_intervals = []
+
+        # Optional intervals for solver decision variables
         for date_iso, day_vars in clinician_vars.items():
-            # Overlap constraints within the same day
-            for i in range(len(day_vars)):
-                _sid_i, var_i, start_i, end_i, loc_i = day_vars[i]
-                for j in range(i + 1, len(day_vars)):
-                    _sid_j, var_j, start_j, end_j, loc_j = day_vars[j]
-                    overlaps = not (end_i <= start_j or end_j <= start_i)
-                    if overlaps:
-                        model.Add(var_i + var_j <= 1)
-                    if (
-                        solver_settings.enforceSameLocationPerDay
-                        and loc_i
-                        and loc_j
-                        and loc_i != loc_j
-                    ):
-                        model.Add(var_i + var_j <= 1)
-
-            # Check against manual assignments on the same day
-            day_manual = clinician_manual.get(date_iso, [])
-            for _sid_i, var_i, start_i, end_i, loc_i in day_vars:
-                for start_m, end_m, loc_m in day_manual:
-                    overlaps = not (end_i <= start_m or end_m <= start_i)
-                    if overlaps:
-                        model.Add(var_i <= 0)
-                    if (
-                        solver_settings.enforceSameLocationPerDay
-                        and loc_i
-                        and loc_m
-                        and loc_i != loc_m
-                    ):
-                        model.Add(var_i <= 0)
-
-        # Cross-day overlap check (for slots that might span midnight)
-        sorted_dates = sorted(clinician_vars.keys())
-        for idx, date_iso in enumerate(sorted_dates):
-            if idx == 0:
+            day_idx = day_index_by_iso.get(date_iso)
+            if day_idx is None:
                 continue
-            prev_date = sorted_dates[idx - 1]
-            day_index_curr = day_index_by_iso.get(date_iso)
-            day_index_prev = day_index_by_iso.get(prev_date)
-            if day_index_curr is None or day_index_prev is None:
-                continue
-            if day_index_curr - day_index_prev != 1:
-                continue
-            curr_vars = clinician_vars[date_iso]
-            prev_vars = clinician_vars[prev_date]
-            for _sid_c, var_c, start_c, end_c, _loc_c in curr_vars:
-                abs_start_c = start_c + day_index_curr * 24 * 60
-                abs_end_c = end_c + day_index_curr * 24 * 60
-                for _sid_p, var_p, start_p, end_p, _loc_p in prev_vars:
-                    abs_start_p = start_p + day_index_prev * 24 * 60
-                    abs_end_p = end_p + day_index_prev * 24 * 60
-                    overlaps = not (abs_end_c <= abs_start_p or abs_end_p <= abs_start_c)
-                    if overlaps:
-                        model.Add(var_c + var_p <= 1)
+            day_offset = day_idx * 24 * 60
+            for sid, var, start, end, loc in day_vars:
+                duration = end - start
+                if duration <= 0:
+                    continue
+                abs_start = start + day_offset
+                interval = model.NewOptionalFixedSizeIntervalVar(
+                    abs_start, duration, var,
+                    f"iv_{cid}_{date_iso}_{sid}",
+                )
+                all_intervals.append(interval)
 
-            # Also check manual from previous day
-            prev_manual = clinician_manual.get(prev_date, [])
-            for _sid_c, var_c, start_c, end_c, _loc_c in curr_vars:
-                abs_start_c = start_c + day_index_curr * 24 * 60
-                abs_end_c = end_c + day_index_curr * 24 * 60
-                for start_m, end_m, _loc_m in prev_manual:
-                    abs_start_m = start_m + day_index_prev * 24 * 60
-                    abs_end_m = end_m + day_index_prev * 24 * 60
-                    overlaps = not (abs_end_c <= abs_start_m or abs_end_m <= abs_start_c)
-                    if overlaps:
-                        model.Add(var_c <= 0)
+        # Fixed (always-present) intervals for manual assignments
+        for date_iso, manual_slots in clinician_manual.items():
+            day_idx = day_index_by_iso.get(date_iso)
+            if day_idx is None:
+                continue
+            day_offset = day_idx * 24 * 60
+            for m_idx, (start, end, loc) in enumerate(manual_slots):
+                duration = end - start
+                if duration <= 0:
+                    continue
+                abs_start = start + day_offset
+                interval = model.NewFixedSizeIntervalVar(
+                    abs_start, duration,
+                    f"miv_{cid}_{date_iso}_{m_idx}",
+                )
+                all_intervals.append(interval)
+
+        if len(all_intervals) > 1:
+            model.AddNoOverlap(all_intervals)
+
+        # --- Part 2: Same-location-per-day constraint ---
+        if solver_settings.enforceSameLocationPerDay:
+            for date_iso, day_vars in clinician_vars.items():
+                # Group solver vars by location (skip vars without a location)
+                vars_by_loc: Dict[str, List[cp_model.IntVar]] = {}
+                for _sid, var, _s, _e, loc in day_vars:
+                    if loc:
+                        vars_by_loc.setdefault(loc, []).append(var)
+
+                if not vars_by_loc:
+                    continue
+
+                # Collect manual locations for this day
+                manual_locs: set[str] = set()
+                for _s, _e, loc in clinician_manual.get(date_iso, []):
+                    if loc:
+                        manual_locs.add(loc)
+
+                if manual_locs:
+                    # Manual assignments pin the location for this day.
+                    # A solver var at location X is only allowed if every
+                    # manual assignment is also at X (matches old behaviour).
+                    for loc, loc_vars in vars_by_loc.items():
+                        if manual_locs != {loc}:
+                            for var in loc_vars:
+                                model.Add(var == 0)
+                elif len(vars_by_loc) > 1:
+                    # No manual location fixed — at most one location active.
+                    loc_indicators = []
+                    for loc, loc_vars in vars_by_loc.items():
+                        at_loc = model.NewBoolVar(f"at_{cid}_{date_iso}_{loc}")
+                        for var in loc_vars:
+                            model.Add(var <= at_loc)
+                        model.Add(at_loc <= sum(loc_vars))
+                        loc_indicators.append(at_loc)
+                    model.Add(sum(loc_indicators) <= 1)
 
 
 def _add_coverage_constraints(
@@ -1734,7 +1754,11 @@ def _solve_range_impl(
     timer.checkpoint("objective_setup")
 
     on_progress("phase", {"phase": "solve", "label": "Preparation (10/10): Solving constraints..."})
-    # Solution callback to track when solutions are found and check for cancellation
+    # Solution callback to track when solutions are found and check for cancellation.
+    # Implements gap-based early stopping: once the optimality gap drops below
+    # SOLVER_GAP_THRESHOLD, a grace timer starts.  Each improving solution resets
+    # the timer.  If no improvement comes within SOLVER_GAP_GRACE_SECONDS the
+    # search is stopped (StopSearch is thread-safe in OR-Tools).
     class SolutionCallback(cp_model.CpSolverSolutionCallback):
         def __init__(self, timer: SolverTimer, cancel_event_ref, var_map: Dict, progress_callback):
             super().__init__()
@@ -1745,7 +1769,33 @@ def _solve_range_impl(
             self.solution_times: List[Tuple[int, float, float]] = []  # (solution_num, time_ms, objective)
             self.solve_start = time.time()
             self.was_aborted = False
+            self.stopped_by_gap = False
             self.last_assignments: List[Dict] = []  # Store last solution's assignments
+            # Grace-period timer state
+            self._grace_timer: Optional[threading.Timer] = None
+            self._grace_lock = threading.Lock()
+
+        def _restart_grace_timer(self) -> None:
+            """Start or restart the grace-period countdown."""
+            with self._grace_lock:
+                if self._grace_timer is not None:
+                    self._grace_timer.cancel()
+                self._grace_timer = threading.Timer(
+                    SOLVER_GAP_GRACE_SECONDS, self._grace_expired,
+                )
+                self._grace_timer.daemon = True
+                self._grace_timer.start()
+
+        def _cancel_grace_timer(self) -> None:
+            with self._grace_lock:
+                if self._grace_timer is not None:
+                    self._grace_timer.cancel()
+                    self._grace_timer = None
+
+        def _grace_expired(self) -> None:
+            """Called from timer thread when grace period elapses."""
+            self.stopped_by_gap = True
+            self.StopSearch()  # thread-safe: sets an atomic flag in C++
 
         def on_solution_callback(self):
             elapsed_ms = (time.time() - self.solve_start) * 1000
@@ -1774,8 +1824,18 @@ def _solve_range_impl(
                 "assignments": current_assignments,
             })
 
+            # Gap-based early stopping with grace period
+            best_bound = self.BestObjectiveBound()
+            denom = max(1, abs(objective))
+            gap = abs(objective - best_bound) / denom
+            if gap <= SOLVER_GAP_THRESHOLD:
+                # Within gap — (re)start the grace countdown.
+                # Each new improving solution resets the 20 s window.
+                self._restart_grace_timer()
+
             # Check if abort was requested
             if self.cancel_event.is_set():
+                self._cancel_grace_timer()
                 self.was_aborted = True
                 self.StopSearch()
 
@@ -1790,6 +1850,7 @@ def _solve_range_impl(
     solver.parameters.max_time_in_seconds = remaining_timeout
     solver.parameters.num_search_workers = SOLVER_NUM_WORKERS
     result = solver.SolveWithSolutionCallback(model, solution_callback)
+    solution_callback._cancel_grace_timer()  # clean up any pending timer
     timer.checkpoint("solve")
 
     if result not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -1993,9 +2054,11 @@ def _solve_range_impl(
         },
     )
 
-    # Add note if solver was aborted
+    # Add note if solver was stopped early
     if solution_callback.was_aborted:
         notes.append("Solver was aborted by user request.")
+    elif solution_callback.stopped_by_gap:
+        notes.append(f"Solver stopped early: within {SOLVER_GAP_THRESHOLD*100:.0f}% of optimal after {SOLVER_GAP_GRACE_SECONDS:.0f}s grace period.")
 
     # Compute sub-scores for the final solution
     sub_scores = None
@@ -2026,7 +2089,7 @@ def _solve_range_impl(
         num_variables=len(var_map),
         num_days=len(target_day_isos),
         num_slots=len(slot_contexts),
-        solver_status="ABORTED" if solution_callback.was_aborted else solver.StatusName(result),
+        solver_status="ABORTED" if solution_callback.was_aborted else ("GAP_CONVERGED" if solution_callback.stopped_by_gap else solver.StatusName(result)),
         cpu_workers_used=SOLVER_NUM_WORKERS,
         cpu_cores_available=multiprocessing.cpu_count(),
         sub_scores=sub_scores,
