@@ -340,11 +340,11 @@ def _solver_subprocess_worker(
 
         # Mode switch: use heuristic or CP-SAT solver
         if payload.use_heuristic:
-            print(f"[SOLVER] Using HEURISTIC solver for {payload.startISO} to {payload.endISO}")
-            from .heuristic.solver import heuristic_solve_range
+            print(f"[SOLVER] Using HEURISTIC solver v2 for {payload.startISO} to {payload.endISO}")
+            from .heuristic.solver_v2 import heuristic_solve_range_v2
             from .state import _load_state
             state = _load_state(mock_user.username)
-            result = heuristic_solve_range(payload, state, cancel_event, on_progress, start_time)
+            result = heuristic_solve_range_v2(payload, state, cancel_event, on_progress, start_time)
         else:
             print(f"[SOLVER] Using CP-SAT solver for {payload.startISO} to {payload.endISO}")
             result = _solve_range_impl_subprocess(payload, mock_user, cancel_event, on_progress, start_time)
