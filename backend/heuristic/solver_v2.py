@@ -447,6 +447,7 @@ def _solve_single_day(
     day_slots = [s for s in all_slot_instances if s.date_iso == day_iso]
 
     warnings = []
+    best_assignments = []
 
     for retry_count in range(config.MAX_DAY_RETRIES):
         # Reset day to manual assignments only
@@ -463,6 +464,10 @@ def _solve_single_day(
             cancel_event,
         )
 
+        # Keep track of best attempt
+        if len(day_assignments) > len(best_assignments):
+            best_assignments = day_assignments
+
         if success:
             return day_assignments, warnings
 
@@ -470,11 +475,29 @@ def _solve_single_day(
         if retry_count < config.MAX_DAY_RETRIES - 1:
             warnings.append(f"Day {day_iso}: retry {retry_count + 1}/{config.MAX_DAY_RETRIES}")
 
-    # All retries failed
+    # All retries failed - return best partial solution
     warnings.append(f"Day {day_iso}: Could not fully fill after {config.MAX_DAY_RETRIES} attempts")
 
-    # Return partial solution
-    return day_assignments, warnings
+    # Restore clinician state to match best solution
+    # (The last retry may have left state in inconsistent state)
+    _reset_day_to_manual_only(day_iso, clinician_states, manual_assignments_map)
+    # Re-apply best assignments to restore correct state
+    for assignment in best_assignments:
+        clinician_id = assignment.clinicianId
+        slot_id = assignment.rowId
+        # Find the slot
+        matching_slot = next((s for s in day_slots if s.slot_id == slot_id), None)
+        if matching_slot and clinician_id in clinician_states:
+            state = clinician_states[clinician_id]
+            # Re-apply assignment (without creating new Assignment object)
+            if day_iso not in state.assigned_slots_by_date:
+                state.assigned_slots_by_date[day_iso] = []
+            state.assigned_slots_by_date[day_iso].append(matching_slot)
+            state.location_by_date[day_iso] = matching_slot.location_id
+            state.current_week_hours += matching_slot.duration_minutes / 60.0
+
+    # Return best partial solution
+    return best_assignments, warnings
 
 
 def _reset_day_to_manual_only(
@@ -574,6 +597,9 @@ def _fill_day_with_prioritized_slots(
     for slot, criticality, eligible_list in slot_criticality:
         if cancel_event.is_set():
             return False, assignments
+
+        # Re-filter eligible doctors (assignments may have changed since we built the list)
+        eligible_list = _filter_eligible_doctors(slot, clinician_states, solver_settings)
 
         if not eligible_list:
             # No eligible doctors - FAILURE
@@ -788,12 +814,13 @@ def _fill_consecutive_slots(
             if slot.date_iso != initial_slot.date_iso:
                 continue
             if slot.start_minutes == end_time:
-                # Check if already filled
-                already_filled = any(
-                    s.slot_id == slot.slot_id
-                    for s in state.assigned_slots_by_date.get(slot.date_iso, [])
+                # Check if already filled by ANY clinician (not just this one)
+                filled_count = sum(
+                    1 for s in clinician_states.values()
+                    if any(assigned.slot_id == slot.slot_id
+                           for assigned in s.assigned_slots_by_date.get(slot.date_iso, []))
                 )
-                if not already_filled:
+                if filled_count < slot.required_count:
                     next_slot = slot
                     break
 
