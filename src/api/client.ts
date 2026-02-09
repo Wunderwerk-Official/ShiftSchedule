@@ -140,10 +140,10 @@ export type SolverSettings = {
   weightSlack?: number; // Minimize unfilled required slots (default: 1000)
   weightTotalAssignments?: number; // Maximize total assignments (default: 100)
   weightSlotPriority?: number; // Prefer slots in template order (default: 10)
-  weightTimeWindow?: number; // Respect preferred working time windows (default: 5)
-  weightSectionPreference?: number; // Assign to preferred sections (default: 1)
-  weightWorkingHours?: number; // Stay within target working hours (default: 1)
-  weightMinimumDailyHours?: number; // Penalize daily assignments shorter than derived minimum (default: 10)
+  weightTimeWindow?: number; // Respect preferred working time windows (default: 20)
+  weightSectionPreference?: number; // Assign to preferred sections (default: 10)
+  weightWorkingHours?: number; // Stay within target working hours (default: 3)
+  weightMinimumDailyHours?: number; // Penalize daily assignments shorter than derived minimum (default: 5)
   weightYtdBalance?: number; // Bias toward clinicians behind on YTD hours (default: 5)
 };
 

@@ -191,10 +191,10 @@ class SolverSettings(BaseModel):
     weightSlack: int = 1000  # Minimize unfilled required slots
     weightTotalAssignments: int = 100  # Maximize total assignments
     weightSlotPriority: int = 10  # Prefer slots in template order
-    weightTimeWindow: int = 5  # Respect preferred working time windows
-    weightSectionPreference: int = 1  # Assign to preferred sections
-    weightWorkingHours: int = 1  # Stay within target working hours
-    weightMinimumDailyHours: int = 10  # Penalize daily assignments shorter than derived minimum
+    weightTimeWindow: int = 20  # Respect preferred working time windows
+    weightSectionPreference: int = 10  # Assign to preferred sections
+    weightWorkingHours: int = 3  # Stay within target working hours (per minute of deviation)
+    weightMinimumDailyHours: int = 5  # Penalize daily assignments shorter than derived minimum
     weightYtdBalance: int = 5  # Bias toward clinicians behind on YTD hours
 
 

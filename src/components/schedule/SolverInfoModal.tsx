@@ -11,10 +11,10 @@ const DEFAULT_WEIGHTS = {
   weightSlack: 1000,
   weightTotalAssignments: 100,
   weightSlotPriority: 10,
-  weightTimeWindow: 5,
-  weightSectionPreference: 1,
-  weightWorkingHours: 1,
-  weightMinimumDailyHours: 10,
+  weightTimeWindow: 20,
+  weightSectionPreference: 10,
+  weightWorkingHours: 3,
+  weightMinimumDailyHours: 5,
   weightYtdBalance: 5,
 };
 
