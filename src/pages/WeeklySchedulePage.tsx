@@ -1140,7 +1140,6 @@ export default function WeeklySchedulePage({
     endISO: string;
     onlyFillRequired: boolean;
     timeoutSeconds: number;
-    useHeuristic: boolean;
   }) => {
     if (autoPlanRunning) return;
     setAutoPlanError(null);
@@ -1196,7 +1195,6 @@ export default function WeeklySchedulePage({
         onlyFillRequired: args.onlyFillRequired,
         timeoutSeconds: args.timeoutSeconds,
         signal: abortController.signal,
-        useHeuristic: args.useHeuristic,
       });
 
       historyNotes = result.notes;

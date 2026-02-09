@@ -144,6 +144,7 @@ export type SolverSettings = {
   weightSectionPreference?: number; // Assign to preferred sections (default: 1)
   weightWorkingHours?: number; // Stay within target working hours (default: 1)
   weightMinimumDailyHours?: number; // Penalize daily assignments shorter than derived minimum (default: 10)
+  weightYtdBalance?: number; // Bias toward clinicians behind on YTD hours (default: 5)
 };
 
 export type SolverRule = {
@@ -529,7 +530,6 @@ export async function solveRange(
     onlyFillRequired?: boolean;
     timeoutSeconds?: number;
     signal?: AbortSignal;
-    useHeuristic?: boolean;
   },
 ): Promise<SolveRangeResult> {
   const res = await fetch(`${API_BASE}/v1/solve/range`, {
@@ -540,7 +540,6 @@ export async function solveRange(
       endISO: options?.endISO,
       only_fill_required: options?.onlyFillRequired ?? false,
       timeout_seconds: options?.timeoutSeconds,
-      use_heuristic: options?.useHeuristic ?? false,
     }),
     signal: options?.signal,
   });

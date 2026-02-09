@@ -20,7 +20,7 @@ type AutomatedPlanningPanelProps = {
   lastRunDurationMs: number | null;
   error: string | null;
   timeoutSeconds: number;
-  onRun: (args: { startISO: string; endISO: string; onlyFillRequired: boolean; timeoutSeconds: number; useHeuristic: boolean }) => void;
+  onRun: (args: { startISO: string; endISO: string; onlyFillRequired: boolean; timeoutSeconds: number }) => void;
   onResetSolver: (args: { startISO: string; endISO: string }) => void;
   onResetAll: (args: { startISO: string; endISO: string }) => void;
   onOpenInfo: () => void;
@@ -73,7 +73,6 @@ export default function AutomatedPlanningPanel({
   const [endInput, setEndInput] = useState("");
   const [hasTouched, setHasTouched] = useState(false);
   const [strategy, setStrategy] = useState<"fill" | "distribute">("fill");
-  const [solverMode, setSolverMode] = useState<"cpsat" | "heuristic">("cpsat");
   const [localError, setLocalError] = useState<string | null>(null);
   const [resetPanelOpen, setResetPanelOpen] = useState(false);
   const [resetPanelAbove, setResetPanelAbove] = useState(false);
@@ -177,7 +176,6 @@ export default function AutomatedPlanningPanel({
       endISO: range.endISO,
       onlyFillRequired: strategy === "fill",
       timeoutSeconds,
-      useHeuristic: solverMode === "heuristic",
     });
   };
 
@@ -302,29 +300,6 @@ export default function AutomatedPlanningPanel({
                 className={getPillToggleClasses(strategy === "distribute")}
               >
                 Distribute all
-              </button>
-            </div>
-          </div>
-          <div className="flex flex-col gap-3">
-            <div className="text-xs font-normal uppercase tracking-wide text-slate-400 dark:text-slate-500">
-              Solver Engine
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setSolverMode("cpsat")}
-                disabled={isRunning}
-                className={getPillToggleClasses(solverMode === "cpsat")}
-              >
-                CP-SAT (Optimal)
-              </button>
-              <button
-                type="button"
-                onClick={() => setSolverMode("heuristic")}
-                disabled={isRunning}
-                className={getPillToggleClasses(solverMode === "heuristic")}
-              >
-                Heuristic (Fast)
               </button>
             </div>
           </div>

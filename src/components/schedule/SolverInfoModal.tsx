@@ -14,6 +14,8 @@ const DEFAULT_WEIGHTS = {
   weightTimeWindow: 5,
   weightSectionPreference: 1,
   weightWorkingHours: 1,
+  weightMinimumDailyHours: 10,
+  weightYtdBalance: 5,
 };
 
 type WeightKey = keyof typeof DEFAULT_WEIGHTS;
@@ -58,6 +60,16 @@ const WEIGHT_LABELS: Record<
     label: "Working Hours",
     description: "Balance weekly hours",
     tooltip: "Tries to match each person's target weekly hours. Prevents overworking or underworking relative to their contract.",
+  },
+  weightMinimumDailyHours: {
+    label: "Minimum Daily Hours",
+    description: "Avoid short daily assignments",
+    tooltip: "Penalizes assigning someone to just a short slot (e.g. 1 hour) with nothing else that day. Minimum is derived from preferred working times or weekly hours.",
+  },
+  weightYtdBalance: {
+    label: "YTD Balance",
+    description: "Fair year-to-date distribution",
+    tooltip: "Gives priority to clinicians who are behind on their year-to-date hours target. Helps balance workload across the year.",
   },
 };
 
