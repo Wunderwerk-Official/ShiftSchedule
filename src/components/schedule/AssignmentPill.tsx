@@ -206,7 +206,7 @@ export default function AssignmentPill({
       onClick={onClick}
       className={cx(
         "group/pill relative w-full select-none overflow-visible rounded-xl border px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
-        "transition-colors hover:z-[500]",
+        "hover:z-[500]",
         hasWarning ? "z-[500]" : "z-[1]",
         (showViolation || showHighlight) &&
           "ring-2 ring-rose-200/80 dark:ring-rose-500/40",

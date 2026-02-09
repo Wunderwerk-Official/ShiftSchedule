@@ -52,7 +52,7 @@ export default function EmptySlotPill({
             onRemove();
           }}
           className={cx(
-            "no-print absolute right-1 top-0 -translate-y-1/2 cursor-pointer opacity-0 transition-opacity",
+            "no-print absolute right-1 top-0 -translate-y-1/2 cursor-pointer opacity-0",
             "group-hover/empty:opacity-100",
           )}
         >

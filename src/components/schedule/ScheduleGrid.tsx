@@ -999,7 +999,7 @@ function RowSection({
                           return;
                         }
                         if (!canDropAssignment(dragState.dragging, row.id, dateISO)) {
-                          e.dataTransfer.dropEffect = "none";
+                          e.dataTransfer.dropEffect = "move";
                           setDragState((s) =>
                             s.dragOverKey ? { ...s, dragOverKey: null } : s,
                           );
@@ -1299,7 +1299,7 @@ function RowSection({
                       return;
                     }
                     if (!canDropAssignment(dragState.dragging, activeRow.id, dateISO)) {
-                      e.dataTransfer.dropEffect = "none";
+                      e.dataTransfer.dropEffect = "move";
                       setDragState((s) =>
                         s.dragOverKey ? { ...s, dragOverKey: null } : s,
                       );
@@ -1541,7 +1541,7 @@ function RowSection({
                         showAddIcon
                         highlighted={highlightOpenSlots}
                         className={cx(
-                          "opacity-0 transition-opacity",
+                          "opacity-0",
                           hoveredClassCell?.rowId === activeRow.id &&
                             hoveredClassCell?.dateISO === dateISO &&
                             "opacity-100",
