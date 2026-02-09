@@ -138,22 +138,6 @@ export default function AssignmentPill({
   onDragEnd,
   onClick,
 }: AssignmentPillProps) {
-  const hasDragOverlay = Boolean(draggable || onDragStart || onDragEnd);
-  const handleRootDragStart: DragEventHandler<HTMLDivElement> | undefined =
-    hasDragOverlay
-      ? (event) => {
-          if (event.target !== event.currentTarget) return;
-          onDragStart?.(event);
-        }
-      : undefined;
-  const handleRootDragEnd: DragEventHandler<HTMLDivElement> | undefined =
-    hasDragOverlay
-      ? (event) => {
-          if (event.target !== event.currentTarget) return;
-          onDragEnd?.(event);
-        }
-      : undefined;
-
   // Abbreviation logic: measure if name fits, progressively abbreviate if not
   const nameRef = useRef<HTMLSpanElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -217,8 +201,8 @@ export default function AssignmentPill({
       data-assignment-pill="true"
       data-assignment-key={assignmentKey}
       draggable={draggable}
-      onDragStart={handleRootDragStart}
-      onDragEnd={handleRootDragEnd}
+      onDragStart={onDragStart}
+      onDragEnd={onDragEnd}
       onClick={onClick}
       className={cx(
         "group/pill relative w-full select-none overflow-visible rounded-xl border px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
@@ -237,19 +221,7 @@ export default function AssignmentPill({
         className,
       )}
     >
-      {hasDragOverlay ? (
-        <div
-          aria-hidden="true"
-          className={cx(
-            "absolute inset-0 z-[120] rounded-[inherit]",
-            draggable && "cursor-grab active:cursor-grabbing",
-          )}
-          draggable={draggable}
-          onDragStart={onDragStart}
-          onDragEnd={onDragEnd}
-        />
-      ) : null}
-      <div className="relative z-10 overflow-hidden rounded-[inherit]">
+      <div className="pointer-events-none relative z-10 overflow-hidden rounded-[inherit]">
         {hasSegments ? (
           <div className="pointer-events-none absolute inset-0 z-0 flex divide-x divide-slate-200/80 dark:divide-slate-700/80">
             {timeSegments?.map((segment, index) => (

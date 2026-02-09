@@ -9,6 +9,17 @@
   border-radius: 0.5rem;
 }
 
+/* Safari: buttons suppress child drag-and-drop by default.
+   -webkit-user-drag: element forces the pill to be draggable even
+   inside a <button> cell. The child rule prevents Safari's native
+   text-drag from competing with HTML5 draggable. */
+[data-assignment-pill][draggable="true"] {
+  -webkit-user-drag: element;
+}
+[data-assignment-pill] * {
+  -webkit-user-drag: none;
+}
+
 .calendar-scroll {
   height: auto !important;
   max-height: none !important;

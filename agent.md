@@ -13,7 +13,9 @@ Where to look first
 - Slot/template normalization + row building: `src/lib/shiftRows.ts`
 - Rendered assignment map + pool logic + overlaps: `src/lib/schedule.ts`
 - Backend normalization + persistence: `backend/state.py`, `backend/db.py`
-- Solver: `backend/solver.py`
+- CP-SAT Solver: `backend/solver.py`
+- Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
+- Solver live stats: `src/lib/solverStats.ts`
 - E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`
 - API client: `src/api/client.ts`
 - Settings UI: `src/components/schedule/SettingsView.tsx`
@@ -21,7 +23,7 @@ Where to look first
 Where to verify behavior
 - UI rules, drag/drop, overlaps: `src/components/schedule/ScheduleGrid.tsx`, `src/lib/schedule.ts`
 - Template/slot migration: `src/lib/shiftRows.ts` and `backend/state.py`
-- Solver constraints: `backend/solver.py`
+- Solver constraints: `backend/solver.py`, `backend/heuristic/solver_v2.py`
 - Public/published views: `src/pages/PublicWeekPage.tsx`, `backend/web.py`
   - Public + print routes use the same calendar layout helpers as the main view (`src/lib/calendarView.ts`).
 
@@ -408,6 +410,16 @@ ColBand explosion on fresh start (fixed)
 - Fix: Changed the condition from `not getattr(template, "blocks", None)` to `not hasattr(template, "blocks")` which correctly checks for property existence rather than truthiness.
 - Note: The frontend (`src/lib/shiftRows.ts`) was already correct, using `!("blocks" in template)` which checks property existence.
 
+Safari drag-and-drop (partially fixed, open issue)
+- Symptom: In Safari, dragging filled physician pills is unreliable — often only works from the lower padding area, not over the text.
+- Root cause: Safari's WebKit engine has multiple interacting drag-and-drop quirks: `<button>` parents suppress child `draggable`; native text drag competes with HTML5 `draggable` even when `user-select: none` is set; transparent overlay divs are not reliably hit-tested.
+- Partial fixes applied:
+  - Removed the transparent drag overlay div from `AssignmentPill.tsx`; root div now handles drag directly.
+  - Added `-webkit-user-drag: element` on `[data-assignment-pill][draggable="true"]` and `-webkit-user-drag: none` on children in `src/index.css`.
+  - Added `pointer-events-none` on the pill content wrapper so events pass through to the root.
+- Status: Works in Chrome; Safari still unreliable. The CSS workarounds are the standard recommendation but don't fully resolve Safari's engine-level issues.
+- Future fix: Replace HTML5 drag-and-drop with a pointer-event-based library like `@dnd-kit/core` which doesn't depend on Safari's native drag implementation. This is a significant refactor affecting `ScheduleGrid.tsx` and `AssignmentPill.tsx`.
+
 Code patterns to avoid
 - **Double `.get()` calls**: Avoid calling `.get()` twice on the same key; cache the result instead.
   - Bad: `d.get(k).attr if d.get(k) else None`
@@ -436,6 +448,7 @@ type SubShift = {
   startTime: string; // "HH:MM"
   endTime: string; // "HH:MM"
   endDayOffset?: number; // 0-3
+  hours?: number;
 };
 
 type WorkplaceRow = {
@@ -443,11 +456,25 @@ type WorkplaceRow = {
   name: string;
   kind: RowKind;
   dotColorClass: string;
+  blockColor?: string;
   locationId?: string;
   subShifts?: SubShift[];
 };
 
 type VacationRange = { id: string; startISO: string; endISO: string };
+
+type PreferredWorkingTimeRequirement = "none" | "preference" | "mandatory";
+
+type PreferredWorkingTime = {
+  startTime?: string;
+  endTime?: string;
+  requirement?: PreferredWorkingTimeRequirement;
+};
+
+type PreferredWorkingTimes = Record<
+  "mon" | "tue" | "wed" | "thu" | "fri" | "sat" | "sun",
+  PreferredWorkingTime
+>;
 
 type Clinician = {
   id: string;
@@ -455,6 +482,7 @@ type Clinician = {
   qualifiedClassIds: string[];
   preferredClassIds: string[];
   vacations: VacationRange[];
+  preferredWorkingTimes?: PreferredWorkingTimes;
   workingHoursPerWeek?: number;
   workingHoursToleranceHours?: number; // default 5
 };
@@ -483,6 +511,7 @@ type TemplateBlock = {
   id: string;
   sectionId: string;
   label?: string;
+  color?: string;
   requiredSlots: number; // legacy; slots carry requiredSlots
 };
 
@@ -552,22 +581,21 @@ Slot IDs
 
 ---
 
-## 6) Solver (Backend, OR-Tools)
-Endpoints:
-- `POST /v1/solve` (single day)
+## 6) Solver (Backend)
+
+Two solver implementations exist. The frontend can select which to use via `useHeuristic` toggle.
+
+### CP-SAT Solver (default) — `backend/solver.py`
+Endpoint:
 - `POST /v1/solve/range` (range solver; accepts `startISO` and optional `endISO`)
-Payloads:
+Payload:
 ```json
-{ "dateISO": "YYYY-MM-DD", "only_fill_required": true|false }
-```
-```json
-{ "startISO": "YYYY-MM-DD", "only_fill_required": true|false }
+{ "startISO": "YYYY-MM-DD", "only_fill_required": true|false, "use_heuristic": false }
 ```
 
 Behavior
-- Day solver (`/v1/solve`) uses only clinicians in Distribution Pool (unassigned + not on vacation).
-- Range solver (`/v1/solve/range`) considers all clinicians not on vacation; manual assignments are treated as fixed.
-- Range solves include a 1-day context window on both ends for rest-day constraints; rest rules only enforce inside the selected range and emit a warning note if boundary days are already assigned.
+- Considers all clinicians not on vacation; manual assignments are treated as fixed.
+- Includes a 1-day context window on both ends for rest-day constraints; rest rules only enforce inside the selected range and emit a warning note if boundary days are already assigned.
 - Hard constraints:
   - Qualification required.
   - Vacation overrides assignment.
@@ -579,12 +607,24 @@ Behavior
   - Enforce continuous shifts: each clinician/day has at most one continuous block (or existing manual blocks).
 - Targets template slot ids; order weights follow location order + row band order + column band order.
 - Qualification + preference checks use slot.sectionId (the parent section).
-- Objective:
-  - Prioritize coverage by section order (top of section list is highest).
-  - Minimize missing required slots.
-  - If `only_fill_required=false`, allow a small extra capacity per slot (default: +1) to distribute additional assignments.
-  - Preferred sections (order of eligible sections) is a lower-weight tie breaker.
-  - Preferred working windows and working hours are soft balancing terms.
+- Objective (weighted minimization):
+  - **Coverage** (w=1000): Maximize filled required slots, prioritized by section order.
+  - **Slack** (w=1000): Minimize unfilled required slots.
+  - **Total Assignments** (w=100, Distribute All only): Maximize total assignments.
+  - **Slot Priority** (w=10, Distribute All only): Prefer earlier slots in template order.
+  - **Time Window** (w=5): Respect clinician preferred working hours.
+  - **Section Preference** (w=1): Assign clinicians to their preferred sections.
+  - **Working Hours** (w=1): Balance hours to target ± tolerance.
+- Sub-scores are computed after solving and returned in `debugInfo.sub_scores` (slots_filled, slots_unfilled, total_assignments, preference_score, time_window_score, hours_penalty).
+- Gap-based early stopping: once optimality gap drops below 5%, allows 20s grace period then stops.
+
+### Heuristic Solver v2 — `backend/heuristic/solver_v2.py`
+- Alternative fast solver activated by `use_heuristic: true` in the payload.
+- Uses a greedy multi-phase approach instead of constraint programming.
+- Phases: bottleneck pre-assignment → greedy slot filling → local improvement.
+- Respects the same constraints as CP-SAT (qualification, vacation, overlap, same-location, on-call rest, continuity).
+- Produces solutions faster but may not be as optimal as CP-SAT.
+- Documentation: `HEURISTIC_SOLVER_V2_README.md`, `human-heuristic-solver.md`.
 
 Performance optimizations:
 - Constraint building uses O(n) date-based grouping instead of O(n²) pairwise comparisons.
@@ -659,12 +699,17 @@ Solver overlay (SolverOverlay.tsx):
     - "Details" button - opens full-screen dashboard with all graphs.
 - Full-screen dashboard (SolverDashboard):
   - Opens via "Details" button, renders as full-viewport overlay via portal to `document.body` (z-[1100]).
-  - Shows all graphs: Score, Filled Slots, Non-consecutive Shifts, People-Weeks within Working Hours, Location Changes.
+  - Organized into logical sections with section headers:
+    - **Coverage**: Optimization Score (full width), Filled Slots, Total Assignments.
+    - **Constraints**: Non-consecutive Shifts, Location Changes, Working Hours Compliance, On-Call Rest Violations.
+    - **Preferences**: Section Preference Match, Time Window Compliance.
+  - Cards are conditionally shown only when relevant (e.g., Time Window only if clinicians have time preferences set).
   - Live updates continue while dashboard is open.
   - "← Back" button to close and return to compact overlay.
 - Solver stats calculation: modular function in `src/lib/solverStats.ts` (`calculateSolverLiveStats`).
 - Stats include both solver-generated and existing manual assignments in the solve range for accurate filled slots display.
-- Stats tracked: filledSlots, totalRequiredSlots, openSlots, nonConsecutiveShifts, peopleWeeksWithinHours, totalPeopleWeeksWithTarget, locationChanges.
+- Accepts optional `solverSettings` parameter (passed from WeeklySchedulePage) for on-call rest violation tracking.
+- Stats tracked: filledSlots, totalRequiredSlots, openSlots, nonConsecutiveShifts, peopleWeeksWithinHours, totalPeopleWeeksWithTarget, locationChanges, totalAssignments, sectionPreferenceMatches, totalClassAssignments, timeWindowFits, totalAssignmentsWithTimeWindows, onCallRestViolations.
 
 Automated Shift Planning panel (frontend):
 - Timeframe: "Current week" and "Today" quick buttons; custom date pickers (DD.MM.YYYY) for start/end displayed inline with dash separator.
@@ -744,15 +789,23 @@ Endpoints
 - `DELETE /auth/users/{username}` (admin only)
 - `GET /v1/state`
 - `POST /v1/state`
-- `POST /v1/solve`
-- `POST /v1/solve/range`
+- `POST /v1/solve/range` (accepts `use_heuristic` to switch solver engine)
 - `POST /v1/solve/abort` (abort solver; `?force=true` kills subprocess immediately)
 - `GET /v1/solve/progress` (SSE stream for live solver updates; requires `?token=<jwt>`)
+- `GET /v1/state/health` (database health check)
+- `GET /v1/state/inspect/week` (database inspector)
 - `GET /v1/ical/publish`
 - `POST /v1/ical/publish`
 - `POST /v1/ical/publish/rotate`
 - `DELETE /v1/ical/publish`
 - `GET /v1/ical/{token}.ics` (public, no JWT)
+- `GET /v1/web/publish`
+- `POST /v1/web/publish`
+- `POST /v1/web/publish/rotate`
+- `DELETE /v1/web/publish`
+- `GET /v1/web/{token}/week` (public, no JWT)
+- `GET /v1/pdf/week`
+- `GET /v1/pdf/weeks`
 
 ---
 
@@ -904,11 +957,11 @@ Frontend
 - `src/api/client.ts`
 - `src/lib/shiftRows.ts` (weeklyTemplate normalization, colBand safeguards, legacy shiftRowId helpers)
 - `src/lib/schedule.ts` (rendered assignment map, time intervals, Rest Day pool logic)
-- `src/lib/solverStats.ts` (live solver stats calculation: filled slots, non-consecutive shifts, working hours)
+- `src/lib/solverStats.ts` (live solver stats calculation: coverage, preferences, time windows, on-call rest, working hours)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
-- `backend/models.py` (Pydantic models)
+- `backend/models.py` (Pydantic models including SolverSubScores, SolverDebugInfo)
 - `backend/constants.py` (shared constants)
 - `backend/db.py` (SQLite schema + connection helpers)
 - `backend/state.py` (state normalization, defaults, persistence)
@@ -918,7 +971,9 @@ Backend
 - `backend/pdf.py` (PDF export endpoints)
 - `backend/ical_routes.py` (iCal endpoints)
 - `backend/publication.py` (tokens + caching helpers)
-- `backend/solver.py` (solver endpoint + logic)
+- `backend/solver.py` (CP-SAT solver endpoint + logic)
+- `backend/heuristic/solver_v2.py` (heuristic solver v2 implementation)
+- `backend/heuristic/models.py` (heuristic solver data models)
 - `backend/state_routes.py` (health + state endpoints + database inspection)
 - `backend/requirements.txt`
 - `backend/schedule.db`
@@ -930,7 +985,7 @@ Database Inspector
 
 ## 12) Notes for New Agents
 - The calendar is the source of truth for edits; Settings manages section priority + min slots + pool names + clinician list.
-- Pool ids: Distribution Pool = `pool-not-allocated`, Reserve Pool = `pool-manual`, Rest Day = `pool-rest-day`, Vacation = `pool-vacation`.
+- Pool ids: Rest Day = `pool-rest-day`, Vacation = `pool-vacation`. Distribution Pool (`pool-not-allocated`) and Reserve Pool (`pool-manual`) were removed; state normalization auto-cleans them.
 - Keep drag restricted to same day; manual overrides are allowed even if they violate solver rules.
 - Mobile single-day view uses `useMediaQuery("(max-width: 640px)")` with `displayDays`; week-level calculations still use `fullWeekDays`.
 - `ScheduleGrid` supports variable day counts (dynamic `gridTemplateColumns`, last column determined by index).
