@@ -51,7 +51,7 @@ const rangesOverlap = (
   return range1.startISO <= range2.endISO && range1.endISO >= range2.startISO;
 };
 
-// Minimal live chart for solutions - shows % improvement from first solution
+// Minimal live chart for solutions - shows raw objective score over time
 function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]; elapsedMs: number }) {
   if (solutions.length === 0) return null;
 
@@ -65,34 +65,50 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
   const maxTimeMs = Math.max(elapsedMs, ...solutions.map((s) => s.time_ms)) * 1.1;
   const maxTimeSec = maxTimeMs / 1000;
 
-  // Calculate % improvement from first solution
-  const firstObjective = solutions[0].objective;
-  const bestObjective = Math.min(...solutions.map((s) => s.objective));
-  const denom = Math.max(1, Math.abs(firstObjective));
-  const bestImprovementPct = ((firstObjective - bestObjective) / denom) * 100;
+  // Y-axis: raw objective values (lower is better in minimization)
+  // Fixed range from worst (first) to best, with padding
+  const objectives = solutions.map((s) => s.objective);
+  const minObj = Math.min(...objectives);
+  const maxObj = Math.max(...objectives);
+  const objRange = maxObj - minObj;
+  const yPad = objRange > 0 ? objRange * 0.1 : Math.max(1, Math.abs(maxObj) * 0.1);
+  const yMin = minObj - yPad;
+  const yMax = maxObj + yPad;
+  const yRange = yMax - yMin;
 
-  // Build path points: Y-axis = % improvement (0% at bottom, max at top)
-  const maxPct = Math.max(0.1, bestImprovementPct * 1.1); // a little headroom
-
-  const points: { x: number; y: number; pct: number }[] = [];
+  const points: { x: number; y: number; value: number }[] = [];
   for (let i = 0; i < solutions.length; i++) {
     const s = solutions[i];
-    const pct = ((firstObjective - s.objective) / denom) * 100;
-    const normalized = pct / maxPct;
+    // Lower objective = better = higher on chart
+    const normalized = (yMax - s.objective) / yRange;
     const x = padding.left + (s.time_ms / 1000 / maxTimeSec) * innerWidth;
     const y = padding.top + (1 - normalized) * innerHeight;
-    points.push({ x, y, pct });
+    points.push({ x, y, value: s.objective });
 
     // Extend horizontally to next solution or to current time
     const nextTime = i < solutions.length - 1 ? solutions[i + 1].time_ms : elapsedMs;
     const nextX = padding.left + (nextTime / 1000 / maxTimeSec) * innerWidth;
-    points.push({ x: nextX, y, pct });
+    points.push({ x: nextX, y, value: s.objective });
   }
 
   const linePath =
     points.length > 0
       ? `M ${points.map((p) => `${p.x},${p.y}`).join(" L ")}`
       : "";
+
+  // Format large numbers compactly
+  const formatObj = (v: number) => {
+    const abs = Math.abs(v);
+    if (abs >= 1_000_000) return `${(v / 1_000_000).toFixed(1)}M`;
+    if (abs >= 1_000) return `${(v / 1_000).toFixed(1)}k`;
+    return v.toFixed(0);
+  };
+
+  // Calculate improvement stats for summary
+  const firstObjective = solutions[0].objective;
+  const bestObjective = minObj;
+  const denom = Math.max(1, Math.abs(firstObjective));
+  const bestImprovementPct = ((firstObjective - bestObjective) / denom) * 100;
 
   return (
     <div className="flex flex-col items-center gap-1">
@@ -135,17 +151,17 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           transform={`rotate(-90, ${padding.left - 8}, ${chartHeight / 2})`}
           className="fill-current text-[11px] opacity-60"
         >
-          Improvement
+          Score
         </text>
 
-        {/* Y-axis values: top = best improvement, bottom = 0% */}
+        {/* Y-axis values: top = best (lowest obj), bottom = worst (highest obj) */}
         <text
           x={padding.left - 4}
           y={padding.top + 4}
           textAnchor="end"
           className="fill-current text-[11px] opacity-60"
         >
-          {maxPct.toFixed(1)}%
+          {formatObj(minObj)}
         </text>
         <text
           x={padding.left - 4}
@@ -153,7 +169,7 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           textAnchor="end"
           className="fill-current text-[11px] opacity-60"
         >
-          0%
+          {formatObj(maxObj)}
         </text>
 
         {/* X-axis label */}
