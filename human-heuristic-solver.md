@@ -60,6 +60,49 @@ This approach works because:
 
 ---
 
+### Phase 0.5: Bottleneck Pre-Assignment
+
+**Purpose:** Before the main day-by-day greedy algorithm, identify and assign **bottleneck slots** where only one doctor is eligible. This prevents flexible generalists from taking slots that specialists need.
+
+**Problem being solved:**
+- Dr. Brown can only do mammography (specialist)
+- Dr. Johnson can do mammography OR MRI (generalist)
+- Without this phase, greedy algorithm might assign Johnson to mammography, leaving no one for Brown's specialty
+- Result: Brown sits idle while Johnson is overloaded
+
+**Algorithm:**
+
+```
+bottleneck_assignments = []
+
+FOR each date D in date_range (chronologically):
+    REPEAT:
+        found_bottleneck = false
+
+        FOR each unfilled slot S on date D:
+            eligible_doctors = FILTER_ELIGIBLE_DOCTORS(S, date D)
+
+            IF COUNT(eligible_doctors) == 1:
+                // BOTTLENECK! Only one doctor can fill this slot
+                doctor = eligible_doctors[0]
+                ASSIGN(doctor, slot S, date D)
+                ADD assignment to bottleneck_assignments
+                MARK assignment as "bottleneck" (preserved during backtracking)
+                found_bottleneck = true
+                BREAK  // Eligibility may have changed, recheck all slots
+
+        IF NOT found_bottleneck:
+            BREAK  // No more bottlenecks, proceed to main algorithm
+```
+
+**Key points:**
+- Bottleneck assignments are treated like manual assignments (never removed during backtracking)
+- After each bottleneck assignment, eligibility is rechecked (hours/overlaps may have changed)
+- This phase only assigns slots where there's NO choice (exactly 1 eligible doctor)
+- Ensures specialists get their work before generalists take it
+
+---
+
 ### Phase 1: Day-by-Day Iteration
 
 ```

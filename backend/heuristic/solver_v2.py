@@ -243,9 +243,39 @@ def heuristic_solve_range_v2(
     if cancel_event.is_set():
         return _build_abort_response(payload, timer)
 
+    # Phase 0.5: Constrained Doctor Pre-assignment
+    # Assign specialists (doctors with limited section options) first to prevent
+    # flexible generalists from taking their slots.
+    specialist_assignments, specialist_warnings = _preassign_constrained_doctors(
+        slot_instances,
+        clinician_states,
+        solver_settings,
+        config,
+        cancel_event,
+    )
+
+    # Add bottleneck assignments to manual_assignments_map so they're preserved during backtracking
+    for assignment in specialist_assignments:
+        day_iso = assignment.dateISO
+        clinician_id = assignment.clinicianId
+        # Find the slot
+        slot = next((s for s in slot_instances if s.slot_id == assignment.rowId and s.date_iso == day_iso), None)
+        if slot:
+            map_key = (day_iso, clinician_id)
+            if map_key not in manual_assignments_map:
+                manual_assignments_map[map_key] = []
+            # Mark as "bottleneck" source so we can track it
+            manual_assignments_map[map_key].append(("bottleneck", slot))
+
+    timer.checkpoint("specialists")
+
+    # Check for cancellation
+    if cancel_event.is_set():
+        return _build_abort_response(payload, timer, specialist_assignments)
+
     # Phase 1: Day-by-day iteration
-    all_assignments = []
-    warnings = []
+    all_assignments = specialist_assignments[:]
+    warnings = specialist_warnings[:]
 
     for day_iso in target_day_isos:
         on_progress("phase", {
@@ -429,6 +459,99 @@ def _mark_manual_assignments(
     return manual_assignments_by_clinician_date
 
 
+def _preassign_constrained_doctors(
+    all_slot_instances: List[SlotInfo],
+    clinician_states: Dict[str, ClinicianState],
+    solver_settings: SolverSettings,
+    config: HeuristicConfig,
+    cancel_event,
+) -> Tuple[List[Assignment], List[str]]:
+    """
+    Phase 0.5: Pre-assign constrained doctors (specialists) first.
+
+    This ensures doctors with limited section options get their work before
+    flexible generalists take those slots. Without this, a specialist like
+    Dr. Brown (only mammography) might be left idle while Dr. Johnson
+    (MRI + mammography) takes all the mammography slots.
+
+    Algorithm:
+    1. Identify specialists: doctors with <= SPECIALIST_THRESHOLD qualified sections
+    2. Sort by constraint level (fewest options first)
+    3. For each specialist, greedily assign them to unfilled slots in their domain
+    4. Mark those slots as filled before main algorithm runs
+
+    Returns: (assignments made, warnings)
+    """
+    assignments = []
+    warnings = []
+    bottleneck_count = 0
+
+    # Group slots by date for efficient processing
+    slots_by_date = {}
+    for slot in all_slot_instances:
+        if slot.date_iso not in slots_by_date:
+            slots_by_date[slot.date_iso] = []
+        slots_by_date[slot.date_iso].append(slot)
+
+    # Process all dates
+    for date_iso in sorted(slots_by_date.keys()):
+        day_slots = slots_by_date[date_iso]
+
+        # Iteratively find and assign bottleneck slots
+        # (eligibility changes after each assignment, so we need to loop)
+        max_iterations = len(day_slots) * 2  # Prevent infinite loops
+        iteration = 0
+
+        while iteration < max_iterations:
+            if cancel_event.is_set():
+                break
+
+            iteration += 1
+            found_bottleneck = False
+
+            # Find unfilled slots and their eligible doctors
+            for slot in day_slots:
+                # Check if slot still needs filling
+                filled_count = sum(
+                    1 for s in clinician_states.values()
+                    if any(assigned.slot_id == slot.slot_id
+                           for assigned in s.assigned_slots_by_date.get(slot.date_iso, []))
+                )
+                if filled_count >= slot.required_count:
+                    continue  # Slot already filled
+
+                # Find eligible doctors for this slot
+                eligible = []
+                for clinician_id, state in clinician_states.items():
+                    if _is_doctor_eligible_for_slot(state, slot, solver_settings):
+                        eligible.append((clinician_id, state))
+
+                # If only 1 doctor eligible → bottleneck!
+                if len(eligible) == 1:
+                    clinician_id, state = eligible[0]
+
+                    # Pre-assign this slot
+                    assignment = _assign_slot_to_doctor(slot, state, "solver")
+                    assignments.append(assignment)
+                    bottleneck_count += 1
+                    found_bottleneck = True
+
+                    if bottleneck_count == 1:
+                        warnings.append(f"[BOTTLENECK] Pre-assigning slots with only 1 eligible doctor")
+
+                    # Break and recheck all slots (eligibility may have changed)
+                    break
+
+            # If no bottlenecks found in this iteration, we're done
+            if not found_bottleneck:
+                break
+
+    if bottleneck_count > 0:
+        warnings.append(f"[BOTTLENECK] Pre-assigned {bottleneck_count} bottleneck slot(s)")
+
+    return assignments, warnings
+
+
 def _solve_single_day(
     day_iso: str,
     all_slot_instances: List[SlotInfo],
@@ -506,27 +629,29 @@ def _reset_day_to_manual_only(
     manual_assignments_map: Dict[Tuple[str, str], List[Tuple[str, SlotInfo]]],
 ) -> None:
     """
-    Reset day to only include manual assignments.
+    Reset day to only include manual and bottleneck assignments.
 
     This implements the backtracking logic: before each retry, we clear
-    solver-generated assignments and restore only manual ones.
+    solver-generated assignments and restore only manual and bottleneck ones.
+    Bottleneck assignments (slots with only 1 eligible doctor) are preserved
+    because they must be assigned to that specific doctor.
     """
     # For each clinician, reset their state for this day
     for clinician_id, state in clinician_states.items():
-        # Get manual assignments for this clinician on this day
+        # Get assignments for this clinician on this day
         map_key = (day_iso, clinician_id)
-        manual_slots = manual_assignments_map.get(map_key, [])
+        assigned_slots = manual_assignments_map.get(map_key, [])
 
-        # Filter to only manual assignments
-        manual_slots_only = [slot for source, slot in manual_slots if source == "manual"]
+        # Filter to manual and bottleneck assignments (preserve both during backtracking)
+        preserved_slots = [slot for source, slot in assigned_slots if source in ["manual", "bottleneck"]]
 
         # Reset assigned slots for this day
-        if manual_slots_only:
-            state.assigned_slots_by_date[day_iso] = manual_slots_only
-            # Set location from first manual slot
-            state.location_by_date[day_iso] = manual_slots_only[0].location_id
+        if preserved_slots:
+            state.assigned_slots_by_date[day_iso] = preserved_slots
+            # Set location from first preserved slot
+            state.location_by_date[day_iso] = preserved_slots[0].location_id
         else:
-            # No manual assignments, clear the day
+            # No preserved assignments, clear the day
             if day_iso in state.assigned_slots_by_date:
                 del state.assigned_slots_by_date[day_iso]
             if day_iso in state.location_by_date:
@@ -625,6 +750,81 @@ def _fill_day_with_prioritized_slots(
     return True, assignments
 
 
+def _is_doctor_eligible_for_slot(
+    state: ClinicianState,
+    slot: SlotInfo,
+    solver_settings: SolverSettings,
+) -> bool:
+    """
+    Check if a single doctor is eligible for a slot (all 7 criteria).
+
+    Returns: True if eligible, False otherwise
+    """
+    # 1. Qualification
+    if slot.section_id not in state.eligible_sections:
+        return False
+
+    # 2. Vacation
+    if state.is_on_vacation(slot.date_iso):
+        return False
+
+    # 3. Time overlap
+    if state.has_time_overlap(slot.date_iso, slot):
+        return False
+
+    # 4. Mandatory time window
+    if not state.fits_mandatory_time_window(slot):
+        return False
+
+    # 5. On-call rest days
+    if slot.date_iso in state.rest_days:
+        return False
+
+    # 6. Same location per day
+    if solver_settings.enforceSameLocationPerDay:
+        if state.has_location_conflict(slot.date_iso, slot.location_id):
+            return False
+
+    # 7. Hour limit
+    if state.would_exceed_hours(slot):
+        return False
+
+    return True
+
+
+def _assign_slot_to_doctor(
+    slot: SlotInfo,
+    state: ClinicianState,
+    source: str = "solver",
+) -> Assignment:
+    """
+    Assign a slot to a doctor and update their state.
+
+    Returns: Assignment object
+    """
+    # Update state
+    if slot.date_iso not in state.assigned_slots_by_date:
+        state.assigned_slots_by_date[slot.date_iso] = []
+    state.assigned_slots_by_date[slot.date_iso].append(slot)
+    state.location_by_date[slot.date_iso] = slot.location_id
+
+    # Update hours
+    hours = slot.duration_minutes / 60.0
+    state.current_week_hours += hours
+    state.ytd_hours += hours
+    state.ytd_deficit = state.ytd_expected - state.ytd_hours
+
+    # Create assignment
+    assignment = Assignment(
+        id=f"heur-{slot.date_iso}-{state.clinician_id}-{slot.slot_id}",
+        clinicianId=state.clinician_id,
+        rowId=slot.slot_id,
+        dateISO=slot.date_iso,
+        source=source if source in ["manual", "solver"] else "solver",
+    )
+    return assignment
+
+
 def _filter_eligible_doctors(
     slot: SlotInfo,
     clinician_states: Dict[str, ClinicianState],
@@ -645,36 +845,8 @@ def _filter_eligible_doctors(
     eligible = []
 
     for clinician_id, state in clinician_states.items():
-        # 1. Qualification
-        if slot.section_id not in state.eligible_sections:
-            continue
-
-        # 2. Vacation
-        if state.is_on_vacation(slot.date_iso):
-            continue
-
-        # 3. Time overlap
-        if state.has_time_overlap(slot.date_iso, slot):
-            continue
-
-        # 4. Mandatory time window
-        if not state.fits_mandatory_time_window(slot):
-            continue
-
-        # 5. On-call rest days
-        if slot.date_iso in state.rest_days:
-            continue
-
-        # 6. Same location per day
-        if solver_settings.enforceSameLocationPerDay:
-            if state.has_location_conflict(slot.date_iso, slot.location_id):
-                continue
-
-        # 7. Hour limit
-        if state.would_exceed_hours(slot):
-            continue
-
-        eligible.append(clinician_id)
+        if _is_doctor_eligible_for_slot(state, slot, solver_settings):
+            eligible.append(clinician_id)
 
     return eligible
 
@@ -747,29 +919,9 @@ def _assign_doctor_to_slot(
     slot: SlotInfo,
     assignments: List[Assignment],
 ) -> None:
-    """Assign a doctor to a slot and update state."""
-    # Add to assigned slots
-    if slot.date_iso not in state.assigned_slots_by_date:
-        state.assigned_slots_by_date[slot.date_iso] = []
-    state.assigned_slots_by_date[slot.date_iso].append(slot)
-
-    # Set location
-    state.location_by_date[slot.date_iso] = slot.location_id
-
-    # Update hours
-    hours = slot.duration_minutes / 60.0
-    state.current_week_hours += hours
-    state.ytd_hours += hours
-    state.ytd_deficit = state.ytd_expected - state.ytd_hours
-
-    # Create assignment
-    assignments.append(Assignment(
-        id=f"heur-{slot.date_iso}-{state.clinician_id}-{slot.slot_id}",
-        rowId=slot.slot_id,
-        dateISO=slot.date_iso,
-        clinicianId=state.clinician_id,
-        source="solver",
-    ))
+    """Assign a doctor to a slot and update state (wrapper for _assign_slot_to_doctor)."""
+    assignment = _assign_slot_to_doctor(slot, state, source="solver")
+    assignments.append(assignment)
 
 
 def _fill_consecutive_slots(
