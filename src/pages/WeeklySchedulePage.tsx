@@ -3684,6 +3684,7 @@ export default function WeeklySchedulePage({
         holidays={holidayDates}
         currentPhase={solverPhase}
         existingAssignments={existingAssignmentsForSolver}
+        solverSettings={solverSettings}
       />
 
       <SolverInfoModal

@@ -971,7 +971,7 @@ def _add_coverage_constraints(
     slot_date_info: List[Dict[str, Any]] = []
     for index, ctx in enumerate(slot_contexts):
         slot_id = ctx["slot_id"]
-        order_weight = max(1, total_slots - index) * 10
+        order_weight = min(100, max(1, total_slots - index))
         order_weight_by_slot_id[slot_id] = order_weight
         for date_iso in target_day_isos:
             day_type = day_type_by_iso.get(date_iso)

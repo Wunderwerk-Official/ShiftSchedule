@@ -9,6 +9,22 @@ export type SolverLiveStats = {
   peopleWeeksWithinHours: number; // Number of (clinician, week) pairs within working hours
   totalPeopleWeeksWithTarget: number; // Total (clinician, week) pairs with targets
   locationChanges: number; // Number of (clinician, date) pairs with location changes
+  totalAssignments: number; // Total assignments (solver + manual) in the solve range
+  sectionPreferenceMatches: number; // Assignments matching clinician's preferred sections
+  totalClassAssignments: number; // Total assignments to class (non-pool) rows
+  timeWindowFits: number; // Assignments fitting clinician's preferred working times
+  totalAssignmentsWithTimeWindows: number; // Assignments where clinician has time window defined
+  onCallRestViolations: number; // Rest day violations around on-call shifts
+  workingHoursDeviationMinutes: number; // Total minutes of deviation beyond tolerance band
+  preferenceRankScore: number; // Weighted preference score (1st choice scores higher)
+  maxPreferenceRankScore: number; // Max possible preference score if all assignments matched #1 choice
+};
+
+export type SolverSettingsForStats = {
+  onCallRestEnabled?: boolean;
+  onCallRestClassId?: string;
+  onCallRestDaysBefore?: number;
+  onCallRestDaysAfter?: number;
 };
 
 // Map day of week (0=Sun, 1=Mon, ..., 6=Sat) to DayType
@@ -81,6 +97,7 @@ export function calculateSolverLiveStats(
   solveRange: { startISO: string; endISO: string },
   holidays: Set<string>,
   existingAssignments: Assignment[] = [],
+  solverSettings?: SolverSettingsForStats,
 ): SolverLiveStats {
   // Merge existing assignments with solver assignments
   // Use a Set to deduplicate by unique key (rowId|dateISO|clinicianId)
@@ -282,6 +299,7 @@ export function calculateSolverLiveStats(
 
   let peopleWeeksWithinHours = 0;
   let totalPeopleWeeksWithTarget = 0;
+  let workingHoursDeviationMinutes = 0;
 
   // For each clinician with a target, check each week in the solve range
   for (const clinician of clinicians) {
@@ -305,6 +323,147 @@ export function calculateSolverLiveStats(
       if (deviation <= toleranceMinutes) {
         peopleWeeksWithinHours++;
       }
+
+      // Continuous deviation: minutes outside the tolerance band
+      const beyondTolerance = Math.max(0, deviation - toleranceMinutes);
+      workingHoursDeviationMinutes += beyondTolerance;
+    }
+  }
+
+  // ===== 5. Total assignments =====
+  const totalAssignments = assignments.length;
+
+  // ===== 6. Section preference matches =====
+  const clinicianById = new Map(clinicians.map((c) => [c.id, c]));
+  let sectionPreferenceMatches = 0;
+  let totalClassAssignments = 0;
+  let preferenceRankScore = 0;
+  let maxPreferenceRankScore = 0;
+
+  for (const a of assignments) {
+    const row = rowById.get(a.rowId);
+    if (!row || row.kind !== "class") continue;
+    totalClassAssignments++;
+    const clinician = clinicianById.get(a.clinicianId);
+    if (!clinician?.preferredClassIds?.length) continue;
+
+    // Max possible score for this assignment = top rank weight
+    const numPrefs = clinician.preferredClassIds.length;
+    maxPreferenceRankScore += numPrefs; // Best case: 1st choice
+
+    if (row.sectionId) {
+      const prefIndex = clinician.preferredClassIds.indexOf(row.sectionId);
+      if (prefIndex >= 0) {
+        sectionPreferenceMatches++;
+        // Ranked score: 1st choice gets numPrefs, 2nd gets numPrefs-1, etc.
+        preferenceRankScore += numPrefs - prefIndex;
+      }
+    }
+  }
+
+  // ===== 7. Time window compliance =====
+  const dayKeys = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+  let timeWindowFits = 0;
+  let totalAssignmentsWithTimeWindows = 0;
+
+  for (const a of assignments) {
+    const clinician = clinicianById.get(a.clinicianId);
+    if (!clinician?.preferredWorkingTimes) continue;
+
+    const date = new Date(a.dateISO);
+    const dayKey = dayKeys[date.getDay()];
+    const pref = clinician.preferredWorkingTimes[dayKey];
+    if (!pref) continue;
+
+    const req = pref.requirement;
+    if (req !== "preference" && req !== "mandatory") continue;
+    if (!pref.startTime || !pref.endTime) continue;
+
+    const wStart = parseTimeToMinutes(pref.startTime);
+    const wEnd = parseTimeToMinutes(pref.endTime);
+    if (wStart === null || wEnd === null) continue;
+
+    totalAssignmentsWithTimeWindows++;
+
+    const row = rowById.get(a.rowId);
+    if (!row) continue;
+
+    const slotStart = parseTimeToMinutes(row.startTime);
+    const slotEnd = parseTimeToMinutes(row.endTime);
+    if (slotStart === null || slotEnd === null) continue;
+
+    let adjustedSlotEnd = slotEnd;
+    if (row.endDayOffset && row.endDayOffset > 0) {
+      adjustedSlotEnd += row.endDayOffset * 24 * 60;
+    } else if (slotEnd < slotStart) {
+      adjustedSlotEnd += 24 * 60;
+    }
+
+    let adjustedWEnd = wEnd;
+    if (wEnd < wStart) {
+      adjustedWEnd += 24 * 60;
+    }
+
+    if (slotStart >= wStart && adjustedSlotEnd <= adjustedWEnd) {
+      timeWindowFits++;
+    }
+  }
+
+  // ===== 8. On-call rest day violations =====
+  let onCallRestViolations = 0;
+
+  if (
+    solverSettings?.onCallRestEnabled &&
+    solverSettings.onCallRestClassId &&
+    ((solverSettings.onCallRestDaysBefore ?? 0) > 0 ||
+      (solverSettings.onCallRestDaysAfter ?? 0) > 0)
+  ) {
+    const onCallSectionId = solverSettings.onCallRestClassId;
+    const restBefore = solverSettings.onCallRestDaysBefore ?? 0;
+    const restAfter = solverSettings.onCallRestDaysAfter ?? 0;
+
+    // Find on-call section slot IDs
+    const onCallSlotIds = new Set<string>();
+    for (const row of scheduleRows) {
+      if (row.sectionId === onCallSectionId && row.kind === "class") {
+        onCallSlotIds.add(row.id);
+      }
+    }
+
+    // Group assignments by (clinicianId, dateISO)
+    const assignmentsByClinicianDateForRest = new Map<string, Set<string>>();
+    for (const a of assignments) {
+      const key = `${a.clinicianId}|${a.dateISO}`;
+      if (!assignmentsByClinicianDateForRest.has(key)) {
+        assignmentsByClinicianDateForRest.set(key, new Set());
+      }
+      assignmentsByClinicianDateForRest.get(key)!.add(a.rowId);
+    }
+
+    // Find on-call assignments and check rest days
+    for (const a of assignments) {
+      if (!onCallSlotIds.has(a.rowId)) continue;
+      const onCallDate = new Date(a.dateISO);
+
+      for (let offset = 1; offset <= restBefore; offset++) {
+        const restDate = new Date(onCallDate);
+        restDate.setDate(restDate.getDate() - offset);
+        const restDateISO = restDate.toISOString().split("T")[0];
+        const key = `${a.clinicianId}|${restDateISO}`;
+        if (assignmentsByClinicianDateForRest.has(key)) {
+          onCallRestViolations++;
+        }
+      }
+
+      for (let offset = 1; offset <= restAfter; offset++) {
+        const restDate = new Date(onCallDate);
+        restDate.setDate(restDate.getDate() + offset);
+        const restDateISO = restDate.toISOString().split("T")[0];
+        const key = `${a.clinicianId}|${restDateISO}`;
+        if (assignmentsByClinicianDateForRest.has(key)) {
+          onCallRestViolations++;
+        }
+      }
     }
   }
 
@@ -316,5 +475,14 @@ export function calculateSolverLiveStats(
     peopleWeeksWithinHours,
     totalPeopleWeeksWithTarget,
     locationChanges,
+    totalAssignments,
+    sectionPreferenceMatches,
+    totalClassAssignments,
+    timeWindowFits,
+    totalAssignmentsWithTimeWindows,
+    onCallRestViolations,
+    workingHoursDeviationMinutes,
+    preferenceRankScore,
+    maxPreferenceRankScore,
   };
 }

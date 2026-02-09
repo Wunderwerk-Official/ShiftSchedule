@@ -1,8 +1,9 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import type { Assignment, Clinician } from "../../api/client";
+import type { Assignment, Clinician, SolverSettings } from "../../api/client";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { calculateSolverLiveStats } from "../../lib/solverStats";
+import type { SolverSettingsForStats } from "../../lib/solverStats";
 
 export type LiveSolution = {
   solution_num: number;
@@ -26,6 +27,7 @@ type SolverOverlayProps = {
   holidays?: Set<string>;
   currentPhase?: string | null;
   existingAssignments?: Assignment[]; // Existing (manual) assignments in the solve range
+  solverSettings?: SolverSettings; // Solver settings for on-call rest tracking
 };
 
 const formatDuration = (valueMs: number) => {
@@ -49,7 +51,7 @@ const rangesOverlap = (
   return range1.startISO <= range2.endISO && range1.endISO >= range2.startISO;
 };
 
-// Minimal live chart for solutions - inverted so better (lower) scores appear higher, with log scale
+// Minimal live chart for solutions - shows % improvement from first solution
 function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]; elapsedMs: number }) {
   if (solutions.length === 0) return null;
 
@@ -63,36 +65,28 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
   const maxTimeMs = Math.max(elapsedMs, ...solutions.map((s) => s.time_ms)) * 1.1;
   const maxTimeSec = maxTimeMs / 1000;
 
-  // Get min/max objectives (min is best)
-  const minObjective = Math.min(...solutions.map((s) => s.objective));
-  const maxObjective = Math.max(...solutions.map((s) => s.objective));
+  // Calculate % improvement from first solution
+  const firstObjective = solutions[0].objective;
+  const bestObjective = Math.min(...solutions.map((s) => s.objective));
+  const denom = Math.max(1, Math.abs(firstObjective));
+  const bestImprovementPct = ((firstObjective - bestObjective) / denom) * 100;
 
-  // Calculate distances from minimum (for log scale)
-  // Transform: distance from best = objective - minObjective
-  const maxDistance = maxObjective - minObjective;
-  const logMaxDistance = maxDistance > 0 ? Math.log10(maxDistance + 1) : 1;
+  // Build path points: Y-axis = % improvement (0% at bottom, max at top)
+  const maxPct = Math.max(0.1, bestImprovementPct * 1.1); // a little headroom
 
-  // Build path points with step function (each solution extends to the next one's time)
-  // Y-axis is INVERTED with LOG SCALE: lower objective (better) = higher on chart
-  const points: { x: number; y: number }[] = [];
+  const points: { x: number; y: number; pct: number }[] = [];
   for (let i = 0; i < solutions.length; i++) {
     const s = solutions[i];
-    // Distance from best (0 for best solution, larger for worse)
-    const distance = s.objective - minObjective;
-    // Log scale: compress large differences
-    const logDistance = distance > 0 ? Math.log10(distance + 1) : 0;
-    // Invert: best (logDistance=0) at top, worst at bottom
-    const normalized = 1 - logDistance / logMaxDistance;
-
+    const pct = ((firstObjective - s.objective) / denom) * 100;
+    const normalized = pct / maxPct;
     const x = padding.left + (s.time_ms / 1000 / maxTimeSec) * innerWidth;
     const y = padding.top + (1 - normalized) * innerHeight;
-
-    points.push({ x, y });
+    points.push({ x, y, pct });
 
     // Extend horizontally to next solution or to current time
     const nextTime = i < solutions.length - 1 ? solutions[i + 1].time_ms : elapsedMs;
     const nextX = padding.left + (nextTime / 1000 / maxTimeSec) * innerWidth;
-    points.push({ x: nextX, y });
+    points.push({ x: nextX, y, pct });
   }
 
   const linePath =
@@ -139,27 +133,27 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           y={chartHeight / 2}
           textAnchor="middle"
           transform={`rotate(-90, ${padding.left - 8}, ${chartHeight / 2})`}
-          className="fill-current text-[9px] opacity-50"
+          className="fill-current text-[11px] opacity-60"
         >
-          Score
+          Improvement
         </text>
 
-        {/* Y-axis values: top = best (min), bottom = worst (max) */}
+        {/* Y-axis values: top = best improvement, bottom = 0% */}
         <text
           x={padding.left - 4}
-          y={padding.top + 3}
+          y={padding.top + 4}
           textAnchor="end"
-          className="fill-current text-[9px] opacity-60"
+          className="fill-current text-[11px] opacity-60"
         >
-          {minObjective}
+          {maxPct.toFixed(1)}%
         </text>
         <text
           x={padding.left - 4}
           y={chartHeight - padding.bottom}
           textAnchor="end"
-          className="fill-current text-[9px] opacity-60"
+          className="fill-current text-[11px] opacity-60"
         >
-          {maxObjective}
+          0%
         </text>
 
         {/* X-axis label */}
@@ -167,7 +161,7 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           x={chartWidth / 2}
           y={chartHeight - 2}
           textAnchor="middle"
-          className="fill-current text-[9px] opacity-50"
+          className="fill-current text-[11px] opacity-60"
         >
           Time (s)
         </text>
@@ -177,7 +171,7 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           x={padding.left}
           y={chartHeight - 8}
           textAnchor="start"
-          className="fill-current text-[9px] opacity-40"
+          className="fill-current text-[11px] opacity-60"
         >
           0
         </text>
@@ -185,14 +179,14 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           x={chartWidth - padding.right}
           y={chartHeight - 8}
           textAnchor="end"
-          className="fill-current text-[9px] opacity-40"
+          className="fill-current text-[11px] opacity-60"
         >
           {maxTimeSec.toFixed(1)}
         </text>
       </svg>
-      <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-400">
+      <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
         <span>Solutions: {solutions.length}</span>
-        <span>Best: {minObjective}</span>
+        <span>Improved: {bestImprovementPct.toFixed(1)}%</span>
       </div>
     </div>
   );
@@ -209,21 +203,35 @@ export type StatsHistoryEntry = {
   totalPeopleWeeksWithTarget: number;
   totalRequiredSlots: number;
   locationChanges: number;
+  totalAssignments: number;
+  sectionPreferenceMatches: number;
+  totalClassAssignments: number;
+  timeWindowFits: number;
+  totalAssignmentsWithTimeWindows: number;
+  onCallRestViolations: number;
+  workingHoursDeviationMinutes: number;
+  preferenceRankScore: number;
+  maxPreferenceRankScore: number;
 };
 
 // Stats chart for a single metric - same size as main solution chart
+// Supports fixed Y-axis range via fixedMin/fixedMax to avoid misleading auto-scaling
 function MiniStatsChart({
   data,
   dataKey,
   elapsedMs,
   color,
   labelSuffix,
+  fixedMin,
+  fixedMax,
 }: {
   data: StatsHistoryEntry[];
   dataKey: keyof StatsHistoryEntry;
   elapsedMs: number;
   color: string;
   labelSuffix?: string; // e.g., "/42" for "x/y" format
+  fixedMin?: number; // Fixed Y-axis minimum (e.g., 0)
+  fixedMax?: number; // Fixed Y-axis maximum (e.g., totalRequiredSlots)
 }) {
   if (data.length === 0) return null;
 
@@ -237,16 +245,15 @@ function MiniStatsChart({
   const dataMin = Math.min(...values);
   const dataMax = Math.max(...values);
 
-  // Always scale Y-axis to actual data min/max (not the maxValue prop)
-  // maxValue is only used for the label suffix (e.g., "80/920")
-  let minVal = dataMin;
-  let maxVal = dataMax;
+  // Use fixed range if provided, otherwise fall back to data range
+  let minVal = fixedMin ?? dataMin;
+  let maxVal = fixedMax ?? dataMax;
 
   // When min equals max, add padding so the line appears in the middle
   if (minVal === maxVal) {
     const padding_amount = Math.max(1, Math.abs(minVal * 0.1)); // 10% or at least 1
-    minVal = minVal - padding_amount;
-    maxVal = maxVal + padding_amount;
+    minVal = Math.floor(minVal - padding_amount);
+    maxVal = Math.ceil(maxVal + padding_amount);
   }
 
   const range = maxVal - minVal;
@@ -315,9 +322,9 @@ function MiniStatsChart({
       {/* Y-axis labels - higher values at top */}
       <text
         x={padding.left - 4}
-        y={padding.top + 3}
+        y={padding.top + 4}
         textAnchor="end"
-        className="fill-current text-[9px] opacity-60"
+        className="fill-current text-[11px] opacity-60"
       >
         {maxVal}
       </text>
@@ -325,7 +332,7 @@ function MiniStatsChart({
         x={padding.left - 4}
         y={height - padding.bottom}
         textAnchor="end"
-        className="fill-current text-[9px] opacity-60"
+        className="fill-current text-[11px] opacity-60"
       >
         {minVal}
       </text>
@@ -333,7 +340,7 @@ function MiniStatsChart({
       <text
         x={padding.left}
         y={height - 5}
-        className="fill-current text-[9px] opacity-40"
+        className="fill-current text-[11px] opacity-60"
       >
         0
       </text>
@@ -341,7 +348,7 @@ function MiniStatsChart({
         x={width - padding.right}
         y={height - 5}
         textAnchor="end"
-        className="fill-current text-[9px] opacity-40"
+        className="fill-current text-[11px] opacity-60"
       >
         {(Math.max(elapsedMs, ...data.map((d) => d.time_ms)) / 1000).toFixed(1)}
       </text>
@@ -400,6 +407,56 @@ function DashboardCard({
   );
 }
 
+// Section header for dashboard groups
+function DashboardSectionHeader({ title }: { title: string }) {
+  return (
+    <div className="col-span-full mt-2 mb-1">
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400 dark:text-slate-500">
+        {title}
+      </h3>
+    </div>
+  );
+}
+
+// Constraint status badge - replaces charts for hard constraints that are always 0
+function ConstraintStatusBadge({
+  items,
+}: {
+  items: { label: string; value: number; color: string }[];
+}) {
+  const allSatisfied = items.every((item) => item.value === 0);
+  return (
+    <div className="col-span-full">
+      <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-200 bg-white px-5 py-3 shadow-sm dark:border-slate-700 dark:bg-slate-800">
+        {allSatisfied ? (
+          <div className="flex items-center gap-2">
+            <div className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 dark:bg-emerald-900">
+              <svg className="h-3 w-3 text-emerald-600 dark:text-emerald-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+              </svg>
+            </div>
+            <span className="text-sm font-medium text-emerald-700 dark:text-emerald-300">
+              All constraints satisfied
+            </span>
+          </div>
+        ) : (
+          items.map((item) => (
+            <div key={item.label} className="flex items-center gap-1.5">
+              <div
+                className="h-2 w-2 rounded-full"
+                style={{ backgroundColor: item.value === 0 ? "#10b981" : item.color }}
+              />
+              <span className={`text-xs font-medium ${item.value === 0 ? "text-slate-500 dark:text-slate-400" : "text-slate-700 dark:text-slate-200"}`}>
+                {item.label}: {item.value === 0 ? "OK" : item.value}
+              </span>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Full-screen dashboard with all graphs
 function SolverDashboard({
   liveSolutions,
@@ -419,6 +476,15 @@ function SolverDashboard({
     peopleWeeksWithinHours: number;
     totalPeopleWeeksWithTarget: number;
     locationChanges: number;
+    totalAssignments: number;
+    sectionPreferenceMatches: number;
+    totalClassAssignments: number;
+    timeWindowFits: number;
+    totalAssignmentsWithTimeWindows: number;
+    onCallRestViolations: number;
+    workingHoursDeviationMinutes: number;
+    preferenceRankScore: number;
+    maxPreferenceRankScore: number;
   } | null;
   elapsedMs: number;
   totalAllowedMs: number;
@@ -426,6 +492,8 @@ function SolverDashboard({
 }) {
   const hasStats = liveStats && statsHistory.length > 1;
   const hasWorkingHoursTarget = liveStats && liveStats.totalPeopleWeeksWithTarget > 0;
+  const hasTimeWindows = liveStats && liveStats.totalAssignmentsWithTimeWindows > 0;
+  const hasPreferenceRank = liveStats && liveStats.maxPreferenceRankScore > 0;
 
   return createPortal(
     <div className="fixed inset-0 z-[1100] flex flex-col bg-slate-50 dark:bg-slate-900">
@@ -462,7 +530,10 @@ function SolverDashboard({
           {/* Stats grid: 2 columns on larger screens */}
           {hasStats && (
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-              {/* Filled Slots */}
+              {/* === Coverage === */}
+              <DashboardSectionHeader title="Coverage" />
+
+              {/* Filled Slots - fixed Y-axis 0..totalRequired */}
               <DashboardCard title="Filled Slots" accentColor="#6366f1">
                 <MiniStatsChart
                   data={statsHistory}
@@ -470,41 +541,80 @@ function SolverDashboard({
                   elapsedMs={elapsedMs}
                   color="#6366f1"
                   labelSuffix={`/${liveStats.totalRequiredSlots}`}
+                  fixedMin={0}
+                  fixedMax={liveStats.totalRequiredSlots}
                 />
               </DashboardCard>
 
-              {/* Non-consecutive shifts */}
-              <DashboardCard title="Non-consecutive Shifts" accentColor="#ef4444">
+              {/* Total Assignments - fixed Y-axis starting at 0 */}
+              <DashboardCard title="Total Assignments" accentColor="#818cf8">
                 <MiniStatsChart
                   data={statsHistory}
-                  dataKey="nonConsecutiveShifts"
+                  dataKey="totalAssignments"
                   elapsedMs={elapsedMs}
-                  color="#ef4444"
+                  color="#818cf8"
+                  fixedMin={0}
                 />
               </DashboardCard>
 
-              {/* People-Weeks within working hours */}
+              {/* === Constraints — compact status badge === */}
+              <DashboardSectionHeader title="Constraints" />
+              <ConstraintStatusBadge
+                items={[
+                  { label: "Non-consecutive shifts", value: liveStats.nonConsecutiveShifts, color: "#ef4444" },
+                  { label: "Location changes", value: liveStats.locationChanges, color: "#f59e0b" },
+                  { label: "On-call rest violations", value: liveStats.onCallRestViolations, color: "#dc2626" },
+                ]}
+              />
+
+              {/* === Quality === */}
+              {(hasWorkingHoursTarget || hasPreferenceRank || hasTimeWindows) && (
+                <DashboardSectionHeader title="Quality" />
+              )}
+
+              {/* Working Hours Deviation - continuous, lower is better, fixed at 0 min */}
               {hasWorkingHoursTarget && (
-                <DashboardCard title="Working Hours Compliance" accentColor="#10b981">
+                <DashboardCard title="Working Hours Deviation" accentColor="#10b981">
                   <MiniStatsChart
                     data={statsHistory}
-                    dataKey="peopleWeeksWithinHours"
+                    dataKey="workingHoursDeviationMinutes"
                     elapsedMs={elapsedMs}
                     color="#10b981"
-                    labelSuffix={`/${liveStats.totalPeopleWeeksWithTarget}`}
+                    labelSuffix=" min"
+                    fixedMin={0}
                   />
                 </DashboardCard>
               )}
 
-              {/* Location changes */}
-              <DashboardCard title="Location Changes" accentColor="#f59e0b">
-                <MiniStatsChart
-                  data={statsHistory}
-                  dataKey="locationChanges"
-                  elapsedMs={elapsedMs}
-                  color="#f59e0b"
-                />
-              </DashboardCard>
+              {/* Section Preference Rank Score - weighted, higher is better */}
+              {hasPreferenceRank && (
+                <DashboardCard title="Preference Rank Score" accentColor="#8b5cf6">
+                  <MiniStatsChart
+                    data={statsHistory}
+                    dataKey="preferenceRankScore"
+                    elapsedMs={elapsedMs}
+                    color="#8b5cf6"
+                    labelSuffix={`/${liveStats.maxPreferenceRankScore}`}
+                    fixedMin={0}
+                    fixedMax={liveStats.maxPreferenceRankScore}
+                  />
+                </DashboardCard>
+              )}
+
+              {/* Time Window Compliance - fixed Y-axis 0..total */}
+              {hasTimeWindows && (
+                <DashboardCard title="Time Window Compliance" accentColor="#06b6d4">
+                  <MiniStatsChart
+                    data={statsHistory}
+                    dataKey="timeWindowFits"
+                    elapsedMs={elapsedMs}
+                    color="#06b6d4"
+                    labelSuffix={`/${liveStats.totalAssignmentsWithTimeWindows}`}
+                    fixedMin={0}
+                    fixedMax={liveStats.totalAssignmentsWithTimeWindows}
+                  />
+                </DashboardCard>
+              )}
             </div>
           )}
         </div>
@@ -529,6 +639,7 @@ export default function SolverOverlay({
   holidays = new Set(),
   currentPhase = null,
   existingAssignments = [],
+  solverSettings,
 }: SolverOverlayProps) {
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [calendarContainer, setCalendarContainer] = useState<HTMLElement | null>(null);
@@ -569,6 +680,14 @@ export default function SolverOverlay({
       } else {
         // Compute stats only for new solutions
         const solverAssignments = solution.assignments ?? [];
+        const statsSettings: SolverSettingsForStats | undefined = solverSettings
+          ? {
+              onCallRestEnabled: solverSettings.onCallRestEnabled,
+              onCallRestClassId: solverSettings.onCallRestClassId,
+              onCallRestDaysBefore: solverSettings.onCallRestDaysBefore,
+              onCallRestDaysAfter: solverSettings.onCallRestDaysAfter,
+            }
+          : undefined;
         const stats = calculateSolverLiveStats(
           solverAssignments,
           scheduleRows,
@@ -576,6 +695,7 @@ export default function SolverOverlay({
           solveRange,
           holidays,
           existingAssignments,
+          statsSettings,
         );
         const entry: StatsHistoryEntry = {
           time_ms: solution.time_ms,
@@ -587,7 +707,7 @@ export default function SolverOverlay({
       }
     }
     return history;
-  }, [solveRange, liveSolutions, scheduleRows, clinicians, holidays, existingAssignments]);
+  }, [solveRange, liveSolutions, scheduleRows, clinicians, holidays, existingAssignments, solverSettings]);
 
   // Calculate live stats for the current best solution (last entry in history)
   const liveStats = useMemo(() => {
@@ -601,6 +721,15 @@ export default function SolverOverlay({
       peopleWeeksWithinHours: last.peopleWeeksWithinHours,
       totalPeopleWeeksWithTarget: last.totalPeopleWeeksWithTarget,
       locationChanges: last.locationChanges,
+      totalAssignments: last.totalAssignments,
+      sectionPreferenceMatches: last.sectionPreferenceMatches,
+      totalClassAssignments: last.totalClassAssignments,
+      timeWindowFits: last.timeWindowFits,
+      totalAssignmentsWithTimeWindows: last.totalAssignmentsWithTimeWindows,
+      onCallRestViolations: last.onCallRestViolations,
+      workingHoursDeviationMinutes: last.workingHoursDeviationMinutes,
+      preferenceRankScore: last.preferenceRankScore,
+      maxPreferenceRankScore: last.maxPreferenceRankScore,
     };
   }, [statsHistory]);
 
@@ -633,7 +762,7 @@ export default function SolverOverlay({
           const circumference = 2 * Math.PI * radius;
           const strokeDashoffset = circumference * (1 - progress);
           return (
-            <div className="relative h-16 w-16">
+            <div className="relative h-16 w-16" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-label="Solver progress">
               <svg
                 className="-rotate-90"
                 viewBox="0 0 64 64"
