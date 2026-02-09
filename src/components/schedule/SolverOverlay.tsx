@@ -659,6 +659,13 @@ export default function SolverOverlay({
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [calendarContainer, setCalendarContainer] = useState<HTMLElement | null>(null);
 
+  // Reset dashboard view when a new solve starts
+  useEffect(() => {
+    if (isVisible) {
+      setDashboardOpen(false);
+    }
+  }, [isVisible]);
+
   // Find the calendar container when visible or on mount
   useEffect(() => {
     if (!isVisible) return;
