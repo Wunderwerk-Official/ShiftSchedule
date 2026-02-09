@@ -124,19 +124,52 @@ export function calculateSolverLiveStats(
   // Get all dates in the solve range
   const dates = getDatesInRange(solveRange.startISO, solveRange.endISO);
 
-  // Count working days (Mon-Fri) excluding holidays for working hours scaling
-  let workingDaysInRange = 0;
-  for (const dateISO of dates) {
+  // Helper to get ISO week key (YYYY-Www format)
+  const getWeekKey = (dateISO: string): string => {
     const date = new Date(dateISO);
-    const dayOfWeek = date.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
-    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5; // Mon-Fri
-    const isHoliday = holidays.has(dateISO);
-    if (isWeekday && !isHoliday) {
-      workingDaysInRange++;
+    // Get Thursday of the current week to determine the year for ISO week
+    const thursday = new Date(date);
+    thursday.setDate(date.getDate() + (4 - ((date.getDay() + 6) % 7 + 1)));
+    const yearStart = new Date(thursday.getFullYear(), 0, 1);
+    const weekNum = Math.ceil(((thursday.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
+    return `${thursday.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+  };
+
+  // Count days per ISO week in the solve range (for scaling partial weeks)
+  const daysPerWeek = new Map<string, number>();
+  for (const dateISO of dates) {
+    const weekKey = getWeekKey(dateISO);
+    daysPerWeek.set(weekKey, (daysPerWeek.get(weekKey) ?? 0) + 1);
+  }
+
+  // Build vacation date sets per clinician for efficient lookup
+  const vacationDatesByClinicianId = new Map<string, Set<string>>();
+  for (const clinician of clinicians) {
+    if (!clinician.vacations?.length) continue;
+    const vacDates = new Set<string>();
+    for (const v of clinician.vacations) {
+      const vStart = new Date(v.startISO);
+      const vEnd = new Date(v.endISO);
+      const cur = new Date(vStart);
+      while (cur <= vEnd) {
+        vacDates.add(cur.toISOString().split("T")[0]);
+        cur.setDate(cur.getDate() + 1);
+      }
+    }
+    vacationDatesByClinicianId.set(clinician.id, vacDates);
+  }
+
+  // Build a map of (clinicianId, weekKey) -> available days (in solve range, not on vacation)
+  const availableDaysByClinicianWeek = new Map<string, number>();
+  for (const clinician of clinicians) {
+    const vacDates = vacationDatesByClinicianId.get(clinician.id);
+    for (const dateISO of dates) {
+      if (vacDates?.has(dateISO)) continue;
+      const weekKey = getWeekKey(dateISO);
+      const key = `${clinician.id}|${weekKey}`;
+      availableDaysByClinicianWeek.set(key, (availableDaysByClinicianWeek.get(key) ?? 0) + 1);
     }
   }
-  // Scale based on working days: if 4 working days in range, scale = 4/5
-  const scale = workingDaysInRange / 5.0;
 
   // Build maps for quick lookup
   const rowById = new Map(scheduleRows.map((r) => [r.id, r]));
@@ -269,17 +302,6 @@ export function calculateSolverLiveStats(
   // Group hours by (clinician, week) and compare to their target
   // A "week" is determined by the ISO week number of each date
 
-  // Helper to get ISO week key (YYYY-Www format)
-  const getWeekKey = (dateISO: string): string => {
-    const date = new Date(dateISO);
-    // Get Thursday of the current week to determine the year for ISO week
-    const thursday = new Date(date);
-    thursday.setDate(date.getDate() + (4 - ((date.getDay() + 6) % 7 + 1)));
-    const yearStart = new Date(thursday.getFullYear(), 0, 1);
-    const weekNum = Math.ceil(((thursday.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-    return `${thursday.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
-  };
-
   // Sum up hours per (clinician, week)
   const minutesByClinicianWeek = new Map<string, number>();
   const weeksInRange = new Set<string>();
@@ -302,6 +324,7 @@ export function calculateSolverLiveStats(
   let workingHoursDeviationMinutes = 0;
 
   // For each clinician with a target, check each week in the solve range
+  // Scale target proportionally for partial weeks and skip vacation days
   for (const clinician of clinicians) {
     const targetHoursPerWeek = clinician.workingHoursPerWeek;
     if (typeof targetHoursPerWeek !== "number" || targetHoursPerWeek <= 0) {
@@ -309,11 +332,22 @@ export function calculateSolverLiveStats(
     }
 
     const toleranceHours = clinician.workingHoursToleranceHours ?? 5;
-    const targetMinutes = targetHoursPerWeek * 60;
-    const toleranceMinutes = toleranceHours * 60;
+    const fullTargetMinutes = targetHoursPerWeek * 60;
+    const fullToleranceMinutes = toleranceHours * 60;
 
     // Check each week in the solve range for this clinician
     for (const weekKey of weeksInRange) {
+      const availKey = `${clinician.id}|${weekKey}`;
+      const availableDays = availableDaysByClinicianWeek.get(availKey) ?? 0;
+
+      // Skip weeks where clinician has no available days (fully on vacation)
+      if (availableDays === 0) continue;
+
+      // Scale target and tolerance by fraction of week available
+      const weekScale = availableDays / 7;
+      const targetMinutes = fullTargetMinutes * weekScale;
+      const toleranceMinutes = fullToleranceMinutes * weekScale;
+
       totalPeopleWeeksWithTarget++;
 
       const key = `${clinician.id}|${weekKey}`;
