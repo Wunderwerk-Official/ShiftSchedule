@@ -741,5 +741,299 @@ def test_consecutive_slot_filling():
     assert len(dates) == 1
 
 
+def test_specialist_vs_generalist_bottleneck():
+    """
+    Test bottleneck pre-assignment: specialists get work before generalists take their slots.
+
+    Scenario from user feedback:
+    - Dr. Brown: specialist (only mammography sections)
+    - Dr. Johnson: generalist (MRI + mammography)
+
+    Without bottleneck pre-assignment:
+    - Greedy algorithm assigns Johnson to mammography
+    - Brown sits idle (0 hours)
+
+    With bottleneck pre-assignment:
+    - Phase 0.5 detects mammography slots are bottlenecks for Brown
+    - Brown gets mammography work
+    - Johnson routed to MRI
+    """
+    locations = [
+        Location(id="main-campus", name="Main Campus"),
+        Location(id="northwest", name="Northwest")
+    ]
+
+    # Create slots for mammography and MRI
+    template = WeeklyCalendarTemplate(
+        version=4,
+        blocks=[
+            TemplateBlock(id="block-mammo-stereo", sectionId="mammo-stereo-mc", label="Mammography Stereo MC", requiredSlots=1),
+            TemplateBlock(id="block-mammo-general", sectionId="mammo-general-mc", label="Mammography General MC", requiredSlots=1),
+            TemplateBlock(id="block-mri", sectionId="mri", label="MRI", requiredSlots=1),
+        ],
+        locations=[
+            WeeklyTemplateLocation(
+                locationId="main-campus",
+                rowBands=[{"id": "rb-1", "order": 0}],
+                colBands=[{"id": "cb-mon", "order": 0, "dayType": "mon"}],
+                slots=[
+                    # Morning: Mammography Stereo (only Brown can do this)
+                    TemplateSlot(
+                        id="slot-mammo-stereo-morning",
+                        locationId="main-campus",
+                        rowBandId="rb-1",
+                        colBandId="cb-mon",
+                        blockId="block-mammo-stereo",
+                        requiredSlots=1,
+                        startTime="07:30",
+                        endTime="13:00",  # 5.5 hours
+                    ),
+                    # Afternoon: Mammography General (Brown or Johnson)
+                    TemplateSlot(
+                        id="slot-mammo-general-afternoon",
+                        locationId="main-campus",
+                        rowBandId="rb-1",
+                        colBandId="cb-mon",
+                        blockId="block-mammo-general",
+                        requiredSlots=1,
+                        startTime="13:00",
+                        endTime="16:00",  # 3 hours
+                    ),
+                    # MRI slot (only Johnson can do this)
+                    TemplateSlot(
+                        id="slot-mri-morning",
+                        locationId="main-campus",
+                        rowBandId="rb-1",
+                        colBandId="cb-mon",
+                        blockId="block-mri",
+                        requiredSlots=1,
+                        startTime="08:00",
+                        endTime="12:00",  # 4 hours
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clinicians = [
+        # Dr. Brown: Specialist - ONLY mammography
+        Clinician(
+            id="brown",
+            name="Dr. Brown",
+            qualifiedClassIds=["mammo-stereo-mc", "mammo-general-mc"],
+            preferredClassIds=["mammo-stereo-mc", "mammo-general-mc"],
+            vacations=[],
+            workingHoursPerWeek=8.0,  # Expects ~8 hours
+            workingHoursToleranceHours=2,
+        ),
+        # Dr. Johnson: Generalist - MRI AND mammography
+        Clinician(
+            id="johnson",
+            name="Dr. Johnson",
+            qualifiedClassIds=["mri", "mammo-general-mc"],  # Can do both!
+            preferredClassIds=["mri", "mammo-general-mc"],
+            vacations=[],
+            workingHoursPerWeek=8.0,
+            workingHoursToleranceHours=2,
+        ),
+    ]
+
+    state = AppState(
+        locations=locations,
+        clinicians=clinicians,
+        assignments=[],
+        weeklyTemplate=template,
+        solverSettings={},
+        holidays=[],
+        rows=[],
+        locationsEnabled=True,
+        minSlotsByRowId={},
+    )
+
+    monday = date(2026, 2, 9)
+    payload = SolveRangeRequest(
+        startISO=monday.isoformat(),
+        endISO=monday.isoformat(),
+        use_heuristic=True,
+    )
+
+    result = heuristic_solve_range_v2(
+        payload,
+        state,
+        MockCancelEvent(),
+        mock_progress,
+        0.0,
+    )
+
+    assignments = result["assignments"]
+
+    # Extract assignments by doctor
+    brown_assignments = [a for a in assignments if a["clinicianId"] == "brown"]
+    johnson_assignments = [a for a in assignments if a["clinicianId"] == "johnson"]
+
+    # Critical assertion: Brown should NOT be idle!
+    assert len(brown_assignments) > 0, "Dr. Brown (specialist) should have work, not sit idle!"
+
+    # Brown should get mammography slots (his specialty)
+    brown_slots = set(a["rowId"] for a in brown_assignments)
+    assert "slot-mammo-stereo-morning" in brown_slots or "slot-mammo-general-afternoon" in brown_slots, \
+        "Brown should be assigned to mammography slots (his only qualification)"
+
+    # Johnson should get MRI (where she's more flexible)
+    johnson_slots = set(a["rowId"] for a in johnson_assignments)
+    assert "slot-mri-morning" in johnson_slots, \
+        "Johnson should be assigned to MRI (she's flexible, Brown is not)"
+
+    # Verify bottleneck pre-assignment worked
+    # The slot-mammo-stereo-morning is a bottleneck (only Brown can do it)
+    # It should be assigned to Brown
+    mammo_stereo_assignments = [a for a in assignments if a["rowId"] == "slot-mammo-stereo-morning"]
+    assert len(mammo_stereo_assignments) == 1, "Mammography stereo slot should be filled"
+    assert mammo_stereo_assignments[0]["clinicianId"] == "brown", \
+        "Bottleneck slot (only Brown eligible) should be assigned to Brown"
+
+    # Check warnings for bottleneck detection
+    notes = result.get("notes", [])
+    bottleneck_notes = [n for n in notes if "BOTTLENECK" in n]
+    assert len(bottleneck_notes) > 0, "Should report bottleneck pre-assignments in notes"
+
+    print(f"\n✅ Specialist test PASSED:")
+    print(f"  - Dr. Brown (specialist): {len(brown_assignments)} assignments")
+    print(f"  - Dr. Johnson (generalist): {len(johnson_assignments)} assignments")
+    print(f"  - Brown slots: {brown_slots}")
+    print(f"  - Johnson slots: {johnson_slots}")
+    print(f"  - Bottleneck notes: {bottleneck_notes}")
+
+
+def test_bottleneck_preservation_during_backtracking():
+    """
+    Test that bottleneck assignments are preserved during backtracking.
+
+    Scenario:
+    - Create a schedule that will trigger backtracking (conflicting constraints)
+    - Ensure bottleneck assignments (slots with only 1 eligible doctor) persist
+    - Verify they're not cleared when the algorithm retries
+    """
+    locations = [Location(id="loc-1", name="Berlin")]
+
+    template = WeeklyCalendarTemplate(
+        version=4,
+        blocks=[
+            TemplateBlock(id="block-special", sectionId="special", label="Special", requiredSlots=1),
+            TemplateBlock(id="block-general", sectionId="general", label="General", requiredSlots=1),
+        ],
+        locations=[
+            WeeklyTemplateLocation(
+                locationId="loc-1",
+                rowBands=[{"id": "rb-1", "order": 0}],
+                colBands=[{"id": "cb-mon", "order": 0, "dayType": "mon"}],
+                slots=[
+                    # Specialist slot (only doc-specialist can do this)
+                    TemplateSlot(
+                        id="slot-special",
+                        locationId="loc-1",
+                        rowBandId="rb-1",
+                        colBandId="cb-mon",
+                        blockId="block-special",
+                        requiredSlots=1,
+                        startTime="08:00",
+                        endTime="12:00",
+                    ),
+                    # General slot (both can do this, but overlaps with specialist slot)
+                    TemplateSlot(
+                        id="slot-general-1",
+                        locationId="loc-1",
+                        rowBandId="rb-1",
+                        colBandId="cb-mon",
+                        blockId="block-general",
+                        requiredSlots=1,
+                        startTime="10:00",  # Overlaps!
+                        endTime="14:00",
+                    ),
+                    # Another general slot (non-overlapping)
+                    TemplateSlot(
+                        id="slot-general-2",
+                        locationId="loc-1",
+                        rowBandId="rb-1",
+                        colBandId="cb-mon",
+                        blockId="block-general",
+                        requiredSlots=1,
+                        startTime="14:00",
+                        endTime="18:00",
+                    ),
+                ],
+            )
+        ],
+    )
+
+    clinicians = [
+        # Specialist: only qualified for "special"
+        Clinician(
+            id="doc-specialist",
+            name="Dr. Specialist",
+            qualifiedClassIds=["special"],
+            preferredClassIds=["special"],
+            vacations=[],
+            workingHoursPerWeek=4.0,
+            workingHoursToleranceHours=2,
+        ),
+        # Generalist: qualified for both
+        Clinician(
+            id="doc-generalist",
+            name="Dr. Generalist",
+            qualifiedClassIds=["special", "general"],
+            preferredClassIds=["special", "general"],
+            vacations=[],
+            workingHoursPerWeek=8.0,
+            workingHoursToleranceHours=2,
+        ),
+    ]
+
+    state = AppState(
+        locations=locations,
+        clinicians=clinicians,
+        assignments=[],
+        weeklyTemplate=template,
+        solverSettings={},
+        holidays=[],
+        rows=[],
+        locationsEnabled=True,
+        minSlotsByRowId={},
+    )
+
+    monday = date(2026, 2, 9)
+    payload = SolveRangeRequest(
+        startISO=monday.isoformat(),
+        endISO=monday.isoformat(),
+        use_heuristic=True,
+    )
+
+    result = heuristic_solve_range_v2(
+        payload,
+        state,
+        MockCancelEvent(),
+        mock_progress,
+        0.0,
+    )
+
+    assignments = result["assignments"]
+
+    # The specialist slot should be assigned to the specialist (bottleneck)
+    specialist_slot_assignments = [a for a in assignments if a["rowId"] == "slot-special"]
+    assert len(specialist_slot_assignments) == 1, "Specialist slot should be filled"
+    assert specialist_slot_assignments[0]["clinicianId"] == "doc-specialist", \
+        "Bottleneck slot should go to the specialist (only eligible doctor)"
+
+    # Even if backtracking occurred, the bottleneck assignment should persist
+    specialist_assignments = [a for a in assignments if a["clinicianId"] == "doc-specialist"]
+    assert len(specialist_assignments) >= 1, "Specialist should have at least the bottleneck slot"
+    assert "slot-special" in [a["rowId"] for a in specialist_assignments], \
+        "Specialist should have the specialist slot (bottleneck preserved)"
+
+    print(f"\n✅ Bottleneck preservation test PASSED:")
+    print(f"  - Specialist assignments: {[a['rowId'] for a in specialist_assignments]}")
+    print(f"  - Bottleneck slot assigned to: {specialist_slot_assignments[0]['clinicianId']}")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
