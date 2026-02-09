@@ -95,6 +95,7 @@ class ClinicianState:
 
         # Calculate year-to-date hours and deficit
         self.ytd_hours = 0.0  # Will be calculated from assignments
+        self._historical_ytd_hours = 0.0  # Hours from before solve range (set by _calculate_historical_ytd_hours)
         self.ytd_expected = self._calculate_ytd_expected(solve_start_date)
         self.ytd_deficit = self.ytd_expected - self.ytd_hours
 
@@ -144,15 +145,43 @@ class ClinicianState:
             if not (slot_end <= existing_start or existing_end <= slot_start):
                 return True
 
-        # Check overnight slots from previous day extending into today
-        prev_date = (date.fromisoformat(date_iso) - timedelta(days=1)).isoformat()
-        prev_slots = self.assigned_slots_by_date.get(prev_date, [])
-        for existing in prev_slots:
-            if existing.end_day_offset > 0 or existing.end_minutes <= existing.start_minutes:
-                # This slot extends into today — its portion today is [0, end_minutes)
-                overnight_end_today = existing.end_minutes
-                if not (slot_end <= 0 or overnight_end_today <= slot_start):
-                    return True
+        # Check overnight slots from previous days extending into today
+        today = date.fromisoformat(date_iso)
+        for days_back in range(1, 4):  # Check up to 3 days back (matching v1 cap)
+            prev_date = (today - timedelta(days=days_back)).isoformat()
+            prev_slots = self.assigned_slots_by_date.get(prev_date, [])
+            for existing in prev_slots:
+                effective_offset = existing.end_day_offset
+                if effective_offset == 0 and existing.end_minutes <= existing.start_minutes:
+                    effective_offset = 1  # Implicit overnight
+                if effective_offset >= days_back:
+                    # This slot extends into today
+                    if effective_offset > days_back:
+                        overnight_end_today = 1440  # Spans through entire today
+                    else:
+                        overnight_end_today = existing.end_minutes  # Ends today
+                    if not (slot_end <= 0 or overnight_end_today <= slot_start):
+                        return True
+
+        # Check if the new slot extends into future days and conflicts
+        new_effective_offset = slot.end_day_offset
+        if new_effective_offset == 0 and slot.end_minutes <= slot.start_minutes:
+            new_effective_offset = 1  # Implicit overnight
+        if new_effective_offset > 0:
+            for days_forward in range(1, min(new_effective_offset + 1, 4)):
+                next_date = (today + timedelta(days=days_forward)).isoformat()
+                next_slots = self.assigned_slots_by_date.get(next_date, [])
+                if days_forward < new_effective_offset:
+                    overflow_end = 1440  # New slot spans through entire day
+                else:
+                    overflow_end = slot.end_minutes  # New slot ends on this day
+                for existing in next_slots:
+                    existing_start = existing.start_minutes
+                    existing_end = existing.end_minutes
+                    if existing.end_day_offset > 0 or existing_end < existing_start:
+                        existing_end = existing_start + existing.duration_minutes
+                    if not (overflow_end <= existing_start or existing_end <= 0):
+                        return True
 
         return False
 
@@ -181,8 +210,13 @@ class ClinicianState:
         if start_pref is None or end_pref is None:
             return True  # No valid window, so it fits
 
+        # Normalize overnight slot end time
+        slot_end = slot.end_minutes
+        if slot.end_day_offset > 0 or slot_end < slot.start_minutes:
+            slot_end = slot.start_minutes + slot.duration_minutes
+
         # Slot must fall entirely within the window
-        return slot.start_minutes >= start_pref and slot.end_minutes <= end_pref
+        return slot.start_minutes >= start_pref and slot_end <= end_pref
 
     def has_location_conflict(self, date_iso: str, location_id: str) -> bool:
         """Check if assigning to this location would create a conflict."""
@@ -279,6 +313,14 @@ def heuristic_solve_range_v2(
         state.assignments,
         slot_instances,
         clinician_states,
+    )
+
+    # Add historical YTD hours from assignments before solve range
+    _calculate_historical_ytd_hours(
+        state.assignments,
+        state,
+        clinician_states,
+        range_start,
     )
 
     # Calculate on-call rest days if enabled
@@ -522,6 +564,64 @@ def _mark_manual_assignments(
     return manual_assignments_by_clinician_date
 
 
+def _calculate_historical_ytd_hours(
+    assignments: List[Assignment],
+    app_state: AppState,
+    clinician_states: Dict[str, ClinicianState],
+    range_start: date,
+) -> None:
+    """
+    Add YTD hours from assignments before the solve range.
+
+    _mark_manual_assignments only counts hours for assignments within the solve
+    range (since slot_instances only cover target dates). This function adds
+    hours from earlier assignments in the same year so that YTD deficit
+    calculations are accurate.
+    """
+    # Build duration lookup from slot templates (slot_id -> duration_minutes)
+    slot_contexts = _collect_slot_contexts(app_state)
+    slot_duration_by_id: Dict[str, int] = {}
+    for ctx in slot_contexts:
+        slot = ctx["slot"]
+        start, end, _ = _build_slot_interval(slot, ctx["location_id"])
+        end_day_offset = getattr(slot, "endDayOffset", 0) or 0
+        duration = end - start
+        if end_day_offset > 0:
+            duration += end_day_offset * 24 * 60
+        elif duration < 0:
+            duration += 24 * 60
+        slot_duration_by_id[slot.id] = max(0, duration)
+
+    for assignment in assignments:
+        if assignment.rowId.startswith("pool-"):
+            continue
+
+        try:
+            assignment_date = date.fromisoformat(assignment.dateISO)
+        except (ValueError, TypeError):
+            continue
+
+        # Only count assignments before the solve range, in the same year
+        if assignment_date >= range_start:
+            continue
+        if assignment_date.year != range_start.year:
+            continue
+
+        clinician_state = clinician_states.get(assignment.clinicianId)
+        if not clinician_state:
+            continue
+
+        duration = slot_duration_by_id.get(assignment.rowId, 0)
+        if duration > 0:
+            hours = duration / 60.0
+            clinician_state._historical_ytd_hours += hours
+            clinician_state.ytd_hours += hours
+
+    # Recalculate deficits
+    for state in clinician_states.values():
+        state.ytd_deficit = state.ytd_expected - state.ytd_hours
+
+
 def _preassign_constrained_doctors(
     all_slot_instances: List[SlotInfo],
     clinician_states: Dict[str, ClinicianState],
@@ -679,8 +779,12 @@ def _solve_single_day(
             if day_iso not in state.assigned_slots_by_date:
                 state.assigned_slots_by_date[day_iso] = []
             state.assigned_slots_by_date[day_iso].append(matching_slot)
-            state.location_by_date[day_iso] = matching_slot.location_id
-            state.current_week_hours += matching_slot.duration_minutes / 60.0
+            if day_iso not in state.location_by_date:
+                state.location_by_date[day_iso] = matching_slot.location_id
+            hours = matching_slot.duration_minutes / 60.0
+            state.current_week_hours += hours
+            state.ytd_hours += hours
+            state.ytd_deficit = state.ytd_expected - state.ytd_hours
 
     # Return best partial solution
     return best_assignments, warnings
@@ -720,16 +824,21 @@ def _reset_day_to_manual_only(
             if day_iso in state.location_by_date:
                 del state.location_by_date[day_iso]
 
-        # Recalculate hours for THIS week only (not all weeks)
+        # Recalculate hours from assigned slots (source of truth)
         current_week = date.fromisoformat(day_iso).isocalendar()[1]
         current_year = date.fromisoformat(day_iso).isocalendar()[0]
         state.current_week_hours = 0.0
+        state.ytd_hours = 0.0
         for assigned_date_iso, slots in state.assigned_slots_by_date.items():
-            assigned_week = date.fromisoformat(assigned_date_iso).isocalendar()[1]
-            assigned_year = date.fromisoformat(assigned_date_iso).isocalendar()[0]
-            if assigned_week == current_week and assigned_year == current_year:
-                for slot in slots:
-                    state.current_week_hours += slot.duration_minutes / 60.0
+            for slot in slots:
+                hours = slot.duration_minutes / 60.0
+                state.ytd_hours += hours
+                assigned_week = date.fromisoformat(assigned_date_iso).isocalendar()[1]
+                assigned_year = date.fromisoformat(assigned_date_iso).isocalendar()[0]
+                if assigned_week == current_week and assigned_year == current_year:
+                    state.current_week_hours += hours
+        state.ytd_hours += state._historical_ytd_hours
+        state.ytd_deficit = state.ytd_expected - state.ytd_hours
 
 
 def _fill_day_with_prioritized_slots(
@@ -823,6 +932,11 @@ def _fill_day_with_prioritized_slots(
         if config.ENABLE_CONSECUTIVE_FILLING:
             _fill_consecutive_slots(chosen_state, slot, day_slots, clinician_states, solver_settings, config, assignments)
 
+    # If slots were skipped due to retry offset, signal failure so the
+    # retry loop can pick the best attempt (typically retry_count=0).
+    if skipped_count > 0:
+        return False, assignments
+
     return True, assignments
 
 
@@ -887,7 +1001,8 @@ def _assign_slot_to_doctor(
     if slot.date_iso not in state.assigned_slots_by_date:
         state.assigned_slots_by_date[slot.date_iso] = []
     state.assigned_slots_by_date[slot.date_iso].append(slot)
-    state.location_by_date[slot.date_iso] = slot.location_id
+    if slot.date_iso not in state.location_by_date:
+        state.location_by_date[slot.date_iso] = slot.location_id
 
     # Update hours
     hours = slot.duration_minutes / 60.0
@@ -961,11 +1076,11 @@ def _rank_doctors_by_deficit(
         # Secondary: YTD deficit (negate for ascending sort)
         ytd_deficit = state.ytd_deficit
 
-        # Tertiary: section preference
+        # Tertiary: section preference (per spec, use eligible_sections ordering)
         try:
-            section_priority = state.preferred_sections.index(slot.section_id)
+            section_priority = state.eligible_sections.index(slot.section_id)
         except ValueError:
-            section_priority = 999  # Not in preferred list
+            section_priority = 999  # Not in list
 
         # Quaternary: time preference bonus
         time_bonus = 0
@@ -1060,16 +1175,9 @@ def _fill_consecutive_slots(
         if next_slot is None:
             break  # No consecutive slot found
 
-        # Check qualification
-        if next_slot.section_id not in state.eligible_sections:
-            break
-
-        # Check if would exceed max hours
-        if state.would_exceed_hours(next_slot):
-            break
-
-        # Check mandatory time window
-        if not state.fits_mandatory_time_window(next_slot):
+        # Check all eligibility criteria (qualification, vacation, time overlap,
+        # mandatory time window, on-call rest, location, hours, continuity)
+        if not _is_doctor_eligible_for_slot(state, next_slot, solver_settings):
             break
 
         # Assign to next slot
