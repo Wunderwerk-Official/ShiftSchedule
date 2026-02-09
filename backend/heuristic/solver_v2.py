@@ -277,7 +277,17 @@ def heuristic_solve_range_v2(
     all_assignments = specialist_assignments[:]
     warnings = specialist_warnings[:]
 
+    prev_week_number = None
     for day_iso in target_day_isos:
+        # Reset weekly hours at the start of each new week (Monday)
+        current_date = date.fromisoformat(day_iso)
+        week_number = current_date.isocalendar()[1]
+        if prev_week_number is not None and week_number != prev_week_number:
+            # New week - reset all clinicians' weekly hours
+            for cs in clinician_states.values():
+                cs.current_week_hours = 0.0
+        prev_week_number = week_number
+
         on_progress("phase", {
             "phase": "solve_day",
             "label": f"Solving day {day_iso}..."
@@ -657,12 +667,16 @@ def _reset_day_to_manual_only(
             if day_iso in state.location_by_date:
                 del state.location_by_date[day_iso]
 
-        # Recalculate hours for this week
-        # (This is a simplification - ideally we'd track hours per week properly)
+        # Recalculate hours for THIS week only (not all weeks)
+        current_week = date.fromisoformat(day_iso).isocalendar()[1]
+        current_year = date.fromisoformat(day_iso).isocalendar()[0]
         state.current_week_hours = 0.0
-        for date_iso, slots in state.assigned_slots_by_date.items():
-            for slot in slots:
-                state.current_week_hours += slot.duration_minutes / 60.0
+        for assigned_date_iso, slots in state.assigned_slots_by_date.items():
+            assigned_week = date.fromisoformat(assigned_date_iso).isocalendar()[1]
+            assigned_year = date.fromisoformat(assigned_date_iso).isocalendar()[0]
+            if assigned_week == current_week and assigned_year == current_year:
+                for slot in slots:
+                    state.current_week_hours += slot.duration_minutes / 60.0
 
 
 def _fill_day_with_prioritized_slots(
@@ -719,6 +733,8 @@ def _fill_day_with_prioritized_slots(
         i = j
 
     # Step 2.3: Fill slots in priority order
+    unfillable_count = 0
+    skipped_count = 0
     for slot, criticality, eligible_list in slot_criticality:
         if cancel_event.is_set():
             return False, assignments
@@ -727,14 +743,22 @@ def _fill_day_with_prioritized_slots(
         eligible_list = _filter_eligible_doctors(slot, clinician_states, solver_settings)
 
         if not eligible_list:
-            # No eligible doctors - FAILURE
-            return False, assignments
+            if criticality == 0:
+                # Slot was already unfillable before any assignments - skip it
+                unfillable_count += 1
+            else:
+                # Slot became unfillable due to earlier assignments (e.g. location locks)
+                # Skip and continue instead of failing entire day
+                skipped_count += 1
+            continue
 
         # Rank doctors
         ranked_doctors = _rank_doctors_by_deficit(eligible_list, slot, retry_count, clinician_states)
 
         if not ranked_doctors:
-            return False, assignments
+            # All ranked doctors were skipped by retry offset - skip this slot
+            skipped_count += 1
+            continue
 
         # Assign top-ranked doctor
         chosen_doctor_id = ranked_doctors[0]

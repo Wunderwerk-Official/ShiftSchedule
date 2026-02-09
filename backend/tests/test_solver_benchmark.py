@@ -17,7 +17,7 @@ import pytest
 
 from backend.models import SolveRangeRequest, AppState, Assignment
 from backend.solver import _solve_range_impl
-from backend.heuristic.solver import heuristic_solve_range
+from backend.heuristic.solver_v2 import heuristic_solve_range_v2
 from backend.tests.fixtures_martin_like import make_martin_like_state
 
 
@@ -147,7 +147,7 @@ def _run_cpsat_solver(state: AppState, start_iso: str, end_iso: str) -> Benchmar
 
 
 def _run_heuristic_solver(state: AppState, start_iso: str, end_iso: str) -> BenchmarkResult:
-    """Run heuristic solver and return benchmark results."""
+    """Run heuristic solver v2 and return benchmark results."""
     cancel_event = threading.Event()
 
     # Calculate required slots from template
@@ -157,7 +157,7 @@ def _run_heuristic_solver(state: AppState, start_iso: str, end_iso: str) -> Benc
         pass
 
     start = time.perf_counter()
-    result = heuristic_solve_range(
+    result = heuristic_solve_range_v2(
         SolveRangeRequest(
             startISO=start_iso,
             endISO=end_iso,

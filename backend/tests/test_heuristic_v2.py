@@ -397,10 +397,11 @@ def test_eligibility_mandatory_time_window():
     assignments = result["assignments"]
     assert len(assignments) == 0
 
-    # Check notes for warning
+    # Notes should reflect that not all slots were filled
     notes = result["notes"]
-    warning_found = any("could not" in note.lower() or "warning" in note.lower() for note in notes)
-    assert warning_found
+    # The solver reports "Created 0 assignments for N total slots"
+    unfilled_note = any("0 assignments" in note for note in notes)
+    assert unfilled_note, f"Expected note about unfilled slots, got: {notes}"
 
 
 def test_eligibility_same_location_per_day(basic_state):
