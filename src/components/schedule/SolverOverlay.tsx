@@ -51,7 +51,7 @@ const rangesOverlap = (
   return range1.startISO <= range2.endISO && range1.endISO >= range2.startISO;
 };
 
-// Minimal live chart for solutions - shows raw objective score over time
+// Minimal live chart for solutions - log scale so both large and small improvements are visible
 function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]; elapsedMs: number }) {
   if (solutions.length === 0) return null;
 
@@ -65,30 +65,30 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
   const maxTimeMs = Math.max(elapsedMs, ...solutions.map((s) => s.time_ms)) * 1.1;
   const maxTimeSec = maxTimeMs / 1000;
 
-  // Y-axis: raw objective values (lower is better in minimization)
-  // Fixed range from worst (first) to best, with padding
-  const objectives = solutions.map((s) => s.objective);
-  const minObj = Math.min(...objectives);
-  const maxObj = Math.max(...objectives);
-  const objRange = maxObj - minObj;
-  const yPad = objRange > 0 ? objRange * 0.1 : Math.max(1, Math.abs(maxObj) * 0.1);
-  const yMin = minObj - yPad;
-  const yMax = maxObj + yPad;
-  const yRange = yMax - yMin;
+  // Y-axis: log-scaled distance from best objective
+  // This compresses large early jumps and amplifies small late improvements
+  const minObjective = Math.min(...solutions.map((s) => s.objective));
+  const maxObjective = Math.max(...solutions.map((s) => s.objective));
+  const maxDistance = maxObjective - minObjective;
+  const logMaxDistance = maxDistance > 0 ? Math.log10(maxDistance + 1) : 1;
 
-  const points: { x: number; y: number; value: number }[] = [];
+  const points: { x: number; y: number }[] = [];
   for (let i = 0; i < solutions.length; i++) {
     const s = solutions[i];
-    // Lower objective = better = higher on chart
-    const normalized = (yMax - s.objective) / yRange;
+    // Distance from best (0 for best solution, larger for worse)
+    const distance = s.objective - minObjective;
+    const logDistance = distance > 0 ? Math.log10(distance + 1) : 0;
+    // Invert: best (logDistance=0) at top, worst at bottom
+    const normalized = 1 - logDistance / logMaxDistance;
+
     const x = padding.left + (s.time_ms / 1000 / maxTimeSec) * innerWidth;
     const y = padding.top + (1 - normalized) * innerHeight;
-    points.push({ x, y, value: s.objective });
+    points.push({ x, y });
 
     // Extend horizontally to next solution or to current time
     const nextTime = i < solutions.length - 1 ? solutions[i + 1].time_ms : elapsedMs;
     const nextX = padding.left + (nextTime / 1000 / maxTimeSec) * innerWidth;
-    points.push({ x: nextX, y, value: s.objective });
+    points.push({ x: nextX, y });
   }
 
   const linePath =
@@ -106,9 +106,8 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
 
   // Calculate improvement stats for summary
   const firstObjective = solutions[0].objective;
-  const bestObjective = minObj;
   const denom = Math.max(1, Math.abs(firstObjective));
-  const bestImprovementPct = ((firstObjective - bestObjective) / denom) * 100;
+  const bestImprovementPct = ((firstObjective - minObjective) / denom) * 100;
 
   return (
     <div className="flex flex-col items-center gap-1">
@@ -154,14 +153,14 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           Score
         </text>
 
-        {/* Y-axis values: top = best (lowest obj), bottom = worst (highest obj) */}
+        {/* Y-axis values: top = best (min objective), bottom = worst (max objective) */}
         <text
           x={padding.left - 4}
           y={padding.top + 4}
           textAnchor="end"
           className="fill-current text-[11px] opacity-60"
         >
-          {formatObj(minObj)}
+          {formatObj(minObjective)}
         </text>
         <text
           x={padding.left - 4}
@@ -169,7 +168,7 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           textAnchor="end"
           className="fill-current text-[11px] opacity-60"
         >
-          {formatObj(maxObj)}
+          {formatObj(maxObjective)}
         </text>
 
         {/* X-axis label */}
