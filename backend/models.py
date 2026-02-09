@@ -194,6 +194,7 @@ class SolverSettings(BaseModel):
     weightTimeWindow: int = 5  # Respect preferred working time windows
     weightSectionPreference: int = 1  # Assign to preferred sections
     weightWorkingHours: int = 1  # Stay within target working hours
+    weightMinimumDailyHours: int = 10  # Penalize daily assignments shorter than derived minimum
 
 
 class SolverRule(BaseModel):
@@ -238,13 +239,13 @@ class SolverSubScores(BaseModel):
 
 class SolverDebugInfo(BaseModel):
     timing: Dict[str, Any]
-    solution_times: List[SolverDebugSolutionTime]
-    num_variables: int
-    num_days: int
-    num_slots: int
-    solver_status: str
-    cpu_workers_used: int
-    cpu_cores_available: int
+    solution_times: List[SolverDebugSolutionTime] = []
+    num_variables: int = 0
+    num_days: int = 0
+    num_slots: int = 0
+    solver_status: str = ""
+    cpu_workers_used: int = 0
+    cpu_cores_available: int = 0
     sub_scores: Optional[SolverSubScores] = None
 
 

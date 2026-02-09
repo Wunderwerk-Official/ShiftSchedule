@@ -75,10 +75,10 @@ class SlotInfo:
     def _calculate_duration(self) -> int:
         """Calculate slot duration in minutes."""
         base = self.end_minutes - self.start_minutes
-        if base < 0:  # Overnight slot
-            base += 24 * 60
         if self.end_day_offset > 0:
             base += self.end_day_offset * 24 * 60
+        elif base < 0:  # Overnight slot without explicit end_day_offset
+            base += 24 * 60
         return max(0, base)
 
 

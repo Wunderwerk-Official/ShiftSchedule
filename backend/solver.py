@@ -458,6 +458,7 @@ DEFAULT_WEIGHT_SLOT_PRIORITY = 10
 DEFAULT_WEIGHT_TIME_WINDOW = 5
 DEFAULT_WEIGHT_SECTION_PREFERENCE = 1
 DEFAULT_WEIGHT_WORKING_HOURS = 1
+DEFAULT_WEIGHT_MINIMUM_DAILY_HOURS = 10
 
 # Extra capacity per slot in "Distribute All" mode (beyond required)
 EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL = 1
@@ -1221,6 +1222,97 @@ def _add_working_hours_constraints(
     return hours_penalty_terms
 
 
+def _add_minimum_daily_minutes_penalty(
+    model: cp_model.CpModel,
+    state,
+    vars_by_clinician_date: Dict[str, Dict[str, List[Tuple[str, cp_model.IntVar, int, int, str]]]],
+    manual_by_clinician_date: Dict[str, Dict[str, List[Tuple[int, int, str]]]],
+    slot_intervals: Dict[str, Tuple[int, int, str]],
+    working_window_by_clinician_date: Dict[Tuple[str, str], Tuple[str, int, int]],
+) -> List[cp_model.IntVar]:
+    """Penalize daily assignments shorter than a derived minimum.
+
+    The minimum is derived per (clinician, date):
+    1. If clinician has a preferred working window for that day:
+       min_minutes = 50% of window duration
+    2. Else if clinician has workingHoursPerWeek:
+       min_minutes = 50% of (weeklyHours * 60 / 5)
+    3. Otherwise: no penalty
+
+    The deficit (minutes below minimum) is added as a penalty term only when
+    the solver assigns at least one slot to that (clinician, date).
+    """
+    deficit_terms: List[cp_model.IntVar] = []
+    slot_duration_by_id = {
+        slot_id: max(0, end - start)
+        for slot_id, (start, end, _loc) in slot_intervals.items()
+    }
+    # Build clinician weekly hours lookup
+    weekly_hours_by_id: Dict[str, float] = {}
+    for clinician in state.clinicians:
+        if isinstance(clinician.workingHoursPerWeek, (int, float)) and clinician.workingHoursPerWeek > 0:
+            weekly_hours_by_id[clinician.id] = clinician.workingHoursPerWeek
+
+    counter = 0
+    for cid, clinician_dates in vars_by_clinician_date.items():
+        for date_iso, day_vars in clinician_dates.items():
+            if not day_vars:
+                continue
+
+            # Derive minimum daily minutes
+            window = working_window_by_clinician_date.get((cid, date_iso))
+            if window is not None:
+                _req, w_start, w_end = window
+                min_minutes = max(1, (w_end - w_start) // 2)
+            elif cid in weekly_hours_by_id:
+                daily_avg_minutes = int(round(weekly_hours_by_id[cid] * 60 / 5))
+                min_minutes = max(1, daily_avg_minutes // 2)
+            else:
+                continue  # No basis to derive minimum
+
+            # Calculate manual minutes for this (clinician, date)
+            manual_slots = manual_by_clinician_date.get(cid, {}).get(date_iso, [])
+            manual_minutes = sum(max(0, end - start) for start, end, _loc in manual_slots)
+
+            # If manual assignments already meet the minimum, skip
+            if manual_minutes >= min_minutes:
+                continue
+
+            # Build solver minutes expression for this day
+            solver_duration_terms = []
+            max_solver_minutes = 0
+            for sid, var, _s, _e, _l in day_vars:
+                dur = slot_duration_by_id.get(sid, 0)
+                if dur > 0:
+                    solver_duration_terms.append(var * dur)
+                    max_solver_minutes += dur
+
+            if not solver_duration_terms:
+                continue
+
+            # has_solver: indicator that at least one solver slot is assigned
+            has_solver = model.NewBoolVar(f"has_solver_min_daily_{counter}")
+            solver_count = sum(var for (_sid, var, _s, _e, _l) in day_vars)
+            # has_solver == 1 iff solver_count >= 1
+            model.Add(solver_count >= 1).OnlyEnforceIf(has_solver)
+            model.Add(solver_count == 0).OnlyEnforceIf(has_solver.Not())
+
+            total_minutes = manual_minutes + sum(solver_duration_terms)
+            remaining_min = min_minutes - manual_minutes  # > 0 guaranteed
+
+            # deficit: how many minutes below minimum when solver is active
+            deficit = model.NewIntVar(0, remaining_min, f"daily_deficit_{counter}")
+            # When has_solver: deficit >= min_minutes - total_minutes
+            model.Add(deficit >= min_minutes - total_minutes).OnlyEnforceIf(has_solver)
+            # When not has_solver: deficit == 0
+            model.Add(deficit == 0).OnlyEnforceIf(has_solver.Not())
+
+            deficit_terms.append(deficit)
+            counter += 1
+
+    return deficit_terms
+
+
 def _add_continuity_constraints(
     model: cp_model.CpModel,
     solver_settings: SolverSettings,
@@ -1687,6 +1779,16 @@ def _solve_range_impl(
     )
     timer.checkpoint("working_hours_constraints")
 
+    daily_deficit_terms = _add_minimum_daily_minutes_penalty(
+        model,
+        state,
+        vars_by_clinician_date,
+        manual_by_clinician_date,
+        slot_intervals,
+        working_window_by_clinician_date,
+    )
+    timer.checkpoint("minimum_daily_minutes")
+
     on_progress("phase", {"phase": "continuity_constraints", "label": "Preparation (8/10): Enforcing continuous shifts..."})
     _add_continuity_constraints(
         model,
@@ -1715,6 +1817,7 @@ def _solve_range_impl(
     total_preference = sum(preference_terms) if preference_terms else 0
     total_time_window_preference = sum(time_window_terms) if time_window_terms else 0
     total_hours_penalty = sum(hours_penalty_terms) if hours_penalty_terms else 0
+    total_daily_deficit = sum(daily_deficit_terms) if daily_deficit_terms else 0
     # Total assignments - used to maximize distribution when not only_fill_required
     total_assignments = sum(var for var in var_map.values())
 
@@ -1731,6 +1834,7 @@ def _solve_range_impl(
     w_time_window = get_weight('weightTimeWindow', DEFAULT_WEIGHT_TIME_WINDOW)
     w_section_pref = get_weight('weightSectionPreference', DEFAULT_WEIGHT_SECTION_PREFERENCE)
     w_working_hours = get_weight('weightWorkingHours', DEFAULT_WEIGHT_WORKING_HOURS)
+    w_min_daily = get_weight('weightMinimumDailyHours', DEFAULT_WEIGHT_MINIMUM_DAILY_HOURS)
 
     if payload.only_fill_required:
         model.Minimize(
@@ -1739,6 +1843,7 @@ def _solve_range_impl(
             - total_preference * w_section_pref
             - total_time_window_preference * w_time_window
             + total_hours_penalty * w_working_hours
+            + total_daily_deficit * w_min_daily
         )
     else:
         # When distributing all people, maximize total assignments
@@ -1750,6 +1855,7 @@ def _solve_range_impl(
             - total_preference * w_section_pref
             - total_time_window_preference * w_time_window
             + total_hours_penalty * w_working_hours
+            + total_daily_deficit * w_min_daily
         )
     timer.checkpoint("objective_setup")
 

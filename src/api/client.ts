@@ -143,6 +143,7 @@ export type SolverSettings = {
   weightTimeWindow?: number; // Respect preferred working time windows (default: 5)
   weightSectionPreference?: number; // Assign to preferred sections (default: 1)
   weightWorkingHours?: number; // Stay within target working hours (default: 1)
+  weightMinimumDailyHours?: number; // Penalize daily assignments shorter than derived minimum (default: 10)
 };
 
 export type SolverRule = {
