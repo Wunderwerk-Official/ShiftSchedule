@@ -195,6 +195,7 @@ class SolverSettings(BaseModel):
     weightSectionPreference: int = 1  # Assign to preferred sections
     weightWorkingHours: int = 1  # Stay within target working hours
     weightMinimumDailyHours: int = 10  # Penalize daily assignments shorter than derived minimum
+    weightYtdBalance: int = 5  # Bias toward clinicians behind on YTD hours
 
 
 class SolverRule(BaseModel):
@@ -235,6 +236,7 @@ class SolverSubScores(BaseModel):
     preference_score: int = 0  # Clinician section preferences satisfied
     time_window_score: int = 0  # Preferred working hours satisfied
     hours_penalty: int = 0  # Working hours violations
+    ytd_balance_bonus: int = 0  # YTD balance bonus
 
 
 class SolverDebugInfo(BaseModel):

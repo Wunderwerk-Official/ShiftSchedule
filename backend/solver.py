@@ -448,8 +448,6 @@ async def solver_progress_stream(token: str = Query(...)):
     )
 
 
-WORKING_HOURS_BLOCK_MINUTES = 15
-
 # Default weights (used if not configured in solver_settings)
 DEFAULT_WEIGHT_COVERAGE = 1000
 DEFAULT_WEIGHT_SLACK = 1000
@@ -459,6 +457,7 @@ DEFAULT_WEIGHT_TIME_WINDOW = 5
 DEFAULT_WEIGHT_SECTION_PREFERENCE = 1
 DEFAULT_WEIGHT_WORKING_HOURS = 1
 DEFAULT_WEIGHT_MINIMUM_DAILY_HOURS = 10
+DEFAULT_WEIGHT_YTD_BALANCE = 5
 
 # Extra capacity per slot in "Distribute All" mode (beyond required)
 EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL = 1
@@ -1018,6 +1017,7 @@ def _add_coverage_constraints(
         if vars_here:
             covered = model.NewBoolVar(f"covered_{slot_id}_{date_iso}")
             model.Add(sum(vars_here) + already >= covered)
+            model.Add(covered <= sum(vars_here) + already)
             coverage_terms.append(covered * order_weight)
             if payload.only_fill_required:
                 slot_capacity = missing
@@ -1046,7 +1046,6 @@ def _add_on_call_rest_constraints(
     day_index_by_iso: Dict[str, int],
 ) -> Tuple[List[str], set[str], int, int]:
     """Enforce rest days around on-call assignments."""
-    BIG = 20
     rest_class_id = solver_settings.onCallRestClassId
     rest_before = max(0, solver_settings.onCallRestDaysBefore or 0)
     rest_after = max(0, solver_settings.onCallRestDaysAfter or 0)
@@ -1111,9 +1110,7 @@ def _add_on_call_rest_constraints(
                     on_call_var = model.NewBoolVar(
                         f"on_call_{clinician_id}_{date_iso}"
                     )
-                    model.Add(sum(on_call_vars) >= on_call_var)
-                    for var in on_call_vars:
-                        model.Add(var <= on_call_var)
+                    model.AddMaxEquality(on_call_var, on_call_vars)
 
                 def apply_rest_constraint(target_idx: int) -> None:
                     if target_idx < 0 or target_idx >= len(day_isos):
@@ -1137,7 +1134,7 @@ def _add_on_call_rest_constraints(
                     if manual_target > 0:
                         model.Add(on_call_var == 0)
                     elif vars_target:
-                        model.Add(sum(vars_target) <= BIG * (1 - on_call_var))
+                        model.Add(sum(vars_target) <= len(vars_target) * (1 - on_call_var))
 
                 for offset in range(1, rest_before + 1):
                     apply_rest_constraint(day_index - offset)
@@ -1205,19 +1202,7 @@ def _add_working_hours_constraints(
         over = model.NewIntVar(0, max_total, f"over_{clinician.id}")
         model.Add(under >= target_minus_tol - total_minutes_expr)
         model.Add(over >= total_minutes_expr - target_plus_tol)
-        under_blocks = model.NewIntVar(
-            0,
-            max_under // WORKING_HOURS_BLOCK_MINUTES + 1,
-            f"under_blocks_{clinician.id}",
-        )
-        over_blocks = model.NewIntVar(
-            0,
-            max_total // WORKING_HOURS_BLOCK_MINUTES + 1,
-            f"over_blocks_{clinician.id}",
-        )
-        model.AddDivisionEquality(under_blocks, under, WORKING_HOURS_BLOCK_MINUTES)
-        model.AddDivisionEquality(over_blocks, over, WORKING_HOURS_BLOCK_MINUTES)
-        hours_penalty_terms.append(under_blocks + over_blocks)
+        hours_penalty_terms.append(under + over)
 
     return hours_penalty_terms
 
@@ -1313,6 +1298,99 @@ def _add_minimum_daily_minutes_penalty(
     return deficit_terms
 
 
+def _compute_ytd_deficit_hours(
+    state,
+    range_start: date,
+    all_slot_intervals: Dict[str, Tuple[int, int, str]],
+) -> Dict[str, int]:
+    """Compute per-clinician YTD deficit as a percentage (positive = behind, negative = ahead).
+
+    Uses percentage-based deficit so clinicians with different contract hours
+    get comparable scores. A full-time clinician at 90% of target gets the same
+    score as a part-time clinician at 90% of target.
+
+    Returns integer percentage: 10 means 10% behind target, -5 means 5% ahead.
+    """
+    # Build slot duration map (minutes) from all_slot_intervals
+    slot_duration_minutes: Dict[str, int] = {}
+    for slot_id, (start, end, _loc) in all_slot_intervals.items():
+        slot_duration_minutes[slot_id] = max(0, end - start)
+
+    year_start = date(range_start.year, 1, 1)
+
+    # No history if solving from Jan 1
+    if range_start <= year_start:
+        return {}
+
+    weeks_elapsed = (range_start - year_start).days / 7.0
+    # Need at least 1 week of history for meaningful YTD balance
+    if weeks_elapsed < 1.0:
+        return {}
+
+    range_start_iso = range_start.isoformat()
+    year_start_iso = year_start.isoformat()
+
+    # Sum actual minutes per clinician from historical assignments
+    actual_minutes_by_clinician: Dict[str, int] = {}
+    for assignment in state.assignments:
+        if assignment.dateISO >= range_start_iso:
+            continue
+        if assignment.dateISO < year_start_iso:
+            continue
+        if assignment.rowId.startswith("pool-"):
+            continue
+        duration = slot_duration_minutes.get(assignment.rowId, 0)
+        if duration > 0:
+            actual_minutes_by_clinician[assignment.clinicianId] = (
+                actual_minutes_by_clinician.get(assignment.clinicianId, 0) + duration
+            )
+
+    # Compute percentage deficit per clinician
+    ytd_deficit_pct: Dict[str, int] = {}
+    for clinician in state.clinicians:
+        if not isinstance(clinician.workingHoursPerWeek, (int, float)):
+            continue
+        if clinician.workingHoursPerWeek <= 0:
+            continue
+
+        expected_minutes = clinician.workingHoursPerWeek * 60 * weeks_elapsed
+        if expected_minutes <= 0:
+            continue
+        actual_minutes = actual_minutes_by_clinician.get(clinician.id, 0)
+        deficit_pct = round((expected_minutes - actual_minutes) / expected_minutes * 100)
+        # Clamp to [-100, 100] to prevent extreme values
+        deficit_pct = max(-100, min(100, deficit_pct))
+        ytd_deficit_pct[clinician.id] = deficit_pct
+
+    return ytd_deficit_pct
+
+
+def _add_ytd_balance_objective(
+    ytd_deficit_pct: Dict[str, int],
+    vars_by_clinician_date: Dict[str, Dict[str, List[Tuple[str, "cp_model.IntVar", int, int, str]]]],
+    slot_intervals: Dict[str, Tuple[int, int, str]],
+) -> list:
+    """Build YTD balance bonus terms for the objective function.
+
+    For each clinician with a deficit percentage, creates terms: var * deficit_pct.
+    Positive deficit (behind) produces positive bonus; negative (ahead) produces penalty.
+    The caller negates this in Minimize so positive bonus reduces cost.
+
+    Uses percentage-based deficit so the bonus is comparable across clinicians
+    with different contract hours.
+    """
+    bonus_terms = []
+    for clinician_id, deficit_pct in ytd_deficit_pct.items():
+        if deficit_pct == 0:
+            continue
+        clinician_dates = vars_by_clinician_date.get(clinician_id, {})
+        for _date_iso, day_vars in clinician_dates.items():
+            for (sid, var, _s, _e, _l) in day_vars:
+                bonus_terms.append(var * deficit_pct)
+
+    return bonus_terms
+
+
 def _add_continuity_constraints(
     model: cp_model.CpModel,
     solver_settings: SolverSettings,
@@ -1370,8 +1448,7 @@ def _add_continuity_constraints(
                 has_prev = model.NewBoolVar(
                     f"has_prev_{cid}_{date_iso}_{block_counter}"
                 )
-                model.Add(sum(vars_ending) >= has_prev)
-                model.Add(sum(vars_ending) <= len(vars_ending) * has_prev)
+                model.AddMaxEquality(has_prev, vars_ending)
                 prev_indicator_by_start[key] = has_prev
                 return has_prev
 
@@ -1627,6 +1704,9 @@ def _solve_range_impl(
     ) = _build_slot_contexts_and_intervals(state)
     timer.checkpoint("slot_contexts")
 
+    # Compute YTD hour deficits (pre-solve constants, no CP-SAT variables)
+    ytd_deficit_hours = _compute_ytd_deficit_hours(state, range_start, all_slot_intervals)
+
     on_progress("phase", {"phase": "create_variables", "label": "Preparation (3/10): Setting up assignment options..."})
     holidays = state.holidays or []
     day_type_by_iso = {iso: _get_day_type(iso, holidays) for iso in day_isos}
@@ -1712,6 +1792,11 @@ def _solve_range_impl(
 
     # Overlap + location constraints (optimized: group by clinician+date to avoid O(n²))
     vars_by_clinician_date = _group_vars_by_clinician_date(var_map, slot_intervals)
+
+    # Build YTD balance objective terms
+    ytd_bonus_terms = _add_ytd_balance_objective(
+        ytd_deficit_hours, vars_by_clinician_date, slot_intervals,
+    )
 
     # Build manual assignments lookup: clinician_id -> date -> list of (start, end, loc)
     # Uses all_manual_assignments (from all locations) for continuity and overlap checks.
@@ -1818,6 +1903,7 @@ def _solve_range_impl(
     total_time_window_preference = sum(time_window_terms) if time_window_terms else 0
     total_hours_penalty = sum(hours_penalty_terms) if hours_penalty_terms else 0
     total_daily_deficit = sum(daily_deficit_terms) if daily_deficit_terms else 0
+    total_ytd_bonus = sum(ytd_bonus_terms) if ytd_bonus_terms else 0
     # Total assignments - used to maximize distribution when not only_fill_required
     total_assignments = sum(var for var in var_map.values())
 
@@ -1835,6 +1921,7 @@ def _solve_range_impl(
     w_section_pref = get_weight('weightSectionPreference', DEFAULT_WEIGHT_SECTION_PREFERENCE)
     w_working_hours = get_weight('weightWorkingHours', DEFAULT_WEIGHT_WORKING_HOURS)
     w_min_daily = get_weight('weightMinimumDailyHours', DEFAULT_WEIGHT_MINIMUM_DAILY_HOURS)
+    w_ytd_balance = get_weight('weightYtdBalance', DEFAULT_WEIGHT_YTD_BALANCE)
 
     if payload.only_fill_required:
         model.Minimize(
@@ -1844,6 +1931,7 @@ def _solve_range_impl(
             - total_time_window_preference * w_time_window
             + total_hours_penalty * w_working_hours
             + total_daily_deficit * w_min_daily
+            - total_ytd_bonus * w_ytd_balance
         )
     else:
         # When distributing all people, maximize total assignments
@@ -1856,7 +1944,21 @@ def _solve_range_impl(
             - total_time_window_preference * w_time_window
             + total_hours_penalty * w_working_hours
             + total_daily_deficit * w_min_daily
+            - total_ytd_bonus * w_ytd_balance
         )
+    # Decision strategy: try high-priority slot variables first for faster initial solutions
+    priority_sorted_vars = sorted(
+        var_map.keys(),
+        key=lambda k: order_weight_by_slot_id.get(k[2], 0),
+        reverse=True,
+    )
+    if priority_sorted_vars:
+        model.AddDecisionStrategy(
+            [var_map[k] for k in priority_sorted_vars],
+            cp_model.CHOOSE_FIRST,
+            cp_model.SELECT_MAX_VALUE,
+        )
+
     timer.checkpoint("objective_setup")
 
     on_progress("phase", {"phase": "solve", "label": "Preparation (10/10): Solving constraints..."})
@@ -1955,6 +2057,7 @@ def _solve_range_impl(
     remaining_timeout = max(1.0, total_timeout_seconds - elapsed_since_start)  # At least 1 second
     solver.parameters.max_time_in_seconds = remaining_timeout
     solver.parameters.num_search_workers = SOLVER_NUM_WORKERS
+    solver.parameters.relative_gap_limit = SOLVER_GAP_THRESHOLD
     result = solver.SolveWithSolutionCallback(model, solution_callback)
     solution_callback._cancel_grace_timer()  # clean up any pending timer
     timer.checkpoint("solve")
@@ -2175,6 +2278,7 @@ def _solve_range_impl(
         eval_preference = sum(solver.Value(t) for t in preference_terms) if preference_terms else 0
         eval_time_window = sum(solver.Value(t) for t in time_window_terms) if time_window_terms else 0
         eval_hours_penalty = sum(solver.Value(t) for t in hours_penalty_terms) if hours_penalty_terms else 0
+        eval_ytd_bonus = sum(solver.Value(t) for t in ytd_bonus_terms) if ytd_bonus_terms else 0
 
         sub_scores = SolverSubScores(
             slots_filled=eval_coverage,
@@ -2183,6 +2287,7 @@ def _solve_range_impl(
             preference_score=eval_preference,
             time_window_score=eval_time_window,
             hours_penalty=eval_hours_penalty,
+            ytd_balance_bonus=eval_ytd_bonus,
         )
 
     # Build debug info (always included for frontend timing display)
