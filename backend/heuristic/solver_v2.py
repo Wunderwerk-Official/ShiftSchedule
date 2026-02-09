@@ -144,6 +144,16 @@ class ClinicianState:
             if not (slot_end <= existing_start or existing_end <= slot_start):
                 return True
 
+        # Check overnight slots from previous day extending into today
+        prev_date = (date.fromisoformat(date_iso) - timedelta(days=1)).isoformat()
+        prev_slots = self.assigned_slots_by_date.get(prev_date, [])
+        for existing in prev_slots:
+            if existing.end_day_offset > 0 or existing.end_minutes <= existing.start_minutes:
+                # This slot extends into today — its portion today is [0, end_minutes)
+                overnight_end_today = existing.end_minutes
+                if not (slot_end <= 0 or overnight_end_today <= slot_start):
+                    return True
+
         return False
 
     def would_exceed_hours(self, slot: SlotInfo) -> bool:
@@ -180,6 +190,49 @@ class ClinicianState:
         if existing_location is None:
             return False  # No location assigned yet
         return existing_location != location_id
+
+    def would_create_gap(self, date_iso: str, slot: SlotInfo) -> bool:
+        """Check if adding this slot would create a non-contiguous work block (split shift)."""
+        assigned = self.assigned_slots_by_date.get(date_iso, [])
+        if not assigned:
+            return False  # First slot of the day, no gap possible
+
+        # Build list of (start, end) intervals for all assigned + new slot
+        def slot_interval(s: SlotInfo) -> Tuple[int, int]:
+            start = s.start_minutes
+            end = s.end_minutes
+            if s.end_day_offset > 0 or end < start:
+                end = start + s.duration_minutes
+            return (start, end)
+
+        intervals = [slot_interval(s) for s in assigned]
+        new_interval = slot_interval(slot)
+        intervals.append(new_interval)
+
+        # Sort by start time
+        intervals.sort()
+
+        # Merge adjacent/overlapping intervals
+        merged = [intervals[0]]
+        for start, end in intervals[1:]:
+            if start <= merged[-1][1]:  # Adjacent or overlapping
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+
+        # Count how many blocks existed BEFORE adding the new slot
+        existing_intervals = [slot_interval(s) for s in assigned]
+        existing_intervals.sort()
+        existing_merged = [existing_intervals[0]]
+        for start, end in existing_intervals[1:]:
+            if start <= existing_merged[-1][1]:
+                existing_merged[-1] = (existing_merged[-1][0], max(existing_merged[-1][1], end))
+            else:
+                existing_merged.append((start, end))
+
+        # If manual assignments already created multiple blocks, allow adding to them
+        # but don't create even MORE blocks
+        return len(merged) > len(existing_merged)
 
 
 def heuristic_solve_range_v2(
@@ -746,11 +799,10 @@ def _fill_day_with_prioritized_slots(
             if criticality == 0:
                 # Slot was already unfillable before any assignments - skip it
                 unfillable_count += 1
+                continue
             else:
-                # Slot became unfillable due to earlier assignments (e.g. location locks)
-                # Skip and continue instead of failing entire day
-                skipped_count += 1
-            continue
+                # Slot became unfillable due to earlier assignments — trigger backtracking
+                return False, assignments
 
         # Rank doctors
         ranked_doctors = _rank_doctors_by_deficit(eligible_list, slot, retry_count, clinician_states)
@@ -812,6 +864,11 @@ def _is_doctor_eligible_for_slot(
     # 7. Hour limit
     if state.would_exceed_hours(slot):
         return False
+
+    # 8. Continuous shift enforcement (no split shifts)
+    if solver_settings.preferContinuousShifts:
+        if state.would_create_gap(slot.date_iso, slot):
+            return False
 
     return True
 
