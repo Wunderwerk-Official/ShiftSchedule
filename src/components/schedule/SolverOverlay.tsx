@@ -132,14 +132,25 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
 
         {/* Solution line */}
         {linePath && (
-          <path d={linePath} fill="none" stroke="#6366f1" strokeWidth={2} />
+          <path
+            d={linePath}
+            fill="none"
+            strokeWidth={2}
+            className="stroke-indigo-500 dark:stroke-indigo-400"
+          />
         )}
 
         {/* Solution dots */}
         {points
           .filter((_, i) => i % 2 === 0)
           .map((p, i) => (
-            <circle key={i} cx={p.x} cy={p.y} r={3} fill="#6366f1" />
+            <circle
+              key={i}
+              cx={p.x}
+              cy={p.y}
+              r={3}
+              className="fill-indigo-500 dark:fill-indigo-400"
+            />
           ))}
 
         {/* Y-axis label */}

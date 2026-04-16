@@ -509,7 +509,9 @@ export default function SolverInfoModal({
   };
 
   return createPortal(
-    <div className="fixed inset-0 z-[1050]">
+    // z-[1200] sits above the live SolverOverlay dashboard (z-[1100] in SolverOverlay.tsx)
+    // so this modal remains visible when opened while a solve run is in progress.
+    <div className="fixed inset-0 z-[1200]">
       {/* Backdrop */}
       <button
         className="absolute inset-0 cursor-default bg-slate-900/30 backdrop-blur-[1px]"

@@ -116,7 +116,9 @@ export default function CustomTimePicker({
           hasError
             ? "border-rose-400 dark:border-rose-500"
             : isOpen
-              ? "border-indigo-400 ring-1 ring-indigo-400 dark:border-indigo-500 dark:ring-indigo-500"
+              // Match the sky-400 focus ring used by CustomSelect / CustomNumberInput /
+              // CustomDatePicker so all picker-style fields open with the same highlight.
+              ? "border-sky-400 ring-1 ring-sky-400 dark:border-sky-500 dark:ring-sky-500"
               : "border-slate-200 hover:border-slate-300 dark:border-slate-700 dark:hover:border-slate-600",
         )}
       >

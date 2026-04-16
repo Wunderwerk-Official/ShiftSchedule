@@ -282,14 +282,15 @@ export default function SolverDebugPanel({ debugInfo }: SolverDebugPanelProps) {
               />
 
               {/* Main line */}
+              {/* Using className-based stroke so the dark: variant actually wins —
+                  a hardcoded stroke="…" attribute used to override the dark class. */}
               <path
                 d={chartData.pathD}
                 fill="none"
-                stroke="#0ea5e9"
                 strokeWidth={2.5}
                 strokeLinecap="round"
                 strokeLinejoin="round"
-                className="dark:stroke-sky-400"
+                className="stroke-sky-500 dark:stroke-sky-400"
               />
 
               {/* Data points with hover effect */}
@@ -307,10 +308,8 @@ export default function SolverDebugPanel({ debugInfo }: SolverDebugPanelProps) {
                     cx={point.x}
                     cy={point.y}
                     r={4}
-                    fill="white"
-                    stroke="#0ea5e9"
                     strokeWidth={2}
-                    className="dark:fill-slate-800 dark:stroke-sky-400"
+                    className="fill-white stroke-sky-500 dark:fill-slate-800 dark:stroke-sky-400"
                   />
                 </g>
               ))}
