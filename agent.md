@@ -15,6 +15,7 @@ Where to look first
 - Backend normalization + persistence: `backend/state.py`, `backend/db.py`
 - CP-SAT Solver: `backend/solver.py`
 - Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
+- **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 12.
 - Solver live stats: `src/lib/solverStats.ts`
 - E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`
 - API client: `src/api/client.ts`
@@ -725,6 +726,81 @@ Custom date picker component (`CustomDatePicker.tsx`):
 - Calendar shows month navigation, weekday headers (Mo-Su), today highlight, selected date highlight.
 - Dropdown opens above if not enough space below (auto-detects).
 - Fixed width 252px for consistent dropdown size; z-index 100 for proper layering.
+
+---
+
+## 6.5) Constraint Validator (`backend/validation.py`)
+
+A solver-independent module that encodes the **hard** constraints of the CP-SAT
+solver as pure functions. Use it anywhere a proposed set of assignments needs a
+pass/fail check — LLM-generated schedules, external imports, UI conflict
+badges, debug tooling.
+
+### What it checks
+All return `list[Violation]`; `validate_assignments()` aggregates them into a
+`ValidationReport`:
+- `validate_qualifications` — section must be in clinician's `qualifiedClassIds`
+- `validate_vacations` — no slot assignments during vacations (pool rows exempt)
+- `validate_overlaps` — same-clinician time overlap, handles overnight slots
+  (`endDayOffset > 0`) by placing intervals on an absolute minute axis
+- `validate_same_location_per_day` — only when `enforceSameLocationPerDay`
+- `validate_on_call_rest` — only when `onCallRestEnabled`; checks N days before
+  and M days after each on-call slot (back-to-back on-call is allowed)
+- `validate_references` — unknown clinician IDs or slot IDs
+
+### What it does NOT check
+Soft objectives: coverage counts, section preferences, time-window preferences,
+working-hours balance, YTD balance, continuity, minimum daily hours. Keep
+scoring in a separate module.
+
+### Design rules
+- **No imports from `solver.py`** — the small helpers (time parsing, slot
+  interval construction) are duplicated intentionally to avoid a circular
+  dependency with the subprocess-spawning code.
+- **Pure, side-effect-free.** No I/O, no global state. Safe to call from any
+  request path.
+- **Pool rows (`pool-*`) are skipped** for qualification, overlap, vacation,
+  and on-call-rest — they represent virtual rows (Rest Day, Vacation), not
+  schedulable slots. Reference integrity also skips them.
+- **Stable violation codes** (`VIOLATION_QUALIFICATION`, …) so LLM feedback
+  loops and UI badges can pattern-match without parsing the `message` string.
+- **Multi-location awareness**: uses `WeeklyTemplateLocation.locationId` (not
+  the per-slot `locationId` field) because that's what the solver does.
+  Single-template-location states won't produce same-location violations
+  regardless of per-slot values.
+
+### Typical LLM-backend flow
+```python
+from backend.validation import validate_assignments
+
+# Claude or any other model proposes assignments as JSON
+proposed: list[Assignment] = parse_llm_response(raw)
+
+report = validate_assignments(state, proposed)
+if not report.is_valid:
+    # Feed violations back as tool-result so the model can correct
+    feedback = [v.message for v in report.violations]
+    ...
+else:
+    apply_assignments(state, proposed)
+```
+
+### Tests
+`backend/tests/test_validation.py` — 21 cases, run with
+`pytest backend/tests/test_validation.py`. Tests use the conftest factories
+EXCEPT for multi-location scenarios, which build `AppState` manually (because
+`make_app_state` creates a single `WeeklyTemplateLocation`).
+
+### Things to watch out for
+- **`qualified_class_ids=[]` in `make_clinician()` is ignored** — the factory
+  does `qualified_class_ids or ["section-a"]`, so empty-list falls back to the
+  default. Use `["section-nonexistent"]` to force a qualification violation.
+- **`_slot_interval()` returns `None` for missing start/end** or zero-duration
+  slots. This is intentional — the solver would silently clamp to 0 duration,
+  but the validator surfaces it via `VIOLATION_UNKNOWN_SLOT` through
+  `validate_references`. If future behaviour change is needed (e.g. tolerate
+  missing start time), update both the validator and `_build_slot_interval` in
+  `solver.py` together.
 
 ---
 
