@@ -135,13 +135,6 @@ export function calculateSolverLiveStats(
     return `${thursday.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
   };
 
-  // Count days per ISO week in the solve range (for scaling partial weeks)
-  const daysPerWeek = new Map<string, number>();
-  for (const dateISO of dates) {
-    const weekKey = getWeekKey(dateISO);
-    daysPerWeek.set(weekKey, (daysPerWeek.get(weekKey) ?? 0) + 1);
-  }
-
   // Build vacation date sets per clinician for efficient lookup
   const vacationDatesByClinicianId = new Map<string, Set<string>>();
   for (const clinician of clinicians) {

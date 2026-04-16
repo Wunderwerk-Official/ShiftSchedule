@@ -590,6 +590,14 @@ export function subscribeSolverProgress(
   };
 
   eventSource.onerror = (e) => {
+    // Close on terminal failures (e.g. 401 from a bad token) so the browser doesn't
+    // silently reconnect in a loop. For transient disconnects the caller can
+    // resubscribe.
+    if (eventSource.readyState === EventSource.CLOSED) {
+      onError?.(e);
+      return;
+    }
+    eventSource.close();
     onError?.(e);
   };
 

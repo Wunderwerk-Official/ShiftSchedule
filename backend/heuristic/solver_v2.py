@@ -87,7 +87,9 @@ class ClinicianState:
     def __init__(self, clinician: Clinician, solve_start_date: date):
         self.clinician_id = clinician.id
         self.contract_hours = clinician.workingHoursPerWeek or 0
-        self.tolerance_hours = clinician.workingHoursToleranceHours
+        # Match fallback used elsewhere (solver.py:1182, local_improvement.py:219) to avoid
+        # TypeError in would_exceed_hours() if the field comes through as None.
+        self.tolerance_hours = clinician.workingHoursToleranceHours or 5
         self.eligible_sections = clinician.qualifiedClassIds
         self.preferred_sections = clinician.preferredClassIds
         self.preferred_working_times = getattr(clinician, "preferredWorkingTimes", {})

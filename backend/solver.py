@@ -25,14 +25,18 @@ SOLVER PHASES (shown in UI progress)
 
 OBJECTIVE FUNCTION
 ==================
-The solver minimizes a weighted sum of terms (some negated for maximization):
-- Coverage: Maximize filled required slots (weight: 1000)
-- Slack: Minimize unfilled slots (weight: 1000)
-- Total Assignments: Maximize assignments in "Distribute All" mode (weight: 100)
-- Slot Priority: Prefer earlier slots in template order (weight: 10)
-- Time Window: Respect clinician preferred working hours (weight: 5)
-- Section Preference: Assign clinicians to preferred sections (weight: 1)
-- Working Hours: Balance hours to target ± tolerance (weight: 1)
+The solver minimizes a weighted sum of terms (some negated for maximization).
+Defaults live in DEFAULT_WEIGHT_* constants below; users override them through
+solverSettings in the app state.
+- Coverage: maximise filled required slots (default weight: 1000)
+- Slack: minimise unfilled slots (default weight: 1000)
+- Total Assignments: maximise assignments in "Distribute All" mode (default weight: 100)
+- Slot Priority: prefer earlier slots in template order (default weight: 10)
+- Time Window: respect clinician preferred working hours (default weight: 20)
+- Section Preference: assign clinicians to preferred sections (default weight: 10)
+- Working Hours: balance hours to target ± tolerance (default weight: 3)
+- Minimum Daily Hours: penalise days below the configured daily minimum (default weight: 5)
+- YTD Balance: nudge year-to-date hours toward the per-clinician target (default weight: 5)
 
 CONSTRAINTS
 ===========
@@ -1015,8 +1019,10 @@ def _add_coverage_constraints(
                 model.Add(sum(vars_here) <= slot_capacity)
             continue
         if vars_here:
+            # covered=1 iff the slot has at least one assignment (already + new).
+            # Since the objective maximises coverage, a single upper-bound suffices:
+            # the solver sets covered=1 whenever it legally can.
             covered = model.NewBoolVar(f"covered_{slot_id}_{date_iso}")
-            model.Add(sum(vars_here) + already >= covered)
             model.Add(covered <= sum(vars_here) + already)
             coverage_terms.append(covered * order_weight)
             if payload.only_fill_required:
