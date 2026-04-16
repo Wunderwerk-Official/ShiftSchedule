@@ -1092,9 +1092,21 @@ def _rank_doctors_by_deficit(
             if hasattr(pref, "requirement") and pref.requirement == "preference":
                 start_pref = _parse_time_to_minutes(getattr(pref, "startTime", None))
                 end_pref = _parse_time_to_minutes(getattr(pref, "endTime", None))
-                if start_pref is not None and end_pref is not None:
-                    if start_pref <= slot.start_minutes and slot.end_minutes <= end_pref:
-                        time_bonus = 1
+                # Overnight slots can't fit a single-day preference window — their
+                # end_minutes refers to the next day, so a naive comparison would
+                # spuriously award bonuses (e.g. a 22:00–06:00 slot passing a
+                # 08:00–18:00 daytime preference). Skip the bonus in that case.
+                is_overnight = (
+                    slot.end_day_offset > 0 or slot.end_minutes < slot.start_minutes
+                )
+                if (
+                    start_pref is not None
+                    and end_pref is not None
+                    and not is_overnight
+                    and start_pref <= slot.start_minutes
+                    and slot.end_minutes <= end_pref
+                ):
+                    time_bonus = 1
 
         priority = (week_pct, -ytd_deficit, section_priority, -time_bonus)
         ranked.append((priority, doctor_id))

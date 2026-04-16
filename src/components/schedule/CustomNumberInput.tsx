@@ -35,8 +35,10 @@ export default function CustomNumberInput({
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Generate options from min to max
-  const options = Array.from({ length: max - min + 1 }, (_, i) => min + i);
+  // Generate options from min to max. Clamp the length at zero so a caller
+  // passing max < min renders an empty dropdown instead of crashing on a
+  // negative Array.from length.
+  const options = Array.from({ length: Math.max(0, max - min + 1) }, (_, i) => min + i);
 
   // Close on click outside
   useEffect(() => {

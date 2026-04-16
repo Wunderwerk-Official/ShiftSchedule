@@ -500,7 +500,13 @@ export default function ScheduleGrid({
                               assignmentId: string;
                               clinicianId: string;
                             };
-                            if (onRemoveAssignment) {
+                            if (
+                              onRemoveAssignment &&
+                              payload?.rowId &&
+                              payload.dateISO &&
+                              payload.assignmentId &&
+                              payload.clinicianId
+                            ) {
                               onRemoveAssignment({
                                 rowId: payload.rowId,
                                 dateISO: payload.dateISO,
@@ -508,6 +514,9 @@ export default function ScheduleGrid({
                                 clinicianId: payload.clinicianId,
                               });
                             }
+                          } catch {
+                            // Malformed drag payload (e.g. cross-tab drop) — drop it silently,
+                            // the finally block will still reset drag state.
                           } finally {
                             setDragState({ dragging: null, dragOverKey: null });
                           }

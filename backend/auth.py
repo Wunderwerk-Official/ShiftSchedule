@@ -1,4 +1,6 @@
+import logging
 import os
+import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -19,11 +21,45 @@ from .models import (
 )
 from .state import _default_state, _load_state, _parse_import_state, _save_state
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "dev-secret")
+logger = logging.getLogger(__name__)
+
+
+def _resolve_jwt_secret() -> str:
+    """Load the JWT signing secret.
+
+    A missing secret silently falling back to a well-known string ("dev-secret")
+    would let an attacker forge tokens for any environment that forgot to set
+    JWT_SECRET. Require it explicitly in production; in development, generate a
+    fresh ephemeral key and warn loudly so the problem is obvious.
+    """
+    configured = os.environ.get("JWT_SECRET")
+    if configured:
+        return configured
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
+    if env in {"production", "prod"}:
+        raise RuntimeError(
+            "JWT_SECRET must be set when ENVIRONMENT=production. Refusing to start "
+            "with a default secret."
+        )
+    generated = secrets.token_urlsafe(32)
+    logger.warning(
+        "JWT_SECRET is not set; using an ephemeral dev secret. All existing tokens "
+        "will be invalidated on every restart. Set JWT_SECRET explicitly for "
+        "stable development sessions."
+    )
+    return generated
+
+
+JWT_SECRET = _resolve_jwt_secret()
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "720"))
 
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+
+# Precomputed hash for a random password, used as a dummy verify target when the
+# requested username does not exist. This keeps login-endpoint timing constant
+# regardless of whether the user is known, preventing username enumeration.
+_DUMMY_PASSWORD_HASH = pwd_context.hash(secrets.token_urlsafe(32))
 
 router = APIRouter()
 
@@ -205,6 +241,12 @@ def _ensure_admin_user() -> None:
 
 
 def _ensure_test_user() -> None:
+    # The E2E test user has a hardcoded password. Keep it enabled by default for
+    # local development and CI, but NEVER provision it when ENVIRONMENT=production
+    # even if someone forgets to set ENABLE_E2E_TEST_USER=0.
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
+    if env in {"production", "prod"}:
+        return
     if os.environ.get("ENABLE_E2E_TEST_USER", "1") != "1":
         return
     username = "testuser"
@@ -224,9 +266,11 @@ def login(payload: LoginRequest):
     if not username or not payload.password:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
     row = _get_user_by_username(username)
-    if not row or not row["active"]:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
-    if not _verify_password(payload.password, row["password_hash"]):
+    # Always hash a password, even when the user doesn't exist, so response time
+    # doesn't leak which usernames are registered.
+    password_hash = row["password_hash"] if row else _DUMMY_PASSWORD_HASH
+    password_ok = _verify_password(payload.password, password_hash)
+    if not row or not row["active"] or not password_ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials.")
     user_public = _user_row_to_public(row)
     token = _create_access_token(user_public)
