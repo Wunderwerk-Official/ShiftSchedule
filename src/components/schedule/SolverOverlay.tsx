@@ -111,13 +111,14 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
 
   return (
     <div className="flex w-full flex-col items-center gap-1">
-      {/* Responsive SVG: the viewBox-based sizing lets the chart shrink to the
-          modal's inner width on narrow viewports without clipping the left-hand
-          Y-axis labels (previously fixed width=500 overflowed max-w-lg's 448px). */}
+      {/* Responsive SVG: viewBox-based sizing lets the chart shrink to the
+          modal's inner width on narrow viewports (avoids the left-hand Y-axis
+          label getting clipped) and lets it grow up to ~700px on wide ones so
+          the score progression is actually readable. */}
       <svg
         viewBox={`0 0 ${chartWidth} ${chartHeight}`}
         preserveAspectRatio="xMidYMid meet"
-        className="block h-auto w-full max-w-[500px]"
+        className="block h-auto w-full max-w-[700px]"
       >
         {/* Grid lines */}
         <line
@@ -793,8 +794,10 @@ export default function SolverOverlay({
       {/* Semi-transparent overlay */}
       <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80" />
 
-      {/* Content panel - compact width that fits content */}
-      <div className="relative z-10 flex max-h-[90%] w-auto max-w-xl flex-col items-center gap-4 overflow-y-auto rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+      {/* Content panel. max-w-3xl on wide viewports (so the live chart can
+          use ~700px and the modal stops looking stranded), mx-4 so on narrow
+          viewports the modal still keeps a 1rem side-gutter. */}
+      <div className="relative z-10 mx-4 flex max-h-[90%] w-auto max-w-3xl flex-col items-center gap-4 overflow-y-auto rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
         {/* Header: title with elapsed/total time inline, then date range + subtitle */}
         <div
           className="flex flex-col items-center gap-1"
