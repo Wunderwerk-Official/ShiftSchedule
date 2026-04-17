@@ -260,17 +260,22 @@ class WeeklyInspectionResult(BaseModel):
     stats: dict
 
 
+_WEEKDAY_TO_DAY_TYPE = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
 def _get_day_type(date: datetime, holidays: list) -> str:
-    """Determine day type for a given date."""
+    """Determine day type for a given date.
+
+    Must return one of the values in ``DAY_TYPES`` from state.py
+    (``"mon" | "tue" | ... | "sun" | "holiday"``) so slot matching against
+    ``TemplateColBand.dayType`` works. A previous version returned
+    ``"saturday" | "sunday" | "weekday"`` which silently produced empty
+    inspection results because nothing ever matched the template day-type.
+    """
     date_iso = date.strftime("%Y-%m-%d")
     if any(h.dateISO == date_iso for h in holidays):
         return "holiday"
-    weekday = date.weekday()
-    if weekday == 5:
-        return "saturday"
-    if weekday == 6:
-        return "sunday"
-    return "weekday"
+    return _WEEKDAY_TO_DAY_TYPE[date.weekday()]
 
 
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
