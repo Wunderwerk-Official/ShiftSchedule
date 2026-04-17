@@ -95,39 +95,24 @@ function scrollToAssignmentKeys(keys: string[], delayMs: number = 50): void {
       const selector = `[data-assignment-key="${key}"]`;
       const element = document.querySelector(selector) as HTMLElement | null;
       if (element) {
-        // Find the calendar scroll container for horizontal scrolling
-        const scrollContainer = element.closest(".calendar-scroll") as HTMLElement | null;
-
-        if (scrollContainer) {
-          // Get element position relative to the scroll container
-          const elementRect = element.getBoundingClientRect();
-          const containerRect = scrollContainer.getBoundingClientRect();
-
-          // Calculate the horizontal scroll position to center the element
-          const elementCenterX = elementRect.left + elementRect.width / 2;
-          const containerCenterX = containerRect.left + containerRect.width / 2;
-          const scrollLeftDelta = elementCenterX - containerCenterX;
-
-          // Scroll the container horizontally
-          scrollContainer.scrollBy({
-            left: scrollLeftDelta,
-            behavior: "smooth",
-          });
-
-          // For vertical scroll, we need to scroll the window/page directly
-          // since the calendar container has overflow-y: hidden
-          const viewportCenterY = window.innerHeight / 2;
-          const elementCenterY = elementRect.top + elementRect.height / 2;
-          const scrollTopDelta = elementCenterY - viewportCenterY;
-
-          window.scrollBy({
-            top: scrollTopDelta,
-            behavior: "smooth",
-          });
-        } else {
-          // Fallback if no scroll container found
-          element.scrollIntoView({ behavior: "smooth", block: "center" });
-        }
+        // scrollIntoView with inline:"center" + block:"center" does what we
+        // used to hand-roll below: the browser walks up from the element and
+        // scrolls EACH scrollable ancestor the minimum amount to put the
+        // element in its centre. That means:
+        //   - the horizontal .calendar-scroll container scrolls sideways
+        //   - the window scrolls vertically (since .calendar-scroll has
+        //     overflow-y: hidden, so vertical scrolling is on the window)
+        //
+        // The previous implementation only scrolled ONE container for each
+        // axis, which failed when the pill was out of view in the current
+        // week but deep inside a horizontally-scrolled area — the window
+        // scrolled, but the calendar container didn't bring the pill into
+        // the visible stripe. scrollIntoView does both in one call.
+        element.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+          inline: "center",
+        });
         return;
       }
     }
