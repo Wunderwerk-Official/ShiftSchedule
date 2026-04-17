@@ -1597,12 +1597,18 @@ function RowSection({
               );
               return showSlotPanel ? (
                 <div
+                  // Border width is kept constant at 2px across every state.
+                  // Previously this was `border` (1px) by default and
+                  // `border-2` (2px) when highlighted/qualified-drop-target,
+                  // and that 1px delta shifted every row underneath whenever
+                  // the user hovered a drop-eligible cell during a drag.
+                  // Only the color/dash style changes now.
                   className={cx(
-                    "h-full w-full min-h-[48px] rounded-lg border bg-white/95 px-2 py-0.5 shadow-sm dark:bg-slate-950",
+                    "h-full w-full min-h-[48px] rounded-lg border-2 bg-white/95 px-2 py-0.5 shadow-sm dark:bg-slate-950",
                     hasHighlightedViolation
-                      ? "border-2 border-rose-500 dark:border-rose-400"
+                      ? "border-rose-500 dark:border-rose-400"
                       : showQualified
-                        ? "border-2 border-slate-900 dark:border-slate-100"
+                        ? "border-slate-900 dark:border-slate-100"
                         : "border-slate-200 dark:border-slate-700",
                   )}
                   style={
