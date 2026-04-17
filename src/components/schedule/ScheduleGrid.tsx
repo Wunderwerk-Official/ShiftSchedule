@@ -1275,6 +1275,16 @@ function RowSection({
             : 0;
         const isOtherDay = !!dragState.dragging && dragState.dragging.dateISO !== dateISO;
         const isActiveDay = !!dragState.dragging && dragState.dragging.dateISO === dateISO;
+        // The source cell (the one the pill is being dragged out of) would
+        // otherwise fail canDropAssignment because its own interval overlaps
+        // with itself. Dropping back on source is handled as a no-op by the
+        // drop handler (ScheduleGrid.onDrop: `if (payload.rowId === row.id)
+        // return;`), so treating the source cell as "qualified" for the
+        // outline is visually consistent and functionally safe.
+        const isSourceCell =
+          !!dragState.dragging &&
+          dragState.dragging.rowId === activeRow.id &&
+          dragState.dragging.dateISO === dateISO;
         const showQualified =
           !readOnly &&
           !!dragState.dragging &&
@@ -1282,7 +1292,8 @@ function RowSection({
           row.kind === "class" &&
           isCellActive &&
           getIsQualified(dragState.dragging.clinicianId, activeRow.id) &&
-          canDropAssignment(dragState.dragging, activeRow.id, dateISO);
+          (isSourceCell ||
+            canDropAssignment(dragState.dragging, activeRow.id, dateISO));
 
         const isHoveredCell =
           hoveredClassCell?.rowId === activeRow.id &&

@@ -81,33 +81,30 @@ function extractDateFromAssignmentKey(key: string): string | null {
 /**
  * Scroll to the first assignment element matching any of the given keys.
  * Uses the data-assignment-key attribute on AssignmentPill components.
- * Handles both page scroll (vertical) and calendar container scroll (horizontal).
  *
- * `delayMs` lets callers give React extra time to commit a preceding state
- * change (like switching weeks to bring the target into view) before we
- * query the DOM. 50 ms is enough for a typical re-render; 200 ms covers
- * slower machines after a week switch.
+ * Instead of a fixed timeout — which used to fail on larger schedules where
+ * the post-setAnchorDate re-render takes longer than the delay — we poll via
+ * requestAnimationFrame up to `maxWaitMs`. The moment the pill appears in
+ * the DOM we scroll to it. This handles:
+ *   - already-visible pills (found on the first tick; no visible scroll)
+ *   - pills in the current week but outside the scrolled viewport
+ *   - pills that only appear after a week-switch triggered by the caller
+ *
+ * scrollIntoView with inline/block:"center" lets the browser walk every
+ * scrollable ancestor and scroll each the minimum amount:
+ *   - the horizontal .calendar-scroll container scrolls sideways
+ *   - the window scrolls vertically (since .calendar-scroll has overflow-y:
+ *     hidden, so vertical scrolling happens on the window)
  */
-function scrollToAssignmentKeys(keys: string[], delayMs: number = 50): void {
-  // Use setTimeout to ensure the DOM has updated after state change
-  setTimeout(() => {
+function scrollToAssignmentKeys(keys: string[], maxWaitMs: number = 1000): void {
+  if (keys.length === 0) return;
+  const startedAt = performance.now();
+  const tick = () => {
     for (const key of keys) {
-      const selector = `[data-assignment-key="${key}"]`;
-      const element = document.querySelector(selector) as HTMLElement | null;
+      const element = document.querySelector(
+        `[data-assignment-key="${key}"]`,
+      ) as HTMLElement | null;
       if (element) {
-        // scrollIntoView with inline:"center" + block:"center" does what we
-        // used to hand-roll below: the browser walks up from the element and
-        // scrolls EACH scrollable ancestor the minimum amount to put the
-        // element in its centre. That means:
-        //   - the horizontal .calendar-scroll container scrolls sideways
-        //   - the window scrolls vertically (since .calendar-scroll has
-        //     overflow-y: hidden, so vertical scrolling is on the window)
-        //
-        // The previous implementation only scrolled ONE container for each
-        // axis, which failed when the pill was out of view in the current
-        // week but deep inside a horizontally-scrolled area — the window
-        // scrolled, but the calendar container didn't bring the pill into
-        // the visible stripe. scrollIntoView does both in one call.
         element.scrollIntoView({
           behavior: "smooth",
           block: "center",
@@ -116,7 +113,10 @@ function scrollToAssignmentKeys(keys: string[], delayMs: number = 50): void {
         return;
       }
     }
-  }, delayMs);
+    if (performance.now() - startedAt > maxWaitMs) return;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
 }
 import { buildICalendar, type ICalEvent } from "../lib/ical";
 import {
@@ -2882,12 +2882,12 @@ export default function WeeklySchedulePage({
                         if (outOfView && targetDateISO) {
                           const [y, m, d] = targetDateISO.split("-").map(Number);
                           setAnchorDate(new Date(y, m - 1, d));
-                          // 250ms gives React time to commit the new week
-                          // and the grid time to layout before we query DOM.
-                          scrollToAssignmentKeys(violation.assignmentKeys, 250);
-                        } else {
-                          scrollToAssignmentKeys(violation.assignmentKeys);
                         }
+                        // scrollToAssignmentKeys now polls via rAF until the
+                        // pill appears in the DOM (up to 1s), so callers no
+                        // longer need to guess how long the re-render will
+                        // take.
+                        scrollToAssignmentKeys(violation.assignmentKeys);
                       }}
                       onMouseEnter={() => setHoveredRuleViolationId(violation.id)}
                       onMouseLeave={() => setHoveredRuleViolationId(null)}
@@ -2976,10 +2976,8 @@ export default function WeeklySchedulePage({
                         if (outOfView && targetDateISO) {
                           const [y, m, d] = targetDateISO.split("-").map(Number);
                           setAnchorDate(new Date(y, m - 1, d));
-                          scrollToAssignmentKeys(shift.assignmentKeys, 250);
-                        } else {
-                          scrollToAssignmentKeys(shift.assignmentKeys);
                         }
+                        scrollToAssignmentKeys(shift.assignmentKeys);
                       }}
                       onMouseEnter={() => setHoveredSplitShiftId(shift.id)}
                       onMouseLeave={() => setHoveredSplitShiftId(null)}
