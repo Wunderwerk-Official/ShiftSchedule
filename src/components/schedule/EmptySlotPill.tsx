@@ -24,10 +24,14 @@ export default function EmptySlotPill({
     <div
       role={onClick ? "button" : undefined}
       onClick={onClick}
+      // Border width is kept at border-2 in every state so that the
+      // hover/highlighted styling (previously border → border-2) doesn't
+      // grow the box by 1px on each side, which used to shift every row
+      // below this one. Only the border color/style and ring change.
       className={cx(
-        "no-print group/empty relative w-full rounded-xl border px-2 py-1 text-center text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
+        "no-print group/empty relative w-full rounded-xl border-2 px-2 py-1 text-center text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
         highlighted
-          ? "border-2 border-solid border-rose-500 bg-rose-50 text-rose-700 ring-2 ring-rose-200/80 dark:border-rose-400 dark:bg-rose-900/30 dark:text-rose-100 dark:ring-rose-500/40"
+          ? "border-solid border-rose-500 bg-rose-50 text-rose-700 ring-2 ring-rose-200/80 dark:border-rose-400 dark:bg-rose-900/30 dark:text-rose-100 dark:ring-rose-500/40"
           : variant === "ghost"
             ? "border-dashed border-slate-200 bg-white text-slate-400 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400"
             : "border-dashed border-slate-300 bg-white text-slate-600 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-300",

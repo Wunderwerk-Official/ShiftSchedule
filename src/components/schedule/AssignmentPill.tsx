@@ -186,10 +186,14 @@ function AssignmentPillImpl({
       ? "bg-sky-200 dark:bg-sky-700/60"
       : "bg-sky-50 dark:bg-sky-900/40";
   const segmentTakenClass = "bg-white dark:bg-slate-900";
+  // Border width is kept constant across all states (see className below:
+  // `border-2` on the outer div). Previously this switched between `border`
+  // (default) and `border-2` (violation/drag-focus), and the 1px delta
+  // shifted every row underneath when hovering a violating pill.
   const toneClass = showViolation || showHighlight
-    ? "border-2 border-rose-500 text-rose-900 dark:border-rose-400 dark:text-rose-100"
+    ? "border-rose-500 text-rose-900 dark:border-rose-400 dark:text-rose-100"
     : showDragFocus
-      ? "border-2 border-slate-900 text-slate-900 dark:border-slate-100 dark:text-sky-50"
+      ? "border-slate-900 text-slate-900 dark:border-slate-100 dark:text-sky-50"
       : "border-sky-200 text-sky-800 dark:border-sky-500/40 dark:text-sky-100";
   const toneBgClass = showViolation || showHighlight
     ? "bg-rose-100/80 dark:bg-rose-900/40"
@@ -210,7 +214,7 @@ function AssignmentPillImpl({
       // wrapper's `select-none` below. See index.css for the matching CSS-side
       // safeguards (-webkit-user-drag: element + cursor: grab).
       className={cx(
-        "group/pill relative w-full overflow-visible rounded-xl border px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
+        "group/pill relative w-full overflow-visible rounded-xl border-2 px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
         "hover:z-[500]",
         hasWarning ? "z-[500]" : "z-[1]",
         (showViolation || showHighlight) &&
