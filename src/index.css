@@ -31,9 +31,12 @@
 [data-assignment-pill][draggable="true"]:active {
   cursor: grabbing;
 }
-[data-assignment-pill] * {
-  -webkit-user-drag: none;
-}
+/* Intentionally NO `[data-assignment-pill] * { -webkit-user-drag: none }`
+   rule here. An earlier version tried to suppress Safari's native text-drag
+   on children, but the side-effect was that Safari refused to start drag on
+   the parent when mousedown landed on a child — which is always, since the
+   visible content fills the pill. Text selection inside the pill is blocked
+   by the inner wrapper's `select-none` class, which is enough. */
 [data-schedule-cell] {
   -webkit-user-drag: none;
 }

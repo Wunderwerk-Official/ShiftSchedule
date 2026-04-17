@@ -184,15 +184,63 @@ export default function ScheduleGrid({
     }
     return map;
   }, [rows]);
-  const [dragState, setDragState] = useState<{
-    dragging: {
-      rowId: string;
-      dateISO: string;
-      assignmentId: string;
-      clinicianId: string;
-    } | null;
-    dragOverKey: string | null;
-  }>({ dragging: null, dragOverKey: null });
+  // `dragState` was previously {dragging, dragOverKey}. dragOverKey was
+  // re-set on every dragover tick (many per second) but was never read from
+  // the render tree — it only served as an idempotency key inside the
+  // dragover/dragLeave handlers to avoid redundant setState calls. In
+  // practice it was the biggest source of "drag lag": each mouse movement
+  // triggered a full ScheduleGrid re-render for no visual change.
+  //
+  // Split into two: `dragging` keeps state-driven rendering, `dragOverKeyRef`
+  // is a mutable box for the idempotency check that no longer re-renders.
+  // The wrapper `setDragState` preserves the old call sites.
+  const [dragging, setDragging] = useState<{
+    rowId: string;
+    dateISO: string;
+    assignmentId: string;
+    clinicianId: string;
+  } | null>(null);
+  const dragOverKeyRef = useRef<string | null>(null);
+  // Back-compat shim: reassemble the old shape for downstream code that still
+  // reads `dragState.dragging`. We don't expose dragOverKey in this reader
+  // (it's write-only now) — callers that need to check it use the ref directly.
+  const dragState = { dragging, dragOverKey: null as string | null };
+  type DragStateUpdate =
+    | {
+        dragging: {
+          rowId: string;
+          dateISO: string;
+          assignmentId: string;
+          clinicianId: string;
+        } | null;
+        dragOverKey: string | null;
+      }
+    | ((prev: {
+        dragging: ReturnType<typeof getDragging>;
+        dragOverKey: string | null;
+      }) => {
+        dragging: ReturnType<typeof getDragging>;
+        dragOverKey: string | null;
+      });
+  const getDragging = () => dragging;
+  const setDragState = (update: DragStateUpdate) => {
+    const prevShape = {
+      dragging,
+      dragOverKey: dragOverKeyRef.current,
+    };
+    const next = typeof update === "function" ? update(prevShape) : update;
+    // Dragging is rendered — fire setState only when it actually changes.
+    const draggingChanged =
+      next.dragging?.assignmentId !== prevShape.dragging?.assignmentId ||
+      next.dragging?.rowId !== prevShape.dragging?.rowId ||
+      next.dragging?.dateISO !== prevShape.dragging?.dateISO ||
+      next.dragging?.clinicianId !== prevShape.dragging?.clinicianId;
+    if (draggingChanged) {
+      setDragging(next.dragging);
+    }
+    // dragOverKey is silent — just mutate the ref, no re-render.
+    dragOverKeyRef.current = next.dragOverKey;
+  };
   const [hoveredClassCell, setHoveredClassCell] = useState<{
     rowId: string;
     dateISO: string;
@@ -960,14 +1008,14 @@ function RowSection({
               : rowBg;
 
             return (
-              <button
+              // Rendered as a <div> rather than a <button>. In Safari a
+              // <button> ancestor captures the pointer gesture before its
+              // descendants, so the inner draggable pill never receives
+              // dragstart. Chrome routes correctly through the inner
+              // element either way. This cell has no onClick (it's a
+              // drop-target only), so no role/tabIndex is needed.
+              <div
                 key={cellKey}
-                type="button"
-                // Safari routes drag gestures to the nearest draggable ancestor;
-                // without an explicit draggable={false} on this <button>, an
-                // inner [data-assignment-pill] never receives dragstart on
-                // WebKit. Chrome handles either the same way.
-                draggable={false}
                 onDragOver={
                   readOnly
                     ? undefined
@@ -1156,7 +1204,7 @@ function RowSection({
                     })()}
                   </div>
                 ) : null}
-              </button>
+              </div>
             );
           })
         : dayColumns.map((column, index) => {
@@ -1250,11 +1298,15 @@ function RowSection({
                 : rowBg;
 
         return (
-          <button
+          // Same Safari drag-routing fix as the grouped-view cell above —
+          // rendered as div role="button" so the inner pill can own the
+          // drag gesture. This cell IS interactive (onClick), so keep
+          // role + tabIndex + onKeyDown for keyboard a11y parity with
+          // the previous <button>.
+          <div
             key={cellKey}
-            type="button"
-            // Same Safari drag-routing fix as the grouped-view cell above.
-            draggable={false}
+            role="button"
+            tabIndex={readOnly ? -1 : 0}
             onClick={(e) => {
               if (readOnly) return;
               const target = e.target as HTMLElement;
@@ -1269,6 +1321,13 @@ function RowSection({
               ) {
                 onCellClick({ row: activeRow, date: column.date });
               }
+            }}
+            onKeyDown={(e) => {
+              if (readOnly) return;
+              // Only act on Enter / Space, like a native button.
+              if (e.key !== "Enter" && e.key !== " ") return;
+              e.preventDefault();
+              (e.currentTarget as HTMLElement).click();
             }}
             onDragOver={
               readOnly
@@ -1573,7 +1632,7 @@ function RowSection({
                 <div className="flex flex-col gap-1">{cellContent}</div>
               );
             })()}
-          </button>
+          </div>
         );
       })}
     </>
