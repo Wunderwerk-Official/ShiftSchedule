@@ -110,8 +110,15 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
   const bestImprovementPct = ((firstObjective - minObjective) / denom) * 100;
 
   return (
-    <div className="flex flex-col items-center gap-1">
-      <svg width={chartWidth} height={chartHeight} className="overflow-visible">
+    <div className="flex w-full flex-col items-center gap-1">
+      {/* Responsive SVG: the viewBox-based sizing lets the chart shrink to the
+          modal's inner width on narrow viewports without clipping the left-hand
+          Y-axis labels (previously fixed width=500 overflowed max-w-lg's 448px). */}
+      <svg
+        viewBox={`0 0 ${chartWidth} ${chartHeight}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="block h-auto w-full max-w-[500px]"
+      >
         {/* Grid lines */}
         <line
           x1={padding.left}
@@ -787,85 +794,34 @@ export default function SolverOverlay({
       <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80" />
 
       {/* Content panel - compact width that fits content */}
-      <div className="relative z-10 flex max-h-[90%] w-auto max-w-lg flex-col items-center gap-4 overflow-y-auto rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-        {/* Circular progress indicator */}
-        {(() => {
-          const progress = Math.min(1, elapsedMs / totalAllowedMs);
-          const radius = 28;
-          const circumference = 2 * Math.PI * radius;
-          const strokeDashoffset = circumference * (1 - progress);
-          return (
-            <div className="relative h-16 w-16" role="progressbar" aria-valuenow={Math.round(progress * 100)} aria-label="Solver progress">
-              <svg
-                className="-rotate-90"
-                viewBox="0 0 64 64"
-                fill="none"
-                xmlns="http://www.w3.org/2000/svg"
-              >
-                {/* Background circle */}
-                <circle
-                  cx="32"
-                  cy="32"
-                  r={radius}
-                  stroke="currentColor"
-                  strokeWidth="4"
-                  className="text-slate-200 dark:text-slate-700"
-                />
-                {/* Progress arc */}
-                <circle
-                  cx="32"
-                  cy="32"
-                  r={radius}
-                  stroke="currentColor"
-                  strokeWidth="4"
-                  strokeLinecap="round"
-                  className="text-indigo-500 transition-all duration-300"
-                  style={{
-                    strokeDasharray: circumference,
-                    strokeDashoffset: strokeDashoffset,
-                  }}
-                />
-              </svg>
-            </div>
-          );
-        })()}
-
-        {/* Elapsed / Total time - directly under the progress ring */}
-        <div className="-mt-2 text-sm font-medium tabular-nums text-slate-600 dark:text-slate-300">
-          {formatDuration(elapsedMs)} / {formatDuration(totalAllowedMs)}
-        </div>
-
-        {/* Title and date range */}
-        <div className="flex flex-col items-center gap-1">
-          <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">
-            Optimizing Schedule
-          </h3>
+      <div className="relative z-10 flex max-h-[90%] w-auto max-w-xl flex-col items-center gap-4 overflow-y-auto rounded-2xl border border-slate-200 bg-white px-8 py-6 shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+        {/* Header: title with elapsed/total time inline, then date range + subtitle */}
+        <div
+          className="flex flex-col items-center gap-1"
+          role="progressbar"
+          aria-valuenow={Math.round(Math.min(1, elapsedMs / totalAllowedMs) * 100)}
+          aria-label="Solver progress"
+        >
+          <div className="flex items-baseline gap-3">
+            <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">
+              Optimizing Schedule
+            </h3>
+            <span className="text-sm font-medium tabular-nums text-slate-500 dark:text-slate-400">
+              {formatDuration(elapsedMs)} / {formatDuration(totalAllowedMs)}
+            </span>
+          </div>
           {dateRangeLabel && (
             <p className="text-sm font-medium text-indigo-600 dark:text-indigo-400">
               {dateRangeLabel}
             </p>
           )}
-          <p className="mt-1 text-center text-xs text-slate-500 dark:text-slate-400">
+          <p className="text-center text-xs text-slate-500 dark:text-slate-400">
             Schedule is locked during optimization
           </p>
         </div>
 
-        {/* Preparation phase indicator - shown before solutions arrive */}
-        {currentPhase && liveSolutions.length === 0 && (
-          <div className="flex items-center gap-3 rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-800">
-            <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
-            <span className="text-sm text-slate-600 dark:text-slate-300">
-              {currentPhase}
-            </span>
-          </div>
-        )}
-
-        {/* Live solutions chart */}
-        {liveSolutions.length > 0 && (
-          <LiveSolutionChart solutions={liveSolutions} elapsedMs={elapsedMs} />
-        )}
-
-        {/* Action buttons */}
+        {/* Action buttons — placed above the phase/chart so they stay visible
+            without scrolling as the chart fills with live solutions. */}
         <div className="flex items-center gap-3">
           {/* Details button - only shown when solutions exist */}
           {liveSolutions.length > 0 && (
@@ -898,6 +854,21 @@ export default function SolverOverlay({
             </button>
           )}
         </div>
+
+        {/* Preparation phase indicator - shown before solutions arrive */}
+        {currentPhase && liveSolutions.length === 0 && (
+          <div className="flex items-center gap-3 rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-800">
+            <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
+            <span className="text-sm text-slate-600 dark:text-slate-300">
+              {currentPhase}
+            </span>
+          </div>
+        )}
+
+        {/* Live solutions chart */}
+        {liveSolutions.length > 0 && (
+          <LiveSolutionChart solutions={liveSolutions} elapsedMs={elapsedMs} />
+        )}
 
         {/* Full-screen dashboard */}
         {dashboardOpen && (
