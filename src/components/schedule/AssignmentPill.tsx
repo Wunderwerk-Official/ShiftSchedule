@@ -1,5 +1,5 @@
 import { cx } from "../../lib/classNames";
-import { useMemo, useRef, useState, useLayoutEffect } from "react";
+import { memo, useMemo, useRef, useState, useLayoutEffect } from "react";
 import type { DragEventHandler, MouseEventHandler } from "react";
 import type { AvailabilitySegment } from "../../lib/schedule";
 
@@ -121,7 +121,7 @@ type AssignmentPillProps = {
   onClick?: MouseEventHandler<HTMLDivElement>;
 };
 
-export default function AssignmentPill({
+function AssignmentPillImpl({
   name,
   siblingNames,
   assignmentKey,
@@ -204,8 +204,13 @@ export default function AssignmentPill({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onClick}
+      // No `select-none` here: Safari/WebKit refuses to start dragstart on an
+      // element whose -webkit-user-select is `none` (Chrome ignores that).
+      // Text selection on the visible content is still prevented by the inner
+      // wrapper's `select-none` below. See index.css for the matching CSS-side
+      // safeguards (-webkit-user-drag: element + cursor: grab).
       className={cx(
-        "group/pill relative w-full select-none overflow-visible rounded-xl border px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
+        "group/pill relative w-full overflow-visible rounded-xl border px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
         "hover:z-[500]",
         hasWarning ? "z-[500]" : "z-[1]",
         (showViolation || showHighlight) &&
@@ -221,7 +226,7 @@ export default function AssignmentPill({
         className,
       )}
     >
-      <div className="pointer-events-none relative z-10 overflow-hidden rounded-[inherit]">
+      <div className="pointer-events-none relative z-10 select-none overflow-hidden rounded-[inherit]">
         {hasSegments ? (
           <div className="pointer-events-none absolute inset-0 z-0 flex divide-x divide-slate-200/80 dark:divide-slate-700/80">
             {timeSegments?.map((segment, index) => (
@@ -250,25 +255,100 @@ export default function AssignmentPill({
           </div>
         </div>
       </div>
-      {showNoEligibilityWarning ? (
-        <span className="group/warn pointer-events-auto absolute right-1 top-0 z-[200] -translate-y-1/2">
-          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-rose-300 text-[10px] font-semibold text-rose-700 shadow-sm">
-            !
+      {hasWarning ? (
+        <>
+          {/* Warning dot. pointer-events-none so the ~16px-wide hit target doesn't
+              swallow the drag-start event when the user grabs the pill near its
+              top edge (the dot is absolute + -translate-y-1/2, so it overlaps
+              the pill's upper-right corner). Before this, pills with a warning
+              could only be dragged from the lower half, which looked like a
+              z-index glitch but was actually HTML5 drag getting intercepted. */}
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute right-1 top-0 z-[200] -translate-y-1/2"
+          >
+            <span
+              className={cx(
+                "inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-semibold shadow-sm",
+                showNoEligibilityWarning
+                  ? "bg-rose-300 text-rose-700"
+                  : "bg-amber-200 text-amber-700",
+              )}
+            >
+              !
+            </span>
           </span>
-          <span className="pointer-events-none absolute right-0 top-full z-[210] mt-1 w-max rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 opacity-0 shadow-sm transition-opacity duration-75 group-hover/warn:opacity-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-            No eligible sections defined yet.
+          {/* Tooltip is now gated on hover of the whole pill (group/pill on the
+              outer div) instead of the tiny warning dot — so it appears on any
+              hover and doesn't require pointer-events on the dot. */}
+          <span className="pointer-events-none absolute right-0 top-full z-[210] mt-1 w-max rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 opacity-0 shadow-sm transition-opacity duration-75 group-hover/pill:opacity-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+            {showNoEligibilityWarning
+              ? "No eligible sections defined yet."
+              : "Not eligible for this slot."}
           </span>
-        </span>
-      ) : showIneligibleWarning ? (
-        <span className="group/warn pointer-events-auto absolute right-1 top-0 z-[200] -translate-y-1/2">
-          <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-amber-200 text-[10px] font-semibold text-amber-700 shadow-sm">
-            !
-          </span>
-          <span className="pointer-events-none absolute right-0 top-full z-[210] mt-1 w-max rounded-md border border-slate-200 bg-white px-2 py-1 text-[10px] font-semibold text-slate-600 opacity-0 shadow-sm transition-opacity duration-75 group-hover/warn:opacity-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-            Not eligible for this slot.
-          </span>
-        </span>
+        </>
       ) : null}
     </div>
   );
 }
+
+function arraysShallowEqual<T>(
+  a: ReadonlyArray<T> | undefined,
+  b: ReadonlyArray<T> | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
+function segmentsEqual(
+  a: AvailabilitySegment[] | undefined,
+  b: AvailabilitySegment[] | undefined,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i].kind !== b[i].kind || a[i].label !== b[i].label) return false;
+  }
+  return true;
+}
+
+/**
+ * Pills are rendered hundreds at a time in the schedule grid. Any state
+ * change in the parent (e.g. setDragState during a drag) would otherwise
+ * re-render every single pill, compounded by each pill's own
+ * useLayoutEffect → rAF → setState abbreviation loop. Skipping re-renders
+ * for pills whose data didn't change is what makes drag feel snappy.
+ *
+ * We intentionally ignore callback prop identity. The onDragStart /
+ * onDragEnd / onClick closures capture per-pill ids (rowId, dateISO,
+ * assignmentId, clinicianId) that are stable for the lifetime of that
+ * pill, so a new closure with the same behaviour is safe to skip.
+ */
+function arePillPropsEqual(
+  prev: AssignmentPillProps,
+  next: AssignmentPillProps,
+): boolean {
+  return (
+    prev.name === next.name &&
+    prev.assignmentKey === next.assignmentKey &&
+    prev.showNoEligibilityWarning === next.showNoEligibilityWarning &&
+    prev.showIneligibleWarning === next.showIneligibleWarning &&
+    prev.isHighlighted === next.isHighlighted &&
+    prev.isViolation === next.isViolation &&
+    prev.isDragging === next.isDragging &&
+    prev.isDragFocus === next.isDragFocus &&
+    prev.draggable === next.draggable &&
+    prev.className === next.className &&
+    arraysShallowEqual(prev.siblingNames, next.siblingNames) &&
+    segmentsEqual(prev.timeSegments, next.timeSegments)
+  );
+}
+
+const AssignmentPill = memo(AssignmentPillImpl, arePillPropsEqual);
+export default AssignmentPill;

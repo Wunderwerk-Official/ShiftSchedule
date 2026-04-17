@@ -1311,6 +1311,15 @@ export default function WeeklySchedulePage({
             applySolverAssignments(lastSolution.assignments);
           }
         }
+      } else if (err instanceof Error && err.name === "SolverBusyError") {
+        // Backend reports another solve is already running (or recovering from
+        // a zombie state that couldn't be reset automatically). Surface the
+        // server's message verbatim instead of the generic "not responding".
+        historyStatus = "error";
+        historyNotes = [err.message];
+        setAutoPlanError(err.message);
+        setSolverNotice({ notes: err.message });
+        window.setTimeout(() => setSolverNotice(null), 5000);
       } else {
         historyStatus = "error";
         historyNotes = ["Solver service is not responding."];

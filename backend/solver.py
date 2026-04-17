@@ -67,7 +67,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from ortools.sat.python import cp_model
 
@@ -1493,8 +1493,37 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
     # Capture start time BEFORE anything else - this is used for accurate timeout calculation
     request_start_time = time.time()
 
-    # Set solver running flag and clear any previous cancel event
+    # Reconcile solver state before starting a new run.
+    # Scenarios we handle here:
+    #   (1) Clean slate — no previous run active. Just proceed.
+    #   (2) Zombie state — _solver_is_running is True but the subprocess is
+    #       dead (finally block didn't complete, subprocess crashed, or a
+    #       prior abort interrupted cleanup). Reset and carry on; the user
+    #       was trying to recover and shouldn't have to restart the backend.
+    #   (3) Genuine concurrent run — another solve is alive. Refuse this one
+    #       with 409 instead of silently overwriting _solver_process and
+    #       leaving the other handler orphaned (which was how this state
+    #       got wedged in the first place).
     with _solver_running_lock:
+        if _solver_is_running:
+            process_alive = (
+                _solver_process is not None and _solver_process.is_alive()
+            )
+            if process_alive:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Another solve is already running. Abort it first "
+                        "via POST /v1/solve/abort."
+                    ),
+                )
+            # Zombie state — clear residue so the new run starts fresh.
+            if _solver_process is not None:
+                try:
+                    _solver_process.join(timeout=0.5)
+                except Exception:
+                    pass
+            _solver_process = None
         _solver_is_running = True
         _solver_cancel_event.clear()
 
@@ -1510,8 +1539,14 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
     cancel_event = _mp_context.Event()
     heartbeat_value = _mp_context.Value('i', 0)  # Shared integer for heartbeat
 
-    # Spawn subprocess - pass start_time for accurate timeout calculation
-    _solver_process = _mp_context.Process(
+    # Spawn subprocess - pass start_time for accurate timeout calculation.
+    # `owned_process` is a LOCAL reference that this handler uses from here on.
+    # The global `_solver_process` is exposed for the /v1/solve/abort endpoint,
+    # but we never read it inside the while-loop: another request's zombie-
+    # recovery path could set the global to None at any moment and crash this
+    # handler with AttributeError (see the pre-fix race: two near-simultaneous
+    # /v1/solve/range calls could race the finally block of the first one).
+    owned_process = _mp_context.Process(
         target=_solver_subprocess_worker,
         args=(
             current_user.username,
@@ -1522,7 +1557,8 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
             request_start_time,
         ),
     )
-    _solver_process.start()
+    _solver_process = owned_process
+    owned_process.start()
 
     result = None
     error = None
@@ -1541,7 +1577,7 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                 cancel_event.set()
 
             # Check if process is still alive
-            if not _solver_process.is_alive():
+            if not owned_process.is_alive():
                 # Process ended, drain remaining messages
                 while not progress_queue.empty():
                     try:
@@ -1575,7 +1611,7 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                 pass  # Timeout, continue loop
 
         # Wait for process to finish
-        _solver_process.join(timeout=2.0)
+        owned_process.join(timeout=2.0)
 
         if error:
             raise Exception(error.get("error", "Unknown solver error"))
@@ -1613,14 +1649,28 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
         })
         raise
     finally:
-        # Cleanup subprocess if still running (use aggressive cleanup)
-        _cleanup_solver_process()
+        # Terminate our owned subprocess aggressively. We operate on the local
+        # reference (owned_process) so we always clean up THIS handler's child,
+        # regardless of what the global _solver_process currently points at.
+        try:
+            if owned_process.is_alive():
+                owned_process.terminate()
+                owned_process.join(timeout=2.0)
+                if owned_process.is_alive():
+                    owned_process.kill()
+                    owned_process.join(timeout=1.0)
+        except Exception:
+            pass
 
-        # Always clear the running flag when done
+        # Only reset the globals if they still refer to OUR subprocess. If
+        # another request grabbed the slot in the meantime (unlikely with the
+        # guard at the top, but possible on a zombie-recovery path), we must
+        # not trample on it.
         with _solver_running_lock:
-            _solver_is_running = False
-            _solver_process = None
-            _solver_cancel_event.clear()
+            if _solver_process is owned_process:
+                _solver_process = None
+                _solver_is_running = False
+                _solver_cancel_event.clear()
 
 
 def _solve_range_impl_subprocess(

@@ -815,47 +815,15 @@ function RowSection({
     source: HTMLElement,
     event: ReactMouseEvent<HTMLElement> | DragEvent,
   ) => {
+    // Kept lightweight: this runs on the critical path of every dragstart.
+    // Instead of 30+ classList mutations we just tag the clone with a
+    // data attribute — the "drag preview" styling lives in index.css
+    // (see [data-pill-drag-preview="true"]). setDragImage reads the clone
+    // synchronously, so the cleanup can happen on the next tick.
     const dragRoot =
       source.closest<HTMLElement>('[data-assignment-pill="true"]') ?? source;
     const clone = dragRoot.cloneNode(true) as HTMLElement;
-    const pill = clone.matches('[data-assignment-pill="true"]')
-      ? clone
-      : clone.querySelector<HTMLElement>('[data-assignment-pill="true"]');
-    if (pill) {
-      pill.classList.remove(
-        "border-2",
-        "border-emerald-500",
-        "border-emerald-300",
-        "border-sky-200",
-        "border-sky-300",
-        "border-sky-500/40",
-        "bg-sky-50",
-        "bg-sky-100",
-        "bg-sky-50/60",
-        "bg-sky-100/80",
-        "dark:bg-sky-900/40",
-        "dark:bg-sky-900/60",
-        "bg-emerald-100",
-        "bg-emerald-100/80",
-        "text-emerald-950",
-        "text-emerald-900",
-        "dark:border-emerald-300",
-        "dark:border-emerald-500/60",
-        "dark:bg-emerald-900/70",
-        "dark:bg-emerald-900/40",
-        "dark:text-emerald-50",
-        "dark:text-emerald-100",
-      );
-      pill.classList.add(
-        "border-2",
-        "border-slate-900",
-        "bg-sky-200",
-        "text-slate-900",
-        "dark:border-slate-100",
-        "dark:bg-sky-700/60",
-        "dark:text-sky-50",
-      );
-    }
+    clone.setAttribute("data-pill-drag-preview", "true");
     clone.style.position = "absolute";
     clone.style.top = "-9999px";
     clone.style.left = "-9999px";
@@ -995,6 +963,11 @@ function RowSection({
               <button
                 key={cellKey}
                 type="button"
+                // Safari routes drag gestures to the nearest draggable ancestor;
+                // without an explicit draggable={false} on this <button>, an
+                // inner [data-assignment-pill] never receives dragstart on
+                // WebKit. Chrome handles either the same way.
+                draggable={false}
                 onDragOver={
                   readOnly
                     ? undefined
@@ -1280,6 +1253,8 @@ function RowSection({
           <button
             key={cellKey}
             type="button"
+            // Same Safari drag-routing fix as the grouped-view cell above.
+            draggable={false}
             onClick={(e) => {
               if (readOnly) return;
               const target = e.target as HTMLElement;

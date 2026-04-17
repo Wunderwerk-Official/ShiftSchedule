@@ -12,12 +12,45 @@
 /* Safari: buttons suppress child drag-and-drop by default.
    -webkit-user-drag: element forces the pill to be draggable even
    inside a <button> cell. The child rule prevents Safari's native
-   text-drag from competing with HTML5 draggable. */
+   text-drag from competing with HTML5 draggable. The schedule-cell
+   rule tells Safari explicitly that the wrapping <button> is NOT
+   draggable — otherwise Safari routes the drag gesture to the button
+   and the inner pill never gets the dragstart event, while Chrome
+   (correctly) honours the inner element's -webkit-user-drag: element. */
 [data-assignment-pill][draggable="true"] {
   -webkit-user-drag: element;
+  /* Safari refuses to start dragstart on an element with user-select: none.
+     We explicitly set it to auto here so the rule wins over any ancestor
+     `select-none` that would otherwise cascade down (e.g. a parent button
+     with user-select: none). Text selection on the VISIBLE content is
+     re-blocked by the inner wrapper's own .select-none class. */
+  -webkit-user-select: auto;
+  user-select: auto;
+  cursor: grab;
+}
+[data-assignment-pill][draggable="true"]:active {
+  cursor: grabbing;
 }
 [data-assignment-pill] * {
   -webkit-user-drag: none;
+}
+[data-schedule-cell] {
+  -webkit-user-drag: none;
+}
+
+/* The drag preview is a cloned pill that gets tagged with this attribute
+   instead of having 30+ Tailwind classes mutated per dragstart. Keep the
+   selector tight so it only applies to the off-screen clone. */
+[data-pill-drag-preview="true"] {
+  border-width: 2px !important;
+  border-color: rgb(15 23 42) !important; /* slate-900 */
+  background-color: rgb(186 230 253) !important; /* sky-200 */
+  color: rgb(15 23 42) !important;
+}
+.dark [data-pill-drag-preview="true"] {
+  border-color: rgb(241 245 249) !important; /* slate-100 */
+  background-color: rgba(3 105 161 / 0.6) !important; /* sky-700/60 */
+  color: rgb(240 249 255) !important; /* sky-50 */
 }
 
 .calendar-scroll {

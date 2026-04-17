@@ -544,6 +544,22 @@ export async function solveRange(
     signal: options?.signal,
   });
   if (res.status === 401) handleUnauthorized();
+  if (res.status === 409) {
+    // Backend refused because another solve is still running. Let the caller
+    // surface a specific message instead of the generic "not responding".
+    let detail = "Another solve is already running.";
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (typeof body.detail === "string" && body.detail.length > 0) {
+        detail = body.detail;
+      }
+    } catch {
+      // Non-JSON 409 body — fall back to the default detail string above.
+    }
+    const err = new Error(detail);
+    err.name = "SolverBusyError";
+    throw err;
+  }
   if (!res.ok) {
     throw new Error(`Failed to solve range: ${res.status}`);
   }
