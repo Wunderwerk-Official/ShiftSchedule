@@ -69,11 +69,26 @@ import {
 } from "../lib/calendarView";
 
 /**
+ * Extract the dateISO (YYYY-MM-DD) from an assignment key of the form
+ * `${rowId}__${dateISO}__${clinicianId}`. Uses a regex because rowId itself
+ * can contain "__" (e.g. "section-a__sub-shift-1"), which breaks a naive split.
+ */
+function extractDateFromAssignmentKey(key: string): string | null {
+  const match = key.match(/__(\d{4}-\d{2}-\d{2})__/);
+  return match ? match[1] : null;
+}
+
+/**
  * Scroll to the first assignment element matching any of the given keys.
  * Uses the data-assignment-key attribute on AssignmentPill components.
  * Handles both page scroll (vertical) and calendar container scroll (horizontal).
+ *
+ * `delayMs` lets callers give React extra time to commit a preceding state
+ * change (like switching weeks to bring the target into view) before we
+ * query the DOM. 50 ms is enough for a typical re-render; 200 ms covers
+ * slower machines after a week switch.
  */
-function scrollToAssignmentKeys(keys: string[]): void {
+function scrollToAssignmentKeys(keys: string[], delayMs: number = 50): void {
   // Use setTimeout to ensure the DOM has updated after state change
   setTimeout(() => {
     for (const key of keys) {
@@ -116,7 +131,7 @@ function scrollToAssignmentKeys(keys: string[]): void {
         return;
       }
     }
-  }, 50);
+  }, delayMs);
 }
 import { buildICalendar, type ICalEvent } from "../lib/ical";
 import {
@@ -2866,8 +2881,28 @@ export default function WeeklySchedulePage({
                         setActiveRuleViolationId((current) =>
                           current === violation.id ? null : violation.id,
                         );
-                        // Scroll to the first matching assignment pill
-                        scrollToAssignmentKeys(violation.assignmentKeys);
+                        // Figure out which week the violation lives in. If
+                        // it's outside the currently displayed week range,
+                        // swing the calendar to the target date first, then
+                        // wait a bit longer before scrolling so the newly
+                        // rendered pill is actually in the DOM.
+                        const targetDateISO = violation.assignmentKeys
+                          .map(extractDateFromAssignmentKey)
+                          .find((d): d is string => d !== null);
+                        const weekEndISO = toISODate(weekEndInclusive);
+                        const outOfView =
+                          targetDateISO !== undefined &&
+                          (targetDateISO < currentWeekStartISO ||
+                            targetDateISO > weekEndISO);
+                        if (outOfView && targetDateISO) {
+                          const [y, m, d] = targetDateISO.split("-").map(Number);
+                          setAnchorDate(new Date(y, m - 1, d));
+                          // 250ms gives React time to commit the new week
+                          // and the grid time to layout before we query DOM.
+                          scrollToAssignmentKeys(violation.assignmentKeys, 250);
+                        } else {
+                          scrollToAssignmentKeys(violation.assignmentKeys);
+                        }
                       }}
                       onMouseEnter={() => setHoveredRuleViolationId(violation.id)}
                       onMouseLeave={() => setHoveredRuleViolationId(null)}
@@ -2944,7 +2979,22 @@ export default function WeeklySchedulePage({
                       type="button"
                       onClick={() => {
                         setActiveSplitShiftId((prev) => (prev === shift.id ? null : shift.id));
-                        scrollToAssignmentKeys(shift.assignmentKeys);
+                        // Same out-of-view jump as rule violations above.
+                        const targetDateISO = shift.assignmentKeys
+                          .map(extractDateFromAssignmentKey)
+                          .find((d): d is string => d !== null);
+                        const weekEndISO = toISODate(weekEndInclusive);
+                        const outOfView =
+                          targetDateISO !== undefined &&
+                          (targetDateISO < currentWeekStartISO ||
+                            targetDateISO > weekEndISO);
+                        if (outOfView && targetDateISO) {
+                          const [y, m, d] = targetDateISO.split("-").map(Number);
+                          setAnchorDate(new Date(y, m - 1, d));
+                          scrollToAssignmentKeys(shift.assignmentKeys, 250);
+                        } else {
+                          scrollToAssignmentKeys(shift.assignmentKeys);
+                        }
                       }}
                       onMouseEnter={() => setHoveredSplitShiftId(shift.id)}
                       onMouseLeave={() => setHoveredSplitShiftId(null)}
