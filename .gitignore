@@ -14,3 +14,12 @@ test-results/
 .env.*
 !.env.example
 testing/
+
+# Python build artefacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Scheduled-task runtime lock (claude-code feature)
+.claude/scheduled_tasks.lock
