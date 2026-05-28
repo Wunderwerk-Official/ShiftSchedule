@@ -1185,7 +1185,10 @@ def _add_working_hours_constraints(
             continue
         if clinician.workingHoursPerWeek <= 0:
             continue
-        tolerance_hours = max(0, clinician.workingHoursToleranceHours or 5)
+        # Default to 5 only when missing (None); an explicit 0 (strict cap)
+        # must be preserved, not coerced to 5 by a falsy `or`.
+        _tol = clinician.workingHoursToleranceHours
+        tolerance_hours = max(0, _tol if _tol is not None else 5)
         target_minutes = int(round(clinician.workingHoursPerWeek * 60 * scale))
         tol_minutes = int(round(tolerance_hours * 60 * scale))
         if target_minutes <= 0 and tol_minutes <= 0:
@@ -1504,6 +1507,16 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
     #       with 409 instead of silently overwriting _solver_process and
     #       leaving the other handler orphaned (which was how this state
     #       got wedged in the first place).
+    # Create the subprocess and publish the global `_solver_process` *while
+    # still holding the lock*, then start it, all before releasing. This closes
+    # a race the previous code left open: if the global were assigned only after
+    # the lock was released, there was a window where `_solver_is_running` was
+    # True but `_solver_process` was still None. A second near-simultaneous
+    # /v1/solve/range would acquire the lock, see that combination, mistake it
+    # for a dead run via the zombie-recovery path, reset, and spawn a *second*
+    # live subprocess — orphaning the first. `owned_process` is also kept as a
+    # LOCAL reference that this handler uses from here on; we never read the
+    # mutable global inside the while-loop.
     with _solver_running_lock:
         if _solver_is_running:
             process_alive = (
@@ -1527,38 +1540,33 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
         _solver_is_running = True
         _solver_cancel_event.clear()
 
-    # Broadcast start event
+        # Create multiprocessing primitives (after the 409/zombie check so we
+        # don't leak a Queue/Event when refusing a concurrent run).
+        progress_queue = _mp_context.Queue(maxsize=1000)
+        cancel_event = _mp_context.Event()
+        heartbeat_value = _mp_context.Value('i', 0)  # Shared integer for heartbeat
+
+        # Spawn subprocess - pass start_time for accurate timeout calculation.
+        owned_process = _mp_context.Process(
+            target=_solver_subprocess_worker,
+            args=(
+                current_user.username,
+                payload.model_dump(),
+                progress_queue,
+                cancel_event,
+                heartbeat_value,
+                request_start_time,
+            ),
+        )
+        _solver_process = owned_process
+        owned_process.start()
+
+    # Broadcast start event (after the subprocess is live and the lock released)
     _broadcast_solver_progress("start", {
         "startISO": payload.startISO,
         "endISO": payload.endISO,
         "timeout_seconds": payload.timeout_seconds,
     })
-
-    # Create multiprocessing primitives
-    progress_queue = _mp_context.Queue(maxsize=1000)
-    cancel_event = _mp_context.Event()
-    heartbeat_value = _mp_context.Value('i', 0)  # Shared integer for heartbeat
-
-    # Spawn subprocess - pass start_time for accurate timeout calculation.
-    # `owned_process` is a LOCAL reference that this handler uses from here on.
-    # The global `_solver_process` is exposed for the /v1/solve/abort endpoint,
-    # but we never read it inside the while-loop: another request's zombie-
-    # recovery path could set the global to None at any moment and crash this
-    # handler with AttributeError (see the pre-fix race: two near-simultaneous
-    # /v1/solve/range calls could race the finally block of the first one).
-    owned_process = _mp_context.Process(
-        target=_solver_subprocess_worker,
-        args=(
-            current_user.username,
-            payload.model_dump(),
-            progress_queue,
-            cancel_event,
-            heartbeat_value,
-            request_start_time,
-        ),
-    )
-    _solver_process = owned_process
-    owned_process.start()
 
     result = None
     error = None

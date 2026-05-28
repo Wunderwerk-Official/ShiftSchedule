@@ -1753,7 +1753,10 @@ export default function WeeklySchedulePage({
       }
 
       if (hasGap) {
-        const date = new Date(dateISO);
+        // Parse as local midnight (matches the rest of this file). A bare
+        // `new Date(dateISO)` parses as UTC, so local date getters below would
+        // roll back a day in timezones west of UTC and mislabel the split-shift.
+        const date = new Date(`${dateISO}T00:00:00`);
         const dayName = date.toLocaleDateString("en-US", { weekday: "short" });
         const dayNum = date.getDate();
         const monthNum = date.getMonth() + 1;

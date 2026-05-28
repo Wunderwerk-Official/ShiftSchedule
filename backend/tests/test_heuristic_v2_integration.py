@@ -38,6 +38,8 @@ from backend.models import (
 )
 from backend.heuristic.solver_v2 import heuristic_solve_range_v2
 
+from typing import Optional
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1241,3 +1243,599 @@ class TestWeeklyHoursReset:
         assert len(result["assignments"]) == 4, (
             f"Expected 4 total assignments across 2 weeks, got {len(result['assignments'])}"
         )
+
+
+# ===========================================================================
+# Additional v2-specific integration tests (analyst scenarios 4, 8-12)
+# ===========================================================================
+
+
+def _build_multi_day_state(
+    slots_per_day_type: dict,
+    clinicians_list: List,
+    blocks: List,
+    day_types: List[str],
+    locations: Optional[List] = None,
+    assignments: Optional[List] = None,
+    solver_settings: Optional[dict] = None,
+    holidays: Optional[List] = None,
+) -> AppState:
+    """Helper to build an AppState spanning multiple day types."""
+    if locations is None:
+        locations = [Location(id="loc-1", name="Berlin")]
+    col_bands = [
+        TemplateColBand(id=f"col-{d}-1", label="", order=i, dayType=d)
+        for i, d in enumerate(day_types)
+    ]
+    all_slots = []
+    for d in day_types:
+        all_slots.extend(slots_per_day_type.get(d, []))
+
+    loc_groups: Dict[str, List] = {}
+    for loc in locations:
+        loc_groups[loc.id] = []
+    for s in all_slots:
+        lid = s.locationId
+        if lid not in loc_groups:
+            loc_groups[lid] = []
+        loc_groups[lid].append(s)
+
+    template_locations = []
+    for lid, loc_slots in loc_groups.items():
+        template_locations.append(
+            WeeklyTemplateLocation(
+                locationId=lid,
+                rowBands=[TemplateRowBand(id="rb-1", label="Row", order=1)],
+                colBands=col_bands,
+                slots=loc_slots,
+            )
+        )
+
+    template = WeeklyCalendarTemplate(
+        version=4,
+        blocks=blocks,
+        locations=template_locations,
+    )
+    return AppState(
+        locations=locations,
+        locationsEnabled=True,
+        rows=[],
+        clinicians=clinicians_list,
+        assignments=assignments or [],
+        minSlotsByRowId={},
+        weeklyTemplate=template,
+        solverSettings=solver_settings or {},
+        holidays=holidays or [],
+    )
+
+
+def _run_multi_day_solver(
+    state: AppState,
+    start: date,
+    end: date,
+    only_fill_required: bool = True,
+    cancel_event=None,
+    on_progress=None,
+) -> dict:
+    """Helper to invoke the v2 solver over a date range."""
+    payload = SolveRangeRequest(
+        startISO=start.isoformat(),
+        endISO=end.isoformat(),
+        onlyFillRequired=only_fill_required,
+        use_heuristic=True,
+    )
+    return heuristic_solve_range_v2(
+        payload,
+        state,
+        cancel_event or MockCancelEvent(),
+        on_progress or mock_progress,
+        0.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# On-call with rest days
+# ---------------------------------------------------------------------------
+
+
+def test_v2_on_call_with_rest_days():
+    """On-call rest days block adjacent days for the on-call doctor."""
+    blocks = [
+        TemplateBlock(id="block-regular", sectionId="regular", requiredSlots=0),
+        TemplateBlock(id="block-oncall", sectionId="oncall", requiredSlots=0),
+    ]
+    day_types = ["mon", "tue", "wed"]
+    slots_per_day = {
+        "mon": [
+            TemplateSlot(id="slot-reg__mon", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-mon-1", blockId="block-regular", requiredSlots=1,
+                         startTime="08:00", endTime="16:00"),
+        ],
+        "tue": [
+            TemplateSlot(id="slot-reg__tue", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-tue-1", blockId="block-regular", requiredSlots=1,
+                         startTime="08:00", endTime="16:00"),
+            TemplateSlot(id="slot-oncall__tue", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-tue-1", blockId="block-oncall", requiredSlots=1,
+                         startTime="16:00", endTime="08:00", endDayOffset=1),
+        ],
+        "wed": [
+            TemplateSlot(id="slot-reg__wed", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-wed-1", blockId="block-regular", requiredSlots=1,
+                         startTime="08:00", endTime="16:00"),
+        ],
+    }
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. OnCall", qualifiedClassIds=["regular", "oncall"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+        Clinician(id="doc-2", name="Dr. Other", qualifiedClassIds=["regular", "oncall"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+    ]
+    monday = date(2026, 2, 9)
+    tuesday = monday + timedelta(days=1)
+    manual = [
+        Assignment(id="oncall-tue", rowId="slot-oncall__tue",
+                   dateISO=tuesday.isoformat(), clinicianId="doc-1", source="manual"),
+    ]
+    state = _build_multi_day_state(
+        slots_per_day, clinicians, blocks, day_types,
+        assignments=manual,
+        solver_settings={
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "oncall",
+            "onCallRestDaysBefore": 1,
+            "onCallRestDaysAfter": 1,
+        },
+    )
+
+    wednesday = monday + timedelta(days=2)
+    result = _run_multi_day_solver(state, monday, wednesday)
+
+    assignments = result["assignments"]
+
+    # doc-1 has on-call on Tuesday -> blocked Monday (before) and Wednesday (after)
+    doc1_mon = [a for a in assignments if a["clinicianId"] == "doc-1"
+                and a["dateISO"] == monday.isoformat()]
+    doc1_wed = [a for a in assignments if a["clinicianId"] == "doc-1"
+                and a["dateISO"] == wednesday.isoformat()]
+
+    assert len(doc1_mon) == 0, (
+        "doc-1 should be blocked on Monday (rest day before on-call)"
+    )
+    assert len(doc1_wed) == 0, (
+        "doc-1 should be blocked on Wednesday (rest day after on-call)"
+    )
+
+    # doc-2 should fill Monday and Wednesday regular slots
+    doc2_mon = [a for a in assignments if a["clinicianId"] == "doc-2"
+                and a["dateISO"] == monday.isoformat()]
+    doc2_wed = [a for a in assignments if a["clinicianId"] == "doc-2"
+                and a["dateISO"] == wednesday.isoformat()]
+    assert len(doc2_mon) >= 1, "doc-2 should fill Monday regular slot"
+    assert len(doc2_wed) >= 1, "doc-2 should fill Wednesday regular slot"
+
+
+# ---------------------------------------------------------------------------
+# Solver cancellation
+# ---------------------------------------------------------------------------
+
+
+def test_v2_solver_cancellation():
+    """When cancel_event is set, solver returns partial results with ABORTED status."""
+
+    class CancelAfterFewChecks:
+        def __init__(self):
+            self.call_count = 0
+
+        def is_set(self):
+            self.call_count += 1
+            return self.call_count > 5
+
+    blocks = [
+        TemplateBlock(id="block-a", sectionId="sec-a", requiredSlots=0),
+    ]
+    day_types = ["mon", "tue", "wed", "thu", "fri"]
+    slots_per_day = {}
+    for d in day_types:
+        slots_per_day[d] = [
+            TemplateSlot(
+                id=f"slot-a__{d}", locationId="loc-1", rowBandId="rb-1",
+                colBandId=f"col-{d}-1", blockId="block-a", requiredSlots=1,
+                startTime="08:00", endTime="16:00",
+            ),
+        ]
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. A", qualifiedClassIds=["sec-a"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+    ]
+    state = _build_multi_day_state(slots_per_day, clinicians, blocks, day_types)
+
+    monday = date(2026, 2, 9)
+    friday = date(2026, 2, 13)
+    result = _run_multi_day_solver(
+        state, monday, friday, cancel_event=CancelAfterFewChecks()
+    )
+
+    assert result["debugInfo"]["solver_status"] == "ABORTED"
+    assert any("aborted" in n.lower() for n in result["notes"]), (
+        f"Expected 'aborted' in notes, got: {result['notes']}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Progress callback
+# ---------------------------------------------------------------------------
+
+
+def test_v2_progress_callback_called():
+    """The on_progress callback receives phase and solution events."""
+    progress_events = []
+
+    def track_progress(event_type, data):
+        progress_events.append((event_type, data))
+
+    blocks = [
+        TemplateBlock(id="block-a", sectionId="sec-a", requiredSlots=0),
+    ]
+    slots = {
+        "mon": [
+            TemplateSlot(
+                id="slot-a__mon", locationId="loc-1", rowBandId="rb-1",
+                colBandId="col-mon-1", blockId="block-a", requiredSlots=1,
+                startTime="08:00", endTime="16:00",
+            ),
+        ],
+    }
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. A", qualifiedClassIds=["sec-a"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+    ]
+    state = _build_multi_day_state(slots, clinicians, blocks, ["mon"])
+
+    monday = date(2026, 2, 9)
+    _run_multi_day_solver(state, monday, monday, on_progress=track_progress)
+
+    # Should have init phase
+    assert any(e[0] == "phase" and e[1].get("phase") == "init"
+               for e in progress_events), "Missing 'init' phase event"
+    # Should have solve_day phase
+    assert any(e[0] == "phase" and e[1].get("phase") == "solve_day"
+               for e in progress_events), "Missing 'solve_day' phase event"
+    # Should have solution update
+    assert any(e[0] == "solution" for e in progress_events), (
+        "Missing 'solution' progress event"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Empty clinicians
+# ---------------------------------------------------------------------------
+
+
+def test_v2_empty_clinicians_returns_gracefully():
+    """Solver handles zero clinicians without crashing."""
+    blocks = [
+        TemplateBlock(id="block-a", sectionId="sec-a", requiredSlots=0),
+    ]
+    slots = {
+        "mon": [
+            TemplateSlot(
+                id="slot-a__mon", locationId="loc-1", rowBandId="rb-1",
+                colBandId="col-mon-1", blockId="block-a", requiredSlots=1,
+                startTime="08:00", endTime="16:00",
+            ),
+        ],
+    }
+    state = _build_multi_day_state(slots, [], blocks, ["mon"])
+
+    monday = date(2026, 2, 9)
+    result = _run_multi_day_solver(state, monday, monday)
+
+    assert len(result["assignments"]) == 0
+    assert len(result["notes"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Holiday handling
+# ---------------------------------------------------------------------------
+
+
+def test_v2_holiday_handling():
+    """Slots with 'holiday' day type are used on holidays.
+
+    If no holiday slots exist, no assignments should be produced for that day
+    because the date is mapped to 'holiday' type instead of 'mon'.
+    """
+    blocks = [
+        TemplateBlock(id="block-a", sectionId="sec-a", requiredSlots=0),
+    ]
+    slots = {
+        "mon": [
+            TemplateSlot(
+                id="slot-a__mon", locationId="loc-1", rowBandId="rb-1",
+                colBandId="col-mon-1", blockId="block-a", requiredSlots=1,
+                startTime="08:00", endTime="16:00",
+            ),
+        ],
+    }
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. A", qualifiedClassIds=["sec-a"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+    ]
+    state = _build_multi_day_state(
+        slots, clinicians, blocks, ["mon"],
+        holidays=[Holiday(dateISO="2026-02-09", name="Test Holiday")],
+    )
+
+    monday = date(2026, 2, 9)
+    result = _run_multi_day_solver(state, monday, monday)
+
+    assert len(result["assignments"]) == 0, (
+        f"Expected 0 assignments on holiday (no holiday slots defined), "
+        f"got {len(result['assignments'])}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Debug info completeness
+# ---------------------------------------------------------------------------
+
+
+def test_v2_debug_info_complete():
+    """The result debugInfo contains timing, status, and stats."""
+    blocks = [
+        TemplateBlock(id="block-a", sectionId="sec-a", requiredSlots=0),
+    ]
+    slots = {
+        "mon": [
+            TemplateSlot(
+                id="slot-a__mon", locationId="loc-1", rowBandId="rb-1",
+                colBandId="col-mon-1", blockId="block-a", requiredSlots=1,
+                startTime="08:00", endTime="16:00",
+            ),
+        ],
+    }
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. A", qualifiedClassIds=["sec-a"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+    ]
+    state = _build_multi_day_state(slots, clinicians, blocks, ["mon"])
+
+    monday = date(2026, 2, 9)
+    result = _run_multi_day_solver(state, monday, monday)
+
+    debug = result["debugInfo"]
+    assert debug["solver_status"] == "HEURISTIC_COMPLETE_V2"
+    assert "timing" in debug
+    assert debug["num_days"] > 0
+    assert debug["num_slots"] > 0
+    assert isinstance(debug["num_assignments"], int)
+    assert isinstance(debug["num_warnings"], int)
+
+
+# ---------------------------------------------------------------------------
+# Multi-week basic assignment with 2 sections
+# ---------------------------------------------------------------------------
+
+
+def test_v2_multi_week_basic_assignment():
+    """The v2 solver produces assignments across a 2-week solve range."""
+    day_types = ["mon", "tue", "wed", "thu", "fri"]
+    blocks = [
+        TemplateBlock(id="block-mri", sectionId="mri", requiredSlots=0),
+        TemplateBlock(id="block-ct", sectionId="ct", requiredSlots=0),
+    ]
+    slots_per_day = {}
+    for d in day_types:
+        slots_per_day[d] = [
+            TemplateSlot(
+                id=f"slot-mri-am__{d}", locationId="loc-1", rowBandId="rb-1",
+                colBandId=f"col-{d}-1", blockId="block-mri", requiredSlots=1,
+                startTime="08:00", endTime="12:00",
+            ),
+            TemplateSlot(
+                id=f"slot-ct-pm__{d}", locationId="loc-1", rowBandId="rb-1",
+                colBandId=f"col-{d}-1", blockId="block-ct", requiredSlots=1,
+                startTime="12:00", endTime="16:00",
+            ),
+        ]
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. A", qualifiedClassIds=["mri", "ct"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+        Clinician(id="doc-2", name="Dr. B", qualifiedClassIds=["mri", "ct"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+    ]
+    state = _build_multi_day_state(slots_per_day, clinicians, blocks, day_types)
+
+    monday = date(2026, 2, 9)
+    friday_wk2 = date(2026, 2, 20)
+    result = _run_multi_day_solver(state, monday, friday_wk2)
+
+    assignments = result["assignments"]
+    # 2 weeks x 5 days x 2 slots = 20 required slots
+    assert len(assignments) >= 20, (
+        f"Expected >= 20 assignments over 2 weeks, got {len(assignments)}"
+    )
+    notes_text = " ".join(result["notes"])
+    assert "Could not" not in notes_text, f"Unexpected unfilled warning: {notes_text}"
+
+
+# ---------------------------------------------------------------------------
+# Realistic radiology department with qualification check
+# ---------------------------------------------------------------------------
+
+
+def test_v2_radiology_department_realistic():
+    """Realistic radiology department with specialist bottleneck detection."""
+    blocks = [
+        TemplateBlock(id="block-mri", sectionId="mri", requiredSlots=0),
+        TemplateBlock(id="block-ct", sectionId="ct", requiredSlots=0),
+        TemplateBlock(id="block-mammo-general", sectionId="mammo-general", requiredSlots=0),
+        TemplateBlock(id="block-mammo-stereo", sectionId="mammo-stereo", requiredSlots=0),
+    ]
+    slots = {
+        "mon": [
+            TemplateSlot(id="slot-mri-am__mon", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-mon-1", blockId="block-mri", requiredSlots=1,
+                         startTime="07:30", endTime="13:00"),
+            TemplateSlot(id="slot-mri-pm__mon", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-mon-1", blockId="block-mri", requiredSlots=1,
+                         startTime="13:00", endTime="16:00"),
+            TemplateSlot(id="slot-ct-am__mon", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-mon-1", blockId="block-ct", requiredSlots=1,
+                         startTime="07:30", endTime="13:00"),
+            TemplateSlot(id="slot-ct-pm__mon", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-mon-1", blockId="block-ct", requiredSlots=1,
+                         startTime="13:00", endTime="16:00"),
+            TemplateSlot(id="slot-mammo-stereo__mon", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-mon-1", blockId="block-mammo-stereo", requiredSlots=1,
+                         startTime="07:30", endTime="13:00"),
+            TemplateSlot(id="slot-mammo-general__mon", locationId="loc-1", rowBandId="rb-1",
+                         colBandId="col-mon-1", blockId="block-mammo-general", requiredSlots=1,
+                         startTime="13:00", endTime="16:00"),
+        ],
+    }
+    clinicians = [
+        Clinician(id="doc-senior", name="Dr. Senior",
+                  qualifiedClassIds=["mri", "ct", "mammo-general", "mammo-stereo"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+        Clinician(id="doc-mri", name="Dr. MRI",
+                  qualifiedClassIds=["mri", "ct"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+        Clinician(id="doc-ct", name="Dr. CT",
+                  qualifiedClassIds=["ct", "mammo-general"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=33.0),
+        Clinician(id="doc-mammo", name="Dr. Mammo",
+                  qualifiedClassIds=["mammo-general", "mammo-stereo"],
+                  preferredClassIds=["mammo-stereo"], vacations=[],
+                  workingHoursPerWeek=20.0),
+    ]
+    state = _build_multi_day_state(slots, clinicians, blocks, ["mon"])
+
+    monday = date(2026, 2, 9)
+    result = _run_multi_day_solver(state, monday, monday)
+
+    assignments = result["assignments"]
+
+    # All 6 slots should be filled
+    assert len(assignments) >= 6, (
+        f"Expected 6 assignments, got {len(assignments)}"
+    )
+
+    # Verify qualifications: each assignment's section matches doctor's quals
+    qual_map = {
+        "doc-senior": {"mri", "ct", "mammo-general", "mammo-stereo"},
+        "doc-mri": {"mri", "ct"},
+        "doc-ct": {"ct", "mammo-general"},
+        "doc-mammo": {"mammo-general", "mammo-stereo"},
+    }
+    section_by_slot = {
+        "slot-mri-am__mon": "mri", "slot-mri-pm__mon": "mri",
+        "slot-ct-am__mon": "ct", "slot-ct-pm__mon": "ct",
+        "slot-mammo-stereo__mon": "mammo-stereo",
+        "slot-mammo-general__mon": "mammo-general",
+    }
+    for a in assignments:
+        section = section_by_slot.get(a["rowId"])
+        if section:
+            assert section in qual_map[a["clinicianId"]], (
+                f"{a['clinicianId']} assigned to {a['rowId']} (section={section}) "
+                f"but not qualified: {qual_map[a['clinicianId']]}"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Fair distribution over 2 weeks
+# ---------------------------------------------------------------------------
+
+
+def test_v2_fair_distribution_over_two_weeks():
+    """Two identical doctors should get roughly equal work over 2 weeks."""
+    day_types = ["mon", "tue", "wed", "thu", "fri"]
+    blocks = [
+        TemplateBlock(id="block-a", sectionId="sec-a", requiredSlots=0),
+    ]
+    slots_per_day = {}
+    for d in day_types:
+        slots_per_day[d] = [
+            TemplateSlot(
+                id=f"slot-am__{d}", locationId="loc-1", rowBandId="rb-1",
+                colBandId=f"col-{d}-1", blockId="block-a", requiredSlots=1,
+                startTime="08:00", endTime="12:00",
+            ),
+            TemplateSlot(
+                id=f"slot-pm__{d}", locationId="loc-1", rowBandId="rb-1",
+                colBandId=f"col-{d}-1", blockId="block-a", requiredSlots=1,
+                startTime="12:00", endTime="16:00",
+            ),
+        ]
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. One", qualifiedClassIds=["sec-a"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+        Clinician(id="doc-2", name="Dr. Two", qualifiedClassIds=["sec-a"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+    ]
+    state = _build_multi_day_state(slots_per_day, clinicians, blocks, day_types)
+
+    monday = date(2026, 2, 9)
+    friday_wk2 = date(2026, 2, 20)
+    result = _run_multi_day_solver(state, monday, friday_wk2)
+
+    assignments = result["assignments"]
+    doc1_count = sum(1 for a in assignments if a["clinicianId"] == "doc-1")
+    doc2_count = sum(1 for a in assignments if a["clinicianId"] == "doc-2")
+    total = doc1_count + doc2_count
+
+    assert total >= 20, f"Expected >= 20 total assignments, got {total}"
+    # Neither doctor should be idle -- both should get meaningful work
+    assert doc1_count >= 3, f"doc-1 should have >= 3 assignments, got {doc1_count}"
+    assert doc2_count >= 3, f"doc-2 should have >= 3 assignments, got {doc2_count}"
+
+
+# ---------------------------------------------------------------------------
+# Weekly hours reset at week boundary (2-week, strict cap)
+# ---------------------------------------------------------------------------
+
+
+def test_v2_weekly_hours_reset_strict_cap():
+    """current_week_hours resets to 0 when crossing into a new ISO week.
+
+    Uses a strict 16h cap with 0 tolerance to prove the reset happens.
+    """
+    day_types = ["mon", "tue", "wed", "thu", "fri"]
+    blocks = [
+        TemplateBlock(id="block-a", sectionId="sec-a", requiredSlots=0),
+    ]
+    slots_per_day = {}
+    for d in day_types:
+        slots_per_day[d] = [
+            TemplateSlot(
+                id=f"slot-am__{d}", locationId="loc-1", rowBandId="rb-1",
+                colBandId=f"col-{d}-1", blockId="block-a", requiredSlots=1,
+                startTime="08:00", endTime="12:00",
+            ),
+            TemplateSlot(
+                id=f"slot-pm__{d}", locationId="loc-1", rowBandId="rb-1",
+                colBandId=f"col-{d}-1", blockId="block-a", requiredSlots=1,
+                startTime="12:00", endTime="16:00",
+            ),
+        ]
+    clinicians = [
+        Clinician(id="doc-1", name="Dr. Capped", qualifiedClassIds=["sec-a"],
+                  preferredClassIds=[], vacations=[], workingHoursPerWeek=16.0,
+                  workingHoursToleranceHours=0),
+    ]
+    state = _build_multi_day_state(slots_per_day, clinicians, blocks, day_types)
+
+    monday_wk1 = date(2026, 2, 9)
+    friday_wk2 = date(2026, 2, 20)
+    result = _run_multi_day_solver(state, monday_wk1, friday_wk2)
+
+    assignments = result["assignments"]
+    week1 = [a for a in assignments if "2026-02-09" <= a["dateISO"] <= "2026-02-13"]
+    week2 = [a for a in assignments if "2026-02-16" <= a["dateISO"] <= "2026-02-20"]
+
+    assert len(week1) > 0, "Week 1 should have assignments"
+    assert len(week1) <= 4, f"Week 1: at most 4 slots (16h cap), got {len(week1)}"
+    assert len(week2) > 0, "Week 2 should have assignments (proves hours reset)"
+    assert len(week2) <= 4, f"Week 2: at most 4 slots (16h cap), got {len(week2)}"

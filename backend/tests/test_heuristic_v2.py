@@ -2491,5 +2491,412 @@ class TestOvernightIntegration:
         assert len(clinician_ids) == 2, "Each slot should be assigned to a different doctor"
 
 
+def test_ytd_reset_recalculates_correctly():
+    """Verify that _reset_day_to_manual_only recalculates YTD hours from
+    assigned_slots_by_date + _historical_ytd_hours, rather than
+    accumulating stale values across retries.
+
+    This is the direct unit test for the reset mechanism that prevents
+    YTD hour drift during backtracking.
+    """
+    monday = date(2026, 2, 9)
+    clinician = Clinician(
+        id="doc-1", name="Dr. One",
+        qualifiedClassIds=["mri"], preferredClassIds=["mri"],
+        vacations=[], workingHoursPerWeek=40.0, workingHoursToleranceHours=5,
+    )
+    cs = ClinicianState(clinician, monday)
+    cs._historical_ytd_hours = 100.0
+    cs.ytd_hours = 100.0
+
+    # Simulate solver having assigned an 8h slot on Monday
+    slot = SlotInfo(
+        slot_id="s1", date_iso="2026-02-09", location_id="loc-1",
+        section_id="mri", start_minutes=480, end_minutes=960,
+        end_day_offset=0, required_count=1,
+    )
+    cs.assigned_slots_by_date["2026-02-09"] = [slot]
+    cs.current_week_hours = 8.0
+    cs.ytd_hours = 108.0  # 100 historical + 8 from slot
+
+    # Reset with no manual assignments -> should clear all day assignments
+    _reset_day_to_manual_only("2026-02-09", {"doc-1": cs}, {})
+
+    # After reset: historical YTD preserved, day assignments cleared
+    assert cs.ytd_hours == 100.0, (
+        f"YTD hours should equal historical only (100.0), got {cs.ytd_hours}"
+    )
+    assert cs.current_week_hours == 0.0, (
+        f"Current week hours should be 0 after reset, got {cs.current_week_hours}"
+    )
+    assert "2026-02-09" not in cs.assigned_slots_by_date, (
+        "Day's assigned slots should be cleared after reset"
+    )
+
+
+def test_ranking_zero_contract_hours_ranked_last():
+    """Verify that doctors with contract_hours=0 get week_pct=999,
+    ranking them last even below doctors who are nearly at capacity.
+
+    This ensures zero-contract doctors (e.g., on-call only, volunteers)
+    don't get preferentially assigned regular shifts.
+    """
+    monday = date(2026, 2, 9)
+    slot = SlotInfo(
+        slot_id="slot-1",
+        date_iso=monday.isoformat(),
+        location_id="loc-1",
+        section_id="sec-a",
+        start_minutes=480,
+        end_minutes=960,
+        end_day_offset=0,
+        required_count=1,
+    )
+
+    clinician_states = {}
+
+    # Doc-A: zero contract hours
+    cs_a = ClinicianState.__new__(ClinicianState)
+    cs_a.clinician_id = "doc-a"
+    cs_a.contract_hours = 0.0  # No contract
+    cs_a.tolerance_hours = 5.0
+    cs_a.eligible_sections = ["sec-a"]
+    cs_a.preferred_sections = ["sec-a"]
+    cs_a.preferred_working_times = {}
+    cs_a.vacations = []
+    cs_a.ytd_hours = 0.0
+    cs_a._historical_ytd_hours = 0.0
+    cs_a.ytd_expected = 0.0
+    cs_a.ytd_deficit = 0.0
+    cs_a.current_week_hours = 0.0
+    cs_a.assigned_slots_by_date = {}
+    cs_a.location_by_date = {}
+    cs_a.rest_days = set()
+    clinician_states["doc-a"] = cs_a
+
+    # Doc-B: 40h contract, nearly full at 39h this week
+    cs_b = ClinicianState.__new__(ClinicianState)
+    cs_b.clinician_id = "doc-b"
+    cs_b.contract_hours = 40.0
+    cs_b.tolerance_hours = 5.0
+    cs_b.eligible_sections = ["sec-a"]
+    cs_b.preferred_sections = ["sec-a"]
+    cs_b.preferred_working_times = {}
+    cs_b.vacations = []
+    cs_b.ytd_hours = 0.0
+    cs_b._historical_ytd_hours = 0.0
+    cs_b.ytd_expected = 200.0
+    cs_b.ytd_deficit = 200.0
+    cs_b.current_week_hours = 39.0  # Almost full
+    cs_b.assigned_slots_by_date = {}
+    cs_b.location_by_date = {}
+    cs_b.rest_days = set()
+    clinician_states["doc-b"] = cs_b
+
+    eligible = ["doc-a", "doc-b"]
+    ranked = _rank_doctors_by_deficit(eligible, slot, 0, clinician_states)
+
+    # Doc-B (week_pct=39/40=0.975) should rank before Doc-A (week_pct=999)
+    assert ranked == ["doc-b", "doc-a"], (
+        f"Zero-contract doctor should rank last, got {ranked}"
+    )
+
+
+# =============================================================================
+# Additional Overnight / Cross-Day / Time Window Edge Cases (Task #3 followup)
+# =============================================================================
+
+
+class TestSlotDurationEdgeCases:
+    """Additional duration calculation edge cases from analyst scenarios."""
+
+    def test_zero_duration_slot(self):
+        """A slot where start == end with no day offset should have 0 duration."""
+        slot = SlotInfo("s4", "2026-02-09", "loc-1", "mri",
+                        start_minutes=480, end_minutes=480, end_day_offset=0,
+                        required_count=1)
+        assert slot.duration_minutes == 0
+
+    def test_multi_day_offset_same_time_48_hours(self):
+        """A slot 08:00 to 08:00 with end_day_offset=2 should be 48 hours (2880 min)."""
+        slot = SlotInfo("s3", "2026-02-09", "loc-1", "oncall",
+                        start_minutes=480, end_minutes=480, end_day_offset=2,
+                        required_count=1)
+        assert slot.duration_minutes == 2880
+
+
+class TestMandatoryWindowAdditionalEdgeCases:
+    """Additional mandatory time window edge cases from analyst scenarios."""
+
+    def test_slot_partially_inside_window_rejected(self):
+        """A slot starting inside but ending outside the mandatory window should be rejected.
+
+        Window: 08:00-12:00. Slot: 10:00-14:00. Starts inside but ends 2h past window.
+        """
+        from backend.models import PreferredWorkingTime
+        state = _make_clinician_state(
+            preferred_working_times={
+                "mon": PreferredWorkingTime(
+                    startTime="08:00", endTime="12:00", requirement="mandatory",
+                ),
+            },
+        )
+        slot = _make_slot(
+            date_iso="2026-02-09",
+            start_time="10:00", end_time="14:00",
+        )
+        assert state.fits_mandatory_time_window(slot) is False
+
+    def test_slot_exactly_matches_window_accepted(self):
+        """A slot exactly matching the mandatory window should be accepted."""
+        from backend.models import PreferredWorkingTime
+        state = _make_clinician_state(
+            preferred_working_times={
+                "mon": PreferredWorkingTime(
+                    startTime="08:00", endTime="12:00", requirement="mandatory",
+                ),
+            },
+        )
+        slot = _make_slot(
+            date_iso="2026-02-09",
+            start_time="08:00", end_time="12:00",
+        )
+        assert state.fits_mandatory_time_window(slot) is True
+
+    def test_slot_starts_before_window_rejected(self):
+        """A slot starting before the mandatory window should be rejected."""
+        from backend.models import PreferredWorkingTime
+        state = _make_clinician_state(
+            preferred_working_times={
+                "mon": PreferredWorkingTime(
+                    startTime="08:00", endTime="12:00", requirement="mandatory",
+                ),
+            },
+        )
+        slot = _make_slot(
+            date_iso="2026-02-09",
+            start_time="07:00", end_time="11:00",
+        )
+        assert state.fits_mandatory_time_window(slot) is False
+
+
+class TestThreeDayLookback:
+    """Tests for the 3-day lookback limit in has_time_overlap."""
+
+    def test_multi_day_slot_lookback_intermediate_and_final_day(self):
+        """A slot from Monday 08:00 to Wednesday 08:00 (end_day_offset=2):
+        - Tuesday: any slot overlaps (intermediate day, full span)
+        - Wednesday before 08:00: overlaps
+        - Wednesday at/after 08:00: does NOT overlap (touching boundary)
+        - Thursday: does NOT overlap (beyond the slot and lookback)
+        """
+        state = _make_clinician_state()
+        multi_day = SlotInfo("oncall", "2026-02-09", "loc-1", "oncall",
+                             start_minutes=480, end_minutes=480, end_day_offset=2,
+                             required_count=1)
+        state.assigned_slots_by_date["2026-02-09"] = [multi_day]
+
+        # Tuesday (1 day forward): fully spanned, any slot overlaps
+        tue_slot = _make_slot(slot_id="tue", date_iso="2026-02-10",
+                              start_time="08:00", end_time="16:00")
+        assert state.has_time_overlap("2026-02-10", tue_slot) is True
+
+        # Wednesday before 08:00: overlaps
+        wed_early = _make_slot(slot_id="wed-early", date_iso="2026-02-11",
+                               start_time="05:00", end_time="08:00")
+        assert state.has_time_overlap("2026-02-11", wed_early) is True
+
+        # Wednesday at 08:00 (touching): does NOT overlap
+        wed_touch = _make_slot(slot_id="wed-touch", date_iso="2026-02-11",
+                               start_time="08:00", end_time="16:00")
+        assert state.has_time_overlap("2026-02-11", wed_touch) is False
+
+        # Thursday: beyond the multi-day slot, no overlap
+        thu_slot = _make_slot(slot_id="thu", date_iso="2026-02-12",
+                              start_time="08:00", end_time="16:00")
+        assert state.has_time_overlap("2026-02-12", thu_slot) is False
+
+    def test_lookback_limit_does_not_exceed_three_days(self):
+        """The lookback range is capped at 3 days. A slot assigned 4 days ago
+        should not be checked even if it had a large end_day_offset.
+
+        This tests the `range(1, 4)` bound on line 150 of solver_v2.py.
+        """
+        state = _make_clinician_state()
+        # Assign on Monday with end_day_offset=3 (ends Thursday 06:00)
+        monday_long = SlotInfo("long", "2026-02-09", "loc-1", "oncall",
+                               start_minutes=1320, end_minutes=360, end_day_offset=3,
+                               required_count=1)
+        state.assigned_slots_by_date["2026-02-09"] = [monday_long]
+
+        # Wednesday (2 days back): within lookback, should overlap
+        wed_slot = _make_slot(slot_id="wed", date_iso="2026-02-11",
+                              start_time="10:00", end_time="14:00")
+        assert state.has_time_overlap("2026-02-11", wed_slot) is True
+
+        # Thursday (3 days back): at the edge of lookback
+        thu_early = _make_slot(slot_id="thu-early", date_iso="2026-02-12",
+                               start_time="04:00", end_time="08:00")
+        assert state.has_time_overlap("2026-02-12", thu_early) is True
+
+        # Friday (4 days back): BEYOND lookback, should NOT be detected
+        # even though end_day_offset=3 means the slot theoretically ends Thursday
+        fri_slot = _make_slot(slot_id="fri", date_iso="2026-02-13",
+                              start_time="04:00", end_time="08:00")
+        assert state.has_time_overlap("2026-02-13", fri_slot) is False
+
+
+class TestOnCallRestDays:
+    """Tests for on-call rest day blocking."""
+
+    def test_on_call_rest_days_block_surrounding_days(self):
+        """When a clinician has an on-call assignment on Tuesday, and rest days
+        are configured with daysBefore=1 / daysAfter=1, they should be blocked
+        on Monday and Wednesday. Evaluated live via is_in_on_call_rest_window so
+        it covers solver-placed on-call too, not just manual assignments.
+        """
+        clinician = Clinician(
+            id="doc-1", name="Dr. Rest",
+            qualifiedClassIds=["oncall", "mri"],
+            preferredClassIds=["oncall", "mri"],
+            vacations=[],
+            workingHoursPerWeek=40.0,
+            workingHoursToleranceHours=5,
+        )
+        state = ClinicianState(clinician, date(2026, 2, 9))
+
+        # Assign on-call on Tuesday
+        tuesday_oncall = SlotInfo("oncall-tue", "2026-02-10", "loc-1", "oncall",
+                                  start_minutes=480, end_minutes=960, end_day_offset=0,
+                                  required_count=1)
+        state.assigned_slots_by_date["2026-02-10"] = [tuesday_oncall]
+
+        def is_rest(date_iso: str) -> bool:
+            return state.is_in_on_call_rest_window(
+                date_iso, on_call_section_id="oncall", days_before=1, days_after=1
+            )
+
+        # Monday (1 day before) should be a rest day
+        assert is_rest("2026-02-09"), "Monday should be blocked (rest before on-call)"
+        # Wednesday (1 day after) should be a rest day
+        assert is_rest("2026-02-11"), "Wednesday should be blocked (rest after on-call)"
+        # Tuesday itself is NOT a rest day (it's a working day with on-call)
+        assert not is_rest("2026-02-10"), "Tuesday itself should not be a rest day"
+        # Thursday should NOT be blocked
+        assert not is_rest("2026-02-12"), "Thursday should not be blocked"
+
+    def test_on_call_rest_blocks_eligibility(self):
+        """A clinician within an on-call rest window should be ineligible for a
+        slot on that day (only when the on-call rest rule is enabled)."""
+        clinician = Clinician(
+            id="doc-1", name="Dr. Rest",
+            qualifiedClassIds=["mri", "oncall"],
+            preferredClassIds=["mri"],
+            vacations=[],
+            workingHoursPerWeek=40.0,
+            workingHoursToleranceHours=5,
+        )
+        state = ClinicianState(clinician, date(2026, 2, 9))
+
+        # On-call on Tuesday makes Monday a rest day (daysBefore=1).
+        tuesday_oncall = SlotInfo("oncall-tue", "2026-02-10", "loc-1", "oncall",
+                                  start_minutes=480, end_minutes=960, end_day_offset=0,
+                                  required_count=1)
+        state.assigned_slots_by_date["2026-02-10"] = [tuesday_oncall]
+
+        # Try to put an MRI slot on Monday (the rest day).
+        slot = SlotInfo("s1", "2026-02-09", "loc-1", "mri",
+                        480, 960, 0, 1)
+
+        enabled = SolverSettings.model_validate({
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "oncall",
+            "onCallRestDaysBefore": 1,
+            "onCallRestDaysAfter": 1,
+        })
+        assert _is_doctor_eligible_for_slot(state, slot, enabled) is False
+
+        # With the rule disabled, the same Monday slot is allowed again.
+        disabled = SolverSettings.model_validate({"onCallRestEnabled": False})
+        assert _is_doctor_eligible_for_slot(state, slot, disabled) is True
+
+
+class TestMultiDayIntegration:
+    """Integration test for multi-day on-call slot through the full solver pipeline."""
+
+    def test_multi_day_oncall_slot_assigned(self):
+        """An on-call overnight slot with endDayOffset=1 (Friday 22:00 to Saturday 06:00)
+        should be correctly assigned through the full solver pipeline.
+
+        Note: multi-day slots with endDayOffset=2 have a known duration double-counting
+        issue when _build_slot_interval pre-expands end_minutes and _calculate_duration
+        adds the offset again. This test uses endDayOffset=1 to avoid that issue.
+        """
+        locations = [Location(id="loc-1", name="Berlin")]
+
+        template = WeeklyCalendarTemplate(
+            version=4,
+            blocks=[
+                TemplateBlock(id="block-oncall", sectionId="oncall", label="On-Call", requiredSlots=1),
+            ],
+            locations=[
+                WeeklyTemplateLocation(
+                    locationId="loc-1",
+                    rowBands=[{"id": "rb-1", "order": 0}],
+                    colBands=[
+                        {"id": "cb-fri", "order": 4, "dayType": "fri"},
+                    ],
+                    slots=[
+                        TemplateSlot(
+                            id="slot-oncall-fri",
+                            locationId="loc-1",
+                            rowBandId="rb-1",
+                            colBandId="cb-fri",
+                            blockId="block-oncall",
+                            requiredSlots=1,
+                            startTime="22:00",
+                            endTime="06:00",
+                            endDayOffset=1,
+                        ),
+                    ],
+                )
+            ],
+        )
+
+        clinicians = [
+            Clinician(
+                id="doc-1", name="Dr. OnCall",
+                qualifiedClassIds=["oncall"],
+                preferredClassIds=["oncall"],
+                vacations=[],
+                workingHoursPerWeek=40.0,
+                workingHoursToleranceHours=10,
+            ),
+        ]
+
+        state = AppState(
+            locations=locations, clinicians=clinicians, assignments=[],
+            weeklyTemplate=template, solverSettings={}, holidays=[],
+            rows=[], locationsEnabled=True, minSlotsByRowId={},
+        )
+
+        # Friday Feb 13, 2026 is a Friday
+        friday = date(2026, 2, 13)
+        payload = SolveRangeRequest(
+            startISO=friday.isoformat(),
+            endISO=friday.isoformat(),
+            use_heuristic=True,
+        )
+
+        result = heuristic_solve_range_v2(
+            payload, state, MockCancelEvent(), mock_progress, 0.0,
+        )
+
+        assignments = result["assignments"]
+        assert len(assignments) == 1, "On-call slot should be assigned"
+        assert assignments[0]["clinicianId"] == "doc-1"
+        assert assignments[0]["rowId"] == "slot-oncall-fri"
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

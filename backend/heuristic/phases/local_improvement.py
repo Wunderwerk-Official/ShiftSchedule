@@ -214,9 +214,10 @@ def _calculate_solution_cost(
         weeks = len(target_day_isos) / 7.0
         target_hours = clin.workingHoursPerWeek * weeks
 
-        # Penalty for deviation
-        diff = abs(hours - target_hours)
-        tolerance = (clin.workingHoursToleranceHours or 5) * weeks
+        # Penalty for deviation. Default to 5 only when missing (None); an
+        # explicit 0 (strict cap) must be preserved, not coerced to 5.
+        _tol = clin.workingHoursToleranceHours
+        tolerance = (_tol if _tol is not None else 5) * weeks
         if diff > tolerance:
             cost += (diff - tolerance) * 0.5
 

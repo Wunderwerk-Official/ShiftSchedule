@@ -130,7 +130,13 @@ export default function WorkingHoursOverviewModal({
       const containerRect = container.getBoundingClientRect();
       const todayRect = todayCol.getBoundingClientRect();
       const scrollLeft = todayRect.left - containerRect.left + container.scrollLeft - containerRect.width / 2;
-      container.scrollTo({ left: Math.max(0, scrollLeft), behavior: "instant" });
+      // Feature-detect scrollTo: jsdom (tests) doesn't implement it, and older
+      // Safari throws on the options object. Fall back to assigning scrollLeft.
+      if (typeof container.scrollTo === "function") {
+        container.scrollTo({ left: Math.max(0, scrollLeft), behavior: "auto" });
+      } else {
+        container.scrollLeft = Math.max(0, scrollLeft);
+      }
     });
   }, [open, selectedYear]);
 

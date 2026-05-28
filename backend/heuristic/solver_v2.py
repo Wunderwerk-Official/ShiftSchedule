@@ -19,7 +19,7 @@ Key differences from v1 (band/pattern approach):
 
 import random
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..models import (
     AppState,
@@ -87,9 +87,16 @@ class ClinicianState:
     def __init__(self, clinician: Clinician, solve_start_date: date):
         self.clinician_id = clinician.id
         self.contract_hours = clinician.workingHoursPerWeek or 0
-        # Match fallback used elsewhere (solver.py:1182, local_improvement.py:219) to avoid
-        # TypeError in would_exceed_hours() if the field comes through as None.
-        self.tolerance_hours = clinician.workingHoursToleranceHours or 5
+        # Default to 5 only when the field is genuinely missing (None). Using
+        # `or 5` here was a bug: an explicit tolerance of 0 (a strict hour cap)
+        # is falsy and would be silently turned into 5, letting the solver
+        # exceed contract hours. Match this guard in solver.py and
+        # local_improvement.py.
+        self.tolerance_hours = (
+            clinician.workingHoursToleranceHours
+            if clinician.workingHoursToleranceHours is not None
+            else 5
+        )
         self.eligible_sections = clinician.qualifiedClassIds
         self.preferred_sections = clinician.preferredClassIds
         self.preferred_working_times = getattr(clinician, "preferredWorkingTimes", {})
@@ -107,7 +114,6 @@ class ClinicianState:
         # Per-day tracking
         self.assigned_slots_by_date: Dict[str, List[SlotInfo]] = {}
         self.location_by_date: Dict[str, str] = {}
-        self.rest_days: Set[str] = set()  # Dates blocked due to on-call rest rules
 
     def _calculate_ytd_expected(self, current_date: date) -> float:
         """Calculate expected year-to-date hours based on contract."""
@@ -125,6 +131,48 @@ class ClinicianState:
             end = date.fromisoformat(vac.endISO)
             current = date.fromisoformat(date_iso)
             if start <= current <= end:
+                return True
+        return False
+
+    def _has_on_call_on(self, date_iso: str, on_call_section_id: str) -> bool:
+        """True if this clinician has an on-call assignment on the given date."""
+        for slot in self.assigned_slots_by_date.get(date_iso, []):
+            if slot.section_id == on_call_section_id:
+                return True
+        return False
+
+    def is_in_on_call_rest_window(
+        self,
+        date_iso: str,
+        on_call_section_id: str,
+        days_before: int,
+        days_after: int,
+    ) -> bool:
+        """Whether ``date_iso`` must be a rest day due to a nearby on-call shift.
+
+        Evaluated live against ``assigned_slots_by_date`` so it reflects every
+        on-call assignment currently on the clinician — manual, historical, and
+        solver-placed. (A set precomputed once at init would only cover
+        manual/historical on-call and silently miss shifts the solver places.)
+
+        A date Y is a rest day when an on-call shift X exists such that Y falls
+        in ``[X - days_before, X - 1]`` (the days *before* X) or
+        ``[X + 1, X + days_after]`` (the days *after* X). Equivalently, Y is
+        blocked if there is an on-call shift on any of ``Y+1..Y+days_before`` or
+        ``Y-1..Y-days_after``.
+        """
+        if not on_call_section_id:
+            return False
+        base_date = date.fromisoformat(date_iso)
+        for offset in range(1, days_before + 1):
+            if self._has_on_call_on(
+                (base_date + timedelta(days=offset)).isoformat(), on_call_section_id
+            ):
+                return True
+        for offset in range(1, days_after + 1):
+            if self._has_on_call_on(
+                (base_date - timedelta(days=offset)).isoformat(), on_call_section_id
+            ):
                 return True
         return False
 
@@ -325,14 +373,9 @@ def heuristic_solve_range_v2(
         range_start,
     )
 
-    # Calculate on-call rest days if enabled
-    if solver_settings.onCallRestEnabled and solver_settings.onCallRestClassId:
-        _calculate_rest_days(
-            clinician_states,
-            solver_settings.onCallRestClassId,
-            solver_settings.onCallRestDaysBefore,
-            solver_settings.onCallRestDaysAfter,
-        )
+    # On-call rest is enforced live during eligibility checks
+    # (see ClinicianState.is_in_on_call_rest_window), so on-call shifts the
+    # solver places itself also generate rest days — no init step needed.
 
     timer.checkpoint("init")
 
@@ -432,36 +475,6 @@ def heuristic_solve_range_v2(
         "notes": notes,
         "debugInfo": debug_info,
     }
-
-
-def _calculate_rest_days(
-    clinician_states: Dict[str, ClinicianState],
-    on_call_section_id: str,
-    days_before: int,
-    days_after: int,
-) -> None:
-    """
-    Calculate rest days for clinicians based on on-call assignments.
-
-    According to MD: Check if on-call assignments exist within the configured window
-    (before/after), and mark those dates as rest days.
-    """
-    for clinician_id, state in clinician_states.items():
-        # Find all on-call assignments for this clinician
-        for date_iso, slots in state.assigned_slots_by_date.items():
-            for slot in slots:
-                if slot.section_id == on_call_section_id:
-                    # This is an on-call assignment
-                    # Block days before and after
-                    base_date = date.fromisoformat(date_iso)
-
-                    for offset in range(1, days_before + 1):
-                        rest_date = (base_date - timedelta(days=offset)).isoformat()
-                        state.rest_days.add(rest_date)
-
-                    for offset in range(1, days_after + 1):
-                        rest_date = (base_date + timedelta(days=offset)).isoformat()
-                        state.rest_days.add(rest_date)
 
 
 def _expand_slots_to_instances(
@@ -968,9 +981,16 @@ def _is_doctor_eligible_for_slot(
     if not state.fits_mandatory_time_window(slot):
         return False
 
-    # 5. On-call rest days
-    if slot.date_iso in state.rest_days:
-        return False
+    # 5. On-call rest days (evaluated live against all on-call assignments,
+    #    including ones the solver placed earlier in this run)
+    if solver_settings.onCallRestEnabled and solver_settings.onCallRestClassId:
+        if state.is_in_on_call_rest_window(
+            slot.date_iso,
+            solver_settings.onCallRestClassId,
+            solver_settings.onCallRestDaysBefore,
+            solver_settings.onCallRestDaysAfter,
+        ):
+            return False
 
     # 6. Same location per day
     if solver_settings.enforceSameLocationPerDay:
