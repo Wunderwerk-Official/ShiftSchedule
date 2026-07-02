@@ -172,6 +172,36 @@ describe("buildRenderedAssignmentMap", () => {
     expect(slotAssignments?.length ?? 0).toBe(0);
   });
 
+  it("filters out vacation assignments for slot ids containing __", () => {
+    // Migrated template slot ids look like "class-1::s1__wed"; the key must be
+    // split at the LAST "__" so the dateISO is parsed correctly.
+    const migratedRows: ScheduleRow[] = [
+      {
+        id: "class-1::s1__wed",
+        kind: "class",
+        name: "MRI",
+        dotColorClass: "bg-slate-200",
+        sectionId: "mri",
+      },
+      ...scheduleRows.filter((row) => row.kind === "pool"),
+    ];
+    const clinicians = [makeClinicianWithVacation("clin-1", "2026-01-05", "2026-01-10")];
+    const assignments: Assignment[] = [
+      { id: "a1", rowId: "class-1::s1__wed", dateISO: "2026-01-07", clinicianId: "clin-1" },
+    ];
+    const assignmentMap = new Map([["class-1::s1__wed__2026-01-07", assignments]]);
+    const displayDays = [new Date("2026-01-07")];
+
+    const result = buildRenderedAssignmentMap(assignmentMap, clinicians, displayDays, {
+      scheduleRows: migratedRows,
+    });
+
+    const slotAssignments = result.get("class-1::s1__wed__2026-01-07");
+    expect(slotAssignments?.length ?? 0).toBe(0);
+    const vacationPool = result.get("pool-vacation__2026-01-07");
+    expect(vacationPool?.some((item) => item.clinicianId === "clin-1")).toBe(true);
+  });
+
   it("preserves assignments outside vacation period", () => {
     const clinicians = [makeClinicianWithVacation("clin-1", "2026-01-10", "2026-01-15")];
     const assignments: Assignment[] = [

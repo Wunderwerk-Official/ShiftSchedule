@@ -172,8 +172,10 @@ export default function SolverDebugPanel({ debugInfo }: SolverDebugPanelProps) {
     if (!solution_times || solution_times.length < 2) return null;
     const first = solution_times[0].objective;
     const last = solution_times[solution_times.length - 1].objective;
-    // Objectives are negative, so improvement = (last - first) / |first|
-    const diff = last - first;
+    // The objective is minimized (more negative = better), so improvement is
+    // how far the objective dropped relative to the first solution — same
+    // formula as SolverOverlay.
+    const diff = first - last;
     const pct = (diff / Math.abs(first)) * 100;
     return pct.toFixed(4);
   }, [solution_times]);

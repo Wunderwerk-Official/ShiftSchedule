@@ -431,7 +431,7 @@ export default function VacationOverviewModal({
         setHoverDayIndex(null);
       }
     },
-    [totalDays],
+    [totalDays, leftColumnWidth],
   );
 
   const handleTimelineMouseLeave = useCallback(() => {

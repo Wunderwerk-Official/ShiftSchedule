@@ -7,6 +7,7 @@ import {
   buildShiftInterval,
   formatTimeRangeLabel,
   intervalsOverlap,
+  splitAssignmentKey,
 } from "../../lib/schedule";
 import { getDayType } from "../../lib/dayTypes";
 import AssignmentPill from "./AssignmentPill";
@@ -278,7 +279,7 @@ export default function ScheduleGrid({
     const assignedByDate = new Map<string, Map<string, TimeRange[]>>();
     const unknownByDate = new Map<string, Set<string>>();
     for (const [key, list] of assignmentMap.entries()) {
-      const [rowId, dateISO] = key.split("__");
+      const { rowId, dateISO } = splitAssignmentKey(key);
       if (!rowId || !dateISO) continue;
       const rowKind =
         rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
@@ -333,7 +334,7 @@ export default function ScheduleGrid({
     if (enforceSameLocationPerDay) {
       for (const [key, assignments] of assignmentMap.entries()) {
         if (!key.endsWith(`__${dateISO}`)) continue;
-        const keyRowId = key.split("__")[0];
+        const keyRowId = splitAssignmentKey(key).rowId;
         const keyRow =
           rows.find((r) => r.id === keyRowId) ??
           rows.flatMap((r) => r.slotRows ?? []).find((sr) => sr.id === keyRowId);

@@ -179,7 +179,10 @@ export default function WorkingHoursOverviewModal({
         // Skip pool assignments (they don't count as working hours)
         if (assignment.rowId.startsWith("pool-")) continue;
 
-        const assignmentDate = new Date(assignment.dateISO);
+        // Parse as local midnight: bare "YYYY-MM-DD" parses as UTC, which
+        // shifts to the previous day in timezones west of UTC once the local
+        // getters below are applied.
+        const assignmentDate = new Date(`${assignment.dateISO}T00:00:00`);
         if (assignmentDate.getFullYear() !== selectedYear) continue;
 
         // Find which week this assignment belongs to (use weekMonday for matching)

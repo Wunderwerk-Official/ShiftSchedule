@@ -14,6 +14,15 @@ export type RenderedAssignment = Assignment & {
 
 const MINUTES_IN_DAY = 24 * 60;
 
+// Assignment-map keys have the form `${rowId}__${dateISO}`. Row ids can
+// themselves contain "__" (migrated template slot ids like "class-1::s1__mon"),
+// so the key must be split at the LAST "__" separator.
+export function splitAssignmentKey(key: string): { rowId: string; dateISO: string } {
+  const idx = key.lastIndexOf("__");
+  if (idx < 0) return { rowId: key, dateISO: "" };
+  return { rowId: key.slice(0, idx), dateISO: key.slice(idx + 2) };
+}
+
 function parseTimeToMinutes(value?: string): number | null {
   if (!value) return null;
   const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
@@ -118,7 +127,7 @@ export function buildRenderedAssignmentMap(
   const poolCliniciansByDate = new Map<string, Set<string>>();
 
   for (const [key, list] of assignmentMap.entries()) {
-    const [rowId, dateISO] = key.split("__");
+    const { rowId, dateISO } = splitAssignmentKey(key);
     if (!dateISO) continue;
     if (rowId === VACATION_POOL_ID) continue;
     const rowKind =
@@ -166,7 +175,7 @@ export function buildRenderedAssignmentMap(
   }
 
   for (const [key, list] of next.entries()) {
-    const [rowId, dateISO] = key.split("__");
+    const { rowId, dateISO } = splitAssignmentKey(key);
     if (!rowId || !dateISO) continue;
     const rowKind =
       rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
@@ -185,7 +194,7 @@ export function buildRenderedAssignmentMap(
   poolCliniciansByKey.clear();
   poolCliniciansByDate.clear();
   for (const [key, list] of next.entries()) {
-    const [rowId, dateISO] = key.split("__");
+    const { rowId, dateISO } = splitAssignmentKey(key);
     if (!rowId || !dateISO) continue;
     const rowKind =
       rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
@@ -239,7 +248,7 @@ export function buildRenderedAssignmentMap(
 
   if (offByDate.size > 0) {
     for (const [key, list] of next.entries()) {
-      const [rowId, dateISO] = key.split("__");
+      const { rowId, dateISO } = splitAssignmentKey(key);
       if (!rowId || !dateISO) continue;
       const rowKind =
         rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");

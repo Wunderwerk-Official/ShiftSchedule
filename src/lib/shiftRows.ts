@@ -931,10 +931,21 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
   const overrides = state.slotOverridesByKey ?? {};
   const slotOverridesByKey: Record<string, number> = {};
   for (const [key, value] of Object.entries(overrides)) {
-    const [rowId, dateISO] = key.split("__");
+    // Keys are `${rowId}__${dateISO}` where rowId may itself contain "__"
+    // (migrated slot ids like "class-1::s1__mon"), so split at the last "__".
+    const separatorIndex = key.lastIndexOf("__");
+    const rowId = separatorIndex >= 0 ? key.slice(0, separatorIndex) : key;
+    const dateISO = separatorIndex >= 0 ? key.slice(separatorIndex + 2) : "";
     if (!rowId || !dateISO) continue;
+    // Migrated slot ids carry a `__${dayType}` suffix; they are already in
+    // slot-id form and must not be remapped as legacy shift-row ids.
+    const slotIdParts = rowId.split("__");
+    const isTemplateSlotId =
+      slotIdParts.length === 2 && DAY_TYPES.includes(slotIdParts[1] as DayType);
     let nextRowId = rowId;
-    if (classRowIds.has(rowId) && !rowId.includes(SHIFT_ROW_SEPARATOR)) {
+    if (isTemplateSlotId) {
+      // Keep as-is; validated against the template's slot ids below.
+    } else if (classRowIds.has(rowId) && !rowId.includes(SHIFT_ROW_SEPARATOR)) {
       nextRowId = buildShiftRowId(rowId, "s1");
       changed = true;
     } else if (rowId.includes(SHIFT_ROW_SEPARATOR)) {
@@ -1054,7 +1065,9 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
 
   const filteredOverrides: Record<string, number> = {};
   for (const [key, value] of Object.entries(slotOverridesByKey)) {
-    const [rowId, dateISO] = key.split("__");
+    const separatorIndex = key.lastIndexOf("__");
+    const rowId = separatorIndex >= 0 ? key.slice(0, separatorIndex) : key;
+    const dateISO = separatorIndex >= 0 ? key.slice(separatorIndex + 2) : "";
     if (!rowId || !dateISO) continue;
     let nextRowId = rowId;
     if (!slotIds.has(nextRowId)) {

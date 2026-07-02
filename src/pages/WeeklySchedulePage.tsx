@@ -124,6 +124,7 @@ import {
   buildShiftInterval,
   intervalsOverlap,
   REST_DAY_POOL_ID,
+  splitAssignmentKey,
   VACATION_POOL_ID,
 } from "../lib/schedule";
 import {
@@ -180,15 +181,6 @@ const SECTION_BLOCK_COLORS = [
   "#DEE8FF",
   "#E8E1F5",
 ];
-
-const splitAssignmentKey = (key: string) => {
-  const parts = key.split("__");
-  if (parts.length < 2) {
-    return { rowId: key, dateISO: "" };
-  }
-  const dateISO = parts.pop() ?? "";
-  return { rowId: parts.join("__"), dateISO };
-};
 
 function useMediaQuery(query: string) {
   const [matches, setMatches] = useState(() => {
@@ -1646,7 +1638,9 @@ export default function WeeklySchedulePage({
         const dayType = getDayType(d, holidayDates);
         const isActive = row.dayType ? row.dayType === dayType : true;
         if (!isActive) continue;
-        const cell = assignmentMap.get(`${rowId}__${d}`) ?? [];
+        // Use the rendered map (vacation-filtered) so the badge matches the
+        // open slots actually shown in the grid.
+        const cell = fullWeekRenderAssignmentMap.get(`${rowId}__${d}`) ?? [];
         const baseRequired =
           typeof row.requiredSlots === "number"
             ? row.requiredSlots
@@ -1661,7 +1655,7 @@ export default function WeeklySchedulePage({
     return openSlots;
   }, [
     fullWeekDays,
-    assignmentMap,
+    fullWeekRenderAssignmentMap,
     classShiftRowIds,
     minSlotsByRowId,
     slotOverridesByKey,
@@ -3461,14 +3455,8 @@ export default function WeeklySchedulePage({
             onFetchHolidays={async (countryCode, year) => {
               await handleFetchHolidays(countryCode, year);
             }}
-            onAddHoliday={(holiday) => {
-              setHolidays((prev) => [...prev, holiday]);
-            }}
-            onRemoveHoliday={(holiday) => {
-              setHolidays((prev) =>
-                prev.filter((item) => item.dateISO !== holiday.dateISO),
-              );
-            }}
+            onAddHoliday={handleAddHoliday}
+            onRemoveHoliday={handleRemoveHoliday}
             onCreateSection={(name) => {
               const trimmed = name.trim() || "New Section";
               const id = `class-${Date.now().toString(36)}`;

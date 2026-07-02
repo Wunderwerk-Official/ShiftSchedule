@@ -95,14 +95,14 @@ export default function ClinicianEditor({
     .filter((row): row is { id: string; name: string } => Boolean(row));
   const availableRows = classRows.filter((row) => !eligibleIds.includes(row.id));
   const [selectedClassId, setSelectedClassId] = useState("");
+  // Format today's LOCAL date; toISOString would convert local midnight to
+  // UTC and yield yesterday's date in timezones east of UTC.
   const now = new Date();
-  const todayISO = new Date(
+  const todayISO = [
     now.getFullYear(),
-    now.getMonth(),
-    now.getDate(),
-  )
-    .toISOString()
-    .slice(0, 10);
+    String(now.getMonth() + 1).padStart(2, "0"),
+    String(now.getDate()).padStart(2, "0"),
+  ].join("-");
   const sortedVacations = [...clinician.vacations].sort((a, b) =>
     a.startISO.localeCompare(b.startISO),
   );

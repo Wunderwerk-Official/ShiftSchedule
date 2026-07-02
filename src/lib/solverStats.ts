@@ -38,15 +38,16 @@ const DAY_INDEX_TO_TYPE: Record<number, string> = {
   6: "sat",
 };
 
-// Helper to get all dates in a range (inclusive)
+// Helper to get all dates in a range (inclusive).
+// Date-only ISO strings parse as UTC midnight, so all arithmetic must stay in
+// UTC: mixing in local setDate() duplicates/drops days across DST transitions.
 function getDatesInRange(startISO: string, endISO: string): string[] {
   const dates: string[] = [];
-  const start = new Date(startISO);
   const end = new Date(endISO);
-  const current = new Date(start);
+  const current = new Date(startISO);
   while (current <= end) {
     dates.push(current.toISOString().split("T")[0]);
-    current.setDate(current.getDate() + 1);
+    current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
 }
@@ -124,15 +125,17 @@ export function calculateSolverLiveStats(
   // Get all dates in the solve range
   const dates = getDatesInRange(solveRange.startISO, solveRange.endISO);
 
-  // Helper to get ISO week key (YYYY-Www format)
+  // Helper to get ISO week key (YYYY-Www format). Uses UTC getters throughout:
+  // dateISO parses as UTC midnight, so local getters shift the date in non-UTC
+  // timezones and the local-midnight year start adds a fractional day offset.
   const getWeekKey = (dateISO: string): string => {
     const date = new Date(dateISO);
     // Get Thursday of the current week to determine the year for ISO week
     const thursday = new Date(date);
-    thursday.setDate(date.getDate() + (4 - ((date.getDay() + 6) % 7 + 1)));
-    const yearStart = new Date(thursday.getFullYear(), 0, 1);
-    const weekNum = Math.ceil(((thursday.getTime() - yearStart.getTime()) / 86400000 + 1) / 7);
-    return `${thursday.getFullYear()}-W${String(weekNum).padStart(2, "0")}`;
+    thursday.setUTCDate(date.getUTCDate() + (4 - (((date.getUTCDay() + 6) % 7) + 1)));
+    const yearStart = Date.UTC(thursday.getUTCFullYear(), 0, 1);
+    const weekNum = Math.ceil(((thursday.getTime() - yearStart) / 86400000 + 1) / 7);
+    return `${thursday.getUTCFullYear()}-W${String(weekNum).padStart(2, "0")}`;
   };
 
   // Build vacation date sets per clinician for efficient lookup
@@ -141,12 +144,11 @@ export function calculateSolverLiveStats(
     if (!clinician.vacations?.length) continue;
     const vacDates = new Set<string>();
     for (const v of clinician.vacations) {
-      const vStart = new Date(v.startISO);
       const vEnd = new Date(v.endISO);
-      const cur = new Date(vStart);
+      const cur = new Date(v.startISO);
       while (cur <= vEnd) {
         vacDates.add(cur.toISOString().split("T")[0]);
-        cur.setDate(cur.getDate() + 1);
+        cur.setUTCDate(cur.getUTCDate() + 1);
       }
     }
     vacationDatesByClinicianId.set(clinician.id, vacDates);
@@ -206,7 +208,7 @@ export function calculateSolverLiveStats(
       const date = new Date(dateISO);
       const dayType = holidays.has(dateISO)
         ? "holiday"
-        : DAY_INDEX_TO_TYPE[date.getDay()] ?? "mon";
+        : DAY_INDEX_TO_TYPE[date.getUTCDay()] ?? "mon";
 
       const required = dayMap.get(dayType) ?? 0;
       if (required === 0) continue;
@@ -305,7 +307,9 @@ export function calculateSolverLiveStats(
 
   for (const a of assignments) {
     const row = rowById.get(a.rowId);
-    if (!row) continue;
+    // Only class rows represent actual work; pool rows (rest day, vacation)
+    // have no times and would otherwise count as the 8-hour default.
+    if (!row || row.kind !== "class") continue;
     const duration = getSlotDurationMinutes(row);
     const weekKey = getWeekKey(a.dateISO);
     const key = `${a.clinicianId}|${weekKey}`;
@@ -398,7 +402,7 @@ export function calculateSolverLiveStats(
     if (!clinician?.preferredWorkingTimes) continue;
 
     const date = new Date(a.dateISO);
-    const dayKey = dayKeys[date.getDay()];
+    const dayKey = dayKeys[date.getUTCDay()];
     const pref = clinician.preferredWorkingTimes[dayKey];
     if (!pref) continue;
 
@@ -457,9 +461,12 @@ export function calculateSolverLiveStats(
       }
     }
 
-    // Group assignments by (clinicianId, dateISO)
+    // Group assignments by (clinicianId, dateISO). Pool entries (rest day,
+    // vacation) are not work and must not count as rest violations.
     const assignmentsByClinicianDateForRest = new Map<string, Set<string>>();
     for (const a of assignments) {
+      const row = rowById.get(a.rowId);
+      if (row?.kind === "pool" || a.rowId.startsWith("pool-")) continue;
       const key = `${a.clinicianId}|${a.dateISO}`;
       if (!assignmentsByClinicianDateForRest.has(key)) {
         assignmentsByClinicianDateForRest.set(key, new Set());
@@ -474,7 +481,7 @@ export function calculateSolverLiveStats(
 
       for (let offset = 1; offset <= restBefore; offset++) {
         const restDate = new Date(onCallDate);
-        restDate.setDate(restDate.getDate() - offset);
+        restDate.setUTCDate(restDate.getUTCDate() - offset);
         const restDateISO = restDate.toISOString().split("T")[0];
         const key = `${a.clinicianId}|${restDateISO}`;
         if (assignmentsByClinicianDateForRest.has(key)) {
@@ -484,7 +491,7 @@ export function calculateSolverLiveStats(
 
       for (let offset = 1; offset <= restAfter; offset++) {
         const restDate = new Date(onCallDate);
-        restDate.setDate(restDate.getDate() + offset);
+        restDate.setUTCDate(restDate.getUTCDate() + offset);
         const restDateISO = restDate.toISOString().split("T")[0];
         const key = `${a.clinicianId}|${restDateISO}`;
         if (assignmentsByClinicianDateForRest.has(key)) {
