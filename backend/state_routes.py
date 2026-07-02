@@ -308,7 +308,9 @@ def inspect_week(
     # Build lookup maps
     location_names = {loc.id: loc.name for loc in (state.locations or [])}
     clinician_names = {c.id: c.name for c in (state.clinicians or [])}
-    section_names = {row.id: row.name for row in (state.rows or []) if row.kind == "section"}
+    # block.sectionId refers to class row ids (row.kind is "class" or "pool";
+    # there is no "section" kind).
+    section_names = {row.id: row.name for row in (state.rows or []) if row.kind == "class"}
     pool_names = {row.id: row.name for row in (state.rows or []) if row.kind == "pool"}
     pool_ids = set(pool_names.keys())
 

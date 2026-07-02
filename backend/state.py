@@ -388,6 +388,10 @@ def _normalize_weekly_template(
                 end_day_offset = max(
                     0, min(3, int(raw_offset if isinstance(raw_offset, int) else 0))
                 )
+                # Carry a midnight-crossing default end into the day offset;
+                # _format_minutes wraps modulo 24h.
+                if end_minutes >= 24 * 60:
+                    end_day_offset = max(end_day_offset, min(3, end_minutes // (24 * 60)))
                 start_time = _format_minutes(start_minutes)
                 end_time = _format_minutes(end_minutes)
                 slot_label = getattr(slot, "label", None)
@@ -667,6 +671,11 @@ def _normalize_sub_shifts(sub_shifts: List[SubShift]) -> List[SubShift]:
         )
         if end_minutes is None:
             end_minutes = start_minutes + duration_minutes
+            # A duration-derived end can cross midnight; _format_minutes wraps
+            # modulo 24h, so carry the overflow into endDayOffset or the shift
+            # would end before it starts (e.g. 22:00 + 8h -> 06:00 same day).
+            if end_minutes >= 24 * 60:
+                end_day_offset = max(end_day_offset, min(3, end_minutes // (24 * 60)))
         normalized.append(
             SubShift(
                 id=shift_id,

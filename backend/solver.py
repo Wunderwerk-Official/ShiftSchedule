@@ -1031,11 +1031,14 @@ def _add_coverage_constraints(
                 extra = EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL if target > 0 else 0
                 slot_capacity = max(0, target + extra - already)
             model.Add(sum(vars_here) <= slot_capacity)
+        # `missing` already discounts manual assignments; adding `already`
+        # here again would let slack under-count unfilled positions whenever
+        # a slot is partially manned manually.
         slack = model.NewIntVar(0, missing, f"slack_{slot_id}_{date_iso}")
         if vars_here:
-            model.Add(sum(vars_here) + slack + already >= missing)
+            model.Add(sum(vars_here) + slack >= missing)
         else:
-            model.Add(slack + already >= missing)
+            model.Add(slack >= missing)
         slack_terms.append(slack * order_weight)
 
     return coverage_terms, slack_terms, total_required, order_weight_by_slot_id

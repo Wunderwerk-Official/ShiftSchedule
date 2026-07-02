@@ -97,6 +97,12 @@ def expand_slots_to_instances(
 
             slot: TemplateSlot = ctx["slot"]
             start, end, loc = _build_slot_interval(slot, ctx["location_id"])
+            # _build_slot_interval returns an offset-INCLUSIVE end, but
+            # SlotInstance expects the raw clock end plus a separate
+            # end_day_offset (duration/overlap logic re-adds the offset).
+            raw_offset = getattr(slot, "endDayOffset", 0)
+            offset = max(0, min(3, raw_offset)) if isinstance(raw_offset, int) else 0
+            end -= offset * 24 * 60
 
             # Classify the slot into a band based on start time
             band = classify_time_to_band(start)
@@ -115,7 +121,7 @@ def expand_slots_to_instances(
                 band=band,
                 start_minutes=start,
                 end_minutes=end,
-                end_day_offset=getattr(slot, "endDayOffset", 0) or 0,
+                end_day_offset=offset,
                 required_count=required,
             ))
 

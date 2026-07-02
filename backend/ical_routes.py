@@ -102,6 +102,23 @@ def publish_ical(
             return _build_publish_status(request, {"token": token}, clinician_rows, state.clinicians)
         except sqlite3.IntegrityError:
             conn.rollback()
+            # The conflict may be on the username primary key (a concurrent
+            # publish won the race) rather than the token; return the
+            # existing publication instead of retrying until a 500.
+            raced = conn.execute(
+                "SELECT token FROM ical_publications WHERE username = ?",
+                (current_user.username,),
+            ).fetchone()
+            if raced:
+                state = _load_state(current_user.username)
+                clinician_rows = _ensure_clinician_publications(
+                    conn, current_user.username, state.clinicians
+                )
+                conn.commit()
+                conn.close()
+                return _build_publish_status(
+                    request, {"token": raced["token"]}, clinician_rows, state.clinicians
+                )
             continue
     conn.close()
     raise HTTPException(status_code=500, detail="Failed to generate token.")

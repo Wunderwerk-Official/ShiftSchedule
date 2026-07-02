@@ -70,6 +70,16 @@ def publish_web(current_user: UserPublic = Depends(_get_current_user)):
             return WebPublishStatus(published=True, token=token)
         except sqlite3.IntegrityError:
             conn.rollback()
+            # The conflict may be on the username primary key (a concurrent
+            # publish won the race) rather than the token; return the
+            # existing publication instead of retrying until a 500.
+            raced = conn.execute(
+                "SELECT token FROM web_publications WHERE username = ?",
+                (current_user.username,),
+            ).fetchone()
+            if raced:
+                conn.close()
+                return WebPublishStatus(published=True, token=raced["token"])
             continue
     conn.close()
     raise HTTPException(status_code=500, detail="Failed to generate token.")

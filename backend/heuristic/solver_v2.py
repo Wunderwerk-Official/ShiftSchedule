@@ -236,13 +236,25 @@ class ClinicianState:
         return False
 
     def would_exceed_hours(self, slot: SlotInfo) -> bool:
-        """Check if adding this slot would exceed maximum allowed hours."""
+        """Check if adding this slot would exceed maximum allowed hours.
+
+        Compares against the hours of the slot's OWN ISO week, computed from
+        assigned slots. current_week_hours is only reliable inside the main
+        day loop (it accumulates across the whole range in phase 0.5), which
+        wrongly excluded doctors with hours in other weeks.
+        """
         if self.contract_hours == 0:
             return False
 
         max_hours = self.contract_hours + self.tolerance_hours
-        new_total = self.current_week_hours + (slot.duration_minutes / 60.0)
-        return new_total > max_hours
+        slot_week = date.fromisoformat(slot.date_iso).isocalendar()[:2]
+        week_hours = 0.0
+        for date_iso, slots in self.assigned_slots_by_date.items():
+            if date.fromisoformat(date_iso).isocalendar()[:2] != slot_week:
+                continue
+            for assigned in slots:
+                week_hours += assigned.duration_minutes / 60.0
+        return week_hours + (slot.duration_minutes / 60.0) > max_hours
 
     def fits_mandatory_time_window(self, slot: SlotInfo) -> bool:
         """Check if slot fits within mandatory time window (if set)."""
@@ -495,6 +507,12 @@ def _expand_slots_to_instances(
 
             slot = ctx["slot"]
             start, end, loc = _build_slot_interval(slot, ctx["location_id"])
+            # _build_slot_interval returns an offset-INCLUSIVE end, but
+            # SlotInfo expects the raw clock end plus a separate
+            # end_day_offset (duration/overlap logic re-adds the offset).
+            raw_offset = getattr(slot, "endDayOffset", 0)
+            offset = max(0, min(3, raw_offset)) if isinstance(raw_offset, int) else 0
+            end -= offset * 24 * 60
 
             required = getattr(slot, "requiredSlots", 0)
             if not isinstance(required, int) or required < 0:
@@ -507,7 +525,7 @@ def _expand_slots_to_instances(
                 section_id=ctx["section_id"],
                 start_minutes=start,
                 end_minutes=end,
-                end_day_offset=getattr(slot, "endDayOffset", 0) or 0,
+                end_day_offset=offset,
                 required_count=required,
             ))
 
@@ -599,13 +617,10 @@ def _calculate_historical_ytd_hours(
     for ctx in slot_contexts:
         slot = ctx["slot"]
         start, end, _ = _build_slot_interval(slot, ctx["location_id"])
-        end_day_offset = getattr(slot, "endDayOffset", 0) or 0
-        duration = end - start
-        if end_day_offset > 0:
-            duration += end_day_offset * 24 * 60
-        elif duration < 0:
-            duration += 24 * 60
-        slot_duration_by_id[slot.id] = max(0, duration)
+        # _build_slot_interval's end already includes endDayOffset (and is
+        # clamped to start otherwise), so the plain difference IS the duration;
+        # adding the offset again would double-count overnight shifts.
+        slot_duration_by_id[slot.id] = max(0, end - start)
 
     for assignment in assignments:
         if assignment.rowId.startswith("pool-"):
@@ -915,6 +930,16 @@ def _fill_day_with_prioritized_slots(
     for slot, criticality, eligible_list in slot_criticality:
         if cancel_event.is_set():
             return False, assignments
+
+        # The queue was expanded once at day start; consecutive filling may
+        # have satisfied this slot in the meantime, so recheck the fill count
+        # before assigning another doctor (otherwise the slot is overfilled).
+        filled_count = sum(
+            1 for state in clinician_states.values()
+            if any(s.slot_id == slot.slot_id for s in state.assigned_slots_by_date.get(day_iso, []))
+        )
+        if filled_count >= slot.required_count:
+            continue
 
         # Re-filter eligible doctors (assignments may have changed since we built the list)
         eligible_list = _filter_eligible_doctors(slot, clinician_states, solver_settings)

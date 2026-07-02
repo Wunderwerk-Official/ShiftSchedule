@@ -276,9 +276,9 @@ def heuristic_solve_range(
     debug_info = {
         "timing": timer.to_dict(),
         "solution_times": [
-            {"solution": 1, "time_ms": stats.phase_times_ms.get("phase_night_oncall", 0), "objective": 0},
-            {"solution": 2, "time_ms": stats.phase_times_ms.get("phase_fine", 0), "objective": 0},
-            {"solution": 3, "time_ms": stats.phase_times_ms.get("phase_repair", 0), "objective": 0},
+            {"solution": 1, "time_ms": stats.phase_times_ms.get("night_oncall", 0), "objective": 0},
+            {"solution": 2, "time_ms": stats.phase_times_ms.get("fine_assignment", 0), "objective": 0},
+            {"solution": 3, "time_ms": stats.phase_times_ms.get("repair", 0), "objective": 0},
             {"solution": 4, "time_ms": stats.total_time_ms, "objective": stats.filled_positions},
         ],
         "num_variables": stats.total_positions,

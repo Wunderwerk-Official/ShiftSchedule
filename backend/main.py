@@ -1,6 +1,7 @@
 import logging
 import os
 import socket
+import sys
 import time
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,31 @@ from .pdf import router as pdf_router
 from .solver import router as solver_router
 from .state_routes import router as state_router
 from .web import router as web_router
+
+
+def _resolve_expected_port() -> int:
+    """Determine the port this server is meant to bind.
+
+    The startup check used to hardcode 8000, which aborted the
+    README-documented fallback of running on --port 8001 while another
+    instance occupies 8000.
+    """
+    argv = sys.argv
+    for index, arg in enumerate(argv):
+        if arg == "--port" and index + 1 < len(argv):
+            try:
+                return int(argv[index + 1])
+            except ValueError:
+                pass
+        if arg.startswith("--port="):
+            try:
+                return int(arg.split("=", 1)[1])
+            except ValueError:
+                pass
+    try:
+        return int(os.environ.get("BACKEND_PORT", "8000"))
+    except ValueError:
+        return 8000
 
 
 def _check_port_available(port: int = 8000) -> None:
@@ -34,7 +60,7 @@ def _check_port_available(port: int = 8000) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    _check_port_available(8000)
+    _check_port_available(_resolve_expected_port())
     conn = _get_connection()
     conn.close()
     _ensure_admin_user()

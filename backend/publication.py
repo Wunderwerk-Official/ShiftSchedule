@@ -219,7 +219,15 @@ def _ensure_clinician_publications(
                 }
                 break
             except sqlite3.IntegrityError:
-                conn.rollback()
+                # Do NOT roll back: this runs on the caller's connection and a
+                # rollback would discard the caller's uncommitted writes (e.g.
+                # the main publication insert). A failed INSERT has no effects
+                # of its own. If the row was created concurrently, reuse it;
+                # otherwise it was a token collision — retry with a new token.
+                refreshed = _get_clinician_publications_for_user(conn, username)
+                if clinician.id in refreshed:
+                    existing[clinician.id] = refreshed[clinician.id]
+                    break
                 continue
     return existing
 
