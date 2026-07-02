@@ -523,12 +523,15 @@ export type SolveRangeResult = {
   debugInfo?: SolverDebugInfo;
 };
 
+export type SolverMode = "cpsat" | "heuristic" | "agent";
+
 export async function solveRange(
   startISO: string,
   options?: {
     endISO?: string;
     onlyFillRequired?: boolean;
     timeoutSeconds?: number;
+    solverMode?: SolverMode;
     signal?: AbortSignal;
   },
 ): Promise<SolveRangeResult> {
@@ -540,6 +543,7 @@ export async function solveRange(
       endISO: options?.endISO,
       only_fill_required: options?.onlyFillRequired ?? false,
       timeout_seconds: options?.timeoutSeconds,
+      solver_mode: options?.solverMode,
     }),
     signal: options?.signal,
   });

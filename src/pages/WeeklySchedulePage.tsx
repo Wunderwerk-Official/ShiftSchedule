@@ -35,6 +35,7 @@ import {
   type IcalPublishStatus,
   type ScheduleSnapshotExport,
   type SolverDebugInfo,
+  type SolverMode,
   type SolverSettings,
   type WeeklyCalendarTemplate,
   type WebPublishStatus,
@@ -1132,6 +1133,7 @@ export default function WeeklySchedulePage({
     endISO: string;
     onlyFillRequired: boolean;
     timeoutSeconds: number;
+    solverMode?: SolverMode;
   }) => {
     if (autoPlanRunning) return;
     setAutoPlanError(null);
@@ -1186,6 +1188,7 @@ export default function WeeklySchedulePage({
         endISO: args.endISO,
         onlyFillRequired: args.onlyFillRequired,
         timeoutSeconds: args.timeoutSeconds,
+        solverMode: args.solverMode,
         signal: abortController.signal,
       });
 

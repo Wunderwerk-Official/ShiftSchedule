@@ -10,6 +10,11 @@ import { toISODate } from "../../lib/date";
 import CustomDatePicker from "./CustomDatePicker";
 import { SolverInfoButton } from "./SolverInfoModal";
 
+import type { SolverMode } from "../../api/client";
+
+// LLM agent runs need more wall clock than the optimizer default of 60s.
+const AGENT_TIMEOUT_SECONDS = 300;
+
 type AutomatedPlanningPanelProps = {
   weekStartISO: string;
   weekEndISO: string;
@@ -20,7 +25,13 @@ type AutomatedPlanningPanelProps = {
   lastRunDurationMs: number | null;
   error: string | null;
   timeoutSeconds: number;
-  onRun: (args: { startISO: string; endISO: string; onlyFillRequired: boolean; timeoutSeconds: number }) => void;
+  onRun: (args: {
+    startISO: string;
+    endISO: string;
+    onlyFillRequired: boolean;
+    timeoutSeconds: number;
+    solverMode: SolverMode;
+  }) => void;
   onResetSolver: (args: { startISO: string; endISO: string }) => void;
   onResetAll: (args: { startISO: string; endISO: string }) => void;
   onOpenInfo: () => void;
@@ -73,6 +84,7 @@ export default function AutomatedPlanningPanel({
   const [endInput, setEndInput] = useState("");
   const [hasTouched, setHasTouched] = useState(false);
   const [strategy, setStrategy] = useState<"fill" | "distribute">("fill");
+  const [solverMode, setSolverMode] = useState<SolverMode>("cpsat");
   const [localError, setLocalError] = useState<string | null>(null);
   const [resetPanelOpen, setResetPanelOpen] = useState(false);
   const [resetPanelAbove, setResetPanelAbove] = useState(false);
@@ -175,7 +187,9 @@ export default function AutomatedPlanningPanel({
       startISO: range.startISO,
       endISO: range.endISO,
       onlyFillRequired: strategy === "fill",
-      timeoutSeconds,
+      timeoutSeconds:
+        solverMode === "agent" ? Math.max(timeoutSeconds, AGENT_TIMEOUT_SECONDS) : timeoutSeconds,
+      solverMode,
     });
   };
 
@@ -300,6 +314,29 @@ export default function AutomatedPlanningPanel({
                 className={getPillToggleClasses(strategy === "distribute")}
               >
                 Distribute all
+              </button>
+            </div>
+          </div>
+          <div className="flex flex-col gap-3">
+            <div className="text-xs font-normal uppercase tracking-wide text-slate-400 dark:text-slate-500">
+              Solver
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setSolverMode("cpsat")}
+                disabled={isRunning}
+                className={getPillToggleClasses(solverMode === "cpsat")}
+              >
+                Optimizer
+              </button>
+              <button
+                type="button"
+                onClick={() => setSolverMode("agent")}
+                disabled={isRunning}
+                className={getPillToggleClasses(solverMode === "agent")}
+              >
+                AI Agent
               </button>
             </div>
           </div>
