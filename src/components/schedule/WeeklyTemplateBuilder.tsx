@@ -426,7 +426,10 @@ export default function WeeklyTemplateBuilder({
   };
 
   const isDayEmpty = (dayType: DayType): boolean => {
-    return getColumnCountForDay(dayType) === 0 && getSlotCountForDay(dayType) === 0;
+    // Every dayType always has >= 1 colBand (the sync effect guarantees it),
+    // so requiring 0 columns made this always false and forced the overwrite
+    // warning even for untouched days.
+    return getSlotCountForDay(dayType) === 0 && getColumnCountForDay(dayType) <= 1;
   };
 
   const handleCopyDay = () => {
@@ -540,36 +543,57 @@ export default function WeeklyTemplateBuilder({
 
     console.log("[WeeklyTemplateBuilder] syncLocationsUseEffect: update needed");
 
+    // Shared column count per dayType (max across existing locations, min 1):
+    // new locations and missing dayTypes must be seeded with the SAME number
+    // of columns as their peers, otherwise handleAddColBand/DeleteColBand
+    // produce misaligned orders and phantom columns across locations.
+    const sharedCounts = new Map<DayType, number>();
+    for (const dayType of DAY_TYPES) {
+      let count = 1;
+      for (const item of template.locations) {
+        const n = item.colBands.filter((band) => band.dayType === dayType).length;
+        if (n > count) count = n;
+      }
+      sharedCounts.set(dayType, count);
+    }
+    const seedBands = (dayType: DayType, fromOrder: number): TemplateColBand[] => {
+      const target = sharedCounts.get(dayType) ?? 1;
+      const bands: TemplateColBand[] = [];
+      for (let order = fromOrder; order <= target; order += 1) {
+        bands.push({ id: createId("col"), label: "", order, dayType });
+      }
+      return bands;
+    };
+
     // Second pass: build the updated locations
     const nextLocations: WeeklyTemplateLocation[] = [];
     for (const loc of locations) {
       const existing = template.locations.find((item) => item.locationId === loc.id);
       if (existing) {
-        // Check if this specific location needs colBands added
-        const missingDayTypes: DayType[] = [];
+        // Pad every dayType up to the shared count (covers both entirely
+        // missing dayTypes and locations that fell behind).
+        const added: TemplateColBand[] = [];
         for (const dayType of DAY_TYPES) {
-          if (!existing.colBands.some((band) => band.dayType === dayType)) {
-            missingDayTypes.push(dayType);
-          }
+          const have = existing.colBands.filter((band) => band.dayType === dayType).length;
+          added.push(...seedBands(dayType, have + 1));
         }
-        if (missingDayTypes.length > 0) {
-          const newColBands = missingDayTypes.map((dayType) => ({
-            id: createId("col"),
-            label: "",
-            order: 1,
-            dayType,
-          }));
+        if (added.length > 0) {
           nextLocations.push({
             ...existing,
-            colBands: [...existing.colBands, ...newColBands],
+            colBands: [...existing.colBands, ...added],
           });
         } else {
           // No changes needed for this location - keep the SAME object reference
           nextLocations.push(existing);
         }
       } else {
-        // New location - create with default colBands
-        nextLocations.push(emptyTemplateLocation(loc.id));
+        // New location - seed with the shared column counts
+        const seeded = emptyTemplateLocation(loc.id);
+        const bands: TemplateColBand[] = [];
+        for (const dayType of DAY_TYPES) {
+          bands.push(...seedBands(dayType, 1));
+        }
+        nextLocations.push({ ...seeded, colBands: bands });
       }
     }
 
@@ -865,13 +889,17 @@ export default function WeeklyTemplateBuilder({
   const handleAddColBand = (dayType: DayType) => {
     const maxCount = sharedColumnCounts.get(dayType) ?? 0;
     updateAllLocations((location) => {
-      const next: TemplateColBand = {
-        id: createId("col"),
-        label: "",
-        order: maxCount + 1,
-        dayType,
-      };
-      return { ...location, colBands: [...location.colBands, next] };
+      // Pad locations that fell behind the shared count first, so every
+      // location ends at maxCount + 1 aligned columns (appending order
+      // maxCount+1 to a location holding a single order-1 band would create
+      // the sparse orders [1, N+1] and phantom columns).
+      const have = location.colBands.filter((band) => band.dayType === dayType).length;
+      const added: TemplateColBand[] = [];
+      for (let order = have + 1; order <= maxCount + 1; order += 1) {
+        added.push({ id: createId("col"), label: "", order, dayType });
+      }
+      if (added.length === 0) return location;
+      return { ...location, colBands: [...location.colBands, ...added] };
     }, "handleAddColBand");
   };
 
@@ -993,7 +1021,9 @@ export default function WeeklyTemplateBuilder({
               value={slot.requiredSlots ?? 0}
               onChange={(event) => {
                 const parsed = Number(event.target.value);
-                const value = Number.isFinite(parsed) ? Math.max(0, parsed) : 0;
+                // Backend rejects non-integers (TemplateSlot.requiredSlots: int),
+                // which would 422 the whole state save.
+                const value = Number.isFinite(parsed) ? Math.max(0, Math.trunc(parsed)) : 0;
                 handleUpdateSlotTime(locationId, slot.id, { requiredSlots: value });
               }}
             />

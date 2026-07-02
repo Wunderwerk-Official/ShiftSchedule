@@ -161,9 +161,12 @@ def generate_ics(
                     break
         if not assignment_clinician_id:
             continue
-        clinician_name = clinician_name_by_id.get(
-            assignment_clinician_id, assignment_clinician_id or "Unknown"
-        )
+        # Skip assignments whose clinician no longer exists: the public web
+        # page drops them too, and emitting the raw internal id as a person's
+        # name leaks implementation detail into subscribers' calendars.
+        if assignment_clinician_id not in clinician_name_by_id:
+            continue
+        clinician_name = clinician_name_by_id[assignment_clinician_id]
         row_name = row.get("name") or block.get("sectionId") or "Section"
         slot_label = block.get("label") or None
         assignment_id = assignment.get("id") or f"{date_iso}-{row_id}-{assignment_clinician_id}"
@@ -174,7 +177,12 @@ def generate_ics(
             else f"{row_name} - {clinician_name}"
         )
         start = _iso_to_yyyymmdd(date_iso)
-        end = _iso_to_yyyymmdd(_add_days_iso(date_iso, 1))
+        # All-day events: DTEND is exclusive, so a single-day shift ends at
+        # start+1. Shifts crossing midnight (endDayOffset >= 1) extend into
+        # the following day(s) and must block them in subscribers' calendars.
+        end_day_offset = slot.get("endDayOffset")
+        extra_days = end_day_offset if isinstance(end_day_offset, int) and end_day_offset > 0 else 0
+        end = _iso_to_yyyymmdd(_add_days_iso(date_iso, 1 + min(3, extra_days)))
         uid = f"{assignment_id}@shiftschedule"
 
         lines.extend(

@@ -160,7 +160,7 @@ export default function AdminUsersPanel({
 
   const importSummary = useMemo(() => {
     if (!importPayload || !importFileName) {
-      return "No import file selected. New users start from your current configuration.";
+      return "No import file selected. New users start from the default configuration.";
     }
     if ("state" in importPayload) {
       const source = importPayload.sourceUser

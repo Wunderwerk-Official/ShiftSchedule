@@ -220,7 +220,14 @@ def get_public_web_week(
             row_id: min_slots.model_dump()
             for row_id, min_slots in state.minSlotsByRowId.items()
         },
-        "slotOverridesByKey": state.slotOverridesByKey,
+        # Clamp to the requested (published) week like assignments/holidays —
+        # override keys are `${slotId}__${dateISO}`; slot ids may contain "__",
+        # so split at the LAST separator.
+        "slotOverridesByKey": {
+            key: value
+            for key, value in (state.slotOverridesByKey or {}).items()
+            if week_start_iso <= key.rsplit("__", 1)[-1] <= week_end_iso
+        },
         "weeklyTemplate": state.weeklyTemplate.model_dump()
         if state.weeklyTemplate
         else None,

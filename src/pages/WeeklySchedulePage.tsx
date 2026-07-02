@@ -796,6 +796,10 @@ export default function WeeklySchedulePage({
       for (const assignment of list) {
         const row = rowById.get(assignment.rowId);
         if (!row || row.kind !== "class") continue;
+        // Vacations override assignments everywhere else (rendered grid,
+        // published web page, subscribed feed) — the local .ics download
+        // must not resurrect them.
+        if (isOnVacation(assignment.clinicianId, assignment.dateISO)) continue;
         items.push(assignment);
       }
     }
@@ -1167,12 +1171,24 @@ export default function WeeklySchedulePage({
 
     try {
       if (hasLoaded && loadedUserId === currentUser.username) {
+        // Strip in-range solver assignments from the state the backend will
+        // solve against: it treats every existing assignment as FIXED (they
+        // count toward coverage and are never re-proposed), while this page
+        // deletes exactly these assignments before applying the response.
+        // Saving them would make a re-run silently erase the previous run's
+        // plan. Mirrors the post-solve filter below (manual + vacationing
+        // clinicians' assignments are kept).
+        const assignmentsForSolve = toAssignments().filter((a) => {
+          if (a.rowId.startsWith("pool-")) return true;
+          if (a.dateISO < args.startISO || a.dateISO > args.endISO) return true;
+          return a.source !== "solver" || isOnVacation(a.clinicianId, a.dateISO);
+        });
         const { state: normalized } = normalizeAppState({
           locations,
           locationsEnabled,
           rows,
           clinicians,
-          assignments: toAssignments(),
+          assignments: assignmentsForSolve,
           minSlotsByRowId,
           slotOverridesByKey,
           holidays,

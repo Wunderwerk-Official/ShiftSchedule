@@ -56,6 +56,10 @@ def publish_ical(
     _payload: Optional[IcalPublishRequest] = None,
 ):
     now = _utcnow_iso()
+    # Load state BEFORE opening the write transaction: _load_state can persist
+    # a normalized state on its own connection, which would block on this
+    # connection's uncommitted publication write ("database is locked").
+    state = _load_state(current_user.username)
     conn = _get_connection()
     existing = conn.execute(
         "SELECT token FROM ical_publications WHERE username = ?",
@@ -71,7 +75,6 @@ def publish_ical(
             """,
             (now, current_user.username),
         )
-        state = _load_state(current_user.username)
         clinician_rows = _ensure_clinician_publications(
             conn, current_user.username, state.clinicians
         )
@@ -93,7 +96,6 @@ def publish_ical(
                 """,
                 (current_user.username, token, now, now),
             )
-            state = _load_state(current_user.username)
             clinician_rows = _ensure_clinician_publications(
                 conn, current_user.username, state.clinicians
             )
@@ -110,7 +112,6 @@ def publish_ical(
                 (current_user.username,),
             ).fetchone()
             if raced:
-                state = _load_state(current_user.username)
                 clinician_rows = _ensure_clinician_publications(
                     conn, current_user.username, state.clinicians
                 )
@@ -129,6 +130,8 @@ def rotate_ical(
     request: Request, current_user: UserPublic = Depends(_get_current_user)
 ):
     now = _utcnow_iso()
+    # Load before the write transaction (see publish_ical).
+    state = _load_state(current_user.username)
     conn = _get_connection()
     existing = conn.execute(
         "SELECT token FROM ical_publications WHERE username = ?",
@@ -150,7 +153,6 @@ def rotate_ical(
                 "DELETE FROM ical_clinician_publications WHERE username = ?",
                 (current_user.username,),
             )
-            state = _load_state(current_user.username)
             clinician_rows = _ensure_clinician_publications(
                 conn, current_user.username, state.clinicians
             )

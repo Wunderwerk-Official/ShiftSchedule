@@ -618,7 +618,9 @@ def _collect_slot_contexts(state) -> List[Dict[str, Any]]:
     return contexts
 
 
-def _build_date_context(payload: SolveRangeRequest) -> Tuple[date, date, List[str], List[str], set[str], Dict[str, int]]:
+def _build_date_context(
+    payload: SolveRangeRequest, context_pad_days: int = 1
+) -> Tuple[date, date, List[str], List[str], set[str], Dict[str, int]]:
     """Parse the requested range and build day lists + index lookups."""
     try:
         range_start = datetime.fromisoformat(f"{payload.startISO}T00:00:00+00:00").date()
@@ -634,8 +636,8 @@ def _build_date_context(payload: SolveRangeRequest) -> Tuple[date, date, List[st
     if range_end < range_start:
         raise ValueError("Invalid endISO")
 
-    context_start = range_start - timedelta(days=1)
-    context_end = range_end + timedelta(days=1)
+    context_start = range_start - timedelta(days=context_pad_days)
+    context_end = range_end + timedelta(days=context_pad_days)
     day_isos: List[str] = []
     cursor = context_start
     while cursor <= context_end:
@@ -1132,8 +1134,7 @@ def _add_on_call_rest_constraints(
                     if target_idx < 0 or target_idx >= len(day_isos):
                         return
                     target_date = day_isos[target_idx]
-                    if target_date not in target_date_set:
-                        return
+                    in_target_range = target_date in target_date_set
                     target_day_vars = clinician_vars.get(target_date, [])
                     vars_target = [var for (_sid, var, _s, _e, _l) in target_day_vars]
                     manual_target = len(
@@ -1142,14 +1143,17 @@ def _add_on_call_rest_constraints(
                     if manual_on_call:
                         if manual_target > 0:
                             return
-                        if vars_target:
+                        if in_target_range and vars_target:
                             model.Add(sum(vars_target) == 0)
                         return
                     if on_call_var is None:
                         return
                     if manual_target > 0:
+                        # Applies to CONTEXT days too: the solver must not
+                        # freshly place an on-call whose rest window collides
+                        # with manual work just outside the range.
                         model.Add(on_call_var == 0)
-                    elif vars_target:
+                    elif in_target_range and vars_target:
                         model.Add(sum(vars_target) <= len(vars_target) * (1 - on_call_var))
 
                 for offset in range(1, rest_before + 1):
@@ -1346,6 +1350,21 @@ def _compute_ytd_deficit_hours(
     if weeks_elapsed < 1.0:
         return {}
 
+    def _vacation_days_in_window(clinician, window_start: date, window_end: date) -> int:
+        """Vacation days in [window_start, window_end) — inclusive vacation ranges."""
+        days = 0
+        for vacation in clinician.vacations or []:
+            try:
+                v_start = date.fromisoformat(vacation.startISO)
+                v_end = date.fromisoformat(vacation.endISO)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            overlap_start = max(v_start, window_start)
+            overlap_end = min(v_end, window_end - timedelta(days=1))
+            if overlap_end >= overlap_start:
+                days += (overlap_end - overlap_start).days + 1
+        return days
+
     range_start_iso = range_start.isoformat()
     year_start_iso = year_start.isoformat()
 
@@ -1372,7 +1391,12 @@ def _compute_ytd_deficit_hours(
         if clinician.workingHoursPerWeek <= 0:
             continue
 
-        expected_minutes = clinician.workingHoursPerWeek * 60 * weeks_elapsed
+        # Credit vacation days: expecting contract hours for weeks the
+        # clinician was on vacation would otherwise mark returnees as far
+        # behind target and systematically over-assign them.
+        vacation_days = _vacation_days_in_window(clinician, year_start, range_start)
+        effective_weeks = max(0.0, weeks_elapsed - vacation_days / 7.0)
+        expected_minutes = clinician.workingHoursPerWeek * 60 * effective_weeks
         if expected_minutes <= 0:
             continue
         actual_minutes = actual_minutes_by_clinician.get(clinician.id, 0)
@@ -1763,8 +1787,17 @@ def _solve_range_impl(
     state = _load_state(current_user.username)
     timer.checkpoint("load_state")
     diagnostics: List[str] = []  # Track potential issues for debugging
+    # Size the context window from the rest settings: a fixed +/-1 day silently
+    # missed rest violations against manual on-call shifts 2+ days outside the
+    # range when onCallRestDaysBefore/After >= 2.
+    _settings = SolverSettings.model_validate(state.solverSettings or {})
+    _context_pad = 1
+    if _settings.onCallRestEnabled:
+        _context_pad = max(
+            1, _settings.onCallRestDaysBefore or 0, _settings.onCallRestDaysAfter or 0
+        )
     range_start, range_end, day_isos, target_day_isos, target_date_set, day_index_by_iso = (
-        _build_date_context(payload)
+        _build_date_context(payload, context_pad_days=_context_pad)
     )
     timer.checkpoint("date_setup")
 
@@ -2191,7 +2224,15 @@ def _solve_range_impl(
             week_cursor = range_start
             week_num = 0
             week_success = True
+            total_weeks = (total_days + 6) // 7
+            # Divide the remaining budget across the weeks instead of giving
+            # every week the full original timeout.
+            week_timeout = max(10.0, float(payload.timeout_seconds or 60) / max(1, total_weeks))
             while week_cursor <= range_end:
+                if cancel_event is not None and cancel_event.is_set():
+                    week_notes.append("Week-by-week solving aborted by user.")
+                    week_success = False
+                    break
                 week_num += 1
                 week_end = min(week_cursor + timedelta(days=6), range_end)
 
@@ -2200,12 +2241,20 @@ def _solve_range_impl(
                     startISO=week_cursor.isoformat(),
                     endISO=week_end.isoformat(),
                     only_fill_required=payload.only_fill_required,
-                    timeout_seconds=payload.timeout_seconds,
+                    timeout_seconds=week_timeout,
                 )
 
-                # Recursively solve this week (will use shorter timeout for smaller range)
+                # Solve this week IN-PROCESS: calling the solve_range route
+                # handler here would re-enter the subprocess-spawning /
+                # global-lock machinery from inside the solver subprocess.
                 try:
-                    week_result = solve_range(week_payload, current_user)
+                    week_result = _solve_range_impl(
+                        week_payload,
+                        current_user,
+                        cancel_event=cancel_event,
+                        on_progress=on_progress,
+                        start_time=time.time(),
+                    )
                     if any("No solution" in note for note in week_result.notes):
                         week_notes.append(f"Week {week_num} ({week_cursor} to {week_end}): No solution found.")
                         week_success = False

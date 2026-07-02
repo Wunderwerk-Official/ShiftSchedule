@@ -5,6 +5,7 @@ import {
   type SlotInspection,
 } from "../api/client";
 import { cx } from "../lib/classNames";
+import { toISODate } from "../lib/date";
 
 type DatabaseInspectorPageProps = {
   theme: "light" | "dark";
@@ -21,13 +22,17 @@ function getWeekStart(date: Date): string {
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
   d.setDate(diff);
-  return d.toISOString().split("T")[0];
+  // Serialize the LOCAL date; toISOString converts to UTC and yields a
+  // non-Monday whenever local time crosses the UTC date boundary.
+  return toISODate(d);
 }
 
 function addWeeks(dateISO: string, weeks: number): string {
-  const d = new Date(dateISO);
+  // Parse as local midnight so the local setDate arithmetic below cannot
+  // drift a day across DST transitions (bare YYYY-MM-DD parses as UTC).
+  const d = new Date(`${dateISO}T00:00:00`);
   d.setDate(d.getDate() + weeks * 7);
-  return d.toISOString().split("T")[0];
+  return toISODate(d);
 }
 
 type GroupedSlots = {

@@ -119,8 +119,8 @@ export default function ClinicianPickerPopover({
 
   // Sort: eligible first, then by name
   const sortedClinicians = [...filteredClinicians].sort((a, b) => {
-    const aEligible = a.isQualified && !a.isOnVacation && !a.isOnRestDay && !a.hasTimeConflict && !a.alreadyAssigned;
-    const bEligible = b.isQualified && !b.isOnVacation && !b.isOnRestDay && !b.hasTimeConflict && !b.alreadyAssigned;
+    const aEligible = a.isQualified && !a.isOnVacation && !a.isOnRestDay && !a.hasTimeConflict && !a.hasLocationConflict && !a.alreadyAssigned;
+    const bEligible = b.isQualified && !b.isOnVacation && !b.isOnRestDay && !b.hasTimeConflict && !b.hasLocationConflict && !b.alreadyAssigned;
     if (aEligible && !bEligible) return -1;
     if (!aEligible && bEligible) return 1;
     return a.name.localeCompare(b.name);

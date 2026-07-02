@@ -19,7 +19,7 @@ Key differences from v1 (band/pattern approach):
 
 import random
 from datetime import date, datetime, timedelta
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..models import (
     AppState,
@@ -116,13 +116,30 @@ class ClinicianState:
         self.location_by_date: Dict[str, str] = {}
 
     def _calculate_ytd_expected(self, current_date: date) -> float:
-        """Calculate expected year-to-date hours based on contract."""
+        """Calculate expected year-to-date hours based on contract.
+
+        Vacation days are credited (no hours expected for them), matching the
+        CP-SAT YTD deficit calculation — otherwise clinicians returning from
+        vacation look far behind target and get systematically over-assigned.
+        """
         if self.contract_hours == 0:
             return 0.0
 
         year_start = date(current_date.year, 1, 1)
         weeks_elapsed = (current_date - year_start).days / 7.0
-        return weeks_elapsed * self.contract_hours
+        vacation_days = 0
+        for vac in self.vacations or []:
+            try:
+                v_start = date.fromisoformat(vac.startISO)
+                v_end = date.fromisoformat(vac.endISO)
+            except (ValueError, TypeError, AttributeError):
+                continue
+            overlap_start = max(v_start, year_start)
+            overlap_end = min(v_end, current_date - timedelta(days=1))
+            if overlap_end >= overlap_start:
+                vacation_days += (overlap_end - overlap_start).days + 1
+        effective_weeks = max(0.0, weeks_elapsed - vacation_days / 7.0)
+        return effective_weeks * self.contract_hours
 
     def is_on_vacation(self, date_iso: str) -> bool:
         """Check if clinician is on vacation on this date."""
@@ -365,24 +382,50 @@ def heuristic_solve_range_v2(
     slot_instances = _expand_slots_to_instances(state, target_day_isos, holidays)
     slots_by_id = {s.slot_id + "__" + s.date_iso: s for s in slot_instances}
 
+    # Also expand CONTEXT days around the range: manual assignments there must
+    # be visible to the rest-window and overnight-overlap checks (both read
+    # assigned_slots_by_date), otherwise e.g. a manual on-call the day before
+    # range_start never blocks the first range day. Context instances are used
+    # for marking only — never offered to the fill loop.
+    rest_pad = 1
+    if solver_settings.onCallRestEnabled:
+        rest_pad = max(
+            1,
+            solver_settings.onCallRestDaysBefore or 0,
+            solver_settings.onCallRestDaysAfter or 0,
+        )
+    context_pad = max(rest_pad, 3)  # 3 = overnight lookback in has_time_overlap
+    context_day_isos = [
+        (range_start - timedelta(days=offset)).isoformat()
+        for offset in range(1, context_pad + 1)
+    ] + [
+        (range_end + timedelta(days=offset)).isoformat()
+        for offset in range(1, context_pad + 1)
+    ]
+    context_instances = _expand_slots_to_instances(state, context_day_isos, holidays)
+    context_keys = {(s.slot_id, s.date_iso) for s in context_instances}
+
     # Initialize clinician states
     clinician_states = {}
     for clinician in state.clinicians:
         clinician_states[clinician.id] = ClinicianState(clinician, range_start)
 
-    # Mark manual assignments and calculate YTD hours
+    # Mark manual assignments (target + context days) and calculate YTD hours
     manual_assignments_map = _mark_manual_assignments(
         state.assignments,
-        slot_instances,
+        slot_instances + context_instances,
         clinician_states,
     )
 
-    # Add historical YTD hours from assignments before solve range
+    # Add historical YTD hours from assignments before solve range.
+    # Assignments already marked via context instances carry their hours in
+    # ClinicianState — skip them here to avoid double counting.
     _calculate_historical_ytd_hours(
         state.assignments,
         state,
         clinician_states,
         range_start,
+        skip_keys=context_keys,
     )
 
     # On-call rest is enforced live during eligibility checks
@@ -517,6 +560,12 @@ def _expand_slots_to_instances(
             required = getattr(slot, "requiredSlots", 0)
             if not isinstance(required, int) or required < 0:
                 required = 0
+            # Per-date staffing overrides — the CP-SAT solver applies them
+            # (solver.py, coverage constraints); dropping them here silently
+            # ignored "+1 needed on <date>" adjustments in heuristic runs.
+            override = (state.slotOverridesByKey or {}).get(f"{slot.id}__{date_iso}", 0)
+            if isinstance(override, int):
+                required = max(0, required + override)
 
             instances.append(SlotInfo(
                 slot_id=slot.id,
@@ -602,6 +651,7 @@ def _calculate_historical_ytd_hours(
     app_state: AppState,
     clinician_states: Dict[str, ClinicianState],
     range_start: date,
+    skip_keys: Optional[Set[Tuple[str, str]]] = None,
 ) -> None:
     """
     Add YTD hours from assignments before the solve range.
@@ -624,6 +674,9 @@ def _calculate_historical_ytd_hours(
 
     for assignment in assignments:
         if assignment.rowId.startswith("pool-"):
+            continue
+        if skip_keys and (assignment.rowId, assignment.dateISO) in skip_keys:
+            # Already counted by _mark_manual_assignments via context instances.
             continue
 
         try:
@@ -770,7 +823,7 @@ def _solve_single_day(
         _reset_day_to_manual_only(day_iso, clinician_states, manual_assignments_map)
 
         # Try to fill the day
-        success, day_assignments = _fill_day_with_prioritized_slots(
+        success, day_assignments, unfillable_count = _fill_day_with_prioritized_slots(
             day_iso,
             day_slots,
             clinician_states,
@@ -785,6 +838,13 @@ def _solve_single_day(
             best_assignments = day_assignments
 
         if success:
+            # Required slots with zero eligible doctors were previously
+            # dropped silently on the success path — surface them.
+            if unfillable_count > 0:
+                warnings.append(
+                    f"Day {day_iso}: {unfillable_count} required slot position(s) "
+                    f"had no eligible clinician and stayed open."
+                )
             return day_assignments, warnings
 
         # Failed, will retry
@@ -879,11 +939,11 @@ def _fill_day_with_prioritized_slots(
     config: HeuristicConfig,
     retry_count: int,
     cancel_event,
-) -> Tuple[bool, List[Assignment]]:
+) -> Tuple[bool, List[Assignment], int]:
     """
     Fill slots for a single day using prioritized greedy approach.
 
-    Returns: (success, assignments made)
+    Returns: (success, assignments made, unfillable required positions)
     """
     assignments = []
 
@@ -975,9 +1035,9 @@ def _fill_day_with_prioritized_slots(
     # If slots were skipped due to retry offset, signal failure so the
     # retry loop can pick the best attempt (typically retry_count=0).
     if skipped_count > 0:
-        return False, assignments
+        return False, assignments, unfillable_count
 
-    return True, assignments
+    return True, assignments, unfillable_count
 
 
 def _is_doctor_eligible_for_slot(
