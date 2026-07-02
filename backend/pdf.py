@@ -18,6 +18,16 @@ FRONTEND_BASE_URL = (
     or "http://localhost:5173"
 ).strip()
 
+# Optional override for environments where Playwright's own pinned Chromium
+# build is not installed but a system/pre-provisioned Chromium exists.
+PDF_CHROMIUM_EXECUTABLE = os.environ.get("PDF_CHROMIUM_EXECUTABLE", "").strip()
+
+
+def _launch_chromium(playwright):
+    if PDF_CHROMIUM_EXECUTABLE:
+        return playwright.chromium.launch(executable_path=PDF_CHROMIUM_EXECUTABLE)
+    return playwright.chromium.launch()
+
 
 @router.get("/v1/pdf/week")
 def export_week_pdf(
@@ -37,7 +47,7 @@ def export_week_pdf(
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = _launch_chromium(playwright)
             try:
                 # Set viewport to A4 landscape dimensions at 96 DPI
                 # 297mm x 210mm = 1122 x 794 px at 96 DPI
@@ -91,7 +101,7 @@ def export_weeks_pdf(
 
     try:
         with sync_playwright() as playwright:
-            browser = playwright.chromium.launch()
+            browser = _launch_chromium(playwright)
             try:
                 # Set viewport to A4 landscape dimensions at 96 DPI
                 # 297mm x 210mm = 1122 x 794 px at 96 DPI

@@ -200,10 +200,15 @@ test.describe("ColBand Explosion Prevention", () => {
     // - "I understand" checkbox - must be checked
     // - "Copy" button - initially disabled
 
-    // Select target day (Tue is default after Mon)
-    // The second combobox is the "Copy to" dropdown
-    const copyToSelect = page.locator("text=Copy to").locator("..").getByRole("combobox");
-    await copyToSelect.selectOption("Tue");
+    // Select target day (Tue is default after Mon).
+    // "Copy to" is a CustomSelect (button + option list), not a native select.
+    const copyToTrigger = page
+      .locator("text=Copy to")
+      .locator("..")
+      .getByRole("button")
+      .first();
+    await copyToTrigger.click();
+    await page.getByRole("button", { name: "Tue", exact: true }).last().click();
     await page.waitForTimeout(300);
 
     // Check the "I understand" checkbox
@@ -250,9 +255,14 @@ test.describe("ColBand Explosion Prevention", () => {
       await copyDayButton.click();
       await page.waitForTimeout(500);
 
-      // Select target day from dropdown
-      const copyToSelect = page.locator("text=Copy to").locator("..").getByRole("combobox");
-      await copyToSelect.selectOption(targetDay);
+      // Select target day from the CustomSelect dropdown (button + options)
+      const copyToTrigger = page
+        .locator("text=Copy to")
+        .locator("..")
+        .getByRole("button")
+        .first();
+      await copyToTrigger.click();
+      await page.getByRole("button", { name: targetDay, exact: true }).last().click();
       await page.waitForTimeout(300);
 
       // Check the "I understand" checkbox

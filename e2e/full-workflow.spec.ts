@@ -372,7 +372,26 @@ async function addEligibilityToClinician(
 // SOLVER EXECUTION
 // ============================================================================
 
+const SOLVER_API_BASE = process.env.PLAYWRIGHT_API_URL ?? "http://localhost:8000";
+
 async function runSolver(page: Page) {
+  // The backend allows only ONE solve globally (not per user). A solver run
+  // still finishing from an earlier spec would make this run's POST
+  // /v1/solve/range fail with 409, so clear any leftover solve first.
+  await page.evaluate(async (apiBase) => {
+    const token = window.localStorage.getItem("authToken");
+    if (!token) return;
+    try {
+      await fetch(`${apiBase}/v1/solve/abort?force=true`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+    } catch {
+      // Backend unreachable here is fine; the Run click will surface it.
+    }
+  }, SOLVER_API_BASE);
+  await page.waitForTimeout(500);
+
   console.log(`    -> Looking for "Current week" button`);
   const currentWeekBtn = page.locator('button:has-text("Current week")');
   if ((await currentWeekBtn.count()) > 0) {
@@ -397,12 +416,22 @@ async function runSolver(page: Page) {
     console.log(`    -> Clicking "Run" button to start solver`);
     await runBtn.click();
 
-    console.log(`    -> Waiting for "Apply Solution" button to appear (solver found a solution)`);
-    const applySolutionBtn = page.locator('button:has-text("Apply Solution")');
-    await applySolutionBtn.waitFor({ state: "visible", timeout: 120000 });
-    console.log(`    -> Solver found a solution, clicking "Apply Solution"`);
-    await applySolutionBtn.click();
-    await page.waitForTimeout(500);
+    // The current UI applies the solution automatically when the solve
+    // completes ("Apply Solution" only exists while aborting mid-run), so
+    // wait for solver-generated assignment pills to appear in the grid.
+    console.log(`    -> Waiting for solver assignments to appear in the grid`);
+    await page
+      .locator("[data-assignment-key]")
+      .first()
+      .waitFor({ state: "attached", timeout: 120000 });
+
+    // Close the solver dashboard/overlay if it is open so the grid is usable.
+    const overlayBack = page.locator('button:has-text("← Back")');
+    if ((await overlayBack.count()) > 0) {
+      console.log(`    -> Closing solver dashboard via "← Back"`);
+      await overlayBack.first().click();
+      await page.waitForTimeout(300);
+    }
   }
 }
 
@@ -444,7 +473,7 @@ const CLINICIANS = [
 test.describe("Full Workflow - UI Only", () => {
   test.setTimeout(180000); // 3 minutes
 
-  test("complete radiology schedule setup via UI", async ({ page }, testInfo) => {
+  test("complete radiology schedule setup via UI", async ({ page, request }, testInfo) => {
     // ========================================================================
     // STEP 1: Login as admin
     // ========================================================================
@@ -493,6 +522,57 @@ test.describe("Full Workflow - UI Only", () => {
     console.log("\n========================================");
     console.log(`STEP 4: Login as test user "${TEST_USERNAME}"`);
     console.log("========================================");
+    // Reset the test user's state BEFORE any page loads it: the state
+    // persists across suite runs, and accumulated sections/clinicians make
+    // UI selectors ambiguous (duplicate names), breaking later steps. The
+    // reset must happen while no page has the old state in memory, because
+    // an open page would re-save the stale state via its debounced autosave.
+    const loginRes = await request.post(`${SOLVER_API_BASE}/auth/login`, {
+      data: { username: TEST_USERNAME, password: TEST_PASSWORD },
+    });
+    expect(loginRes.ok()).toBeTruthy();
+    const { access_token: resetToken } = (await loginRes.json()) as {
+      access_token: string;
+    };
+    const resetRes = await request.post(`${SOLVER_API_BASE}/v1/state`, {
+      headers: { Authorization: `Bearer ${resetToken}` },
+      data: {
+        locations: [{ id: "loc-default", name: "Location 1" }],
+        locationsEnabled: true,
+        rows: [],
+        clinicians: [],
+        assignments: [],
+        minSlotsByRowId: {},
+        slotOverridesByKey: {},
+        holidays: [],
+        publishedWeekStartISOs: [],
+        // An explicit empty v4 template (like colband-explosion's
+        // resetToCleanState) so the template builder UI renders.
+        weeklyTemplate: {
+          version: 4,
+          blocks: [],
+          locations: [
+            {
+              locationId: "loc-default",
+              rowBands: [],
+              colBands: [
+                { id: "col-mon-1", label: "", order: 1, dayType: "mon" },
+                { id: "col-tue-1", label: "", order: 1, dayType: "tue" },
+                { id: "col-wed-1", label: "", order: 1, dayType: "wed" },
+                { id: "col-thu-1", label: "", order: 1, dayType: "thu" },
+                { id: "col-fri-1", label: "", order: 1, dayType: "fri" },
+                { id: "col-sat-1", label: "", order: 1, dayType: "sat" },
+                { id: "col-sun-1", label: "", order: 1, dayType: "sun" },
+                { id: "col-holiday-1", label: "", order: 1, dayType: "holiday" },
+              ],
+              slots: [],
+            },
+          ],
+        },
+      },
+    });
+    expect(resetRes.ok()).toBeTruthy();
+
     await loginViaUI(page, TEST_USERNAME, TEST_PASSWORD);
     await attachScreenshot(
       page,
@@ -565,9 +645,93 @@ test.describe("Full Workflow - UI Only", () => {
       `Created ${CLINICIANS.length} clinicians`,
     );
 
-    // NOTE: Skipping eligibility step - existing template already has eligible sections
-    // The test user inherits template with MRI, CT, Sonography, On-Call sections
-    // that have slots configured from previous setup
+    // ========================================================================
+    // STEP 7.5: Seed qualifications and template slots via API
+    // ========================================================================
+    // The test used to rely on template slots and qualifications left over
+    // from PREVIOUS suite runs ("existing template already has eligible
+    // sections"), which made it non-deterministic: with a clean state the
+    // solver had no required slots and no eligible clinicians. Seed both
+    // explicitly so the workflow is self-contained.
+    console.log("\n========================================");
+    console.log("STEP 7.5: Seed qualifications + template slots via API");
+    console.log("========================================");
+    // Let the page's debounced autosave (500ms) flush the UI-created data.
+    await page.waitForTimeout(1500);
+    const stateRes = await request.get(`${SOLVER_API_BASE}/v1/state`, {
+      headers: { Authorization: `Bearer ${resetToken}` },
+    });
+    expect(stateRes.ok()).toBeTruthy();
+    const seededState = (await stateRes.json()) as {
+      locations: Array<{ id: string; name: string }>;
+      rows: Array<{ id: string; name: string; kind: string }>;
+      clinicians: Array<{ name: string; qualifiedClassIds: string[] }>;
+      [key: string]: unknown;
+    };
+    const classIdByName = new Map(
+      seededState.rows
+        .filter((row) => row.kind === "class")
+        .map((row) => [row.name, row.id]),
+    );
+    for (const block of SECTION_BLOCKS) {
+      expect(classIdByName.has(block), `section "${block}" was created`).toBeTruthy();
+    }
+    for (const clinician of seededState.clinicians) {
+      const spec = CLINICIANS.find((c) => c.name === clinician.name);
+      if (!spec) continue;
+      clinician.qualifiedClassIds = spec.sections
+        .map((section) => classIdByName.get(section))
+        .filter((id): id is string => Boolean(id));
+    }
+    const templateLocationId = seededState.locations[0]?.id ?? "loc-default";
+    const dayTypes = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday"];
+    const weekdayTypes = ["mon", "tue", "wed", "thu", "fri"];
+    const slotSections = SECTION_BLOCKS.slice(0, 4);
+    seededState.weeklyTemplate = {
+      version: 4,
+      blocks: slotSections.map((section) => ({
+        id: `block-${classIdByName.get(section)}`,
+        sectionId: classIdByName.get(section),
+        requiredSlots: 0,
+      })),
+      locations: [
+        {
+          locationId: templateLocationId,
+          rowBands: slotSections.map((section, index) => ({
+            id: `rowband-${index + 1}`,
+            label: section,
+            order: index + 1,
+          })),
+          colBands: dayTypes.map((dayType) => ({
+            id: `colband-${dayType}`,
+            label: "",
+            order: 1,
+            dayType,
+          })),
+          slots: slotSections.flatMap((section, index) =>
+            weekdayTypes.map((dayType) => ({
+              id: `slot-${classIdByName.get(section)}-${dayType}`,
+              locationId: templateLocationId,
+              rowBandId: `rowband-${index + 1}`,
+              colBandId: `colband-${dayType}`,
+              blockId: `block-${classIdByName.get(section)}`,
+              requiredSlots: 1,
+              startTime: "08:00",
+              endTime: "16:00",
+              endDayOffset: 0,
+            })),
+          ),
+        },
+      ],
+    };
+    const seedRes = await request.post(`${SOLVER_API_BASE}/v1/state`, {
+      headers: { Authorization: `Bearer ${resetToken}` },
+      data: seededState,
+    });
+    expect(seedRes.ok()).toBeTruthy();
+    // Reload so the page picks up the seeded state (discarding in-memory state).
+    await page.reload();
+    await page.waitForSelector('[data-schedule-grid="true"]', { timeout: 15000 });
 
     // ========================================================================
     // STEP 8: Close settings and view the calendar
@@ -575,7 +739,11 @@ test.describe("Full Workflow - UI Only", () => {
     console.log("\n========================================");
     console.log("STEP 8: Return to calendar view");
     console.log("========================================");
-    await closeSettings(page);
+    // The reload in step 7.5 already returned to the calendar view; only
+    // close Settings if it is still open.
+    if ((await page.locator('button:has-text("Back")').count()) > 0) {
+      await closeSettings(page);
+    }
     await attachScreenshot(
       page,
       testInfo,

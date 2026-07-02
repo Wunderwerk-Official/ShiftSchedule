@@ -593,8 +593,10 @@ test.describe.serial("app flows", () => {
     await expect(shiftCell.getByText("Dr. Test")).toBeVisible();
     await attachStepScreenshot(page, testInfo, "reset-before");
     await page.getByRole("button", { name: "Current week" }).click();
-    page.once("dialog", (dialog) => dialog.accept());
-    await page.getByRole("button", { name: "Reset" }).click();
+    // "Reset" now opens a panel with "Reset Solver Only" / "Reset All"
+    // instead of resetting directly behind a confirm dialog.
+    await page.getByRole("button", { name: "Reset", exact: true }).click();
+    await page.getByRole("button", { name: /Reset All/ }).click();
     // Verify assignment was removed
     await expect(shiftCell.getByText("Dr. Test")).toHaveCount(0);
     await attachStepScreenshot(page, testInfo, "reset-after");
@@ -798,8 +800,10 @@ test.describe.serial("ui login flows", () => {
     await page.goto(`/print/week?start=${encodeURIComponent(testDateISO)}`);
     await page.waitForFunction("window.__PDF_READY__ === true");
     await attachStepScreenshot(page, testInfo, "print-layout");
+    // The printable-area wrapper is positioned via inline styles (no
+    // Tailwind "relative" class), so match the direct child instead.
     const layoutBox = await page
-      .locator(".print-page > div.relative")
+      .locator(".print-page > div")
       .first()
       .boundingBox();
     expect(layoutBox).not.toBeNull();
@@ -818,22 +822,24 @@ test.describe.serial("ui login flows", () => {
     const coverageHeight = layoutBox!.height / target.height;
     expect(Math.max(coverageWidth, coverageHeight)).toBeGreaterThanOrEqual(0.7);
 
-    // Verify top alignment and horizontal centering
+    // Verify the content is centered on the page (the print layout centers
+    // both axes via inline styles; the wrapper divs carry no Tailwind classes).
     const pageBox = await page.locator(".print-page").first().boundingBox();
     expect(pageBox).not.toBeNull();
     const contentBox = await page
-      .locator(".print-page > div.relative > div.absolute")
+      .locator(".print-page > div > div")
       .first()
       .boundingBox();
     expect(contentBox).not.toBeNull();
-    // Top alignment: content should start near the top of the page (small margin tolerance)
-    const topOffset = contentBox!.y - pageBox!.y;
-    expect(topOffset).toBeLessThanOrEqual(10); // Within 10px of top
     // Horizontal centering: left and right margins should be approximately equal
     // Using a larger tolerance due to scale transforms and browser rendering differences
     const leftMargin = contentBox!.x - pageBox!.x;
     const rightMargin = (pageBox!.x + pageBox!.width) - (contentBox!.x + contentBox!.width);
     const marginDifference = Math.abs(leftMargin - rightMargin);
     expect(marginDifference).toBeLessThanOrEqual(80); // Within 80px of center (accounts for scaling)
+    // Vertical centering: top and bottom margins should be approximately equal
+    const topMargin = contentBox!.y - pageBox!.y;
+    const bottomMargin = (pageBox!.y + pageBox!.height) - (contentBox!.y + contentBox!.height);
+    expect(Math.abs(topMargin - bottomMargin)).toBeLessThanOrEqual(80);
   });
 });
