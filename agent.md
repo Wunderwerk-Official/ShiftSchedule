@@ -746,12 +746,31 @@ All return `list[Violation]`; `validate_assignments()` aggregates them into a
 - `validate_same_location_per_day` — only when `enforceSameLocationPerDay`
 - `validate_on_call_rest` — only when `onCallRestEnabled`; checks N days before
   and M days after each on-call slot (back-to-back on-call is allowed)
+- `validate_mandatory_windows` — slots must fit inside `preferredWorkingTimes`
+  entries whose requirement is `mandatory` (`preference` entries are soft)
+- `validate_weekly_hours` — per ISO week, assigned hours ≤ contract + tolerance
+  (hard, matching heuristic v2; CP-SAT treats hours as a soft penalty, so a
+  CP-SAT plan may legitimately flag here)
+- `validate_split_shifts` — one contiguous work block per clinician/day when
+  `preferContinuousShifts` is on (adjacent slots merge)
+- `validate_capacity` — per slot instance, count ≤ `requiredSlots` + override
+  (+ distribute-all headroom when `only_fill_required=False`)
 - `validate_references` — unknown clinician IDs or slot IDs
 
+Checked separately (NOT part of `validate_assignments` pass/fail):
+- `validate_solver_rules` — the if/then `SolverRule` entries. No solver has
+  ever enforced these, so existing plans may violate them; callers treat the
+  result as soft feedback (the agent solver scores them as soft violations).
+
+**Baseline-diff pattern:** pre-existing manual data may legitimately violate
+e.g. weekly hours or capacity. Callers comparing a candidate plan against a
+baseline (the agent repair loop) diff the two violation lists — the invariant
+is "no NEW violations", not "zero violations".
+
 ### What it does NOT check
-Soft objectives: coverage counts, section preferences, time-window preferences,
-working-hours balance, YTD balance, continuity, minimum daily hours. Keep
-scoring in a separate module.
+Soft objectives: coverage counts, section preferences, time-window
+*preferences*, working-hours balance below the hard cap, YTD balance, minimum
+daily hours. Scoring lives in `backend/scoring.py` (see §6.6).
 
 ### Design rules
 - **No imports from `solver.py`** — the small helpers (time parsing, slot
@@ -786,7 +805,7 @@ else:
 ```
 
 ### Tests
-`backend/tests/test_validation.py` — 21 cases, run with
+`backend/tests/test_validation.py` — 41 cases, run with
 `pytest backend/tests/test_validation.py`. Tests use the conftest factories
 EXCEPT for multi-location scenarios, which build `AppState` manually (because
 `make_app_state` creates a single `WeeklyTemplateLocation`).
@@ -801,6 +820,76 @@ EXCEPT for multi-location scenarios, which build `AppState` manually (because
   `validate_references`. If future behaviour change is needed (e.g. tolerate
   missing start time), update both the validator and `_build_slot_interval` in
   `solver.py` together.
+- **New constraints must land in three places.** Any constraint added to the
+  CP-SAT solver or heuristic v2 must also be added to `validation.py` (and, if
+  it affects the objective, `scoring.py`) — the agent solver's guardrails are
+  only as complete as the validator. The seed-parity tests in
+  `backend/tests/test_scoring.py` catch drift: heuristic output must always
+  pass `validate_assignments`.
+
+---
+
+## 6.6) Agent Solver (`backend/agent/`, `backend/scoring.py`)
+
+A third solver mode: an LLM improves a heuristic seed plan through tools
+(propose → verify → repair). Selected per request via
+`SolveRangeRequest.solver_mode: "cpsat" | "heuristic" | "agent"` (the legacy
+`use_heuristic` flag still works; `solver_mode` wins when both are set). The
+dispatch lives in `_solver_subprocess_worker` in `solver.py`, so agent runs
+inherit the subprocess isolation, abort/heartbeat machinery, and the SSE
+progress pipeline unchanged — `SolverOverlay` renders agent runs like any
+other solve (`phase` events for loop progress, one `solution` event for the
+seed and one per accepted improvement, objective on the same minimized scale).
+
+### Flow (`backend/agent/harness.py::agent_solve_range`)
+1. **Seed**: `heuristic_solve_range_v2` produces the initial plan (its
+   per-day `solution` events are muted; phases are forwarded).
+2. **Loop**: the LLM gets a compact problem digest and six tools; it inspects
+   and applies moves on a working copy until it stops, the iteration budget
+   (`AGENT_MAX_ITERATIONS`, default 20) runs out, or the wall clock
+   (`timeout_seconds`, default 300s for agent mode) expires.
+3. **Finalize**: the best-scoring snapshot is returned — never worse than the
+   seed. Any LLM failure (missing key, API error, refusal) degrades to the
+   seed plan with a note; it never surfaces as a 500 once the seed exists.
+
+### Tools (`backend/agent/tools.py`)
+`get_plan_overview`, `get_violations`, `list_open_slots`,
+`list_candidates_for_slot`, `get_clinician_summary`, `apply_moves`. Guardrails
+are structural, not prompt-based: fixed assignments (anything already in app
+state) are immutable, capacity is enforced on assign, and a move batch that
+would create NEW hard violations (relative to the seed baseline — see the
+baseline-diff pattern in §6.5) rolls back atomically. Slot instances are
+addressed as `"<slotId>__<dateISO>"`; slot ids may contain `__`, so parsing
+splits on the LAST separator.
+
+### Scoring (`backend/scoring.py`)
+Pure-Python replica of the CP-SAT objective (same `SolverSettings` weights,
+minimized scale) over a precomputed `ScoringContext`, plus `plan_stats` and
+`open_slots`. Reuses the pure helpers from `solver.py` (slot contexts,
+intervals, YTD) so slot expansion cannot drift. Soft `SolverRule` violations
+are reported by the validator and surfaced to the agent, but do not gate
+acceptance.
+
+### Pluggable LLM backend (`backend/agent/provider.py`)
+The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
+`ProviderResponse` + `LLMProvider.complete`). Implementations:
+- `AnthropicProvider` — official `anthropic` SDK; prompt-caching breakpoint on
+  the system block, adaptive thinking, no sampling params. Needs
+  `ANTHROPIC_API_KEY`.
+- `MockProvider` — deterministic scripted turns for tests; inject in-process
+  or across the subprocess boundary via `AGENT_PROVIDER=mock` +
+  `AGENT_MOCK_SCRIPT=<json path>`.
+Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
+`AGENT_MAX_ITERATIONS`, `AGENT_MAX_TOKENS`) — the spawn subprocess inherits it.
+
+### Tests
+- `backend/tests/test_scoring.py` — scorer/stats + **seed-parity** (heuristic
+  output must validate cleanly and beat the empty plan)
+- `backend/tests/test_agent_tools.py` — working copy, guardrails, snapshots
+- `backend/tests/test_agent_harness.py` — loop behaviour with MockProvider
+  (improvement, rejection, provider errors, budgets, abort, determinism)
+- `backend/tests/test_agent_integration.py` — through POST `/v1/solve/range`
+  with the real subprocess; includes the `use_heuristic` regression guard
 
 ---
 

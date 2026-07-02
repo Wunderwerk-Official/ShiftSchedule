@@ -14,6 +14,11 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES}
+      # Agent solver (optional; only needed for solver_mode="agent").
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-anthropic}
+      AGENT_MODEL: ${AGENT_MODEL:-claude-opus-4-8}
+      AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-20}
     volumes:
       - backend_data:/data
     restart: unless-stopped

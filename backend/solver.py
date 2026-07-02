@@ -342,8 +342,15 @@ def _solver_subprocess_worker(
             except:
                 pass  # Queue full, skip
 
-        # Mode switch: use heuristic or CP-SAT solver
-        if payload.use_heuristic:
+        # Mode switch: agent, heuristic, or CP-SAT solver
+        mode = payload.resolved_mode()
+        if mode == "agent":
+            print(f"[SOLVER] Using AGENT solver for {payload.startISO} to {payload.endISO}")
+            from .agent.harness import agent_solve_range
+            from .state import _load_state
+            state = _load_state(mock_user.username)
+            result = agent_solve_range(payload, state, cancel_event, on_progress, start_time)
+        elif mode == "heuristic":
             print(f"[SOLVER] Using HEURISTIC solver v2 for {payload.startISO} to {payload.endISO}")
             from .heuristic.solver_v2 import heuristic_solve_range_v2
             from .state import _load_state

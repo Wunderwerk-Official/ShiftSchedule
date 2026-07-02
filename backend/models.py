@@ -208,13 +208,22 @@ class SolverRule(BaseModel):
     thenShiftRowId: Optional[str] = None
 
 
+SolverMode = Literal["cpsat", "heuristic", "agent"]
+
+
 class SolveRangeRequest(BaseModel):
     """Request to solve a date range (can be a single day, week, or any range)."""
     startISO: str
     endISO: Optional[str] = None
     only_fill_required: bool = False
     timeout_seconds: Optional[float] = None  # None means use default (60s)
-    use_heuristic: bool = False  # Use heuristic solver instead of CP-SAT
+    use_heuristic: bool = False  # Legacy switch, superseded by solver_mode
+    solver_mode: Optional[SolverMode] = None  # Wins over use_heuristic when set
+
+    def resolved_mode(self) -> SolverMode:
+        if self.solver_mode is not None:
+            return self.solver_mode
+        return "heuristic" if self.use_heuristic else "cpsat"
 
 
 class SolverDebugCheckpoint(BaseModel):
@@ -249,6 +258,7 @@ class SolverDebugInfo(BaseModel):
     cpu_workers_used: int = 0
     cpu_cores_available: int = 0
     sub_scores: Optional[SolverSubScores] = None
+    agent: Optional[Dict[str, Any]] = None  # agent-solver run stats
 
 
 class SolveRangeResponse(BaseModel):
