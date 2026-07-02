@@ -465,7 +465,6 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
         ):
             window_fits += 1
 
-    minutes_by_clinician: Dict[str, int] = dict(ctx.fixed_minutes_by_clinician)
     intervals_by_clinician_date: Dict[Tuple[str, str], List[Tuple[int, int]]] = {}
     locations_by_clinician_date: Dict[Tuple[str, str], set] = {}
     for a in ctx.fixed_assignments:
@@ -479,9 +478,6 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
         intervals_by_clinician_date.setdefault(key, []).append((inst.start, inst.end))
         if inst.location_id:
             locations_by_clinician_date.setdefault(key, set()).add(inst.location_id)
-        minutes_by_clinician[a.clinicianId] = minutes_by_clinician.get(
-            a.clinicianId, 0
-        ) + max(0, inst.end - inst.start)
 
     split_shifts = 0
     for intervals in intervals_by_clinician_date.values():
@@ -503,14 +499,61 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
         1 for locs in locations_by_clinician_date.values() if len(locs) > 1
     )
 
+    # Working-hours deviation is computed PER ISO WEEK with per-week
+    # vacation-scaled targets, mirroring the frontend's live stats
+    # (src/lib/solverStats.ts). A single whole-range comparison would report
+    # ~0 for e.g. 0h in week 1 + 2x target in week 2. (The CP-SAT objective
+    # itself uses the whole-range scale — see score_plan — which is the right
+    # reference for the objective, but not for this user-facing stat.)
+    week_days: Dict[Tuple[int, int], int] = {}
+    for date_iso in ctx.target_day_isos:
+        wk = datetime.fromisoformat(f"{date_iso}T00:00:00").date().isocalendar()[:2]
+        week_days[wk] = week_days.get(wk, 0) + 1
+
+    target_day_set = set(ctx.target_day_isos)
+    vacation_days: Dict[Tuple[str, Tuple[int, int]], int] = {}
+    for clinician in ctx.state.clinicians:
+        for vacation in clinician.vacations or []:
+            try:
+                v_start = datetime.fromisoformat(f"{vacation.startISO}T00:00:00").date()
+                v_end = datetime.fromisoformat(f"{vacation.endISO}T00:00:00").date()
+            except (ValueError, TypeError):
+                continue
+            cursor = v_start
+            while cursor <= v_end:
+                iso = cursor.isoformat()
+                if iso in target_day_set:
+                    wk = cursor.isocalendar()[:2]
+                    key = (clinician.id, wk)
+                    vacation_days[key] = vacation_days.get(key, 0) + 1
+                cursor += timedelta(days=1)
+
+    minutes_by_clinician_week: Dict[Tuple[str, Tuple[int, int]], int] = {}
+
+    def _add_week_minutes(clinician_id: str, date_iso: str, minutes: int) -> None:
+        wk = datetime.fromisoformat(f"{date_iso}T00:00:00").date().isocalendar()[:2]
+        key = (clinician_id, wk)
+        minutes_by_clinician_week[key] = minutes_by_clinician_week.get(key, 0) + minutes
+
+    for a in ctx.fixed_assignments:
+        inst = ctx.instances[f"{a.rowId}__{a.dateISO}"]
+        _add_week_minutes(a.clinicianId, a.dateISO, max(0, inst.end - inst.start))
+    for a, inst in new:
+        _add_week_minutes(a.clinicianId, a.dateISO, max(0, inst.end - inst.start))
+
     hours_deviation = 0
     for cid, contract in ctx.contract_hours.items():
-        total_minutes = minutes_by_clinician.get(cid, 0)
-        target_minutes = int(round(contract * 60 * ctx.scale))
-        tol_minutes = int(round(ctx.tolerance_hours[cid] * 60 * ctx.scale))
-        under = max(0, (target_minutes - tol_minutes) - total_minutes)
-        over = max(0, total_minutes - (target_minutes + tol_minutes))
-        hours_deviation += under + over
+        tol_hours = ctx.tolerance_hours[cid]
+        for wk, days in week_days.items():
+            available = days - vacation_days.get((cid, wk), 0)
+            if available <= 0:
+                continue
+            week_scale = available / 7.0
+            target_minutes = contract * 60 * week_scale
+            tol_minutes = tol_hours * 60 * week_scale
+            total_minutes = minutes_by_clinician_week.get((cid, wk), 0)
+            deviation = abs(total_minutes - target_minutes)
+            hours_deviation += int(round(max(0.0, deviation - tol_minutes)))
 
     return PlanStats(
         total_required_slots=total_required,

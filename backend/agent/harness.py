@@ -218,7 +218,10 @@ def agent_solve_range(
             break
         if response.stop_reason == "tool_use" and response.tool_calls:
             assistant = ChatMessage(
-                role="assistant", content=response.text, tool_calls=response.tool_calls
+                role="assistant",
+                content=response.text,
+                tool_calls=response.tool_calls,
+                raw_content=response.raw_content,
             )
             results = []
             for call in response.tool_calls:
@@ -248,6 +251,7 @@ def agent_solve_range(
                         role="assistant",
                         content=response.text or "(truncated)",
                         tool_calls=response.tool_calls,
+                        raw_content=response.raw_content,
                     )
                 )
                 if response.tool_calls:

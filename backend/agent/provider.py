@@ -46,12 +46,19 @@ class ChatMessage:
     - role "user": plain text in ``content``
     - role "assistant": optional ``content`` text plus ``tool_calls``
     - role "tool": ``tool_results`` answering the preceding assistant turn
+
+    ``raw_content`` is an opaque, provider-specific copy of the assistant
+    turn's content blocks (e.g. Anthropic thinking blocks). Providers that
+    produced it replay it verbatim; other providers ignore it. Without it,
+    thinking blocks would be stripped from replayed assistant turns, which
+    the Anthropic API rejects with a 400 on the next request.
     """
 
     role: Literal["user", "assistant", "tool"]
     content: Optional[str] = None
     tool_calls: List[ToolCall] = field(default_factory=list)
     tool_results: List[ToolResult] = field(default_factory=list)
+    raw_content: Optional[List[dict]] = None
 
 
 @dataclass
@@ -62,6 +69,9 @@ class ProviderResponse:
     stop_reason: str
     usage: Dict[str, int] = field(default_factory=dict)  # input_tokens/output_tokens
     error: Optional[str] = None  # set when stop_reason == "error"
+    # Opaque provider content blocks for replaying this assistant turn
+    # verbatim (see ChatMessage.raw_content).
+    raw_content: Optional[List[dict]] = None
 
 
 class LLMProvider(ABC):

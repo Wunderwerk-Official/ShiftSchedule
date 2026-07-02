@@ -70,7 +70,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
-from .constants import DEFAULT_LOCATION_ID
+from .constants import (
+    DEFAULT_LOCATION_ID,
+    DEFAULT_SUB_SHIFT_MINUTES,
+    DEFAULT_SUB_SHIFT_START_MINUTES,
+)
 from .models import AppState, Assignment, Clinician, SolverRule, SolverSettings
 
 
@@ -155,16 +159,18 @@ def _slot_interval(slot: Any, location_id: str) -> Optional[Tuple[int, int, str]
     """Return ``(start_minutes, end_absolute_minutes, location_id)`` for a template slot.
 
     ``end_absolute_minutes`` accounts for ``endDayOffset`` so overnight slots
-    produce positive durations. Mirrors ``solver._build_slot_interval`` but
-    returns ``None`` when the slot has no start time (instead of silently
-    defaulting — the validator is strict).
+    produce positive durations. Mirrors ``solver._build_slot_interval``
+    including its defaults for missing times: a strict ``None`` here would
+    drop the slot from every hard check (and make ``validate_references``
+    report a false UNKNOWN_SLOT) while the solver and scoring still schedule
+    it.
     """
     start = _parse_time_to_minutes(getattr(slot, "startTime", None))
     if start is None:
-        return None
+        start = DEFAULT_SUB_SHIFT_START_MINUTES
     end = _parse_time_to_minutes(getattr(slot, "endTime", None))
     if end is None:
-        return None
+        end = start + DEFAULT_SUB_SHIFT_MINUTES
     offset_raw = getattr(slot, "endDayOffset", None)
     offset = offset_raw if isinstance(offset_raw, int) else 0
     total_end = end + max(0, min(3, offset)) * 24 * 60
@@ -453,10 +459,16 @@ def validate_overlaps(
             day_minutes = _day_offset(a.dateISO, origin_iso) * 24 * 60
             placed.append((start + day_minutes, start + day_minutes + duration, a))
         placed.sort(key=lambda x: x[0])
-        for i in range(len(placed) - 1):
-            s1, e1, a1 = placed[i]
-            s2, _e2, a2 = placed[i + 1]
-            if s2 < e1:
+        # Sweep with a running maximum end: comparing only consecutive pairs
+        # misses overlaps where a long interval spans a later, non-adjacent
+        # one (e.g. 08-20 vs 09-10 vs 11-12 — sorted, 11-12 doesn't touch
+        # 09-10 but sits inside 08-20).
+        max_end = placed[0][1] if placed else 0
+        max_holder = placed[0][2] if placed else None
+        for i in range(1, len(placed)):
+            s2, e2, a2 = placed[i]
+            if s2 < max_end and max_holder is not None:
+                a1 = max_holder
                 out.append(
                     Violation(
                         code=VIOLATION_OVERLAP,
@@ -474,6 +486,9 @@ def validate_overlaps(
                         },
                     )
                 )
+            if e2 > max_end:
+                max_end = e2
+                max_holder = a2
     return out
 
 
@@ -530,11 +545,13 @@ def validate_on_call_rest(
 
     An "on-call" assignment is one whose slot belongs to the section identified
     by ``solver_settings.onCallRestClassId``. When present, the clinician must
-    not hold any other non-on-call assignment on the N days before and M days
-    after (configured via ``onCallRestDaysBefore`` / ``onCallRestDaysAfter``).
+    not hold ANY other assignment on the N days before and M days after
+    (configured via ``onCallRestDaysBefore`` / ``onCallRestDaysAfter``).
 
-    A second on-call shift within the rest window is allowed (matches the
-    solver behaviour — it only blocks *other* work, not back-to-back on-call).
+    This includes a second on-call shift within the rest window: the CP-SAT
+    solver constrains the sum of ALL assignment vars on rest days to zero
+    (solver.py, _add_on_call_rest_constraints), so back-to-back on-call is a
+    violation there too.
     """
     settings = _resolve_settings(state, solver_settings)
     if not settings.onCallRestEnabled:
@@ -575,7 +592,7 @@ def validate_on_call_rest(
                     clashing = [
                         a
                         for a in by_date.get(day, [])
-                        if a.rowId not in on_call_slot_ids
+                        if a.id != call.id
                     ]
                     for clash in clashing:
                         out.append(

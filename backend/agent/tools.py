@@ -27,6 +27,7 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from ..models import AppState, Assignment, Clinician
 from ..scoring import ScoringContext, open_slots, plan_stats, score_plan
 from ..validation import (
+    VIOLATION_WEEKLY_HOURS,
     Violation,
     validate_assignments,
     validate_solver_rules,
@@ -154,6 +155,10 @@ def _dump(data: Any) -> str:
 
 
 def _violation_key(v: Violation) -> Tuple:
+    if v.code == VIOLATION_WEEKLY_HOURS and v.context:
+        # Keyed by ISO week (not the first assignment date, which shifts when
+        # earlier-in-week assignments change) so the baseline diff is stable.
+        return (v.code, v.clinician_id, v.context.get("iso_year"), v.context.get("iso_week"))
     return (v.code, v.clinician_id, v.date_iso, v.slot_id)
 
 
@@ -198,9 +203,16 @@ class PlanToolExecutor:
         self.moves_rejected = 0
 
         # Baseline = violations of the seed plan. Only NEW hard violations
-        # beyond this set block acceptance.
-        self.baseline_hard_keys: Set[Tuple] = {
-            _violation_key(v) for v in self._hard_violations(self._full_plan())
+        # beyond this set block acceptance. For magnitude-typed violations
+        # (weekly hours) also record the baseline magnitude: piling MORE hours
+        # onto an already-over week keeps the same violation key and would
+        # otherwise be masked by the set diff.
+        baseline = self._hard_violations(self._full_plan())
+        self.baseline_hard_keys: Set[Tuple] = {_violation_key(v) for v in baseline}
+        self.baseline_week_minutes: Dict[Tuple, int] = {
+            _violation_key(v): int((v.context or {}).get("assigned_minutes") or 0)
+            for v in baseline
+            if v.code == VIOLATION_WEEKLY_HOURS
         }
 
         seed_score = score_plan(ctx, self._working_list())
@@ -229,6 +241,20 @@ class PlanToolExecutor:
         )
         return report.violations
 
+    def _is_new_hard(self, v: Violation, extra_baseline: Optional[Set[Tuple]] = None) -> bool:
+        """True when a violation is NEW (or worsened) relative to the seed baseline."""
+        key = _violation_key(v)
+        if extra_baseline is not None and key in extra_baseline:
+            return False
+        if key not in self.baseline_hard_keys:
+            return True
+        if v.code == VIOLATION_WEEKLY_HOURS:
+            baseline_minutes = self.baseline_week_minutes.get(key)
+            current_minutes = int((v.context or {}).get("assigned_minutes") or 0)
+            if baseline_minutes is not None and current_minutes > baseline_minutes:
+                return True  # same violating week, but worsened
+        return False
+
     def _counts_by_instance(self, working: List[Assignment]) -> Dict[str, int]:
         counts: Dict[str, int] = dict(self.ctx.fixed_counts)
         for a in working:
@@ -247,7 +273,7 @@ class PlanToolExecutor:
         hard_counts: Dict[str, int] = {}
         for v in hard:
             hard_counts[v.code] = hard_counts.get(v.code, 0) + 1
-        new_hard = [v for v in hard if _violation_key(v) not in self.baseline_hard_keys]
+        new_hard = [v for v in hard if self._is_new_hard(v)]
         return {
             "score": score.total,
             "score_components": score.components,
@@ -309,7 +335,7 @@ class PlanToolExecutor:
                         "clinicianId": v.clinician_id,
                         "dateISO": v.date_iso,
                         "slot_id": v.slot_id,
-                        "new": _violation_key(v) not in self.baseline_hard_keys,
+                        "new": self._is_new_hard(v),
                     }
                 )
         if severity in (None, "soft"):
@@ -377,8 +403,7 @@ class PlanToolExecutor:
                 {
                     v.code
                     for v in self._hard_violations(self._full_plan(trial))
-                    if _violation_key(v) not in current_hard_keys
-                    and _violation_key(v) not in self.baseline_hard_keys
+                    if self._is_new_hard(v, extra_baseline=current_hard_keys)
                 }
             )
             entry = {
@@ -507,7 +532,7 @@ class PlanToolExecutor:
         new_hard = [
             {"code": v.code, "message": v.message}
             for v in self._hard_violations(self._full_plan(trial_list))
-            if _violation_key(v) not in self.baseline_hard_keys
+            if self._is_new_hard(v)
         ]
         if new_hard:
             self.moves_rejected += len(moves)
@@ -556,10 +581,20 @@ class PlanToolExecutor:
         for a in self._full_plan():
             if a.clinicianId != clinician_id:
                 continue
-            inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
-            if inst is None:
+            if a.rowId.startswith("pool-"):
                 continue
             if date.fromisoformat(a.dateISO).isocalendar()[:2] != target_week:
                 continue
-            minutes += max(0, inst.end - inst.start)
+            inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+            if inst is not None:
+                minutes += max(0, inst.end - inst.start)
+                continue
+            # Fixed assignments OUTSIDE the solve range have no instance but
+            # still count toward the week (validate_weekly_hours counts them,
+            # so the advisory number must too or the model proposes moves that
+            # then get rejected).
+            interval = self.ctx.all_slot_intervals.get(a.rowId)
+            if interval is not None:
+                start, end, _loc = interval
+                minutes += max(0, end - start)
         return minutes / 60.0

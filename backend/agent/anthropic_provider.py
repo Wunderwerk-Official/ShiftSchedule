@@ -47,7 +47,13 @@ class AnthropicProvider(LLMProvider):
     ) -> ProviderResponse:
         anthropic = self._anthropic
         try:
-            response = self._client.with_options(timeout=timeout_seconds).messages.create(
+            # max_retries=0: the harness sizes timeout_seconds to the remaining
+            # wall-clock budget; SDK retries (2 by default, full timeout each)
+            # could otherwise block ~3x past the solve deadline. Transient
+            # failures degrade to the best-plan-so-far path instead.
+            response = self._client.with_options(
+                timeout=timeout_seconds, max_retries=0
+            ).messages.create(
                 model=self._config.model,
                 max_tokens=self._config.max_tokens,
                 thinking={"type": "adaptive"},
@@ -81,7 +87,12 @@ class AnthropicProvider(LLMProvider):
 
         text_parts: List[str] = []
         tool_calls: List[ToolCall] = []
+        raw_content: List[dict] = []
         for block in response.content:
+            # Keep EVERY block (thinking included) for verbatim replay: the
+            # API requires thinking blocks to be echoed back unchanged when
+            # continuing the conversation; stripping them 400s the next call.
+            raw_content.append(block.model_dump(exclude_none=True))
             if block.type == "text":
                 text_parts.append(block.text)
             elif block.type == "tool_use":
@@ -101,6 +112,7 @@ class AnthropicProvider(LLMProvider):
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             usage=usage,
+            raw_content=raw_content,
         )
 
     @staticmethod
@@ -110,6 +122,12 @@ class AnthropicProvider(LLMProvider):
             if msg.role == "user":
                 out.append({"role": "user", "content": msg.content or ""})
             elif msg.role == "assistant":
+                if msg.raw_content is not None:
+                    # Replay the turn exactly as the API returned it —
+                    # thinking blocks included (required for adaptive
+                    # thinking + tool use).
+                    out.append({"role": "assistant", "content": msg.raw_content})
+                    continue
                 blocks: List[dict] = []
                 if msg.content:
                     blocks.append({"type": "text", "text": msg.content})
