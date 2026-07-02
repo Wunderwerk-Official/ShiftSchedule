@@ -11,6 +11,7 @@ from backend.models import (
     AppState,
     Assignment,
     Location,
+    PreferredWorkingTime,
     SolverSettings,
     TemplateBlock,
     TemplateRowBand,
@@ -19,20 +20,30 @@ from backend.models import (
     WeeklyTemplateLocation,
 )
 from backend.validation import (
+    VIOLATION_CAPACITY,
+    VIOLATION_MANDATORY_WINDOW,
     VIOLATION_ON_CALL_REST,
     VIOLATION_OVERLAP,
     VIOLATION_QUALIFICATION,
     VIOLATION_SAME_LOCATION,
+    VIOLATION_SOLVER_RULE,
+    VIOLATION_SPLIT_SHIFT,
     VIOLATION_UNKNOWN_CLINICIAN,
     VIOLATION_UNKNOWN_SLOT,
     VIOLATION_VACATION,
+    VIOLATION_WEEKLY_HOURS,
     validate_assignments,
+    validate_capacity,
+    validate_mandatory_windows,
     validate_on_call_rest,
     validate_overlaps,
     validate_qualifications,
     validate_references,
     validate_same_location_per_day,
+    validate_solver_rules,
+    validate_split_shifts,
     validate_vacations,
+    validate_weekly_hours,
 )
 
 from .conftest import (
@@ -467,3 +478,358 @@ def test_by_code_groups_violations():
     grouped = report.by_code()
     assert VIOLATION_QUALIFICATION in grouped
     assert len(grouped[VIOLATION_QUALIFICATION]) == 1
+
+
+# ---------------------------------------------------------------------------
+# Mandatory working windows
+# ---------------------------------------------------------------------------
+
+
+def test_mandatory_window_violation_when_slot_outside_window():
+    clinician = make_clinician("clin-1", "Alice")
+    clinician.preferredWorkingTimes = {
+        "mon": PreferredWorkingTime(startTime="08:00", endTime="12:00", requirement="mandatory")
+    }
+    state = make_app_state(
+        clinicians=[clinician],
+        # default slot-a__mon is 08:00-16:00 — extends past the 12:00 window end
+        assignments=[make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1")],
+    )
+    violations = validate_mandatory_windows(state, state.assignments)
+    assert len(violations) == 1
+    assert violations[0].code == VIOLATION_MANDATORY_WINDOW
+    assert violations[0].context["window_end"] == 12 * 60
+
+
+def test_mandatory_window_ok_when_slot_fits():
+    clinician = make_clinician("clin-1", "Alice")
+    clinician.preferredWorkingTimes = {
+        "mon": PreferredWorkingTime(startTime="06:00", endTime="18:00", requirement="mandatory")
+    }
+    state = make_app_state(
+        clinicians=[clinician],
+        assignments=[make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1")],
+    )
+    assert validate_mandatory_windows(state, state.assignments) == []
+
+
+def test_mandatory_window_preference_requirement_is_soft_and_ignored():
+    clinician = make_clinician("clin-1", "Alice")
+    clinician.preferredWorkingTimes = {
+        "mon": PreferredWorkingTime(startTime="08:00", endTime="12:00", requirement="preference")
+    }
+    state = make_app_state(
+        clinicians=[clinician],
+        assignments=[make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1")],
+    )
+    assert validate_mandatory_windows(state, state.assignments) == []
+
+
+def test_mandatory_window_only_applies_to_matching_weekday():
+    clinician = make_clinician("clin-1", "Alice")
+    clinician.preferredWorkingTimes = {
+        "tue": PreferredWorkingTime(startTime="08:00", endTime="12:00", requirement="mandatory")
+    }
+    state = make_app_state(
+        clinicians=[clinician],
+        # Assignment is on Monday; the mandatory window is for Tuesday
+        assignments=[make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1")],
+    )
+    assert validate_mandatory_windows(state, state.assignments) == []
+
+
+# ---------------------------------------------------------------------------
+# Weekly hours cap
+# ---------------------------------------------------------------------------
+
+
+def _three_day_slots():
+    return [
+        make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+        make_template_slot("slot-a__tue", col_band_id="col-tue-1"),
+        make_template_slot("slot-a__wed", col_band_id="col-wed-1"),
+    ]
+
+
+def test_weekly_hours_violation_when_cap_exceeded():
+    # 8h contract + 5h default tolerance = 13h cap; three 8h shifts = 24h
+    clinician = make_clinician("clin-1", "Alice", working_hours_per_week=8.0)
+    state = make_app_state(
+        clinicians=[clinician],
+        slots=_three_day_slots(),
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-a__tue", "2026-01-06", "clin-1"),
+            make_assignment("a3", "slot-a__wed", "2026-01-07", "clin-1"),
+        ],
+    )
+    violations = validate_weekly_hours(state, state.assignments)
+    assert len(violations) == 1
+    assert violations[0].code == VIOLATION_WEEKLY_HOURS
+    assert violations[0].clinician_id == "clin-1"
+    assert violations[0].context["assigned_minutes"] == 24 * 60
+    assert violations[0].context["max_minutes"] == 13 * 60
+
+
+def test_weekly_hours_ok_within_cap():
+    # 40h contract + 5h tolerance; three 8h shifts = 24h — fine
+    clinician = make_clinician("clin-1", "Alice", working_hours_per_week=40.0)
+    state = make_app_state(
+        clinicians=[clinician],
+        slots=_three_day_slots(),
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-a__tue", "2026-01-06", "clin-1"),
+            make_assignment("a3", "slot-a__wed", "2026-01-07", "clin-1"),
+        ],
+    )
+    assert validate_weekly_hours(state, state.assignments) == []
+
+
+def test_weekly_hours_skips_clinicians_without_contract():
+    clinician = make_clinician("clin-1", "Alice", working_hours_per_week=None)
+    state = make_app_state(
+        clinicians=[clinician],
+        slots=_three_day_slots(),
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-a__tue", "2026-01-06", "clin-1"),
+            make_assignment("a3", "slot-a__wed", "2026-01-07", "clin-1"),
+        ],
+    )
+    assert validate_weekly_hours(state, state.assignments) == []
+
+
+def test_weekly_hours_counts_per_iso_week_separately():
+    # Two 8h shifts in DIFFERENT ISO weeks each stay under the 13h cap
+    clinician = make_clinician("clin-1", "Alice", working_hours_per_week=8.0)
+    state = make_app_state(
+        clinicians=[clinician],
+        slots=_three_day_slots(),
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-a__mon", "2026-01-12", "clin-1"),
+        ],
+    )
+    assert validate_weekly_hours(state, state.assignments) == []
+
+
+# ---------------------------------------------------------------------------
+# Split shifts (continuity)
+# ---------------------------------------------------------------------------
+
+
+def _gap_slots():
+    return [
+        make_template_slot("slot-morning", col_band_id="col-mon-1",
+                           start_time="08:00", end_time="12:00"),
+        make_template_slot("slot-late", col_band_id="col-mon-1",
+                           start_time="13:00", end_time="17:00"),
+        make_template_slot("slot-noon", col_band_id="col-mon-1",
+                           start_time="12:00", end_time="13:00"),
+    ]
+
+
+def test_split_shift_violation_on_gap():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        slots=_gap_slots(),
+        assignments=[
+            make_assignment("a1", "slot-morning", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-late", "2026-01-05", "clin-1"),
+        ],
+    )
+    violations = validate_split_shifts(state, state.assignments)
+    assert len(violations) == 1
+    assert violations[0].code == VIOLATION_SPLIT_SHIFT
+    assert violations[0].context["blocks"] == 2
+
+
+def test_split_shift_ok_when_slots_adjacent():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        slots=_gap_slots(),
+        assignments=[
+            make_assignment("a1", "slot-morning", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-noon", "2026-01-05", "clin-1"),
+            make_assignment("a3", "slot-late", "2026-01-05", "clin-1"),
+        ],
+    )
+    assert validate_split_shifts(state, state.assignments) == []
+
+
+def test_split_shift_ignored_when_setting_disabled():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        slots=_gap_slots(),
+        solver_settings={"preferContinuousShifts": False},
+        assignments=[
+            make_assignment("a1", "slot-morning", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-late", "2026-01-05", "clin-1"),
+        ],
+    )
+    assert validate_split_shifts(state, state.assignments) == []
+
+
+# ---------------------------------------------------------------------------
+# Capacity
+# ---------------------------------------------------------------------------
+
+
+def test_capacity_violation_in_only_fill_required_mode():
+    # Default slot has requiredSlots=1; two assignments exceed it
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-a__mon", "2026-01-05", "clin-2"),
+        ],
+    )
+    violations = validate_capacity(state, state.assignments, only_fill_required=True)
+    assert len(violations) == 1
+    assert violations[0].code == VIOLATION_CAPACITY
+    assert violations[0].context == {"count": 2, "capacity": 1, "target": 1}
+
+
+def test_capacity_distribute_all_allows_extra_assignment():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-a__mon", "2026-01-05", "clin-2"),
+        ],
+    )
+    # target 1 + distribute-all extra 1 = capacity 2
+    assert validate_capacity(state, state.assignments, only_fill_required=False) == []
+
+
+def test_capacity_respects_slot_overrides():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-a__mon", "2026-01-05", "clin-2"),
+        ],
+    )
+    state.slotOverridesByKey = {"slot-a__mon__2026-01-05": 1}
+    # target 1 + override 1 = 2 — two assignments fit even in only-fill-required
+    assert validate_capacity(state, state.assignments, only_fill_required=True) == []
+
+
+def test_capacity_skips_instances_on_non_matching_day_type():
+    # slot-a__mon targets Mondays; an assignment on Tuesday is not a capacity
+    # concern (the solver never creates such instances)
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+        assignments=[
+            make_assignment("a1", "slot-a__mon", "2026-01-06", "clin-1"),
+            make_assignment("a2", "slot-a__mon", "2026-01-06", "clin-2"),
+        ],
+    )
+    assert validate_capacity(state, state.assignments, only_fill_required=True) == []
+
+
+# ---------------------------------------------------------------------------
+# Solver rules (soft, separate from validate_assignments)
+# ---------------------------------------------------------------------------
+
+
+def _rule_state(then_type: str, then_shift_row_id=None, enabled=True, assignments=None):
+    slots = [
+        make_template_slot("slot-night", col_band_id="col-mon-1",
+                           start_time="20:00", end_time="06:00", end_day_offset=1),
+        make_template_slot("slot-day-tue", col_band_id="col-tue-1"),
+        make_template_slot("slot-alt-tue", col_band_id="col-tue-1",
+                           start_time="10:00", end_time="18:00"),
+    ]
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        slots=slots,
+        assignments=assignments or [],
+    )
+    state.solverRules = [
+        {
+            "id": "rule-1",
+            "name": "After night shift",
+            "enabled": enabled,
+            "ifShiftRowId": "slot-night",
+            "dayDelta": 1,
+            "thenType": then_type,
+            "thenShiftRowId": then_shift_row_id,
+        }
+    ]
+    return state
+
+
+def test_solver_rule_off_violation():
+    state = _rule_state(
+        "off",
+        assignments=[
+            make_assignment("a1", "slot-night", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-day-tue", "2026-01-06", "clin-1"),
+        ],
+    )
+    violations = validate_solver_rules(state, state.assignments)
+    assert len(violations) == 1
+    assert violations[0].code == VIOLATION_SOLVER_RULE
+    assert violations[0].date_iso == "2026-01-06"
+
+
+def test_solver_rule_off_satisfied_by_free_day_and_pool_rows():
+    state = _rule_state(
+        "off",
+        assignments=[
+            make_assignment("a1", "slot-night", "2026-01-05", "clin-1"),
+            # Pool rows (rest day) do not count as work
+            make_assignment("a2", "pool-rest-day", "2026-01-06", "clin-1"),
+        ],
+    )
+    assert validate_solver_rules(state, state.assignments) == []
+
+
+def test_solver_rule_shift_row_violation_and_satisfaction():
+    violating = _rule_state(
+        "shiftRow",
+        then_shift_row_id="slot-day-tue",
+        assignments=[
+            make_assignment("a1", "slot-night", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-alt-tue", "2026-01-06", "clin-1"),
+        ],
+    )
+    violations = validate_solver_rules(violating, violating.assignments)
+    assert len(violations) == 1
+    assert violations[0].slot_id == "slot-day-tue"
+
+    satisfied = _rule_state(
+        "shiftRow",
+        then_shift_row_id="slot-day-tue",
+        assignments=[
+            make_assignment("a1", "slot-night", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-day-tue", "2026-01-06", "clin-1"),
+        ],
+    )
+    assert validate_solver_rules(satisfied, satisfied.assignments) == []
+
+
+def test_solver_rule_disabled_is_ignored():
+    state = _rule_state(
+        "off",
+        enabled=False,
+        assignments=[
+            make_assignment("a1", "slot-night", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-day-tue", "2026-01-06", "clin-1"),
+        ],
+    )
+    assert validate_solver_rules(state, state.assignments) == []
+
+
+def test_solver_rules_not_part_of_aggregate_report():
+    state = _rule_state(
+        "off",
+        assignments=[
+            make_assignment("a1", "slot-night", "2026-01-05", "clin-1"),
+            make_assignment("a2", "slot-day-tue", "2026-01-06", "clin-1"),
+        ],
+    )
+    report = validate_assignments(state, state.assignments)
+    assert VIOLATION_SOLVER_RULE not in {v.code for v in report.violations}
