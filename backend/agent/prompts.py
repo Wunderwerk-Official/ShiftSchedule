@@ -7,7 +7,7 @@ problem digest goes into the first user message.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 
 from ..models import AppState
 from ..scoring import PlanScore, PlanStats, OpenSlot, ScoringContext

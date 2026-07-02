@@ -4,15 +4,13 @@ from __future__ import annotations
 
 import time
 
-from typing import List
-
 from backend.agent.config import AgentConfig
 from backend.agent.harness import agent_solve_range
 from backend.agent.mock_provider import MockProvider
-from backend.agent.provider import ChatMessage, LLMProvider, ProviderResponse, ToolSpec
+from backend.agent.provider import LLMProvider, ProviderResponse
 from backend.models import SolveRangeRequest
 
-from .conftest import make_app_state, make_assignment, make_clinician
+from .conftest import make_app_state, make_clinician
 
 MON = "2026-01-05"
 
@@ -61,33 +59,7 @@ def _two_clinician_state():
     )
 
 
-def _vacation_state():
-    """The only qualified clinician is on vacation -> the seed leaves the
-    slot open, giving the agent something to (not) fix, and clin-2 free."""
-    from backend.models import VacationRange
-
-    return make_app_state(
-        clinicians=[
-            make_clinician(
-                "clin-1",
-                "Alice",
-                vacations=[VacationRange(id="v", startISO=MON, endISO=MON)],
-            ),
-        ]
-    )
-
-
-def test_mock_script_fixing_open_slot_is_reflected_in_response():
-    # Seed leaves the slot open (only clinician on vacation is unassignable —
-    # instead use a state where the heuristic CAN'T fill: no qualified
-    # clinician free). Simpler: state with clinician on vacation; the mock
-    # script cannot legally fill it either, so instead run the positive case:
-    # seed fills slot with clin-1; script swaps to clin-2 (equal score) and
-    # then fills nothing else -> response equals best (seed, since swap is
-    # not an improvement). The stronger positive case: seed can't fill
-    # because heuristic assigned clin-1 elsewhere is complex — so we assert
-    # the accepted-move path via a state with TWO required slots where the
-    # heuristic fills both and the script performs a legal no-op inspection.
+def test_inspection_only_script_keeps_seed_and_reports_iterations():
     state = _two_clinician_state()
     script = [
         {"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]},
@@ -115,14 +87,11 @@ def test_mock_script_fixing_open_slot_is_reflected_in_response():
 
 
 def test_agent_move_improves_plan_and_emits_solution():
-    # Manual assignment already covers the slot for clin-1; a second state
-    # slot stays open because the heuristic can't fill it (clin-2 not
-    # qualified for section-a? -> make clin-2 qualified but on vacation for
-    # the heuristic... simplest reliable setup: seed = [] by giving the
-    # heuristic nothing to fill (slot fully manned manually), then the agent
-    # unassigns nothing and fills nothing -> no improvement. Instead:
-    # DISTRIBUTE-ALL mode gives capacity 2 on the slot; the heuristic fills
-    # only required (1), the agent adds a second assignment -> improvement.
+    # Distribute-all mode gives the slot +1 capacity headroom; the heuristic
+    # fills only the required position, the agent adds a second assignment
+    # for the free clinician -> a real improvement. One of the two scripted
+    # assigns targets the clinician the heuristic already used and must be
+    # rejected; the other succeeds.
     state = _two_clinician_state()
     slot_key = f"slot-a__mon__{MON}"
     script = [
@@ -297,7 +266,6 @@ def test_cancel_between_iterations_returns_aborted_best():
 
 
 def test_determinism_same_script_same_output():
-    state = _two_clinician_state()
     script = [
         {"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]},
         {"text": "done"},
