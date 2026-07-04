@@ -356,3 +356,68 @@ def test_rejected_batch_emits_activity():
     assert payload["applied"] is False
     assert events and events[-1][0] == "moves_rejected"
     assert events[-1][1]["count"] == 1
+
+
+# ---------------------------------------------------------------------------
+# YTD progress (percent of target hours worked up to a given day)
+# ---------------------------------------------------------------------------
+
+MAR_MON = "2026-03-02"
+
+
+def _ytd_state(**clin_kwargs):
+    """One 8h Monday slot; clin-1 has an 8h contract and one 8h shift on
+    2026-01-05 in the books."""
+    return make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Dr. Alice", working_hours_per_week=8, **clin_kwargs),
+            make_clinician("clin-2", "Dr. Bob", working_hours_per_week=8),
+        ],
+        assignments=[make_assignment("hist-1", "slot-a__mon", "2026-01-05", "clin-1")],
+    )
+
+
+def test_ytd_completion_pct_math():
+    state = _ytd_state()
+    executor = _make_executor(state, start=MAR_MON, end=MAR_MON)
+    # 2026-01-15: 2 weeks elapsed -> target 16h; worked 8h -> 50%
+    assert executor.ytd_completion_pct("clin-1", "2026-01-15") == 50
+    # clin-2 never worked -> 0%
+    assert executor.ytd_completion_pct("clin-2", "2026-01-15") == 0
+    # less than one week of history -> None
+    assert executor.ytd_completion_pct("clin-1", "2026-01-05") is None
+    # no contract -> None
+    state2 = make_app_state(clinicians=[make_clinician("clin-3", "Dr. C")])
+    executor2 = _make_executor(state2, start=MAR_MON, end=MAR_MON)
+    assert executor2.ytd_completion_pct("clin-3", "2026-01-15") is None
+
+
+def test_ytd_completion_pct_counts_working_copy():
+    state = _ytd_state()
+    # Working copy: the agent's own assignment for clin-2 on 2026-01-05...
+    seed = [_seed("slot-a__mon", MAR_MON, "clin-2")]
+    executor = _make_executor(state, seed, start=MAR_MON, end=MAR_MON)
+    # ...does NOT count before its date, but counts for a later as_of:
+    day_after = "2026-03-03"
+    with_copy = executor.ytd_completion_pct("clin-2", day_after)
+    assert with_copy is not None and with_copy > 0
+    assert executor.ytd_completion_pct("clin-2", MAR_MON) == 0
+
+
+def test_candidates_sorted_most_behind_first_and_tool_lists_progress():
+    state = _ytd_state()
+    executor = _make_executor(state, start=MAR_MON, end=MAR_MON, only_fill_required=False)
+    payload, is_error = _run(
+        executor, "list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MAR_MON}"}
+    )
+    assert not is_error
+    eligible = [c for c in payload["candidates"] if c["eligible"]]
+    # clin-2 (0% worked) must rank before clin-1 (ahead of target)
+    pcts = [c["ytd_worked_pct"] for c in eligible]
+    assert pcts == sorted(pcts)
+
+    progress, is_error = _run(executor, "get_ytd_progress", {})
+    assert not is_error
+    aliases = [e["clinicianId"] for e in progress["clinicians"]]
+    assert aliases[0] == executor.alias_by_id["clin-2"]  # most behind first
+    assert all(e["clinicianId"].startswith("D") for e in progress["clinicians"])

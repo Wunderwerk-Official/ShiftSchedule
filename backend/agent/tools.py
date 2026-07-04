@@ -88,8 +88,10 @@ TOOL_SPECS_RAW = [
             "For one open slot instance, evaluate every clinician: whether "
             "assigning them would be legal (eligible=true) and if not, which "
             "violation codes it would create. Includes week hours vs "
-            "contract, YTD deficit, and preference/time-window fit to help "
-            "you pick the best candidate."
+            "contract, ytd_worked_pct (percent of year-to-date target hours "
+            "already worked up to the slot's day — lower = further behind), "
+            "and preference/time-window fit. Eligible candidates are sorted "
+            "most-behind first: prefer the top of the list."
         ),
         "input_schema": {
             "type": "object",
@@ -102,13 +104,29 @@ TOOL_SPECS_RAW = [
         "name": "get_clinician_summary",
         "description": (
             "One clinician's schedule in the solve range: assignments per "
-            "day (fixed vs yours), weekly hours vs contract+tolerance, YTD "
-            "deficit, preferred sections, time windows, vacations."
+            "day (fixed vs yours), weekly hours vs contract+tolerance, "
+            "ytd_worked_pct, preferred sections, time windows, vacations."
         ),
         "input_schema": {
             "type": "object",
             "properties": {"clinicianId": {"type": "string"}},
             "required": ["clinicianId"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_ytd_progress",
+        "description": (
+            "Year-to-date fairness snapshot: for every clinician, the percent "
+            "of their year-to-date target hours already worked as of a date "
+            "(default: the range start), counting your working copy. 100 = "
+            "exactly on target, below 100 = behind. Sorted most-behind first "
+            "— give extra hours to clinicians at the top so everyone "
+            "converges to the same percentage of their contract."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"dateISO": {"type": "string"}},
             "additionalProperties": False,
         },
     },
@@ -319,6 +337,7 @@ class PlanToolExecutor:
             "list_open_slots": self._tool_open_slots,
             "list_candidates_for_slot": self._tool_candidates,
             "get_clinician_summary": self._tool_clinician_summary,
+            "get_ytd_progress": self._tool_ytd_progress,
             "apply_moves": self._tool_apply_moves,
         }
         handler = handlers.get(name)
@@ -431,7 +450,9 @@ class PlanToolExecutor:
                 "reasons": new_codes if new_codes else ([] if capacity_left > 0 else ["CAPACITY_EXCEEDED"]),
                 "week_hours": round(self._week_hours(clinician.id, inst.date_iso), 1),
                 "contract_hours": clinician.workingHoursPerWeek,
-                "ytd_deficit_pct": self.ctx.ytd_deficit_pct.get(clinician.id, 0),
+                # % of YTD target worked up to THIS slot's day, including the
+                # working copy — lower = further behind = should be preferred.
+                "ytd_worked_pct": self.ytd_completion_pct(clinician.id, inst.date_iso),
                 "prefers_section": inst.section_id in (clinician.preferredClassIds or []),
             }
             window = self.ctx.window_by_clinician_date.get((clinician.id, inst.date_iso))
@@ -440,7 +461,12 @@ class PlanToolExecutor:
                     "fit" if inst.start >= window[1] and inst.end <= window[2] else "outside"
                 )
             candidates.append(entry)
-        candidates.sort(key=lambda c: (not c["eligible"], -c.get("ytd_deficit_pct", 0)))
+        candidates.sort(
+            key=lambda c: (
+                not c["eligible"],
+                c.get("ytd_worked_pct") if c.get("ytd_worked_pct") is not None else 999,
+            )
+        )
         return {"slot_key": slot_key, "capacity_left": capacity_left, "candidates": candidates}
 
     def _tool_clinician_summary(self, args: dict) -> dict:
@@ -470,7 +496,7 @@ class PlanToolExecutor:
             "contract_hours_per_week": clinician.workingHoursPerWeek,
             "tolerance_hours": _tol if _tol is not None else 5,
             "week_hours": weeks,
-            "ytd_deficit_pct": self.ctx.ytd_deficit_pct.get(cid, 0),
+            "ytd_worked_pct": self.ytd_completion_pct(cid, self.ctx.start_iso),
             "qualified_sections": clinician.qualifiedClassIds,
             "preferred_sections": clinician.preferredClassIds or [],
             "preferred_working_times": {
@@ -486,6 +512,27 @@ class PlanToolExecutor:
                 for v in clinician.vacations or []
             ],
             "assignments_by_date": by_date,
+        }
+
+    def _tool_ytd_progress(self, args: dict) -> dict:
+        as_of = args.get("dateISO") or self.ctx.start_iso
+        entries = []
+        for clinician in self.state.clinicians:
+            entries.append(
+                {
+                    "clinicianId": self._alias(clinician.id),
+                    "ytd_worked_pct": self.ytd_completion_pct(clinician.id, as_of),
+                    "contract_hours_per_week": clinician.workingHoursPerWeek,
+                }
+            )
+        entries.sort(
+            key=lambda e: e["ytd_worked_pct"] if e["ytd_worked_pct"] is not None else 999
+        )
+        return {
+            "as_of": as_of,
+            "note": "100 = exactly on target; lower = behind (prefer these). "
+            "Includes your working copy. null = no contract or no history yet.",
+            "clinicians": entries,
         }
 
     def _tool_apply_moves(self, args: dict) -> dict:
@@ -744,3 +791,67 @@ class PlanToolExecutor:
                 start, end, _loc = interval
                 minutes += max(0, end - start)
         return minutes / 60.0
+
+    def ytd_completion_pct(self, clinician_id: str, as_of_iso: str) -> Optional[int]:
+        """Percent of the clinician's year-to-date target hours actually
+        worked before ``as_of_iso`` (100 = exactly on plan, 80 = 20% behind).
+
+        Counts fixed history plus the current working copy, so the number
+        shifts while the agent fills earlier days of the range — assigning
+        someone on Monday raises their percentage for Friday's decision.
+        Vacation days reduce the target (same crediting as the CP-SAT YTD
+        balance in solver._compute_ytd_deficit_hours). Returns None when the
+        clinician has no positive contract or the year has less than one
+        week of history at ``as_of_iso``.
+        """
+        from datetime import date, timedelta
+
+        clinician = self.clinicians_by_id.get(clinician_id)
+        if clinician is None:
+            return None
+        contract = clinician.workingHoursPerWeek
+        if not isinstance(contract, (int, float)) or contract <= 0:
+            return None
+        try:
+            as_of = date.fromisoformat(as_of_iso)
+        except (TypeError, ValueError):
+            return None
+        year_start = date(as_of.year, 1, 1)
+        weeks_elapsed = (as_of - year_start).days / 7.0
+        if weeks_elapsed < 1.0:
+            return None
+
+        vacation_days = 0
+        for vacation in clinician.vacations or []:
+            try:
+                v_start = date.fromisoformat(vacation.startISO)
+                v_end = date.fromisoformat(vacation.endISO)
+            except (TypeError, ValueError, AttributeError):
+                continue
+            overlap_start = max(v_start, year_start)
+            overlap_end = min(v_end, as_of - timedelta(days=1))
+            if overlap_end >= overlap_start:
+                vacation_days += (overlap_end - overlap_start).days + 1
+        effective_weeks = max(0.0, weeks_elapsed - vacation_days / 7.0)
+        expected_minutes = contract * 60 * effective_weeks
+        if expected_minutes <= 0:
+            return None
+
+        year_start_iso = year_start.isoformat()
+        minutes = 0
+        for a in self._full_plan():
+            if a.clinicianId != clinician_id:
+                continue
+            if a.rowId.startswith("pool-"):
+                continue
+            if not (year_start_iso <= a.dateISO < as_of_iso):
+                continue
+            inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+            if inst is not None:
+                minutes += max(0, inst.end - inst.start)
+                continue
+            interval = self.ctx.all_slot_intervals.get(a.rowId)
+            if interval is not None:
+                start, end, _loc = interval
+                minutes += max(0, end - start)
+        return max(0, min(200, round(minutes / expected_minutes * 100)))

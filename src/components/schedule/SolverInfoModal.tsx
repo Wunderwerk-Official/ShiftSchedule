@@ -570,13 +570,12 @@ export default function SolverInfoModal({
                     <li>Fair distribution of workload across the team</li>
                   </ul>
                   <p>
-                    Two solvers are available in the planning panel:{" "}
-                    <span className="font-medium">Optimizer</span> explores thousands of
-                    combinations mathematically (fast, deterministic, no AI), while{" "}
-                    <span className="font-medium">AI Agent</span> builds a draft plan and
-                    lets Claude improve it step by step — following the model choice and
-                    free-text instructions from Settings → Solver. Both respect the same
-                    hard rules; names are anonymized before anything is sent to the AI.
+                    Planning runs as an AI agent: a fast draft plan is built first, then
+                    Claude reviews and improves it step by step — filling open slots,
+                    balancing hours (preferring people behind on their yearly target),
+                    and following the free-text instructions from Settings → Solver.
+                    Names are anonymized before anything is sent to the AI, and the
+                    hard rules above can never be broken.
                   </p>
                   <p className="text-xs text-slate-400 dark:text-slate-500">
                     Longer date ranges or more clinicians will require more time to solve.

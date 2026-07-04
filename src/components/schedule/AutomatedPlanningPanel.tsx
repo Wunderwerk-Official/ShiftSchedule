@@ -84,7 +84,6 @@ export default function AutomatedPlanningPanel({
   const [endInput, setEndInput] = useState("");
   const [hasTouched, setHasTouched] = useState(false);
   const [strategy, setStrategy] = useState<"fill" | "distribute">("fill");
-  const [solverMode, setSolverMode] = useState<SolverMode>("cpsat");
   const [localError, setLocalError] = useState<string | null>(null);
   const [resetPanelOpen, setResetPanelOpen] = useState(false);
   const [resetPanelAbove, setResetPanelAbove] = useState(false);
@@ -183,13 +182,15 @@ export default function AutomatedPlanningPanel({
   const handleRun = () => {
     const range = parseRange();
     if (!range) return;
+    // Planning always runs through the AI agent pipeline (heuristic draft +
+    // Claude refinement). The CP-SAT optimizer still exists in the backend
+    // for tests/API use, but offering both in the UI only confused users.
     onRun({
       startISO: range.startISO,
       endISO: range.endISO,
       onlyFillRequired: strategy === "fill",
-      timeoutSeconds:
-        solverMode === "agent" ? Math.max(timeoutSeconds, AGENT_TIMEOUT_SECONDS) : timeoutSeconds,
-      solverMode,
+      timeoutSeconds: Math.max(timeoutSeconds, AGENT_TIMEOUT_SECONDS),
+      solverMode: "agent",
     });
   };
 
@@ -255,6 +256,7 @@ export default function AutomatedPlanningPanel({
                 type="button"
                 onClick={handleUseVisibleWeek}
                 disabled={isRunning}
+                title="Set the timeframe to the week currently shown in the calendar."
                 className={getPillToggleClasses(visibleWeekActive)}
               >
                 Current week
@@ -263,6 +265,7 @@ export default function AutomatedPlanningPanel({
                 type="button"
                 onClick={handleUseToday}
                 disabled={isRunning}
+                title="Set the timeframe to just today."
                 className={getPillToggleClasses(todayActive)}
               >
                 Today
@@ -319,35 +322,9 @@ export default function AutomatedPlanningPanel({
               </button>
             </div>
           </div>
-          <div className="flex flex-col gap-3">
-            <div className="text-xs font-normal uppercase tracking-wide text-slate-400 dark:text-slate-500">
-              Solver
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setSolverMode("cpsat")}
-                disabled={isRunning}
-                title="Mathematical optimizer (CP-SAT): fast and deterministic, no AI involved."
-                className={getPillToggleClasses(solverMode === "cpsat")}
-              >
-                Optimizer
-              </button>
-              <button
-                type="button"
-                onClick={() => setSolverMode("agent")}
-                disabled={isRunning}
-                title="Builds a draft plan, then Claude improves it step by step. Model, cost, and free-text instructions are configured in Settings."
-                className={getPillToggleClasses(solverMode === "agent")}
-              >
-                AI Agent
-              </button>
-            </div>
-            {solverMode === "agent" && (
-              <div className="text-xs text-slate-400 dark:text-slate-500">
-                Uses Claude (names are anonymized). Model &amp; instructions: Settings → Solver.
-              </div>
-            )}
+          <div className="text-xs text-slate-400 dark:text-slate-500">
+            Planning uses the AI agent: it drafts a plan, then Claude improves it
+            step by step. Names are anonymized. Model &amp; instructions: Settings → Solver.
           </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -356,6 +333,7 @@ export default function AutomatedPlanningPanel({
               type="button"
               onClick={handleRun}
               disabled={isRunning}
+              title="Start automated planning for the selected timeframe. You can watch the progress and stop it at any time."
               className={buttonPrimary.base}
             >
               {isRunning ? "Planning..." : "Run"}
@@ -372,6 +350,7 @@ export default function AutomatedPlanningPanel({
               type="button"
               onClick={handleResetButtonClick}
               disabled={isRunning}
+              title="Remove assignments in the selected timeframe — choose whether to keep manual ones."
               className={buttonSecondary.base}
             >
               Reset

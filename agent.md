@@ -882,7 +882,13 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
 `AGENT_MAX_ITERATIONS`, `AGENT_MAX_TOKENS`) — the spawn subprocess inherits it.
 `solverSettings.agentModel` (set via Settings → Solver → "AI agent model")
-overrides `AGENT_MODEL` per workspace. Each run's `debugInfo.agent` records
+overrides `AGENT_MODEL` per workspace. The frontend planning panel always
+sends `solver_mode: "agent"` — the CP-SAT solver remains available through
+the API (`solver_mode: "cpsat"`) and is still used by tests, but the UI no
+longer offers the choice. YTD fairness: `PlanToolExecutor.ytd_completion_pct`
+gives the percent of a clinician's year-to-date target hours worked up to a
+given day (working copy included, vacations credited); candidates are sorted
+most-behind first and the `get_ytd_progress` tool exposes the roster. Each run's `debugInfo.agent` records
 the model plus input/output/cache token counts; the frontend prices them via
 `src/lib/llmPricing.ts` (per-run + cumulative cost in the solver history —
 update that pricing table when Anthropic prices change).

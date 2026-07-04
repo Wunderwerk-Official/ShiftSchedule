@@ -48,8 +48,14 @@ Soft objectives, in rough order of weight (the score is minimized):
 1. Coverage: fill required slots; open slots are the biggest penalty.
 2. Balanced weekly hours: keep everyone near contract hours.
 3. Custom if/then rules (SOLVER_RULE, severity "soft"): fix when possible.
-4. Section preferences, preferred time windows, YTD balance: prefer
-   clinicians who are behind on year-to-date hours.
+4. Year-to-date fairness: every candidate carries ytd_worked_pct — the
+   percent of their year-to-date target hours already worked up to the
+   slot's day (100 = on target, lower = behind). Prefer the clinician with
+   the LOWEST ytd_worked_pct among equally suitable candidates; the goal is
+   that everyone converges to the same percentage of their contract.
+   list_candidates_for_slot sorts eligible candidates most-behind first;
+   get_ytd_progress shows the whole roster at a glance.
+5. Section preferences and preferred time windows.
 
 Privacy: clinicians are referred to by anonymized ids (D1, D2, ...) — you
 never see real names. Always use these ids in tool calls.
@@ -100,13 +106,18 @@ def build_problem_digest(
     lines.append("")
     lines.append("Sections: " + ", ".join(f"{sid}={name}" for sid, name in sections.items()))
     lines.append("")
-    lines.append("Roster (id|qualified|preferred|contract h/wk|YTD deficit %):")
+    lines.append(
+        "Roster (id|qualified|preferred|contract h/wk|ytd worked % of target, "
+        "100=on target, lower=behind):"
+    )
     for c in state.clinicians:
+        deficit = ctx.ytd_deficit_pct.get(c.id)
+        worked_pct = (100 - deficit) if deficit is not None else "-"
         lines.append(
             f"- {clinician_aliases.get(c.id, c.id)}|{','.join(c.qualifiedClassIds)}"
             f"|{','.join(c.preferredClassIds or []) or '-'}"
             f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
-            f"|{ctx.ytd_deficit_pct.get(c.id, 0)}"
+            f"|{worked_pct}"
         )
     lines.append("")
     lines.append(

@@ -31,12 +31,13 @@ function CheckIcon({ className = "" }: { className?: string }) {
  * constraints show rose, soft targets (tone="warn") amber — being under
  * contract hours is a balancing goal, not a rule break. Re-keyed on state
  * flips so the pop animation replays exactly then. */
-function ConstraintChip({ ok, okLabel, badLabel, value, tone = "hard" }: {
+function ConstraintChip({ ok, okLabel, badLabel, value, tone = "hard", hint }: {
   ok: boolean;
   okLabel: string;
   badLabel: string;
   value: number;
   tone?: "hard" | "warn";
+  hint?: string;
 }) {
   const badClasses =
     tone === "warn"
@@ -45,6 +46,7 @@ function ConstraintChip({ ok, okLabel, badLabel, value, tone = "hard" }: {
   return (
     <span
       key={ok ? "ok" : `bad-${value}`}
+      title={hint}
       className={`solver-pop inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
         ok
           ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300"
@@ -62,10 +64,13 @@ function ConstraintChip({ ok, okLabel, badLabel, value, tone = "hard" }: {
 }
 
 /** Soft-criterion chip (informational, never "red"). */
-function SoftChip({ label, value, max }: { label: string; value: number; max: number }) {
+function SoftChip({ label, value, max, hint }: { label: string; value: number; max: number; hint?: string }) {
   const display = useAnimatedNumber(value);
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-600 dark:border-violet-900 dark:bg-violet-950/60 dark:text-violet-300">
+    <span
+      title={hint}
+      className="inline-flex items-center gap-1.5 rounded-full border border-violet-200 bg-violet-50 px-2.5 py-1 text-[11px] font-medium text-violet-600 dark:border-violet-900 dark:bg-violet-950/60 dark:text-violet-300"
+    >
       <span className="tabular-nums font-semibold">
         {display}/{max}
       </span>
@@ -92,7 +97,10 @@ export default function ConstraintPulse({
     <div className="flex w-full max-w-xl flex-col gap-2">
       {stats.totalRequiredSlots > 0 && (
         <div className="flex items-center gap-3">
-          <span className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+          <span
+            title="How many required positions in the timeframe are already staffed."
+            className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500"
+          >
             Coverage
           </span>
           <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
@@ -122,12 +130,14 @@ export default function ConstraintPulse({
           okLabel="Continuous shifts"
           badLabel={`split shift${stats.nonConsecutiveShifts === 1 ? "" : "s"}`}
           value={stats.nonConsecutiveShifts}
+          hint="Green check: nobody's day is split into separate blocks with a gap in between."
         />
         <ConstraintChip
           ok={stats.locationChanges === 0}
           okLabel="One location/day"
           badLabel={`location switch${stats.locationChanges === 1 ? "" : "es"}`}
           value={stats.locationChanges}
+          hint="Green check: nobody has to switch locations within the same day."
         />
         {onCallRestEnabled && (
           <ConstraintChip
@@ -135,6 +145,7 @@ export default function ConstraintPulse({
             okLabel="On-call rest kept"
             badLabel={`rest violation${stats.onCallRestViolations === 1 ? "" : "s"}`}
             value={stats.onCallRestViolations}
+            hint="Green check: the configured rest days around on-call duties are respected."
           />
         )}
         {stats.totalPeopleWeeksWithTarget > 0 && (
@@ -144,6 +155,7 @@ export default function ConstraintPulse({
             badLabel={`of ${stats.totalPeopleWeeksWithTarget} weeks off target hours`}
             value={stats.totalPeopleWeeksWithTarget - stats.peopleWeeksWithinHours}
             tone="warn"
+            hint="Person-weeks whose planned hours differ from the contract target. Amber = balancing goal, not an error — often unavoidable in partly filled weeks."
           />
         )}
         {stats.totalClassAssignments > 0 && stats.sectionPreferenceMatches > 0 && (
@@ -151,6 +163,7 @@ export default function ConstraintPulse({
             label="preferred sections"
             value={stats.sectionPreferenceMatches}
             max={stats.totalClassAssignments}
+            hint="How many assignments put someone into a section they prefer."
           />
         )}
         {stats.totalAssignmentsWithTimeWindows > 0 && (
@@ -158,6 +171,7 @@ export default function ConstraintPulse({
             label="time windows"
             value={stats.timeWindowFits}
             max={stats.totalAssignmentsWithTimeWindows}
+            hint="How many assignments lie inside the person's preferred working times."
           />
         )}
       </div>

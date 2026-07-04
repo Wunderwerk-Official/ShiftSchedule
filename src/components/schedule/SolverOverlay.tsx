@@ -179,7 +179,7 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           transform={`rotate(-90, ${padding.left - 8}, ${chartHeight / 2})`}
           className="fill-current text-[11px] opacity-60"
         >
-          Score
+          Score ↑ better
         </text>
 
         {/* Y-axis values: top = best (min objective), bottom = worst (max objective) */}
@@ -228,9 +228,15 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
           {maxTimeSec.toFixed(1)}
         </text>
       </svg>
-      <div className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400">
-        <span>Solutions: {solutions.length}</span>
-        <span>Improved: {bestImprovementPct.toFixed(1)}%</span>
+      <div
+        className="flex items-center gap-2 text-[11px] text-slate-500 dark:text-slate-400"
+        title="Every dot is a better plan than the one before. The line climbing means the plan is improving."
+      >
+        <span>
+          {solutions.length} plan{solutions.length === 1 ? "" : "s"} found
+        </span>
+        <span>·</span>
+        <span>{bestImprovementPct.toFixed(1)}% better than the first draft</span>
       </div>
     </div>
   );
@@ -842,7 +848,8 @@ export default function SolverOverlay({
             </p>
           )}
           <p className="text-center text-xs text-slate-500 dark:text-slate-400">
-            Schedule is locked during optimization
+            The calendar is locked while planning runs — it keeps improving the
+            longer you wait.
           </p>
         </div>
 
@@ -854,6 +861,7 @@ export default function SolverOverlay({
             <button
               type="button"
               onClick={() => setDashboardOpen(true)}
+              title="Show live charts and statistics for this run. Planning continues in the background."
               className="rounded-lg border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-700"
             >
               Details
@@ -864,9 +872,10 @@ export default function SolverOverlay({
           <button
             type="button"
             onClick={onAbort}
+            title="Stop planning and discard everything — the calendar stays as it was before the run."
             className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-1.5 text-sm font-medium text-rose-600 transition-colors hover:border-rose-300 hover:bg-rose-100 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-300 dark:hover:border-rose-700 dark:hover:bg-rose-900"
           >
-            Abort
+            Cancel &amp; discard
           </button>
 
           {/* Apply Solution button - only shown when solutions exist */}
@@ -874,9 +883,10 @@ export default function SolverOverlay({
             <button
               type="button"
               onClick={onApplySolution}
+              title="Stop planning now and put the best plan found so far into the calendar."
               className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-1.5 text-sm font-medium text-indigo-600 transition-colors hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900"
             >
-              Apply Solution
+              Apply best plan
             </button>
           )}
         </div>
