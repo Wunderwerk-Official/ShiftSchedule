@@ -286,6 +286,9 @@ def agent_solve_range(
                         "ABORTED", ["Agent run aborted by user; best plan so far returned."]
                     )
                 results.append(executor.execute(call.name, call.arguments, call.id))
+            # Inspection-only rounds were invisible in the live feed, which
+            # made slow runs look hung — surface what the agent looked at.
+            emit_agent("tool_use", {"tools": [c.name for c in response.tool_calls]})
             messages.append(assistant)
             messages.append(ChatMessage(role="tool", tool_results=results))
             on_progress(

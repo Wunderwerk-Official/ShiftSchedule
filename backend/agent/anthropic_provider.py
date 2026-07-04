@@ -4,12 +4,16 @@ Maps the provider-neutral protocol in ``provider.py`` onto the official
 ``anthropic`` SDK:
 
 - tools map 1:1 to the Messages API tool format
-- the system prompt gets a ``cache_control`` breakpoint so iterations 2..N of
-  the repair loop hit the prompt cache (system + tools render first and are
-  byte-stable across the loop)
-- adaptive thinking is enabled (supported on Claude 4.6+ models; the default
-  ``AGENT_MODEL`` is claude-opus-4-8). No sampling parameters — current Opus
-  models reject them.
+- two ``cache_control`` breakpoints: one on the system prompt (system + tools
+  render first and are byte-stable across the loop) and one on the last
+  message, so iterations 2..N also read the growing conversation history —
+  digest plus all tool results — from the cache instead of re-billing it at
+  full input price every round
+- adaptive thinking is enabled only on models that support it (Opus 4.6+,
+  Sonnet 4.6+, Sonnet 5, Fable/Mythos 5). Haiku and unknown models get no
+  ``thinking`` parameter — sending ``{"type": "adaptive"}`` to them is a 400
+  ("adaptive thinking is not supported"). No sampling parameters — current
+  Opus models reject them.
 - API failures never raise: typed SDK errors are mapped to
   ``ProviderResponse(stop_reason="error")`` after the SDK's built-in retries
   (2 by default for 429/5xx/connection errors).
@@ -22,6 +26,23 @@ from typing import List
 
 from .config import AgentConfig
 from .provider import ChatMessage, LLMProvider, ProviderResponse, ToolCall, ToolSpec
+
+# Model families that accept ``thinking: {"type": "adaptive"}``. Anything else
+# (Haiku 4.5, older Sonnet/Opus, unknown ids) runs without a thinking param —
+# that is valid on every model, while adaptive on an unsupported model 400s.
+_ADAPTIVE_THINKING_PREFIXES = (
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+    "claude-fable",
+    "claude-mythos",
+)
+
+
+def supports_adaptive_thinking(model: str) -> bool:
+    return (model or "").lower().startswith(_ADAPTIVE_THINKING_PREFIXES)
 
 
 class AnthropicProvider(LLMProvider):
@@ -51,12 +72,15 @@ class AnthropicProvider(LLMProvider):
             # wall-clock budget; SDK retries (2 by default, full timeout each)
             # could otherwise block ~3x past the solve deadline. Transient
             # failures degrade to the best-plan-so-far path instead.
+            request_kwargs = {}
+            if supports_adaptive_thinking(self._config.model):
+                request_kwargs["thinking"] = {"type": "adaptive"}
             response = self._client.with_options(
                 timeout=timeout_seconds, max_retries=0
             ).messages.create(
                 model=self._config.model,
                 max_tokens=self._config.max_tokens,
-                thinking={"type": "adaptive"},
+                **request_kwargs,
                 system=[
                     {
                         "type": "text",
@@ -124,7 +148,14 @@ class AnthropicProvider(LLMProvider):
         out: List[dict] = []
         for msg in messages:
             if msg.role == "user":
-                out.append({"role": "user", "content": msg.content or ""})
+                out.append(
+                    {
+                        "role": "user",
+                        # block form (not bare string) so a cache breakpoint
+                        # can attach; the API rejects empty text blocks.
+                        "content": [{"type": "text", "text": msg.content or " "}],
+                    }
+                )
             elif msg.role == "assistant":
                 if msg.raw_content is not None:
                     # Replay the turn exactly as the API returned it —
@@ -160,4 +191,15 @@ class AnthropicProvider(LLMProvider):
                         ],
                     }
                 )
+        # Cache breakpoint on the last content block: iterations 2..N then
+        # read the whole prior conversation (digest + all tool results) from
+        # the prompt cache at ~0.1x instead of re-billing it at full input
+        # price every round — on long runs the history dominates the cost.
+        # (Second breakpoint next to the one on the system block; max is 4.)
+        if out:
+            last_content = out[-1]["content"]
+            if isinstance(last_content, list) and last_content:
+                last_block = last_content[-1]
+                if isinstance(last_block, dict):
+                    last_block["cache_control"] = {"type": "ephemeral"}
         return out

@@ -615,7 +615,7 @@ export type AgentMoveItem = {
 
 // Live activity from the agent solver (SSE event type "agent").
 export type AgentActivityData = {
-  kind: "stage" | "iteration" | "thought" | "moves_applied" | "moves_rejected";
+  kind: "stage" | "iteration" | "thought" | "tool_use" | "moves_applied" | "moves_rejected";
   iteration: number;
   max_iterations: number | null;
   moves_accepted: number;
@@ -627,6 +627,7 @@ export type AgentActivityData = {
   score?: number;
   count?: number;
   reason?: string;
+  tools?: string[];
 };
 
 // Every event's data may carry the run_token echoed from the solve request;

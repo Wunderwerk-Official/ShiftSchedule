@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AgentActivityData } from "../../api/client";
 import {
   deriveAgentStatus,
@@ -125,6 +125,16 @@ function FeedRow({ entry }: { entry: AgentFeedEntry }) {
       </div>
     );
   }
+  if (entry.type === "tools") {
+    return (
+      <div className="solver-feed-enter flex items-center gap-2 px-2.5 py-1">
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky-400" />
+        <span className="min-w-0 truncate text-xs text-slate-400 dark:text-slate-500">
+          {entry.label}
+        </span>
+      </div>
+    );
+  }
   return (
     <div className="solver-feed-enter flex items-center gap-2 px-2.5 py-1">
       <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-amber-400" />
@@ -137,6 +147,20 @@ function FeedRow({ entry }: { entry: AgentFeedEntry }) {
 
 export default function AgentActivityPanel({ events }: { events: AgentActivityData[] }) {
   const status = useMemo(() => deriveAgentStatus(events), [events]);
+  // Seconds since the last live event: with adaptive thinking a single model
+  // step can take minutes on large plans, which used to look like a hang.
+  const lastEventAtRef = useRef(Date.now());
+  const [waitSeconds, setWaitSeconds] = useState(0);
+  useEffect(() => {
+    lastEventAtRef.current = Date.now();
+    setWaitSeconds(0);
+  }, [events.length]);
+  useEffect(() => {
+    const id = window.setInterval(() => {
+      setWaitSeconds(Math.floor((Date.now() - lastEventAtRef.current) / 1000));
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
   const iterationProgress =
     status.maxIterations && status.maxIterations > 0
       ? Math.min(1, status.iteration / status.maxIterations)
@@ -166,7 +190,9 @@ export default function AgentActivityPanel({ events }: { events: AgentActivityDa
           <div className="flex items-center gap-2 px-2.5 py-1">
             <SparkleIcon className="solver-float h-3.5 w-3.5 text-violet-400" />
             <span className="solver-shimmer-text text-xs font-medium">
-              Agent is thinking…
+              {waitSeconds > 90
+                ? `Still working — large plans can take a few minutes per step… (${waitSeconds}s)`
+                : `Agent is thinking…${waitSeconds >= 10 ? ` (${waitSeconds}s)` : ""}`}
             </span>
           </div>
         )}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentActivityData } from "../api/client";
-import { deriveAgentStatus, formatFeedDate } from "./agentActivity";
+import { deriveAgentStatus, describeToolUse, formatFeedDate } from "./agentActivity";
 
 const base = { max_iterations: 20, moves_accepted: 0, time_ms: 0 };
 
@@ -88,5 +88,22 @@ describe("formatFeedDate", () => {
 
   it("passes through malformed input", () => {
     expect(formatFeedDate("not-a-date")).toBe("not-a-date");
+  });
+});
+
+describe("tool_use feed entries", () => {
+  it("describes inspection tools in plain language and skips apply_moves", () => {
+    expect(
+      describeToolUse(["get_plan_overview", "apply_moves", "list_candidates_for_slot"]),
+    ).toBe("reviewed the plan status · compared candidates for a slot");
+    expect(describeToolUse(undefined)).toBe("");
+  });
+
+  it("derives a tools feed row from tool_use events", () => {
+    const status = deriveAgentStatus([
+      { kind: "stage", stage: "improve", iteration: 0, max_iterations: 20, moves_accepted: 0, time_ms: 0 },
+      { kind: "tool_use", tools: ["list_open_slots"], iteration: 1, max_iterations: 20, moves_accepted: 0, time_ms: 100 },
+    ]);
+    expect(status.feed[0]).toMatchObject({ type: "tools", label: "scanned for open slots" });
   });
 });

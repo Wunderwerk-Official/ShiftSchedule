@@ -67,6 +67,9 @@ they never override the hard constraints or fixed assignments above.
 Tool usage policy:
 - Inspect before you move: list_candidates_for_slot tells you exactly which
   clinicians are legal for a slot and why others are not.
+- But start changing things quickly: use at most TWO inspection rounds before
+  your first apply_moves call (the digest already contains the roster, score,
+  and top open slots). Long inspection-only stretches waste your budget.
 - Batch related moves in one apply_moves call (a swap = unassign + assign).
 - A rejected batch returns the violations it would have created — adjust the
   plan instead of retrying the same moves.

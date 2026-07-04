@@ -8,7 +8,31 @@ export type AgentStage = "seed" | "improve" | "finalize";
 export type AgentFeedEntry =
   | { type: "move"; key: string; timeMs: number; move: AgentMoveItem; improved: boolean }
   | { type: "thought"; key: string; timeMs: number; text: string }
-  | { type: "rejected"; key: string; timeMs: number; count: number; reason: string };
+  | { type: "rejected"; key: string; timeMs: number; count: number; reason: string }
+  | { type: "tools"; key: string; timeMs: number; label: string };
+
+/** Human wording for inspection tool calls shown in the live feed. */
+const TOOL_LABELS: Record<string, string> = {
+  get_plan_overview: "reviewed the plan status",
+  get_violations: "checked rule violations",
+  list_open_slots: "scanned for open slots",
+  list_candidates_for_slot: "compared candidates for a slot",
+  get_clinician_summary: "reviewed someone's week",
+  get_ytd_progress: "checked year-to-date fairness",
+};
+
+/** "checked rule violations · compared candidates for a slot" — apply_moves is
+ * omitted (its outcome already shows as move/rejected rows). */
+export function describeToolUse(tools: string[] | undefined): string {
+  const labels = Array.from(
+    new Set(
+      (tools ?? [])
+        .filter((name) => name !== "apply_moves")
+        .map((name) => TOOL_LABELS[name] ?? name.replaceAll("_", " ")),
+    ),
+  );
+  return labels.join(" · ");
+}
 
 export type AgentStatus = {
   stage: AgentStage;
@@ -61,6 +85,11 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
         count: event.count ?? 0,
         reason: event.reason ?? "constraint conflict",
       });
+    } else if (event.kind === "tool_use") {
+      const label = describeToolUse(event.tools);
+      if (label) {
+        feed.push({ type: "tools", key: `${index}`, timeMs: event.time_ms, label });
+      }
     }
   }
 

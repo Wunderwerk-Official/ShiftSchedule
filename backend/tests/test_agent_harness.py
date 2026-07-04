@@ -412,3 +412,63 @@ def test_default_instructions_apply_when_unset_and_empty_disables():
         provider=provider2, config=_config(),
     )
     assert "ADMIN INSTRUCTIONS" not in provider2.seen_messages[0][0].content
+
+
+def test_adaptive_thinking_only_for_supported_models():
+    from backend.agent.anthropic_provider import supports_adaptive_thinking
+
+    assert supports_adaptive_thinking("claude-opus-4-8")
+    assert supports_adaptive_thinking("claude-sonnet-5")
+    assert supports_adaptive_thinking("claude-sonnet-4-6")
+    assert supports_adaptive_thinking("claude-fable-5")
+    # Haiku, older models, and unknown ids must NOT get the thinking param
+    assert not supports_adaptive_thinking("claude-haiku-4-5")
+    assert not supports_adaptive_thinking("claude-haiku-4-5-20251001")
+    assert not supports_adaptive_thinking("claude-sonnet-4-5")
+    assert not supports_adaptive_thinking("claude-opus-4-5")
+    assert not supports_adaptive_thinking("")
+    assert not supports_adaptive_thinking("some-future-model")
+
+
+def test_tool_use_activity_is_emitted():
+    state = _two_clinician_state()
+    script = [
+        {"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]},
+        {"text": "Done."},
+    ]
+    progress = ProgressRecorder()
+    agent_solve_range(
+        _payload(), state, MockCancelEvent(), progress, time.time(),
+        provider=MockProvider(script), config=_config(),
+    )
+    tool_events = [
+        data for etype, data in progress.events
+        if etype == "agent" and data["kind"] == "tool_use"
+    ]
+    assert tool_events and tool_events[0]["tools"] == ["get_plan_overview"]
+
+
+def test_convert_messages_places_cache_breakpoint_on_last_block():
+    from backend.agent.anthropic_provider import AnthropicProvider
+    from backend.agent.provider import ChatMessage, ToolCall, ToolResult
+
+    convert = AnthropicProvider._convert_messages
+    msgs = [
+        ChatMessage(role="user", content="digest"),
+        ChatMessage(
+            role="assistant",
+            content=None,
+            tool_calls=[ToolCall(id="c1", name="get_plan_overview", arguments={})],
+        ),
+        ChatMessage(
+            role="tool",
+            tool_results=[ToolResult("c1", "{}", False)],
+        ),
+    ]
+    out = convert(msgs)
+    # only the LAST message's last block carries the cache breakpoint
+    assert out[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert "cache_control" not in out[0]["content"][-1]
+    # a digest-only conversation gets the breakpoint on the digest itself
+    single = convert([ChatMessage(role="user", content="digest")])
+    assert single[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
