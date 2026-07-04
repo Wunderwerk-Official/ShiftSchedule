@@ -620,7 +620,7 @@ Behavior
 - Gap-based early stopping: once optimality gap drops below 5%, allows 20s grace period then stops.
 
 ### Heuristic Solver v2 — `backend/heuristic/solver_v2.py`
-- Alternative fast solver activated by `use_heuristic: true` in the payload.
+- Alternative fast solver activated by `"solver_mode": "heuristic"` (legacy `use_heuristic: true` still works; `solver_mode` wins).
 - Uses a greedy multi-phase approach instead of constraint programming.
 - Phases: bottleneck pre-assignment → greedy slot filling → local improvement.
 - Respects the same constraints as CP-SAT (qualification, vacation, overlap, same-location, on-call rest, continuity).
@@ -888,7 +888,14 @@ the API (`solver_mode: "cpsat"`) and is still used by tests, but the UI no
 longer offers the choice. YTD fairness: `PlanToolExecutor.ytd_completion_pct`
 gives the percent of a clinician's year-to-date target hours worked up to a
 given day (working copy included, vacations credited); candidates are sorted
-most-behind first and the `get_ytd_progress` tool exposes the roster. Each run's `debugInfo.agent` records
+most-behind first and the `get_ytd_progress` tool exposes the roster.
+Candidates can be fetched for up to 8 slots per call (`slot_keys`), old tool
+results are compacted to a stub once the history exceeds ~120K chars (chunked,
+cache-friendly — see `harness._compact_tool_history`), and every run records
+`debugInfo.agent.summary` + `.moves` (real names) for the run review in the
+solver history. `plan_stats.short_days` counts clinician-days below the
+derived daily minimum; candidates carry `day_hours`/`adjacent_to_existing` so
+the agent avoids 1-2h mini-days. Each run's `debugInfo.agent` records
 the model plus input/output/cache token counts; the frontend prices them via
 `src/lib/llmPricing.ts` (per-run + cumulative cost in the solver history —
 update that pricing table when Anthropic prices change).

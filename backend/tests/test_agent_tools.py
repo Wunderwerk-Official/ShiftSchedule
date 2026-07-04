@@ -421,3 +421,107 @@ def test_candidates_sorted_most_behind_first_and_tool_lists_progress():
     aliases = [e["clinicianId"] for e in progress["clinicians"]]
     assert aliases[0] == executor.alias_by_id["clin-2"]  # most behind first
     assert all(e["clinicianId"].startswith("D") for e in progress["clinicians"])
+
+
+# ---------------------------------------------------------------------------
+# Short days + adjacency signals
+# ---------------------------------------------------------------------------
+
+
+def test_candidates_report_day_hours_and_adjacency():
+    early = make_template_slot(
+        slot_id="slot-early__mon", col_band_id="col-mon-1",
+        start_time="06:30", end_time="08:00",
+    )
+    main = make_template_slot(
+        slot_id="slot-a__mon", col_band_id="col-mon-1",
+        start_time="08:00", end_time="16:00",
+    )
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Dr. Alice"),
+            make_clinician("clin-2", "Dr. Bob"),
+        ],
+        slots=[early, main],
+    )
+    seed = [_seed("slot-a__mon", MON, "clin-1")]
+    executor = _make_executor(state, seed)
+    payload, is_error = _run(
+        executor, "list_candidates_for_slot", {"slot_key": f"slot-early__mon__{MON}"}
+    )
+    assert not is_error
+    by_alias = {c["clinicianId"]: c for c in payload["candidates"]}
+    a1 = executor.alias_by_id["clin-1"]
+    a2 = executor.alias_by_id["clin-2"]
+    # clin-1 works 08:00-16:00: the early slot touches their shift
+    assert by_alias[a1]["adjacent_to_existing"] is True
+    assert by_alias[a1]["day_hours"] == 8.0
+    assert by_alias[a2]["adjacent_to_existing"] is False
+    assert by_alias[a2]["day_hours"] == 0.0
+
+
+def test_plan_stats_counts_short_days():
+    from backend.scoring import plan_stats
+
+    early = make_template_slot(
+        slot_id="slot-early__mon", col_band_id="col-mon-1",
+        start_time="06:30", end_time="07:30",
+    )
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Dr. Alice", working_hours_per_week=40)],
+        slots=[early],
+    )
+    executor = _make_executor(state)
+    # 1h assigned vs derived minimum (40h/5days/2 = 4h) -> one short day
+    stats = plan_stats(executor.ctx, [_seed("slot-early__mon", MON, "clin-1")])
+    assert stats.short_days == 1
+    stats_empty = plan_stats(executor.ctx, [])
+    assert stats_empty.short_days == 0
+
+
+def test_accepted_moves_are_logged_for_the_run_summary():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Dr. Alice")],
+    )
+    executor = _make_executor(state, only_fill_required=False)
+    payload, is_error = _run(
+        executor,
+        "apply_moves",
+        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+                    "clinicianId": "clin-1"}]},
+    )
+    assert not is_error and payload["applied"]
+    assert executor.accepted_move_log[0]["action"] == "assign"
+    assert executor.accepted_move_log[0]["clinician"] == "Dr. Alice"
+
+
+def test_batched_candidates_returns_compact_per_slot_results():
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Dr. Alice"),
+            make_clinician("clin-2", "Dr. Bob"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot(
+                slot_id="slot-b__mon", col_band_id="col-mon-1",
+                start_time="16:00", end_time="20:00",
+            ),
+        ],
+    )
+    executor = _make_executor(state)
+    payload, is_error = _run(
+        executor,
+        "list_candidates_for_slot",
+        {"slot_keys": [f"slot-a__mon__{MON}", f"slot-b__mon__{MON}", "bogus__2026-01-05"]},
+    )
+    assert not is_error
+    slots = payload["slots"]
+    assert set(slots) == {f"slot-a__mon__{MON}", f"slot-b__mon__{MON}", "bogus__2026-01-05"}
+    good = slots[f"slot-a__mon__{MON}"]
+    assert {c["clinicianId"] for c in good["eligible"]} == set(executor.alias_by_id.values())
+    assert good["ineligible_counts"] == {}
+    assert "error" in slots["bogus__2026-01-05"]
+    # single-slot legacy shape unchanged
+    single, _ = _run(executor, "list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MON}"})
+    assert "candidates" in single

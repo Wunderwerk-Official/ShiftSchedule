@@ -472,3 +472,28 @@ def test_convert_messages_places_cache_breakpoint_on_last_block():
     # a digest-only conversation gets the breakpoint on the digest itself
     single = convert([ChatMessage(role="user", content="digest")])
     assert single[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_tool_history_is_compacted_in_one_chunk():
+    from backend.agent.harness import (
+        TOOL_HISTORY_BUDGET_CHARS,
+        TOOL_RESULT_STUB,
+        _compact_tool_history,
+    )
+    from backend.agent.provider import ChatMessage, ToolResult
+
+    big = "x" * (TOOL_HISTORY_BUDGET_CHARS // 4)
+    messages = [ChatMessage(role="user", content="digest")]
+    for i in range(8):
+        messages.append(ChatMessage(role="assistant", content=None, tool_calls=[]))
+        messages.append(
+            ChatMessage(role="tool", tool_results=[ToolResult(f"c{i}", big, False)])
+        )
+    _compact_tool_history(messages)
+    tool_msgs = [m for m in messages if m.role == "tool"]
+    assert all(r.content == TOOL_RESULT_STUB for m in tool_msgs[:-4] for r in m.tool_results)
+    assert all(r.content == big for m in tool_msgs[-4:] for r in m.tool_results)
+    # under budget: nothing happens
+    small = [ChatMessage(role="tool", tool_results=[ToolResult("c", "tiny", False)])]
+    _compact_tool_history(small)
+    assert small[0].tool_results[0].content == "tiny"

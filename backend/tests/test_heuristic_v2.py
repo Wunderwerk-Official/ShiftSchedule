@@ -140,7 +140,7 @@ def test_basic_assignment(basic_state):
     payload = SolveRangeRequest(
         startISO=monday.isoformat(),
         endISO=(monday + timedelta(days=6)).isoformat(),
-        onlyFillRequired=True,
+        only_fill_required=True,
         use_heuristic=True,
     )
 
@@ -187,7 +187,7 @@ def test_eligibility_qualification(basic_state):
     payload = SolveRangeRequest(
         startISO=monday.isoformat(),
         endISO=monday.isoformat(),
-        onlyFillRequired=True,
+        only_fill_required=True,
         use_heuristic=True,
     )
 
@@ -220,7 +220,7 @@ def test_eligibility_vacation(basic_state):
     payload = SolveRangeRequest(
         startISO=monday.isoformat(),
         endISO=monday.isoformat(),
-        onlyFillRequired=True,
+        only_fill_required=True,
         use_heuristic=True,
     )
 
@@ -1088,7 +1088,7 @@ def _run_solver(state: AppState, start: date, end: Optional[date] = None) -> dic
     payload = SolveRangeRequest(
         startISO=start.isoformat(),
         endISO=end.isoformat(),
-        onlyFillRequired=True,
+        only_fill_required=True,
         use_heuristic=True,
     )
     return heuristic_solve_range_v2(

@@ -137,7 +137,7 @@ class HeuristicConfig:
 The solver is integrated via `backend/solver.py`:
 
 ```python
-if payload.use_heuristic:
+if payload.resolved_mode() == "heuristic":  # solver_mode wins over legacy use_heuristic
     from .heuristic.solver_v2 import heuristic_solve_range_v2
     result = heuristic_solve_range_v2(payload, state, cancel_event, on_progress, start_time)
 ```
@@ -146,7 +146,7 @@ if payload.use_heuristic:
 
 ### Basic Test
 1. Create a schedule with slots and clinicians
-2. Enable heuristic solver: `payload.use_heuristic = True`
+2. Enable heuristic solver: `"solver_mode": "heuristic"` in the request (legacy `use_heuristic: true` still works)
 3. Run solver
 4. Verify assignments respect:
    - Qualifications

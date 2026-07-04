@@ -218,7 +218,7 @@ def _dump_solver_debug(
     if not DEBUG_SOLVER:
         return
 
-    debug_dir = "backend/logs/solver_debug"
+    debug_dir = os.path.join(os.path.dirname(__file__), "logs", "solver_debug")
     os.makedirs(debug_dir, exist_ok=True)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
@@ -248,7 +248,7 @@ def _dump_solver_debug(
         "request": {
             "startISO": getattr(payload, "startISO", None),
             "endISO": getattr(payload, "endISO", None),
-            "onlyFillRequired": getattr(payload, "onlyFillRequired", getattr(payload, "only_fill_required", None)),
+            "onlyFillRequired": payload.only_fill_required,
         },
         "timing": timer.to_dict(),
         "state_summary": state_summary,
@@ -1432,7 +1432,6 @@ def _compute_ytd_deficit_hours(
 def _add_ytd_balance_objective(
     ytd_deficit_pct: Dict[str, int],
     vars_by_clinician_date: Dict[str, Dict[str, List[Tuple[str, "cp_model.IntVar", int, int, str]]]],
-    slot_intervals: Dict[str, Tuple[int, int, str]],
 ) -> list:
     """Build YTD balance bonus terms for the objective function.
 
@@ -1925,7 +1924,7 @@ def _solve_range_impl(
 
     # Build YTD balance objective terms
     ytd_bonus_terms = _add_ytd_balance_objective(
-        ytd_deficit_hours, vars_by_clinician_date, slot_intervals,
+        ytd_deficit_hours, vars_by_clinician_date,
     )
 
     # Build manual assignments lookup: clinician_id -> date -> list of (start, end, loc)

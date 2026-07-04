@@ -70,6 +70,13 @@ Tool usage policy:
 - But start changing things quickly: use at most TWO inspection rounds before
   your first apply_moves call (the digest already contains the roster, score,
   and top open slots). Long inspection-only stretches waste your budget.
+- Avoid mini work days: nobody should come in for a single 1-2 hour stint.
+  For short edge slots (early morning, late evening) prefer a candidate with
+  adjacent_to_existing=true — their day stays one contiguous block. If a day
+  below the daily minimum is unavoidable, give that person more contiguous
+  work the same day or swap assignments so someone else covers the whole
+  block and they stay off. The overview reports short_days — drive it toward
+  zero whenever coverage allows.
 - Batch related moves in one apply_moves call (a swap = unassign + assign).
 - A rejected batch returns the violations it would have created — adjust the
   plan instead of retrying the same moves.
@@ -77,9 +84,22 @@ Tool usage policy:
 - The plan may contain pre-existing violations from manual data; those are
   marked new=false and do not block you. Only NEW violations block.
 
+Efficient procedure (follow it):
+1. Round 1: ONE list_candidates_for_slot call with slot_keys covering the
+   most important open slots (up to 8 at once). Add get_ytd_progress in the
+   same turn if hours balancing matters — several tool calls per turn are
+   allowed and encouraged.
+2. Round 2: apply ALL clear assignments in ONE apply_moves batch (its
+   verification response replaces a separate overview call).
+3. Then fix what remains: leftover open slots, short_days, soft rules —
+   batching related moves and batching candidate lookups.
+4. Old tool results may be replaced by a "trimmed" stub as the conversation
+   grows; re-query if you genuinely need the data again.
+
 Finish by replying WITHOUT tool calls when you find no further legal
-improvement. Do not narrate every step; keep any text brief. Work within your
-iteration budget: prefer high-impact fixes (open slots) first."""
+improvement — a short summary of what you changed and why. Do not narrate
+every step. Work within your iteration budget: prefer high-impact fixes
+(open slots) first, then short days, then soft objectives."""
 
 
 def build_problem_digest(
@@ -132,6 +152,11 @@ def build_problem_digest(
         f"Violations: {new_hard_violation_count} new hard, "
         f"{soft_violation_count} soft rule violations."
     )
+    if seed_stats.short_days:
+        lines.append(
+            f"Short work days (below the daily minimum): {seed_stats.short_days} "
+            "— repair these (see tool policy on mini work days)."
+        )
     if seed_open:
         lines.append("")
         lines.append("Top open slots (slot_key|section|time|missing):")

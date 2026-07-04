@@ -11,8 +11,10 @@ router = APIRouter()
 
 
 class HealthCheckIssue(BaseModel):
-    type: str  # "orphaned_assignment", "slot_collision", "duplicate_assignment", "colband_explosion"
-    severity: str  # "error", "warning"
+    # "orphaned_assignment", "slot_collision", "duplicate_assignment",
+    # "colband_explosion", "pool_assignment_info"
+    type: str
+    severity: str  # "error", "warning", "info"
     message: str
     details: dict = {}
 

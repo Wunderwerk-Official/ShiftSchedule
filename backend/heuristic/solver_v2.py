@@ -46,7 +46,6 @@ class HeuristicConfig:
     MAX_DAY_RETRIES: int = 5
     ENABLE_CONSECUTIVE_FILLING: bool = True
     RANDOM_SEED: int = 42
-    RESPECT_MANUAL_ASSIGNMENTS: bool = True
 
 
 class SlotInfo:
@@ -380,7 +379,6 @@ def heuristic_solve_range_v2(
 
     # Expand slots to instances
     slot_instances = _expand_slots_to_instances(state, target_day_isos, holidays)
-    slots_by_id = {s.slot_id + "__" + s.date_iso: s for s in slot_instances}
 
     # Also expand CONTEXT days around the range: manual assignments there must
     # be visible to the rest-window and overnight-overlap checks (both read

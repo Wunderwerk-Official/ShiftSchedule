@@ -337,7 +337,7 @@ class TestFullWeekMixedContracts:
         payload = SolveRangeRequest(
             startISO=self.WEEK_START,
             endISO=self.WEEK_END,
-            onlyFillRequired=True,
+            only_fill_required=True,
             use_heuristic=True,
         )
 
@@ -357,7 +357,7 @@ class TestFullWeekMixedContracts:
 
         payload = SolveRangeRequest(
             startISO=self.WEEK_START, endISO=self.WEEK_END,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -372,7 +372,7 @@ class TestFullWeekMixedContracts:
 
         payload = SolveRangeRequest(
             startISO=self.WEEK_START, endISO=self.WEEK_END,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -387,7 +387,7 @@ class TestFullWeekMixedContracts:
 
         payload = SolveRangeRequest(
             startISO=self.WEEK_START, endISO=self.WEEK_END,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -505,7 +505,7 @@ class TestMultiWeekWithVacation:
 
         payload = SolveRangeRequest(
             startISO=self.WEEK1_START, endISO=self.WEEK3_END,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -526,7 +526,7 @@ class TestMultiWeekWithVacation:
 
         payload = SolveRangeRequest(
             startISO=self.WEEK1_START, endISO=self.WEEK3_END,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -549,7 +549,7 @@ class TestMultiWeekWithVacation:
 
         payload = SolveRangeRequest(
             startISO=self.WEEK1_START, endISO=self.WEEK3_END,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -668,7 +668,7 @@ class TestOvernightOnCallNoCrossing:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.TUESDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -695,7 +695,7 @@ class TestOvernightOnCallNoCrossing:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.TUESDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -794,7 +794,7 @@ class TestMultipleLocationsEnforcement:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -810,7 +810,7 @@ class TestMultipleLocationsEnforcement:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -925,7 +925,7 @@ class TestSpecialistsGetTheirSlots:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -951,7 +951,7 @@ class TestSpecialistsGetTheirSlots:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -967,7 +967,7 @@ class TestSpecialistsGetTheirSlots:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1049,7 +1049,7 @@ class TestPartiallyInfeasibleSchedule:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1063,7 +1063,7 @@ class TestPartiallyInfeasibleSchedule:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1081,7 +1081,7 @@ class TestPartiallyInfeasibleSchedule:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1101,7 +1101,7 @@ class TestPartiallyInfeasibleSchedule:
 
         payload = SolveRangeRequest(
             startISO=self.MONDAY, endISO=self.MONDAY,
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1195,7 +1195,7 @@ class TestWeeklyHoursReset:
         # Friday 2026-01-09, Monday 2026-01-12
         payload = SolveRangeRequest(
             startISO="2026-01-09", endISO="2026-01-12",
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1216,7 +1216,7 @@ class TestWeeklyHoursReset:
 
         payload = SolveRangeRequest(
             startISO="2026-01-09", endISO="2026-01-12",
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1235,7 +1235,7 @@ class TestWeeklyHoursReset:
 
         payload = SolveRangeRequest(
             startISO="2026-01-09", endISO="2026-01-12",
-            onlyFillRequired=True, use_heuristic=True,
+            only_fill_required=True, use_heuristic=True,
         )
         result = heuristic_solve_range_v2(
             payload, state, MockCancelEvent(), mock_progress, 0.0
@@ -1321,7 +1321,7 @@ def _run_multi_day_solver(
     payload = SolveRangeRequest(
         startISO=start.isoformat(),
         endISO=end.isoformat(),
-        onlyFillRequired=only_fill_required,
+        only_fill_required=only_fill_required,
         use_heuristic=True,
     )
     return heuristic_solve_range_v2(

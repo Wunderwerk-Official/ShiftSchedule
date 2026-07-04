@@ -12,7 +12,7 @@ const disabledBase = "disabled:cursor-not-allowed disabled:opacity-60";
  * Pill toggle button - used for toggle groups and selection pills
  * Examples: Strategy selection, filter toggles, tab selections
  */
-export const pillToggle = {
+const pillToggle = {
   base: cx(
     "rounded-full border px-3 py-1.5 text-xs font-normal transition-colors",
     disabledBase,
@@ -91,15 +91,6 @@ export const buttonDanger = {
  * Icon button - small circular buttons for icons
  * Examples: Navigation arrows, close buttons
  */
-export const buttonIcon = {
-  base: cx(
-    "grid h-8 w-8 place-items-center rounded-full text-sm font-semibold text-slate-600",
-    "hover:bg-slate-100 active:bg-slate-200/80",
-    "dark:text-slate-300 dark:hover:bg-slate-800 dark:active:bg-slate-700",
-    disabledBase,
-  ),
-} as const;
-
 /**
  * Add/Create button - dashed border for adding new items
  * Examples: "Add Person", "Add Holiday"

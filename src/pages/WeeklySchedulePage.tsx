@@ -40,6 +40,7 @@ import {
   type SolverSettings,
   type WeeklyCalendarTemplate,
   type WebPublishStatus,
+  type SolverRule,
 } from "../api/client";
 import SolverDebugPanel from "../components/schedule/SolverDebugPanel";
 import SolverInfoModal, { type SolverHistoryEntry } from "../components/schedule/SolverInfoModal";
@@ -195,12 +196,8 @@ function useMediaQuery(query: string) {
     const media = window.matchMedia(query);
     const update = () => setMatches(media.matches);
     update();
-    if (media.addEventListener) {
-      media.addEventListener("change", update);
-      return () => media.removeEventListener("change", update);
-    }
-    media.addListener(update);
-    return () => media.removeListener(update);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
   }, [query]);
 
   return matches;
@@ -314,6 +311,28 @@ export default function WeeklySchedulePage({
   const [vacationOverviewOpen, setVacationOverviewOpen] = useState(false);
   const [workingHoursOverviewOpen, setWorkingHoursOverviewOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
+  // Solver if/then rules have no editor in this UI; keep whatever the backend
+  // stores instead of silently wiping the list on every save (every
+  // normalizeAppState call below must include it).
+  const solverRulesRef = useRef<SolverRule[]>([]);
+  // Auto-dismiss timer for solver notices: cleared before re-arming so an old
+  // timer can't close a newer notice (and can't fire after unmount).
+  const solverNoticeTimerRef = useRef<number | null>(null);
+  const showSolverNoticeBriefly = (notes: string, ms: number) => {
+    setSolverNotice({ notes });
+    if (solverNoticeTimerRef.current !== null) {
+      window.clearTimeout(solverNoticeTimerRef.current);
+    }
+    solverNoticeTimerRef.current = window.setTimeout(() => setSolverNotice(null), ms);
+  };
+  useEffect(
+    () => () => {
+      if (solverNoticeTimerRef.current !== null) {
+        window.clearTimeout(solverNoticeTimerRef.current);
+      }
+    },
+    [],
+  );
   const [loadedUserId, setLoadedUserId] = useState<string>("");
   const [solverNotice, setSolverNotice] = useState<{
     notes: string;
@@ -568,14 +587,13 @@ export default function WeeklySchedulePage({
     () => buildScheduleRows(rows, locations, locationsEnabled, weeklyTemplate),
     [rows, locations, locationsEnabled, weeklyTemplate],
   );
-  const visibleScheduleRows = useMemo(() => scheduleRows, [scheduleRows]);
   const classShiftRows = useMemo(
     () => scheduleRows.filter((row) => row.kind === "class"),
     [scheduleRows],
   );
   const calendarRows = useMemo(
-    () => buildCalendarRows(visibleScheduleRows),
-    [visibleScheduleRows],
+    () => buildCalendarRows(scheduleRows),
+    [scheduleRows],
   );
   const locationSeparatorRowIds = useMemo(
     () => buildLocationSeparatorRowIds(calendarRows),
@@ -760,6 +778,7 @@ export default function WeeklySchedulePage({
       holidayYear,
       publishedWeekStartISOs,
       solverSettings,
+      solverRules: solverRulesRef.current,
       weeklyTemplate,
     });
 
@@ -1228,6 +1247,7 @@ export default function WeeklySchedulePage({
           holidayYear,
           publishedWeekStartISOs,
           solverSettings,
+          solverRules: solverRulesRef.current,
           weeklyTemplate,
         });
         await saveState(normalized);
@@ -1274,11 +1294,7 @@ export default function WeeklySchedulePage({
                n.toLowerCase().includes("ignored")
       );
       if (warningNotes.length > 0) {
-        setSolverNotice({
-          notes: warningNotes.join("\n"),
-        });
-        // Auto-dismiss after 5 seconds for warnings
-        window.setTimeout(() => setSolverNotice(null), 5000);
+        showSolverNoticeBriefly(warningNotes.join("\n"), 5000);
       }
       const filtered = result.assignments.filter(
         (a) => a.dateISO >= args.startISO && a.dateISO <= args.endISO,
@@ -1378,8 +1394,7 @@ export default function WeeklySchedulePage({
         historyStatus = "error";
         historyNotes = [err.message];
         setAutoPlanError(err.message);
-        setSolverNotice({ notes: err.message });
-        window.setTimeout(() => setSolverNotice(null), 5000);
+        showSolverNoticeBriefly(err.message, 5000);
       } else {
         historyStatus = "error";
         historyNotes = ["Solver service is not responding."];
@@ -1388,8 +1403,7 @@ export default function WeeklySchedulePage({
             args.startISO,
           )}.`,
         );
-        setSolverNotice({ notes: "Solver service is not responding." });
-        window.setTimeout(() => setSolverNotice(null), 4000);
+        showSolverNoticeBriefly("Solver service is not responding.", 4000);
       }
     } finally {
       // Compute statsHistory from live solutions before clearing state
@@ -2196,6 +2210,7 @@ export default function WeeklySchedulePage({
         if (normalized.solverSettings) {
           setSolverSettings(normalized.solverSettings as SolverSettings);
         }
+        solverRulesRef.current = normalized.solverRules ?? [];
         if (normalized.holidays) setHolidays(normalized.holidays);
         if (normalized.holidayCountry) setHolidayCountry(normalized.holidayCountry);
         if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
@@ -2246,6 +2261,7 @@ export default function WeeklySchedulePage({
       holidayYear,
       publishedWeekStartISOs,
       solverSettings,
+      solverRules: solverRulesRef.current,
       weeklyTemplate,
     });
     const handle = window.setTimeout(() => {
@@ -2343,6 +2359,7 @@ export default function WeeklySchedulePage({
         holidayYear,
         publishedWeekStartISOs,
         solverSettings,
+        solverRules: solverRulesRef.current,
         weeklyTemplate,
       });
       saveState(normalized).catch(() => {

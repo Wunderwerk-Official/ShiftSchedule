@@ -516,6 +516,10 @@ export type SolverAgentDebug = {
   cache_creation_input_tokens?: number;
   seed_score?: number;
   best_score?: number;
+  /** The model's own closing summary of the run (real names restored). */
+  summary?: string | null;
+  /** Every accepted change, in order (real names — browser-only data). */
+  moves?: AgentMoveItem[];
 };
 
 export type SolverDebugInfo = {

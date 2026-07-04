@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { SolverDebugInfo, SolverDebugSolutionTime, SolverSettings } from "../../api/client";
 import { cx } from "../../lib/classNames";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
+import { formatFeedDate } from "../../lib/agentActivity";
 import SolverDebugPanel from "./SolverDebugPanel";
 import type { StatsHistoryEntry } from "./SolverOverlay";
 
@@ -877,6 +878,44 @@ export default function SolverInfoModal({
                           </div>
                         ))}
                       </div>
+                      {agent.summary && (
+                        <div className="mt-3 rounded-lg bg-white/70 px-3 py-2 text-xs italic leading-relaxed text-slate-600 dark:bg-slate-900/50 dark:text-slate-300">
+                          &ldquo;{agent.summary}&rdquo;
+                        </div>
+                      )}
+                      {agent.moves && agent.moves.length > 0 && (
+                        <div className="mt-3">
+                          <div className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
+                            Changes made by the agent ({agent.moves.length})
+                          </div>
+                          <div className="flex max-h-44 flex-col gap-1 overflow-y-auto pr-1">
+                            {agent.moves.map((move, index) => (
+                              <div
+                                key={index}
+                                className="text-xs text-slate-600 dark:text-slate-300"
+                              >
+                                <span
+                                  className={
+                                    move.action === "assign"
+                                      ? "font-bold text-emerald-600 dark:text-emerald-400"
+                                      : "font-bold text-rose-500 dark:text-rose-300"
+                                  }
+                                >
+                                  {move.action === "assign" ? "+" : "–"}
+                                </span>{" "}
+                                <span className="font-medium">{move.clinician}</span>
+                                {move.action === "assign" ? " → " : " ← "}
+                                {move.section || "shift"}
+                                <span className="text-slate-400 dark:text-slate-500">
+                                  {" · "}
+                                  {formatFeedDate(move.dateISO)}
+                                  {move.start && ` · ${move.start}–${move.end}`}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
                 })()}

@@ -85,18 +85,30 @@ TOOL_SPECS_RAW = [
     {
         "name": "list_candidates_for_slot",
         "description": (
-            "For one open slot instance, evaluate every clinician: whether "
+            "Evaluate every clinician for open slot instances: whether "
             "assigning them would be legal (eligible=true) and if not, which "
             "violation codes it would create. Includes week hours vs "
             "contract, ytd_worked_pct (percent of year-to-date target hours "
             "already worked up to the slot's day — lower = further behind), "
-            "and preference/time-window fit. Eligible candidates are sorted "
-            "most-behind first: prefer the top of the list."
+            "and preference/time-window fit. day_hours = hours they already "
+            "work that day; adjacent_to_existing = the slot directly touches "
+            "one of their shifts (prefer these for short edge slots, so "
+            "nobody comes in for a 1-2h stint). Eligible candidates are "
+            "sorted most-behind first: prefer the top of the list. "
+            "PREFER slot_keys (up to 8 slots in ONE call, compact response) "
+            "over repeated single-slot calls — it saves iterations."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"slot_key": {"type": "string"}},
-            "required": ["slot_key"],
+            "properties": {
+                "slot_key": {"type": "string"},
+                "slot_keys": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 8,
+                },
+            },
             "additionalProperties": False,
         },
     },
@@ -238,6 +250,9 @@ class PlanToolExecutor:
 
         self.moves_accepted = 0
         self.moves_rejected = 0
+        # Human-readable log of every ACCEPTED move (real names) — surfaced
+        # in the run summary of the solver history after the run.
+        self.accepted_move_log: List[dict] = []
 
         # Baseline = violations of the seed plan. Only NEW hard violations
         # beyond this set block acceptance. For magnitude-typed violations
@@ -411,7 +426,33 @@ class PlanToolExecutor:
         }
 
     def _tool_candidates(self, args: dict) -> dict:
-        slot_key = args["slot_key"]
+        # Batched form: several slots in one call, compact per-slot output —
+        # one round-trip instead of N (each round costs wall clock and grows
+        # the conversation the model re-reads every iteration).
+        slot_keys = args.get("slot_keys")
+        if slot_keys:
+            out = {}
+            for key in list(slot_keys)[:8]:
+                result = self._candidates_for_slot(key)
+                if "candidates" in result:
+                    eligible = [c for c in result["candidates"] if c["eligible"]][:8]
+                    ineligible_counts: Dict[str, int] = {}
+                    for c in result["candidates"]:
+                        if not c["eligible"]:
+                            for reason in c["reasons"] or ["OTHER"]:
+                                ineligible_counts[reason] = ineligible_counts.get(reason, 0) + 1
+                    result = {
+                        "capacity_left": result["capacity_left"],
+                        "eligible": eligible,
+                        "ineligible_counts": ineligible_counts,
+                    }
+                out[key] = result
+            return {"slots": out}
+        if not args.get("slot_key"):
+            return {"error": "Provide slot_key or slot_keys"}
+        return self._candidates_for_slot(args["slot_key"])
+
+    def _candidates_for_slot(self, slot_key: str) -> dict:
         inst = self.ctx.instances.get(slot_key)
         if inst is None:
             return {"error": f"Unknown or inactive slot instance: {slot_key}"}
@@ -444,10 +485,18 @@ class PlanToolExecutor:
                     if self._is_new_hard(v, extra_baseline=current_hard_keys)
                 }
             )
+            day_intervals = self._day_intervals(clinician.id, inst.date_iso)
             entry = {
                 "clinicianId": self._alias(clinician.id),
                 "eligible": not new_codes and capacity_left > 0,
                 "reasons": new_codes if new_codes else ([] if capacity_left > 0 else ["CAPACITY_EXCEEDED"]),
+                # Hours this clinician already works on the slot's day, and
+                # whether the slot directly touches one of those shifts —
+                # the key signals for avoiding 1-2h mini-days on edge slots.
+                "day_hours": round(sum(e - s for s, e in day_intervals) / 60.0, 1),
+                "adjacent_to_existing": any(
+                    e == inst.start or inst.end == s for s, e in day_intervals
+                ),
                 "week_hours": round(self._week_hours(clinician.id, inst.date_iso), 1),
                 "contract_hours": clinician.workingHoursPerWeek,
                 # % of YTD target worked up to THIS slot's day, including the
@@ -632,10 +681,12 @@ class PlanToolExecutor:
             self.best_assignments = list(trial_list)
             if self.on_improvement is not None:
                 self.on_improvement(score.total, list(trial_list))
+        described = [self._describe_move(m) for m in moves]
+        self.accepted_move_log.extend(described)
         self._emit_activity(
             "moves_applied",
             {
-                "moves": [self._describe_move(m) for m in moves],
+                "moves": described,
                 "improved": improved,
                 "score": score.total,
             },
@@ -723,6 +774,28 @@ class PlanToolExecutor:
     def scrub_text(self, text: str) -> str:
         """Public entry point for pseudonymizing LLM-bound free text."""
         return self._scrub(text)
+
+    def unscrub_text(self, text: str) -> str:
+        """Public entry point for restoring real names in UI-bound text."""
+        return self._unscrub(text)
+
+    def _day_intervals(self, clinician_id: str, date_iso: str) -> List[Tuple[int, int]]:
+        """(start, end) minutes of everything this clinician already works on
+        date_iso (fixed context + working copy)."""
+        out: List[Tuple[int, int]] = []
+        for a in self._full_plan():
+            if a.clinicianId != clinician_id or a.dateISO != date_iso:
+                continue
+            if a.rowId.startswith("pool-"):
+                continue
+            inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+            if inst is not None:
+                out.append((inst.start, inst.end))
+                continue
+            interval = self.ctx.all_slot_intervals.get(a.rowId)
+            if interval is not None:
+                out.append((interval[0], interval[1]))
+        return out
 
     def _describe_move(self, move: dict) -> dict:
         """Humanize one accepted move for the live UI feed (real names are

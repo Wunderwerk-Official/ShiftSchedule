@@ -28,6 +28,35 @@ from .tools import TOOL_SPECS_RAW, PlanToolExecutor
 
 # LLM loops need more wall clock than the CP-SAT default of 60s.
 DEFAULT_AGENT_TIMEOUT_SECONDS = 300.0
+
+# History compaction: once the tool results in the conversation exceed this
+# budget, everything but the most recent exchanges is replaced by a stub in
+# ONE go. Chunked (not per-iteration) so the prompt-cache prefix stays
+# byte-stable between compactions — trimming one message per round would
+# invalidate the cache on every call.
+TOOL_HISTORY_BUDGET_CHARS = 120_000
+TOOL_HISTORY_KEEP_RECENT = 4
+TOOL_RESULT_STUB = '{"trimmed":"stale tool result removed - re-query if needed"}'
+
+
+def _compact_tool_history(messages) -> None:
+    """Replace old tool-result payloads with a stub when the history is big.
+
+    The model re-reads the whole conversation every iteration; ancient
+    candidate lists and overviews are outdated anyway (the working copy moved
+    on) and only cost tokens. Assistant turns are never touched — the API
+    requires them to be replayed verbatim (thinking blocks).
+    """
+    tool_messages = [m for m in messages if m.role == "tool"]
+    total = sum(
+        len(r.content or "") for m in tool_messages for r in m.tool_results
+    )
+    if total <= TOOL_HISTORY_BUDGET_CHARS:
+        return
+    for message in tool_messages[:-TOOL_HISTORY_KEEP_RECENT]:
+        for result in message.tool_results:
+            if result.content != TOOL_RESULT_STUB:
+                result.content = TOOL_RESULT_STUB
 # Leave this many seconds of headroom before the deadline for finalization.
 DEADLINE_HEADROOM_SECONDS = 5.0
 MAX_PER_CALL_TIMEOUT_SECONDS = 180.0
@@ -119,6 +148,7 @@ def agent_solve_range(
         on_progress("agent", data)
 
     executor: Optional[PlanToolExecutor] = None
+    final_summary: Optional[str] = None
     emit_agent("stage", {"stage": "seed"})
     executor = PlanToolExecutor(
         state,
@@ -166,6 +196,10 @@ def agent_solve_range(
                     "cache_creation_input_tokens": total_cache_creation_tokens,
                     "seed_score": executor.seed_score,
                     "best_score": executor.best_score,
+                    # Post-run review: the model's own closing summary (real
+                    # names restored) and every accepted change.
+                    "summary": final_summary[:2000] if final_summary else None,
+                    "moves": executor.accepted_move_log[:200],
                 },
             },
         }
@@ -248,6 +282,7 @@ def agent_solve_range(
         per_call_timeout = min(
             max(remaining - DEADLINE_HEADROOM_SECONDS, 10.0), MAX_PER_CALL_TIMEOUT_SECONDS
         )
+        _compact_tool_history(messages)
         emit_agent("iteration", {"iteration": iterations_done + 1})
         response = provider.complete(
             system=SYSTEM_PROMPT,
@@ -261,7 +296,10 @@ def agent_solve_range(
         total_cache_read_tokens += response.usage.get("cache_read_input_tokens", 0)
         total_cache_creation_tokens += response.usage.get("cache_creation_input_tokens", 0)
         if response.text:
-            emit_agent("thought", {"text": response.text.strip()[:280]})
+            # The model writes aliases (D1, ...); restore real names for the
+            # user-facing feed and remember the latest text as the run summary.
+            final_summary = executor.unscrub_text(response.text.strip())
+            emit_agent("thought", {"text": final_summary[:280]})
 
         if response.stop_reason == "error":
             extra_notes.append(

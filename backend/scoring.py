@@ -96,6 +96,10 @@ class PlanStats(BaseModel):
     working_hours_deviation_minutes: int
     split_shifts: int
     location_changes: int
+    # Clinician-days whose solver-assigned work stays below the derived daily
+    # minimum (same rule as score_plan's minimum_daily_hours penalty) — the
+    # "someone comes in for just 1-2 hours" smell.
+    short_days: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -555,6 +559,27 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
             deviation = abs(total_minutes - target_minutes)
             hours_deviation += int(round(max(0.0, deviation - tol_minutes)))
 
+    # Short days: mirrors score_plan's minimum_daily_hours rule so the agent
+    # sees the same signal the objective punishes.
+    short_days = 0
+    new_minutes_by_cd: Dict[Tuple[str, str], int] = {}
+    for a, inst in new:
+        key = (a.clinicianId, a.dateISO)
+        new_minutes_by_cd[key] = new_minutes_by_cd.get(key, 0) + max(0, inst.end - inst.start)
+    for (cid, date_iso), new_minutes in new_minutes_by_cd.items():
+        window = ctx.window_by_clinician_date.get((cid, date_iso))
+        if window is not None:
+            min_minutes = max(1, (window[2] - window[1]) // 2)
+        elif cid in ctx.contract_hours:
+            min_minutes = max(1, int(round(ctx.contract_hours[cid] * 60 / 5)) // 2)
+        else:
+            continue
+        manual_minutes = ctx.fixed_minutes_by_clinician_date.get((cid, date_iso), 0)
+        if manual_minutes >= min_minutes:
+            continue
+        if manual_minutes + new_minutes < min_minutes:
+            short_days += 1
+
     return PlanStats(
         total_required_slots=total_required,
         filled_slots=filled,
@@ -565,6 +590,7 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
         working_hours_deviation_minutes=hours_deviation,
         split_shifts=split_shifts,
         location_changes=location_changes,
+        short_days=short_days,
     )
 
 

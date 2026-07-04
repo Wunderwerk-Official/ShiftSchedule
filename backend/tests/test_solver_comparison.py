@@ -302,7 +302,7 @@ def test_solver_performance_comparison():
     payload = SolveRangeRequest(
         startISO=monday.isoformat(),
         endISO=tuesday.isoformat(),
-        onlyFillRequired=True,
+        only_fill_required=True,
         use_heuristic=False,  # Will toggle for each test
     )
 
