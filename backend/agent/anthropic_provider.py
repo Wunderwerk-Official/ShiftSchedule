@@ -103,6 +103,10 @@ class AnthropicProvider(LLMProvider):
         usage = {
             "input_tokens": getattr(response.usage, "input_tokens", 0) or 0,
             "output_tokens": getattr(response.usage, "output_tokens", 0) or 0,
+            # Cached tokens are billed separately (~0.1x reads, 1.25x writes)
+            # and excluded from input_tokens — track them for cost estimates.
+            "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
+            "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
         }
         stop_reason = response.stop_reason or "end_turn"
         if stop_reason not in ("tool_use", "end_turn", "max_tokens", "refusal"):

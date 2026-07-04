@@ -196,6 +196,11 @@ class SolverSettings(BaseModel):
     weightWorkingHours: int = 3  # Stay within target working hours (per minute of deviation)
     weightMinimumDailyHours: int = 5  # Penalize daily assignments shorter than derived minimum
     weightYtdBalance: int = 5  # Bias toward clinicians behind on YTD hours
+    # Agent solver: Anthropic model id override (None -> AGENT_MODEL env / default)
+    agentModel: Optional[str] = None
+    # Agent solver: free-text admin instructions appended (pseudonymized) to
+    # the problem digest. None -> DEFAULT_AGENT_INSTRUCTIONS; "" -> none.
+    agentInstructions: Optional[str] = None
 
 
 class SolverRule(BaseModel):
@@ -219,6 +224,9 @@ class SolveRangeRequest(BaseModel):
     timeout_seconds: Optional[float] = None  # None means use default (60s)
     use_heuristic: bool = False  # Legacy switch, superseded by solver_mode
     solver_mode: Optional[SolverMode] = None  # Wins over use_heuristic when set
+    # Client-generated id echoed on every SSE progress event of this run, so
+    # the frontend can ignore stragglers from a previous or foreign run.
+    run_token: Optional[str] = None
 
     def resolved_mode(self) -> SolverMode:
         if self.solver_mode is not None:

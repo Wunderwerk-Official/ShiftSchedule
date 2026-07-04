@@ -320,3 +320,95 @@ def test_agent_activity_events_flow_through_progress():
     assert kinds[-1] == "stage" and agent_events[-1]["stage"] == "finalize"
     # Aliases resolved: the plan carries real ids
     assert {a["clinicianId"] for a in result["assignments"]} == {"clin-1", "clin-2"}
+
+
+def test_settings_agent_model_overrides_config():
+    state = _two_clinician_state()
+    state.solverSettings = {"agentModel": "claude-sonnet-5"}
+    result = agent_solve_range(
+        _payload(),
+        state,
+        MockCancelEvent(),
+        ProgressRecorder(),
+        time.time(),
+        provider=MockProvider(),
+        config=_config(model="claude-opus-4-8"),
+    )
+    assert result["debugInfo"]["agent"]["model"] == "claude-sonnet-5"
+
+
+def test_agent_debug_reports_model_and_token_fields():
+    state = _two_clinician_state()
+    result = agent_solve_range(
+        _payload(),
+        state,
+        MockCancelEvent(),
+        ProgressRecorder(),
+        time.time(),
+        provider=MockProvider(),
+        config=_config(),
+    )
+    agent = result["debugInfo"]["agent"]
+    assert agent["model"] == _config().model
+    for key in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                "cache_creation_input_tokens"):
+        assert key in agent
+
+
+class CapturingProvider(MockProvider):
+    """MockProvider that records the messages of every complete() call."""
+
+    def __init__(self, script=None):
+        super().__init__(script)
+        self.seen_messages = []
+
+    def complete(self, *, system, messages, tools, timeout_seconds):
+        self.seen_messages.append(list(messages))
+        return super().complete(
+            system=system, messages=messages, tools=tools,
+            timeout_seconds=timeout_seconds,
+        )
+
+
+def test_admin_instructions_are_scrubbed_into_digest():
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Dr. Tom Braun"),
+            make_clinician("clin-2", "Dr. Anna Becker"),
+        ]
+    )
+    state.solverSettings = {
+        "agentInstructions": "braun must never work Fridays; prefer Dr. Anna Becker."
+    }
+    provider = CapturingProvider()
+    agent_solve_range(
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    digest = provider.seen_messages[0][0].content
+    assert "ADMIN INSTRUCTIONS" in digest
+    # Real names (any casing, with or without title) never reach the LLM
+    assert "Braun" not in digest and "braun" not in digest
+    assert "Becker" not in digest
+    assert "D1" in digest and "D2" in digest
+
+
+def test_default_instructions_apply_when_unset_and_empty_disables():
+    from backend.agent.prompts import DEFAULT_AGENT_INSTRUCTIONS
+
+    state = _two_clinician_state()
+    provider = CapturingProvider()
+    agent_solve_range(
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    assert DEFAULT_AGENT_INSTRUCTIONS[:40] in provider.seen_messages[0][0].content
+
+    state2 = _two_clinician_state()
+    state2.solverSettings = {"agentInstructions": "   "}
+    provider2 = CapturingProvider()
+    agent_solve_range(
+        _payload(), state2, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider2, config=_config(),
+    )
+    assert "ADMIN INSTRUCTIONS" not in provider2.seen_messages[0][0].content

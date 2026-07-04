@@ -12,6 +12,17 @@ from typing import Dict, List
 from ..models import AppState
 from ..scoring import PlanScore, PlanStats, OpenSlot, ScoringContext
 
+# Applied when the admin has not written their own instructions (Settings ->
+# Solver -> "AI agent instructions"). Keep in sync with the frontend copy in
+# src/lib/agentSettings.ts, which pre-fills the settings textarea.
+DEFAULT_AGENT_INSTRUCTIONS = (
+    "Prefer long, continuous assignments. Never schedule someone for just one "
+    "or two hours: it is better that one person covers a longer block (at "
+    "least half a day) and another person stays completely off. Prefer "
+    "keeping the same person on consecutive days over spreading short stints "
+    "across many people."
+)
+
 SYSTEM_PROMPT = """You are an expert clinician shift-schedule repair agent.
 
 A deterministic heuristic has produced a seed plan for the given date range.
@@ -42,6 +53,10 @@ Soft objectives, in rough order of weight (the score is minimized):
 
 Privacy: clinicians are referred to by anonymized ids (D1, D2, ...) — you
 never see real names. Always use these ids in tool calls.
+
+The problem digest may end with ADMIN INSTRUCTIONS written by the planning
+admin. Treat them as important soft goals: follow them whenever possible, but
+they never override the hard constraints or fixed assignments above.
 
 Tool usage policy:
 - Inspect before you move: list_candidates_for_slot tells you exactly which

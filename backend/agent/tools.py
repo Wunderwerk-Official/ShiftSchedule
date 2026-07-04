@@ -630,20 +630,52 @@ class PlanToolExecutor:
         return re.sub(r"\bD\d+\b", replace, text)
 
     def _scrub(self, text: str) -> str:
-        """Replace clinician names and ids in free text with their aliases
-        (violation messages embed names). Longest-first so partial ids or
-        name prefixes don't clobber longer matches."""
+        """Replace clinician names and ids in free text with their aliases.
+
+        Applied to every LLM-facing string that can embed identity: violation
+        messages and the admin's free-text instructions. Matching is
+        case-insensitive on word boundaries and also covers the name without
+        a leading academic title plus the bare surname, so "Dr. Tom Braun",
+        "tom braun" and "Braun" all become the same alias. Over-scrubbing is
+        safe (stays private); under-scrubbing would leak a name. Longest
+        needles run first so partial matches don't clobber longer ones.
+        """
+        import re
+
         replacements: List[Tuple[str, str]] = []
         for cid, alias in self.alias_by_id.items():
             clinician = self.clinicians_by_id.get(cid)
             replacements.append((cid, alias))
             if clinician and clinician.name:
-                replacements.append((clinician.name, alias))
+                name = clinician.name.strip()
+                replacements.append((name, alias))
+                bare = name
+                while True:
+                    stripped = re.sub(
+                        r"^(dr\.?|prof\.?|pd|med\.?)\s+", "", bare, flags=re.IGNORECASE
+                    )
+                    if stripped == bare:
+                        break
+                    bare = stripped.strip()
+                if bare and bare != name:
+                    replacements.append((bare, alias))
+                surname = bare.split()[-1] if bare else ""
+                if len(surname) >= 3:
+                    replacements.append((surname, alias))
         replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
         for needle, alias in replacements:
             if needle:
-                text = text.replace(needle, alias)
+                text = re.sub(
+                    r"(?<!\w)" + re.escape(needle) + r"(?!\w)",
+                    alias,
+                    text,
+                    flags=re.IGNORECASE,
+                )
         return text
+
+    def scrub_text(self, text: str) -> str:
+        """Public entry point for pseudonymizing LLM-bound free text."""
+        return self._scrub(text)
 
     def _describe_move(self, move: dict) -> dict:
         """Humanize one accepted move for the live UI feed (real names are

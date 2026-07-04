@@ -9,6 +9,8 @@ import {
 import { cx } from "../../lib/classNames";
 import { Location, WorkplaceRow } from "../../data/mockData";
 import type { Holiday, SolverSettings, WeeklyCalendarTemplate } from "../../api/client";
+import { AGENT_MODEL_OPTIONS, DEFAULT_AGENT_MODEL } from "../../lib/llmPricing";
+import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
 import WeeklyTemplateBuilder from "./WeeklyTemplateBuilder";
 import CustomSelect from "./CustomSelect";
 import CustomNumberInput from "./CustomNumberInput";
@@ -435,6 +437,68 @@ export default function SettingsView({
                   )}
                 />
               </button>
+            </div>
+            <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
+              <div>
+                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  AI agent model
+                </div>
+                <div className="text-xs text-slate-500 dark:text-slate-400">
+                  Claude model used by the &ldquo;AI Agent&rdquo; solver. Costs are rough estimates —
+                  the exact cost of each run shows in the solver history (gear icon).
+                </div>
+              </div>
+              <CustomSelect
+                className="w-80"
+                value={solverSettings.agentModel ?? DEFAULT_AGENT_MODEL}
+                onChange={(value) =>
+                  onChangeSolverSettings({ ...solverSettings, agentModel: value })
+                }
+                options={AGENT_MODEL_OPTIONS.map((option) => ({
+                  value: option.id,
+                  label: `${option.label} — ${option.description} · ${option.approxRunCost}`,
+                }))}
+              />
+            </div>
+            <div className="flex flex-col gap-2 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    AI agent instructions
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    Free-text guidance the AI agent follows in addition to the fixed rules above.
+                    You can refer to people and sections by name — names are replaced with
+                    anonymous ids before anything is sent to the AI. Clear the field to run
+                    without extra instructions.
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeSolverSettings({
+                      ...solverSettings,
+                      agentInstructions: DEFAULT_AGENT_INSTRUCTIONS,
+                    })
+                  }
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-600 hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                >
+                  Reset to default
+                </button>
+              </div>
+              <textarea
+                value={solverSettings.agentInstructions ?? DEFAULT_AGENT_INSTRUCTIONS}
+                onChange={(event) =>
+                  onChangeSolverSettings({
+                    ...solverSettings,
+                    agentInstructions: event.target.value,
+                  })
+                }
+                rows={4}
+                maxLength={2000}
+                placeholder="e.g. Dr. Meier should not work Fridays. Prefer two long shifts over four short ones."
+                className="w-full resize-y rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:placeholder:text-slate-500"
+              />
             </div>
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <div>

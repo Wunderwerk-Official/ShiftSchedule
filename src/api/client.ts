@@ -145,6 +145,8 @@ export type SolverSettings = {
   weightWorkingHours?: number; // Stay within target working hours (default: 3)
   weightMinimumDailyHours?: number; // Penalize daily assignments shorter than derived minimum (default: 5)
   weightYtdBalance?: number; // Bias toward clinicians behind on YTD hours (default: 5)
+  agentModel?: string; // Anthropic model id for the AI agent solver (default: server AGENT_MODEL)
+  agentInstructions?: string; // Free-text admin guidance for the AI agent (undefined = built-in default, "" = none)
 };
 
 export type SolverRule = {
@@ -503,6 +505,19 @@ export type SolverSubScores = {
   hours_penalty: number;
 };
 
+export type SolverAgentDebug = {
+  model?: string | null;
+  iterations?: number;
+  moves_accepted?: number;
+  moves_rejected?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+  seed_score?: number;
+  best_score?: number;
+};
+
 export type SolverDebugInfo = {
   timing: SolverDebugTiming;
   solution_times: SolverDebugSolutionTime[];
@@ -513,6 +528,7 @@ export type SolverDebugInfo = {
   cpu_workers_used: number;
   cpu_cores_available: number;
   sub_scores?: SolverSubScores;
+  agent?: SolverAgentDebug;
 };
 
 export type SolveRangeResult = {
@@ -532,6 +548,7 @@ export async function solveRange(
     onlyFillRequired?: boolean;
     timeoutSeconds?: number;
     solverMode?: SolverMode;
+    runToken?: string;
     signal?: AbortSignal;
   },
 ): Promise<SolveRangeResult> {
@@ -544,6 +561,7 @@ export async function solveRange(
       only_fill_required: options?.onlyFillRequired ?? false,
       timeout_seconds: options?.timeoutSeconds,
       solver_mode: options?.solverMode,
+      run_token: options?.runToken,
     }),
     signal: options?.signal,
   });
@@ -611,13 +629,15 @@ export type AgentActivityData = {
   reason?: string;
 };
 
+// Every event's data may carry the run_token echoed from the solve request;
+// listeners drop events whose token doesn't match their own run.
 export type SolverProgressEvent =
-  | { event: "connected"; data: Record<string, never> }
-  | { event: "start"; data: { startISO: string; endISO: string | null; timeout_seconds: number | null } }
-  | { event: "phase"; data: { phase: string; label: string } }
-  | { event: "solution"; data: { solution_num: number; time_ms: number; objective: number; assignments?: Assignment[] } }
-  | { event: "agent"; data: AgentActivityData }
-  | { event: "complete"; data: { startISO: string; endISO: string; status: "success" | "error"; error?: string } };
+  | { event: "connected"; data: { run_token?: string } }
+  | { event: "start"; data: { startISO: string; endISO: string | null; timeout_seconds: number | null; run_token?: string } }
+  | { event: "phase"; data: { phase: string; label: string; run_token?: string } }
+  | { event: "solution"; data: { solution_num: number; time_ms: number; objective: number; assignments?: Assignment[]; run_token?: string } }
+  | { event: "agent"; data: AgentActivityData & { run_token?: string } }
+  | { event: "complete"; data: { startISO: string; endISO: string; status: "success" | "error"; error?: string; run_token?: string } };
 
 export function subscribeSolverProgress(
   onEvent: (event: SolverProgressEvent) => void,

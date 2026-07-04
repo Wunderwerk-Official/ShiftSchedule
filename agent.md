@@ -881,6 +881,19 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   `AGENT_MOCK_SCRIPT=<json path>`.
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
 `AGENT_MAX_ITERATIONS`, `AGENT_MAX_TOKENS`) — the spawn subprocess inherits it.
+`solverSettings.agentModel` (set via Settings → Solver → "AI agent model")
+overrides `AGENT_MODEL` per workspace. Each run's `debugInfo.agent` records
+the model plus input/output/cache token counts; the frontend prices them via
+`src/lib/llmPricing.ts` (per-run + cumulative cost in the solver history —
+update that pricing table when Anthropic prices change).
+
+### SSE progress channel (`/v1/solve/progress`)
+Progress events are delivered only to SSE subscribers of the user who owns
+the active run, and every event is tagged with the client-generated
+`run_token` from the solve request. The frontend drops events whose token
+doesn't match its current run — without this, stragglers from an aborted
+previous run (or another user's run) get mixed into the live score chart
+with a foreign objective scale, which shows up as a full-height "jump".
 
 ### Tests
 - `backend/tests/test_scoring.py` — scorer/stats + **seed-parity** (heuristic

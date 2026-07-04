@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { createPortal } from "react-dom";
 import type { SolverDebugInfo, SolverDebugSolutionTime, SolverSettings } from "../../api/client";
 import { cx } from "../../lib/classNames";
+import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import SolverDebugPanel from "./SolverDebugPanel";
 import type { StatsHistoryEntry } from "./SolverOverlay";
 
@@ -569,9 +570,13 @@ export default function SolverInfoModal({
                     <li>Fair distribution of workload across the team</li>
                   </ul>
                   <p>
-                    The solver explores thousands of possible combinations to find an
-                    assignment that satisfies all constraints while maximizing fairness
-                    and preferences.
+                    Two solvers are available in the planning panel:{" "}
+                    <span className="font-medium">Optimizer</span> explores thousands of
+                    combinations mathematically (fast, deterministic, no AI), while{" "}
+                    <span className="font-medium">AI Agent</span> builds a draft plan and
+                    lets Claude improve it step by step — following the model choice and
+                    free-text instructions from Settings → Solver. Both respect the same
+                    hard rules; names are anonymized before anything is sent to the AI.
                   </p>
                   <p className="text-xs text-slate-400 dark:text-slate-500">
                     Longer date ranges or more clinicians will require more time to solve.
@@ -717,8 +722,28 @@ export default function SolverInfoModal({
                 {/* Recent runs list */}
                 {history.length > 0 && (
                   <div className="flex flex-col gap-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                      Recent Runs
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                        Recent Runs
+                      </div>
+                      {history.some((entry) => entry.debugInfo?.agent) && (
+                        <div className="text-xs text-slate-500 dark:text-slate-400">
+                          AI cost (runs shown):{" "}
+                          <span className="font-semibold text-violet-600 dark:text-violet-400">
+                            {formatCostUSD(
+                              history.reduce(
+                                (sum, entry) =>
+                                  sum +
+                                  (estimateAgentCostUSD(
+                                    entry.debugInfo?.agent?.model,
+                                    entry.debugInfo?.agent,
+                                  ) ?? 0),
+                                0,
+                              ),
+                            )}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     {history.map((entry) => (
                       <button
@@ -752,6 +777,20 @@ export default function SolverInfoModal({
                             <span>{formatDateTime(entry.startedAt)}</span>
                             <span>•</span>
                             <span>{formatDuration(entry.endedAt - entry.startedAt)}</span>
+                            {entry.debugInfo?.agent && (
+                              <>
+                                <span>•</span>
+                                <span className="font-medium text-violet-600 dark:text-violet-400">
+                                  AI{" "}
+                                  {formatCostUSD(
+                                    estimateAgentCostUSD(
+                                      entry.debugInfo.agent.model,
+                                      entry.debugInfo.agent,
+                                    ) ?? 0,
+                                  )}
+                                </span>
+                              </>
+                            )}
                           </div>
                         </div>
                         <ChartIcon className="h-4 w-4 text-slate-400 dark:text-slate-500" />
@@ -792,6 +831,56 @@ export default function SolverInfoModal({
                     {selectedEntry.status === "error" && "Error"}
                   </span>
                 </div>
+
+                {/* AI agent run: model, tokens, and estimated cost */}
+                {selectedEntry.debugInfo?.agent && (() => {
+                  const agent = selectedEntry.debugInfo.agent;
+                  const modelLabel =
+                    AGENT_MODEL_OPTIONS.find((o) => o.id === agent.model)?.label ??
+                    agent.model ??
+                    "server default";
+                  const cost = estimateAgentCostUSD(agent.model, agent);
+                  const fmtTokens = (n?: number) =>
+                    (n ?? 0) >= 1000 ? `${((n ?? 0) / 1000).toFixed(1)}k` : `${n ?? 0}`;
+                  const tiles: Array<{ label: string; value: string }> = [
+                    { label: "Model", value: modelLabel },
+                    {
+                      label: "Iterations",
+                      value: `${agent.iterations ?? 0} · ${agent.moves_accepted ?? 0} changes`,
+                    },
+                    {
+                      label: "Tokens",
+                      value: `${fmtTokens(
+                        (agent.input_tokens ?? 0) +
+                          (agent.cache_read_input_tokens ?? 0) +
+                          (agent.cache_creation_input_tokens ?? 0),
+                      )} in · ${fmtTokens(agent.output_tokens)} out`,
+                    },
+                    {
+                      label: "Estimated cost",
+                      value: formatCostUSD(cost) ?? "n/a (unknown model pricing)",
+                    },
+                  ];
+                  return (
+                    <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900/50 dark:bg-violet-950/20">
+                      <div className="mb-2 text-xs font-medium uppercase tracking-wide text-violet-500 dark:text-violet-400">
+                        AI Agent
+                      </div>
+                      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                        {tiles.map((tile) => (
+                          <div key={tile.label}>
+                            <div className="text-xs text-slate-500 dark:text-slate-400">
+                              {tile.label}
+                            </div>
+                            <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                              {tile.value}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Optimization Score Chart - dashboard style */}
                 {selectedEntry.debugInfo && selectedEntry.debugInfo.solution_times.length > 0 && (
@@ -946,7 +1035,7 @@ export function SolverInfoButton({ onClick }: { onClick: () => void }) {
       type="button"
       onClick={onClick}
       className="rounded p-0.5 text-slate-400 transition-colors hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
-      title="About Automated Planning"
+      title="Solver history, weights & timeout"
     >
       <GearIcon className="h-4 w-4" />
     </button>

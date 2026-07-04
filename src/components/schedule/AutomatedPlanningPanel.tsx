@@ -303,6 +303,7 @@ export default function AutomatedPlanningPanel({
                 type="button"
                 onClick={() => setStrategy("fill")}
                 disabled={isRunning}
+                title="Only fill required slots that are still open — nothing more."
                 className={getPillToggleClasses(strategy === "fill")}
               >
                 Fill open slots
@@ -311,6 +312,7 @@ export default function AutomatedPlanningPanel({
                 type="button"
                 onClick={() => setStrategy("distribute")}
                 disabled={isRunning}
+                title="Fill required slots first, then spread the remaining available people across the timeframe."
                 className={getPillToggleClasses(strategy === "distribute")}
               >
                 Distribute all
@@ -326,6 +328,7 @@ export default function AutomatedPlanningPanel({
                 type="button"
                 onClick={() => setSolverMode("cpsat")}
                 disabled={isRunning}
+                title="Mathematical optimizer (CP-SAT): fast and deterministic, no AI involved."
                 className={getPillToggleClasses(solverMode === "cpsat")}
               >
                 Optimizer
@@ -334,11 +337,17 @@ export default function AutomatedPlanningPanel({
                 type="button"
                 onClick={() => setSolverMode("agent")}
                 disabled={isRunning}
+                title="Builds a draft plan, then Claude improves it step by step. Model, cost, and free-text instructions are configured in Settings."
                 className={getPillToggleClasses(solverMode === "agent")}
               >
                 AI Agent
               </button>
             </div>
+            {solverMode === "agent" && (
+              <div className="text-xs text-slate-400 dark:text-slate-500">
+                Uses Claude (names are anonymized). Model &amp; instructions: Settings → Solver.
+              </div>
+            )}
           </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

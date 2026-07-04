@@ -22,7 +22,7 @@ from ..models import Assignment, SolveRangeRequest, AppState
 from ..scoring import build_scoring_context, open_slots, plan_stats, score_plan
 from ..validation import validate_solver_rules
 from .config import AgentConfig
-from .prompts import SYSTEM_PROMPT, build_problem_digest
+from .prompts import DEFAULT_AGENT_INSTRUCTIONS, SYSTEM_PROMPT, build_problem_digest
 from .provider import ChatMessage, LLMProvider, ToolSpec, get_provider
 from .tools import TOOL_SPECS_RAW, PlanToolExecutor
 
@@ -104,6 +104,8 @@ def agent_solve_range(
     iterations_done = 0
     total_input_tokens = 0
     total_output_tokens = 0
+    total_cache_read_tokens = 0
+    total_cache_creation_tokens = 0
 
     def emit_agent(kind: str, payload: Optional[dict] = None) -> None:
         """Dedicated SSE event type for the live agent panel. Older frontends
@@ -154,11 +156,14 @@ def agent_solve_range(
                 "num_slots": len(ctx.instances),
                 "num_assignments": len(best),
                 "agent": {
+                    "model": config.model if config is not None else None,
                     "iterations": iterations_done,
                     "moves_accepted": executor.moves_accepted,
                     "moves_rejected": executor.moves_rejected,
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,
+                    "cache_read_input_tokens": total_cache_read_tokens,
+                    "cache_creation_input_tokens": total_cache_creation_tokens,
                     "seed_score": executor.seed_score,
                     "best_score": executor.best_score,
                 },
@@ -170,6 +175,12 @@ def agent_solve_range(
     # ------------------------------------------------------------------
     if config is None:
         config = AgentConfig.from_env()
+    # The model can be chosen per workspace in the app settings; a value there
+    # overrides the AGENT_MODEL env default. solverSettings is a plain dict on
+    # AppState.
+    settings_model = (state.solverSettings or {}).get("agentModel")
+    if isinstance(settings_model, str) and settings_model.strip():
+        config.model = settings_model.strip()
     if provider is None:
         try:
             provider = get_provider(config)
@@ -207,6 +218,20 @@ def agent_solve_range(
         max_iterations=config.max_iterations,
         clinician_aliases=executor.alias_by_id,
     )
+    # Free-text guidance from the admin (Settings -> "AI agent instructions").
+    # The admin writes real clinician names; scrub_text swaps them for the
+    # aliases before anything leaves the backend. None/absent falls back to
+    # the default; an explicitly emptied field means "no instructions".
+    admin_instructions = (state.solverSettings or {}).get("agentInstructions")
+    if not isinstance(admin_instructions, str):
+        admin_instructions = DEFAULT_AGENT_INSTRUCTIONS
+    admin_instructions = admin_instructions.strip()[:2000]
+    if admin_instructions:
+        digest += (
+            "\n\nADMIN INSTRUCTIONS (soft goals from the planning admin; never "
+            "override hard constraints or fixed assignments):\n"
+            + executor.scrub_text(admin_instructions)
+        )
     messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
     extra_notes: List[str] = []
     nudged_on_truncation = False
@@ -233,6 +258,8 @@ def agent_solve_range(
         iterations_done += 1
         total_input_tokens += response.usage.get("input_tokens", 0)
         total_output_tokens += response.usage.get("output_tokens", 0)
+        total_cache_read_tokens += response.usage.get("cache_read_input_tokens", 0)
+        total_cache_creation_tokens += response.usage.get("cache_creation_input_tokens", 0)
         if response.text:
             emit_agent("thought", {"text": response.text.strip()[:280]})
 

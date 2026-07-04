@@ -79,9 +79,20 @@ _solver_running_lock = threading.Lock()
 _solver_is_running = False
 _solver_process: Optional[multiprocessing.Process] = None  # The solver subprocess
 
-# Global list of queues for SSE clients to receive solver progress
-_solver_progress_subscribers: List[asyncio.Queue] = []
+# Global list of (username, queue) for SSE clients to receive solver progress.
+# Progress is delivered only to subscribers of the user who owns the active
+# run — the channel used to be a broadcast to everyone, which leaked one
+# user's draft assignments to all others and mixed foreign solution events
+# into the live score chart (visible as a full-height "jump" mid-run).
+_solver_progress_subscribers: List[Tuple[str, asyncio.Queue]] = []
 _subscribers_lock = threading.Lock()
+
+# Identity of the active run. Written under _solver_running_lock when a run
+# starts; read by _broadcast_solver_progress. Deliberately NOT cleared when a
+# run ends: late queue drains keep the old token, so a client that already
+# started its next run filters them out by token mismatch.
+_active_run_owner: Optional[str] = None
+_active_run_token: Optional[str] = None
 
 # Multiprocessing context for spawning solver processes
 _mp_context = multiprocessing.get_context("spawn")
@@ -370,9 +381,18 @@ def _solver_subprocess_worker(
 
 
 def _broadcast_solver_progress(event_type: str, data: dict):
-    """Broadcast solver progress to all SSE subscribers."""
+    """Deliver solver progress to the SSE subscribers of the run owner.
+
+    Events are tagged with the client-chosen run token so the frontend can
+    drop stragglers from a previous run (e.g. the drain after a force-abort)
+    instead of mixing them into the current run's chart.
+    """
+    if _active_run_token:
+        data = {**data, "run_token": _active_run_token}
     with _subscribers_lock:
-        for queue in _solver_progress_subscribers:
+        for username, queue in _solver_progress_subscribers:
+            if _active_run_owner is not None and username != _active_run_owner:
+                continue
             try:
                 # Use put_nowait since we're in a sync context
                 queue.put_nowait({"event": event_type, "data": data})
@@ -423,12 +443,13 @@ async def solver_progress_stream(token: str = Query(...)):
     Uses query param for token since EventSource doesn't support Authorization headers.
     """
     # Verify token (will raise HTTPException if invalid)
-    _verify_token_and_get_user(token)
+    subscriber = _verify_token_and_get_user(token)
 
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
+    entry = (subscriber.username, queue)
 
     with _subscribers_lock:
-        _solver_progress_subscribers.append(queue)
+        _solver_progress_subscribers.append(entry)
 
     async def event_generator():
         try:
@@ -445,8 +466,8 @@ async def solver_progress_stream(token: str = Query(...)):
                     yield f": keepalive\n\n"
         finally:
             with _subscribers_lock:
-                if queue in _solver_progress_subscribers:
-                    _solver_progress_subscribers.remove(queue)
+                if entry in _solver_progress_subscribers:
+                    _solver_progress_subscribers.remove(entry)
 
     return StreamingResponse(
         event_generator(),
@@ -1525,7 +1546,7 @@ def _add_continuity_constraints(
 
 @router.post("/v1/solve/range", response_model=SolveRangeResponse)
 def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_get_current_user)):
-    global _solver_is_running, _solver_process
+    global _solver_is_running, _solver_process, _active_run_owner, _active_run_token
 
     # Capture start time BEFORE anything else - this is used for accurate timeout calculation
     request_start_time = time.time()
@@ -1573,6 +1594,8 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
             _solver_process = None
         _solver_is_running = True
         _solver_cancel_event.clear()
+        _active_run_owner = current_user.username
+        _active_run_token = payload.run_token
 
         # Create multiprocessing primitives (after the 409/zombie check so we
         # don't leak a Queue/Event when refusing a concurrent run).

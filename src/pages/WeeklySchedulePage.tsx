@@ -337,6 +337,10 @@ export default function WeeklySchedulePage({
   } | null>(null);
   const autoPlanAbortRef = useRef<AbortController | null>(null);
   const skipApplyOnAbortRef = useRef(false); // When true, abort handler should NOT apply solution
+  // Identifies OUR run in the SSE progress stream: events tagged with a
+  // different token (a previous aborted run, or another user's run) are
+  // ignored instead of polluting the live chart.
+  const autoPlanRunTokenRef = useRef<string | null>(null);
   const [liveSolutions, setLiveSolutions] = useState<LiveSolution[]>([]);
   const liveSolutionsRef = useRef<LiveSolution[]>([]);
   const [solverPhase, setSolverPhase] = useState<string | null>(null);
@@ -433,6 +437,13 @@ export default function WeeklySchedulePage({
 
     const unsubscribe = subscribeSolverProgress(
       (event) => {
+        // Drop events that belong to a different run (token mismatch). Events
+        // without a token (older backend) are accepted unchanged.
+        if (event.event !== "connected") {
+          const eventToken = event.data.run_token;
+          const ownToken = autoPlanRunTokenRef.current;
+          if (eventToken && ownToken && eventToken !== ownToken) return;
+        }
         if (event.event === "phase") {
           // Store the human-readable label from the backend
           setSolverPhase(event.data.label);
@@ -1162,6 +1173,11 @@ export default function WeeklySchedulePage({
       solverMode: args.solverMode ?? "cpsat",
       timeoutSeconds: args.timeoutSeconds,
     });
+    const runToken =
+      typeof crypto !== "undefined" && "randomUUID" in crypto
+        ? crypto.randomUUID()
+        : `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    autoPlanRunTokenRef.current = runToken;
     const abortController = new AbortController();
     autoPlanAbortRef.current = abortController;
     setAutoPlanRunning(true);
@@ -1221,6 +1237,7 @@ export default function WeeklySchedulePage({
         onlyFillRequired: args.onlyFillRequired,
         timeoutSeconds: args.timeoutSeconds,
         solverMode: args.solverMode,
+        runToken,
         signal: abortController.signal,
       });
 
