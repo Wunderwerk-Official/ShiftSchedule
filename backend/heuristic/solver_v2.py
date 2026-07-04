@@ -989,7 +989,7 @@ def _fill_day_with_prioritized_slots(
     skipped_count = 0
     for slot, criticality, eligible_list in slot_criticality:
         if cancel_event.is_set():
-            return False, assignments
+            return False, assignments, unfillable_count
 
         # The queue was expanded once at day start; consecutive filling may
         # have satisfied this slot in the meantime, so recheck the fill count
@@ -1011,7 +1011,7 @@ def _fill_day_with_prioritized_slots(
                 continue
             else:
                 # Slot became unfillable due to earlier assignments — trigger backtracking
-                return False, assignments
+                return False, assignments, unfillable_count
 
         # Rank doctors
         ranked_doctors = _rank_doctors_by_deficit(eligible_list, slot, retry_count, clinician_states)
