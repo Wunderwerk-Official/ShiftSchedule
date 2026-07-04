@@ -12,6 +12,20 @@ import PrintWeekPage from "./pages/PrintWeekPage";
 import PrintWeeksPage from "./pages/PrintWeeksPage";
 import PublicWeekPage from "./pages/PublicWeekPage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
+import { APP_BUILD, APP_VERSION } from "./version";
+
+/** Subtle, always-visible build identifier at the bottom of the app. Not
+ * rendered on print/public/export routes to keep those documents clean. */
+function VersionBadge() {
+  return (
+    <div
+      className="pointer-events-none fixed bottom-1 right-2 z-50 select-none text-[10px] tabular-nums text-slate-400/80 dark:text-slate-500/80"
+      aria-label={`App version ${APP_VERSION} build ${APP_BUILD}`}
+    >
+      v{APP_VERSION} ({APP_BUILD})
+    </div>
+  );
+}
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
@@ -107,15 +121,23 @@ export default function App() {
   }
 
   if (!currentUser) {
-    return <LoginPage onLogin={handleLogin} theme={theme} onToggleTheme={toggleTheme} />;
+    return (
+      <>
+        <LoginPage onLogin={handleLogin} theme={theme} onToggleTheme={toggleTheme} />
+        <VersionBadge />
+      </>
+    );
   }
 
   return (
-    <WeeklySchedulePage
-      currentUser={currentUser}
-      onLogout={handleLogout}
-      theme={theme}
-      onToggleTheme={toggleTheme}
-    />
+    <>
+      <WeeklySchedulePage
+        currentUser={currentUser}
+        onLogout={handleLogout}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
+      <VersionBadge />
+    </>
   );
 }

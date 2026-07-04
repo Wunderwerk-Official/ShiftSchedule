@@ -1158,6 +1158,7 @@ Database Inspector
 - HTML5 drag-and-drop does not work on mobile; touch DnD would require a new library or alternate UX.
 - If you change the solver API, update `src/api/client.ts` and `WeeklySchedulePage.tsx`.
 - Legacy row id `pool-not-working` is filtered out on load.
+- **Versioning (mandatory):** `src/version.ts` holds `APP_VERSION` (string, starts at `"1.00"`) and `APP_BUILD` (integer, starts at `0`), rendered as a subtle `v1.00 (0)` badge at the bottom-right of the app (`App.tsx::VersionBadge`). Bump BOTH on every delivered iteration — version `+0.01`, build `+1` — so the owner can verify which build a deployment runs.
 
 ---
 
