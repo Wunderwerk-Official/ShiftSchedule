@@ -7,7 +7,9 @@ A script is a list of turns. Each turn is a dict:
 
 A turn with tool_calls yields ``stop_reason="tool_use"``; a turn without
 yields ``end_turn``. When the script runs out, ``end_turn`` is returned so a
-too-short script terminates the loop instead of hanging it.
+too-short script terminates the loop instead of hanging it. An optional
+``"delay_ms"`` per turn (capped at 3000) simulates LLM latency so the live UI
+can be demoed/screenshotted; CI scripts simply omit it.
 
 Injection paths:
 - in-process (unit tests): ``MockProvider(script=[...])`` passed straight to
@@ -23,6 +25,7 @@ Injection paths:
 from __future__ import annotations
 
 import json
+import time
 from typing import List, Optional
 
 from .config import AgentConfig
@@ -61,6 +64,9 @@ class MockProvider(LLMProvider):
             )
         entry = self.script[self.turn]
         self.turn += 1
+        delay_ms = entry.get("delay_ms")
+        if isinstance(delay_ms, (int, float)) and delay_ms > 0:
+            time.sleep(min(delay_ms, 3000) / 1000.0)
         calls = [
             ToolCall(
                 id=f"mock-call-{self.turn}-{idx}",

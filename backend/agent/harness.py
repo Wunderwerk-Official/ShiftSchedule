@@ -101,12 +101,34 @@ def agent_solve_range(
             },
         )
 
+    iterations_done = 0
+    total_input_tokens = 0
+    total_output_tokens = 0
+
+    def emit_agent(kind: str, payload: Optional[dict] = None) -> None:
+        """Dedicated SSE event type for the live agent panel. Older frontends
+        ignore unknown event types, so this is backward-safe."""
+        data = dict(payload or {})
+        data["kind"] = kind
+        data.setdefault("iteration", iterations_done)
+        data["max_iterations"] = config.max_iterations if config else None
+        data["moves_accepted"] = executor.moves_accepted if executor is not None else 0
+        data["time_ms"] = (time.time() - start_time) * 1000.0
+        on_progress("agent", data)
+
+    executor: Optional[PlanToolExecutor] = None
+    emit_agent("stage", {"stage": "seed"})
     executor = PlanToolExecutor(
-        state, ctx, seed_assignments, on_improvement=emit_solution
+        state,
+        ctx,
+        seed_assignments,
+        on_improvement=emit_solution,
+        on_activity=emit_agent,
     )
     emit_solution(executor.seed_score, seed_assignments)
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
+        emit_agent("stage", {"stage": "finalize"})
         best = executor.best_assignments
         notes = [
             f"Agent solver: seed by heuristic v2, {iterations_done} LLM iteration(s), "
@@ -143,10 +165,6 @@ def agent_solve_range(
             },
         }
 
-    iterations_done = 0
-    total_input_tokens = 0
-    total_output_tokens = 0
-
     # ------------------------------------------------------------------
     # Phase 2: LLM repair loop
     # ------------------------------------------------------------------
@@ -181,10 +199,12 @@ def agent_solve_range(
         new_hard_violation_count=0,  # seed violations ARE the baseline
         soft_violation_count=soft_count,
         max_iterations=config.max_iterations,
+        clinician_aliases=executor.alias_by_id,
     )
     messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
     extra_notes: List[str] = []
     nudged_on_truncation = False
+    emit_agent("stage", {"stage": "improve"})
 
     while iterations_done < config.max_iterations:
         if cancel_event.is_set():
@@ -197,6 +217,7 @@ def agent_solve_range(
         per_call_timeout = min(
             max(remaining - DEADLINE_HEADROOM_SECONDS, 10.0), MAX_PER_CALL_TIMEOUT_SECONDS
         )
+        emit_agent("iteration", {"iteration": iterations_done + 1})
         response = provider.complete(
             system=SYSTEM_PROMPT,
             messages=messages,
@@ -206,6 +227,8 @@ def agent_solve_range(
         iterations_done += 1
         total_input_tokens += response.usage.get("input_tokens", 0)
         total_output_tokens += response.usage.get("output_tokens", 0)
+        if response.text:
+            emit_agent("thought", {"text": response.text.strip()[:280]})
 
         if response.stop_reason == "error":
             extra_notes.append(

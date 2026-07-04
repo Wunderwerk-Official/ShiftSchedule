@@ -7,7 +7,7 @@ problem digest goes into the first user message.
 
 from __future__ import annotations
 
-from typing import List
+from typing import Dict, List
 
 from ..models import AppState
 from ..scoring import PlanScore, PlanStats, OpenSlot, ScoringContext
@@ -40,6 +40,9 @@ Soft objectives, in rough order of weight (the score is minimized):
 4. Section preferences, preferred time windows, YTD balance: prefer
    clinicians who are behind on year-to-date hours.
 
+Privacy: clinicians are referred to by anonymized ids (D1, D2, ...) — you
+never see real names. Always use these ids in tool calls.
+
 Tool usage policy:
 - Inspect before you move: list_candidates_for_slot tells you exactly which
   clinicians are legal for a slot and why others are not.
@@ -64,8 +67,14 @@ def build_problem_digest(
     new_hard_violation_count: int,
     soft_violation_count: int,
     max_iterations: int,
+    clinician_aliases: Dict[str, str],
 ) -> str:
-    """Compact first user message. Deep data is fetched via tools."""
+    """Compact first user message. Deep data is fetched via tools.
+
+    Clinicians appear only under their pseudonymous alias (see
+    ``tools.build_clinician_aliases``): real names and real ids never reach
+    the LLM, and the short aliases keep the roster table token-cheap.
+    """
     sections = {r.id: r.name for r in state.rows if r.kind == "class"}
     lines: List[str] = []
     lines.append(
@@ -76,10 +85,10 @@ def build_problem_digest(
     lines.append("")
     lines.append("Sections: " + ", ".join(f"{sid}={name}" for sid, name in sections.items()))
     lines.append("")
-    lines.append("Roster (id|name|qualified|preferred|contract h/wk|YTD deficit %):")
+    lines.append("Roster (id|qualified|preferred|contract h/wk|YTD deficit %):")
     for c in state.clinicians:
         lines.append(
-            f"- {c.id}|{c.name}|{','.join(c.qualifiedClassIds)}"
+            f"- {clinician_aliases.get(c.id, c.id)}|{','.join(c.qualifiedClassIds)}"
             f"|{','.join(c.preferredClassIds or []) or '-'}"
             f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
             f"|{ctx.ytd_deficit_pct.get(c.id, 0)}"

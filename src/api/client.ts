@@ -585,11 +585,38 @@ export async function abortSolver(force = false): Promise<{ status: string; mess
   return res.json();
 }
 
+// One humanized assignment change from the agent solver's live feed.
+export type AgentMoveItem = {
+  action: "assign" | "unassign";
+  clinician: string;
+  section: string;
+  dateISO: string;
+  start: string;
+  end: string;
+};
+
+// Live activity from the agent solver (SSE event type "agent").
+export type AgentActivityData = {
+  kind: "stage" | "iteration" | "thought" | "moves_applied" | "moves_rejected";
+  iteration: number;
+  max_iterations: number | null;
+  moves_accepted: number;
+  time_ms: number;
+  stage?: "seed" | "improve" | "finalize";
+  text?: string;
+  moves?: AgentMoveItem[];
+  improved?: boolean;
+  score?: number;
+  count?: number;
+  reason?: string;
+};
+
 export type SolverProgressEvent =
   | { event: "connected"; data: Record<string, never> }
   | { event: "start"; data: { startISO: string; endISO: string | null; timeout_seconds: number | null } }
   | { event: "phase"; data: { phase: string; label: string } }
   | { event: "solution"; data: { solution_num: number; time_ms: number; objective: number; assignments?: Assignment[] } }
+  | { event: "agent"; data: AgentActivityData }
   | { event: "complete"; data: { startISO: string; endISO: string; status: "success" | "error"; error?: string } };
 
 export function subscribeSolverProgress(

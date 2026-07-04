@@ -108,3 +108,99 @@
     page-break-after: auto;
   }
 }
+
+/* --- Solver overlay: live-progress animations ------------------------------
+   Elegant-playful motion for the solve overlay (agent feed, constraint chips,
+   stage stepper). Everything is opt-in via classes and collapses to static
+   rendering under prefers-reduced-motion. */
+
+@media (prefers-reduced-motion: no-preference) {
+  @keyframes solver-feed-enter {
+    from {
+      opacity: 0;
+      transform: translateY(-6px) scale(0.98);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+  .solver-feed-enter {
+    animation: solver-feed-enter 0.35s cubic-bezier(0.2, 0.8, 0.3, 1) both;
+  }
+
+  @keyframes solver-pop {
+    0% {
+      transform: scale(0.4);
+      opacity: 0;
+    }
+    65% {
+      transform: scale(1.18);
+    }
+    100% {
+      transform: scale(1);
+      opacity: 1;
+    }
+  }
+  .solver-pop {
+    animation: solver-pop 0.45s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+
+  /* Soft breathing glow for the active stepper node / agent orb */
+  @keyframes solver-breathe {
+    0%,
+    100% {
+      box-shadow: 0 0 0 0 rgba(129, 140, 248, 0.45);
+    }
+    50% {
+      box-shadow: 0 0 0 6px rgba(129, 140, 248, 0);
+    }
+  }
+  .solver-breathe {
+    animation: solver-breathe 2s ease-in-out infinite;
+  }
+
+  /* Shimmering gradient text while the agent is thinking */
+  @keyframes solver-shimmer {
+    0% {
+      background-position: 200% 50%;
+    }
+    100% {
+      background-position: -200% 50%;
+    }
+  }
+  .solver-shimmer-text {
+    background-image: linear-gradient(
+      90deg,
+      rgb(100 116 139) 0%,
+      rgb(129 140 248) 45%,
+      rgb(192 132 252) 55%,
+      rgb(100 116 139) 100%
+    );
+    background-size: 200% 100%;
+    background-clip: text;
+    -webkit-background-clip: text;
+    color: transparent;
+    -webkit-text-fill-color: transparent;
+    animation: solver-shimmer 2.4s linear infinite;
+  }
+
+  /* Gentle float for the sparkle icon */
+  @keyframes solver-float {
+    0%,
+    100% {
+      transform: translateY(0) rotate(0deg);
+    }
+    50% {
+      transform: translateY(-2px) rotate(8deg);
+    }
+  }
+  .solver-float {
+    animation: solver-float 2.6s ease-in-out infinite;
+  }
+}
+
+/* Width transitions stay enabled everywhere (continuous, non-distracting) */
+.solver-bar-fill {
+  transition: width 0.7s cubic-bezier(0.2, 0.8, 0.3, 1);
+}

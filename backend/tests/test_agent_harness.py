@@ -286,3 +286,37 @@ def test_determinism_same_script_same_output():
     a, b = results
     assert a["assignments"] == b["assignments"]
     assert a["notes"] == b["notes"]
+
+
+def test_agent_activity_events_flow_through_progress():
+    state = _two_clinician_state()
+    slot_key = f"slot-a__mon__{MON}"
+    script = [
+        {"text": "Filling the open extra slot.", "tool_calls": [{"name": "apply_moves", "arguments": {
+            "moves": [{"action": "assign", "slot_key": slot_key, "clinicianId": "D2"}]}}]},
+        {"text": "Done."},
+    ]
+    progress = ProgressRecorder()
+    result = agent_solve_range(
+        _payload(only_fill_required=False),
+        state,
+        MockCancelEvent(),
+        progress,
+        time.time(),
+        provider=MockProvider(script),
+        config=_config(),
+    )
+    agent_events = [data for etype, data in progress.events if etype == "agent"]
+    kinds = [e["kind"] for e in agent_events]
+    # Lifecycle: seed -> improve -> iteration ticks -> applied moves -> finalize
+    assert kinds[0] == "stage" and agent_events[0]["stage"] == "seed"
+    assert ("stage", "improve") in [(e["kind"], e.get("stage")) for e in agent_events]
+    assert "iteration" in kinds
+    assert "thought" in kinds
+    applied = [e for e in agent_events if e["kind"] == "moves_applied"]
+    assert applied and applied[0]["moves"][0]["action"] == "assign"
+    # The move description carries the real clinician name for the UI
+    assert applied[0]["moves"][0]["clinician"] in ("Alice", "Bob")
+    assert kinds[-1] == "stage" and agent_events[-1]["stage"] == "finalize"
+    # Aliases resolved: the plan carries real ids
+    assert {a["clinicianId"] for a in result["assignments"]} == {"clin-1", "clin-2"}

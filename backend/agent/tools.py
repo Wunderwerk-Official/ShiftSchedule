@@ -171,6 +171,17 @@ def _split_slot_key(slot_key: str) -> Tuple[str, str]:
     return slot_id, date_iso
 
 
+def build_clinician_aliases(state: AppState) -> Dict[str, str]:
+    """Stable pseudonyms (D1, D2, ...) for clinicians, in roster order.
+
+    Everything the LLM sees uses these aliases: real names never leave the
+    backend, and short aliases beat long UUID-ish ids on token count. The
+    mapping lives only in this process; tool inputs are translated back, so
+    the returned plan carries real ids and the UI never sees an alias.
+    """
+    return {c.id: f"D{i + 1}" for i, c in enumerate(state.clinicians)}
+
+
 class PlanToolExecutor:
     """Owns the working copy and executes tool calls against it."""
 
@@ -181,11 +192,19 @@ class PlanToolExecutor:
         seed_assignments: List[Assignment],
         *,
         on_improvement: Optional[Callable[[float, List[Assignment]], None]] = None,
+        on_activity: Optional[Callable[[str, dict], None]] = None,
     ):
         self.state = state
         self.ctx = ctx
         self.on_improvement = on_improvement
+        # Live-activity hook for the UI: called with (kind, payload) for
+        # human-readable progress (applied/rejected move batches).
+        self.on_activity = on_activity
         self.clinicians_by_id: Dict[str, Clinician] = {c.id: c for c in state.clinicians}
+        self.section_names: Dict[str, str] = {r.id: r.name for r in state.rows}
+        # Pseudonymization boundary: the LLM only ever sees aliases.
+        self.alias_by_id: Dict[str, str] = build_clinician_aliases(state)
+        self.id_by_alias: Dict[str, str] = {v: k for k, v in self.alias_by_id.items()}
 
         # Fixed context: everything already in app state. Kept in full so
         # boundary checks (overlap/rest across the range edges) see it.
@@ -331,8 +350,8 @@ class PlanToolExecutor:
                     {
                         "severity": "hard",
                         "code": v.code,
-                        "message": v.message,
-                        "clinicianId": v.clinician_id,
+                        "message": self._scrub(v.message),
+                        "clinicianId": self._alias(v.clinician_id),
                         "dateISO": v.date_iso,
                         "slot_id": v.slot_id,
                         "new": self._is_new_hard(v),
@@ -344,8 +363,8 @@ class PlanToolExecutor:
                     {
                         "severity": "soft",
                         "code": v.code,
-                        "message": v.message,
-                        "clinicianId": v.clinician_id,
+                        "message": self._scrub(v.message),
+                        "clinicianId": self._alias(v.clinician_id),
                         "dateISO": v.date_iso,
                         "slot_id": v.slot_id,
                         "new": False,
@@ -394,7 +413,7 @@ class PlanToolExecutor:
             ) in self.fixed_identity
             if already:
                 candidates.append(
-                    {"clinicianId": clinician.id, "name": clinician.name,
+                    {"clinicianId": self._alias(clinician.id),
                      "eligible": False, "reasons": ["ALREADY_ASSIGNED"]}
                 )
                 continue
@@ -407,8 +426,7 @@ class PlanToolExecutor:
                 }
             )
             entry = {
-                "clinicianId": clinician.id,
-                "name": clinician.name,
+                "clinicianId": self._alias(clinician.id),
                 "eligible": not new_codes and capacity_left > 0,
                 "reasons": new_codes if new_codes else ([] if capacity_left > 0 else ["CAPACITY_EXCEEDED"]),
                 "week_hours": round(self._week_hours(clinician.id, inst.date_iso), 1),
@@ -426,10 +444,10 @@ class PlanToolExecutor:
         return {"slot_key": slot_key, "capacity_left": capacity_left, "candidates": candidates}
 
     def _tool_clinician_summary(self, args: dict) -> dict:
-        cid = args["clinicianId"]
+        cid = self._resolve_clinician(args["clinicianId"])
         clinician = self.clinicians_by_id.get(cid)
         if clinician is None:
-            return {"error": f"Unknown clinician: {cid}"}
+            return {"error": f"Unknown clinician: {args['clinicianId']}"}
         by_date: Dict[str, List[dict]] = {}
         for a in self.fixed_assignments:
             if a.dateISO in self.ctx.target_date_set and a.clinicianId == cid:
@@ -448,8 +466,7 @@ class PlanToolExecutor:
                 weeks[week_key] = round(self._week_hours(cid, date_iso), 1)
         _tol = clinician.workingHoursToleranceHours
         return {
-            "clinicianId": cid,
-            "name": clinician.name,
+            "clinicianId": self._alias(cid),
             "contract_hours_per_week": clinician.workingHoursPerWeek,
             "tolerance_hours": _tol if _tol is not None else 5,
             "week_hours": weeks,
@@ -484,12 +501,13 @@ class PlanToolExecutor:
             except ValueError as exc:
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
-            cid = move.get("clinicianId") or ""
+            raw_cid = move.get("clinicianId") or ""
+            cid = self._resolve_clinician(raw_cid)
             identity = (slot_id, date_iso, cid)
             slot_key = f"{slot_id}__{date_iso}"
 
             if cid not in self.clinicians_by_id:
-                rejected.append({"index": index, "reason": f"Unknown clinician: {cid}"})
+                rejected.append({"index": index, "reason": f"Unknown clinician: {raw_cid}"})
             elif action == "assign":
                 inst = self.ctx.instances.get(slot_key)
                 if inst is None:
@@ -498,7 +516,7 @@ class PlanToolExecutor:
                     )
                 elif identity in trial or identity in self.fixed_identity:
                     rejected.append(
-                        {"index": index, "reason": f"{cid} is already assigned to {slot_key}"}
+                        {"index": index, "reason": f"{raw_cid} is already assigned to {slot_key}"}
                     )
                 elif trial_counts.get(slot_key, 0) >= inst.capacity:
                     rejected.append(
@@ -519,13 +537,17 @@ class PlanToolExecutor:
                     )
                 else:
                     rejected.append(
-                        {"index": index, "reason": f"No such assignment: {cid} @ {slot_key}"}
+                        {"index": index, "reason": f"No such assignment: {raw_cid} @ {slot_key}"}
                     )
             else:
                 rejected.append({"index": index, "reason": f"Unknown action: {action!r}"})
 
         if rejected:
             self.moves_rejected += len(moves)
+            self._emit_activity(
+                "moves_rejected",
+                {"count": len(moves), "reason": rejected[0].get("reason", "invalid move")},
+            )
             return {"applied": False, "rejected": rejected}
 
         trial_list = list(trial.values())
@@ -536,6 +558,15 @@ class PlanToolExecutor:
         ]
         if new_hard:
             self.moves_rejected += len(moves)
+            self._emit_activity(
+                "moves_rejected",
+                {
+                    "count": len(moves),
+                    "reason": "would violate " + ", ".join(
+                        sorted({v["code"] for v in new_hard})
+                    ),
+                },
+            )
             return {
                 "applied": False,
                 "new_hard_violations": new_hard,
@@ -545,16 +576,84 @@ class PlanToolExecutor:
         self.current = trial
         self.moves_accepted += len(moves)
         score = score_plan(self.ctx, trial_list)
-        if score.total < self.best_score:
+        improved = score.total < self.best_score
+        if improved:
             self.best_score = score.total
             self.best_assignments = list(trial_list)
             if self.on_improvement is not None:
                 self.on_improvement(score.total, list(trial_list))
+        self._emit_activity(
+            "moves_applied",
+            {
+                "moves": [self._describe_move(m) for m in moves],
+                "improved": improved,
+                "score": score.total,
+            },
+        )
         return {"applied": True, "verification": self._overview()}
 
     # ------------------------------------------------------------------
     # small helpers
     # ------------------------------------------------------------------
+
+    def _emit_activity(self, kind: str, payload: dict) -> None:
+        if self.on_activity is None:
+            return
+        try:
+            self.on_activity(kind, payload)
+        except Exception:
+            pass  # UI hook failures must never affect the solve
+
+    def _resolve_clinician(self, alias_or_id: str) -> str:
+        """Translate an LLM-facing alias (D1, ...) back to the real id.
+        Real ids are accepted too, so in-process callers/tests keep working."""
+        return self.id_by_alias.get(alias_or_id, alias_or_id)
+
+    def _alias(self, clinician_id: Optional[str]) -> Optional[str]:
+        if clinician_id is None:
+            return None
+        return self.alias_by_id.get(clinician_id, clinician_id)
+
+    def _scrub(self, text: str) -> str:
+        """Replace clinician names and ids in free text with their aliases
+        (violation messages embed names). Longest-first so partial ids or
+        name prefixes don't clobber longer matches."""
+        replacements: List[Tuple[str, str]] = []
+        for cid, alias in self.alias_by_id.items():
+            clinician = self.clinicians_by_id.get(cid)
+            replacements.append((cid, alias))
+            if clinician and clinician.name:
+                replacements.append((clinician.name, alias))
+        replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
+        for needle, alias in replacements:
+            if needle:
+                text = text.replace(needle, alias)
+        return text
+
+    def _describe_move(self, move: dict) -> dict:
+        """Humanize one accepted move for the live UI feed (real names are
+        fine here: this goes to the user's browser, never to the LLM)."""
+        try:
+            slot_id, date_iso = _split_slot_key(move.get("slot_key") or "")
+        except ValueError:
+            slot_id, date_iso = move.get("slot_key") or "?", ""
+        cid = self._resolve_clinician(move.get("clinicianId") or "")
+        clinician = self.clinicians_by_id.get(cid)
+        inst = self.ctx.instances.get(f"{slot_id}__{date_iso}")
+        section = ""
+        start = end = ""
+        if inst is not None:
+            section = self.section_names.get(inst.section_id, inst.section_id)
+            start = f"{inst.start // 60:02d}:{inst.start % 60:02d}"
+            end = f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
+        return {
+            "action": move.get("action"),
+            "clinician": clinician.name if clinician else cid,
+            "section": section,
+            "dateISO": date_iso,
+            "start": start,
+            "end": end,
+        }
 
     def _make_assignment(self, slot_id: str, date_iso: str, clinician_id: str) -> Assignment:
         return Assignment(

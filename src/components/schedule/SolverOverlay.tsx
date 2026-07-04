@@ -1,9 +1,17 @@
 import { useState, useMemo, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import type { Assignment, Clinician, SolverSettings } from "../../api/client";
+import type {
+  AgentActivityData,
+  Assignment,
+  Clinician,
+  SolverMode,
+  SolverSettings,
+} from "../../api/client";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { calculateSolverLiveStats } from "../../lib/solverStats";
 import type { SolverSettingsForStats } from "../../lib/solverStats";
+import AgentActivityPanel from "./AgentActivityPanel";
+import ConstraintPulse from "./ConstraintPulse";
 
 export type LiveSolution = {
   solution_num: number;
@@ -28,6 +36,8 @@ type SolverOverlayProps = {
   currentPhase?: string | null;
   existingAssignments?: Assignment[]; // Existing (manual) assignments in the solve range
   solverSettings?: SolverSettings; // Solver settings for on-call rest tracking
+  solverMode?: SolverMode; // Which solver runs (drives the agent activity panel)
+  agentEvents?: AgentActivityData[]; // Live agent activity (solver_mode "agent")
 };
 
 const formatDuration = (valueMs: number) => {
@@ -674,6 +684,8 @@ export default function SolverOverlay({
   currentPhase = null,
   existingAssignments = [],
   solverSettings,
+  solverMode,
+  agentEvents = [],
 }: SolverOverlayProps) {
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [calendarContainer, setCalendarContainer] = useState<HTMLElement | null>(null);
@@ -807,7 +819,13 @@ export default function SolverOverlay({
         >
           <div className="flex items-baseline gap-3">
             <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">
-              Optimizing Schedule
+              {solverMode === "agent" ? (
+                <span className="bg-gradient-to-r from-indigo-600 to-violet-500 bg-clip-text text-transparent dark:from-indigo-300 dark:to-violet-300">
+                  AI Agent Planning
+                </span>
+              ) : (
+                "Optimizing Schedule"
+              )}
             </h3>
             <span className="text-sm font-medium tabular-nums text-slate-500 dark:text-slate-400">
               {formatDuration(elapsedMs)} / {formatDuration(totalAllowedMs)}
@@ -858,14 +876,26 @@ export default function SolverOverlay({
           )}
         </div>
 
-        {/* Preparation phase indicator - shown before solutions arrive */}
-        {currentPhase && liveSolutions.length === 0 && (
+        {/* Preparation phase indicator - shown before solutions arrive.
+            Agent mode has its own richer status panel below. */}
+        {currentPhase && liveSolutions.length === 0 && solverMode !== "agent" && (
           <div className="flex items-center gap-3 rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-800">
             <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
             <span className="text-sm text-slate-600 dark:text-slate-300">
               {currentPhase}
             </span>
           </div>
+        )}
+
+        {/* Agent live activity: stage stepper, iteration progress, move feed */}
+        {solverMode === "agent" && <AgentActivityPanel events={agentEvents} />}
+
+        {/* Live constraint fulfilment for the current best solution */}
+        {liveStats && (
+          <ConstraintPulse
+            stats={liveStats}
+            onCallRestEnabled={solverSettings?.onCallRestEnabled ?? false}
+          />
         )}
 
         {/* Live solutions chart */}

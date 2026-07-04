@@ -34,6 +34,7 @@ import {
   type Holiday,
   type IcalPublishStatus,
   type ScheduleSnapshotExport,
+  type AgentActivityData,
   type SolverDebugInfo,
   type SolverMode,
   type SolverSettings,
@@ -339,6 +340,13 @@ export default function WeeklySchedulePage({
   const [liveSolutions, setLiveSolutions] = useState<LiveSolution[]>([]);
   const liveSolutionsRef = useRef<LiveSolution[]>([]);
   const [solverPhase, setSolverPhase] = useState<string | null>(null);
+  const [agentEvents, setAgentEvents] = useState<AgentActivityData[]>([]);
+  // Mode + timeout of the CURRENT run (agent runs raise the timeout, so the
+  // overlay's time budget must reflect the run, not the settings value).
+  const [autoPlanRunConfig, setAutoPlanRunConfig] = useState<{
+    solverMode: SolverMode;
+    timeoutSeconds: number;
+  } | null>(null);
   const [solverHistory, setSolverHistory] = useState<SolverHistoryEntry[]>([]);
   const [solverInfoOpen, setSolverInfoOpen] = useState(false);
   const [solverTimeoutSeconds, setSolverTimeoutSeconds] = useState(1800);
@@ -421,12 +429,16 @@ export default function WeeklySchedulePage({
     setLiveSolutions([]);
     liveSolutionsRef.current = [];
     setSolverPhase(null);
+    setAgentEvents([]);
 
     const unsubscribe = subscribeSolverProgress(
       (event) => {
         if (event.event === "phase") {
           // Store the human-readable label from the backend
           setSolverPhase(event.data.label);
+        } else if (event.event === "agent") {
+          // Live agent activity feed (bounded so long runs stay cheap)
+          setAgentEvents((prev) => [...prev.slice(-119), event.data]);
         } else if (event.event === "solution") {
           // Once we get solutions, clear the phase (we're in solve mode)
           setSolverPhase(null);
@@ -1146,6 +1158,10 @@ export default function WeeklySchedulePage({
       setAutoPlanError("Select a valid timeframe to run the solver.");
       return;
     }
+    setAutoPlanRunConfig({
+      solverMode: args.solverMode ?? "cpsat",
+      timeoutSeconds: args.timeoutSeconds,
+    });
     const abortController = new AbortController();
     autoPlanAbortRef.current = abortController;
     setAutoPlanRunning(true);
@@ -3720,7 +3736,7 @@ export default function WeeklySchedulePage({
         isVisible={autoPlanRunning}
         progress={autoPlanProgress}
         elapsedMs={autoPlanElapsedMs}
-        totalAllowedMs={solverTimeoutSeconds * 1000}
+        totalAllowedMs={(autoPlanRunConfig?.timeoutSeconds ?? solverTimeoutSeconds) * 1000}
         solveRange={autoPlanDateRange}
         displayedRange={{
           startISO: toISODate(weekStart),
@@ -3735,6 +3751,8 @@ export default function WeeklySchedulePage({
         currentPhase={solverPhase}
         existingAssignments={existingAssignmentsForSolver}
         solverSettings={solverSettings}
+        solverMode={autoPlanRunConfig?.solverMode}
+        agentEvents={agentEvents}
       />
 
       <SolverInfoModal

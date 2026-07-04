@@ -207,10 +207,12 @@ def test_list_candidates_reports_rejection_reasons():
     seed = [_seed("slot-a__mon", MON, "clin-busy")]  # 08-16 overlaps 10-14
     executor = _make_executor(state, seed)
     payload, _ = _run(executor, "list_candidates_for_slot", {"slot_key": f"slot-b__{MON}"})
-    by_id = {c["clinicianId"]: c for c in payload["candidates"]}
-    assert by_id["clin-ok"]["eligible"] is True
-    assert "QUALIFICATION" in by_id["clin-unqualified"]["reasons"]
-    assert "OVERLAP" in by_id["clin-busy"]["reasons"]
+    # The LLM only ever sees pseudonymous aliases (roster order: D1, D2, D3)
+    by_alias = {c["clinicianId"]: c for c in payload["candidates"]}
+    assert by_alias[executor.alias_by_id["clin-ok"]]["eligible"] is True
+    assert "QUALIFICATION" in by_alias[executor.alias_by_id["clin-unqualified"]]["reasons"]
+    assert "OVERLAP" in by_alias[executor.alias_by_id["clin-busy"]]["reasons"]
+    assert not any("name" in c for c in payload["candidates"])
 
 
 def test_get_violations_pagination_and_new_flag():
@@ -246,3 +248,111 @@ def test_open_slots_and_overview_shapes():
 
     _, is_error = _run(executor, "no_such_tool", {})
     assert is_error
+
+
+# ---------------------------------------------------------------------------
+# Pseudonymization: real names/ids must never reach the LLM
+# ---------------------------------------------------------------------------
+
+
+def test_llm_facing_outputs_contain_no_real_names_or_ids():
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-secret-1", "Dr. Annette Geheimnis", qualified_class_ids=["other"]),
+            make_clinician("clin-secret-2", "Dr. Bernd Vertraulich"),
+        ],
+        assignments=[make_assignment("m1", "slot-a__mon", MON, "clin-secret-1")],
+    )
+    executor = _make_executor(state)
+    assert executor.alias_by_id == {"clin-secret-1": "D1", "clin-secret-2": "D2"}
+
+    for tool, args in [
+        ("get_violations", {}),
+        ("list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MON}"}),
+        ("get_clinician_summary", {"clinicianId": "D2"}),
+        ("get_plan_overview", {}),
+        ("list_open_slots", {}),
+    ]:
+        result = executor.execute(tool, args, "call-x")
+        for secret in ("Annette", "Geheimnis", "Bernd", "Vertraulich", "clin-secret"):
+            assert secret not in result.content, f"{tool} leaked {secret!r}: {result.content}"
+
+
+def test_apply_moves_accepts_aliases_and_returns_real_ids():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-real-id", "Dr. Alice")],
+    )
+    executor = _make_executor(state)
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"}]},
+    )
+    assert payload["applied"] is True
+    # The working copy stores the REAL id — the returned plan needs no
+    # de-pseudonymization step.
+    assert list(executor.current.keys()) == [("slot-a__mon", MON, "clin-real-id")]
+
+
+def test_problem_digest_uses_aliases_only():
+    from backend.agent.prompts import build_problem_digest
+    from backend.scoring import open_slots, plan_stats, score_plan
+
+    state = make_app_state(
+        clinicians=[make_clinician("clin-secret", "Dr. Carola Verborgen")],
+    )
+    executor = _make_executor(state)
+    digest = build_problem_digest(
+        state,
+        executor.ctx,
+        score_plan(executor.ctx, []),
+        plan_stats(executor.ctx, []),
+        open_slots(executor.ctx, []),
+        new_hard_violation_count=0,
+        soft_violation_count=0,
+        max_iterations=10,
+        clinician_aliases=executor.alias_by_id,
+    )
+    assert "D1" in digest
+    assert "Carola" not in digest and "Verborgen" not in digest and "clin-secret" not in digest
+
+
+def test_activity_feed_uses_real_names_for_the_ui():
+    events = []
+    state = make_app_state(clinicians=[make_clinician("clin-1", "Dr. Alice")])
+    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
+    executor = PlanToolExecutor(
+        state, ctx, [], on_activity=lambda kind, payload: events.append((kind, payload))
+    )
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"}]},
+    )
+    assert payload["applied"] is True
+    kinds = [k for k, _ in events]
+    assert "moves_applied" in kinds
+    applied = next(p for k, p in events if k == "moves_applied")
+    assert applied["improved"] is True
+    move = applied["moves"][0]
+    assert move["clinician"] == "Dr. Alice"  # UI feed shows real names
+    assert move["section"] == "Section A"
+    assert move["start"] == "08:00" and move["end"] == "16:00"
+
+
+def test_rejected_batch_emits_activity():
+    events = []
+    state = make_app_state(clinicians=[make_clinician("clin-1", "Dr. Alice")])
+    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
+    executor = PlanToolExecutor(
+        state, ctx, [_seed("slot-a__mon", MON, "clin-1")],
+        on_activity=lambda kind, payload: events.append((kind, payload)),
+    )
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"}]},
+    )
+    assert payload["applied"] is False
+    assert events and events[-1][0] == "moves_rejected"
+    assert events[-1][1]["count"] == 1
