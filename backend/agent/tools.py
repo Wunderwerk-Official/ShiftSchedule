@@ -546,7 +546,10 @@ class PlanToolExecutor:
             self.moves_rejected += len(moves)
             self._emit_activity(
                 "moves_rejected",
-                {"count": len(moves), "reason": rejected[0].get("reason", "invalid move")},
+                {
+                    "count": len(moves),
+                    "reason": self._unscrub(rejected[0].get("reason", "invalid move")),
+                },
             )
             return {"applied": False, "rejected": rejected}
 
@@ -613,6 +616,18 @@ class PlanToolExecutor:
         if clinician_id is None:
             return None
         return self.alias_by_id.get(clinician_id, clinician_id)
+
+    def _unscrub(self, text: str) -> str:
+        """Replace aliases (D1, ...) with real names for the UI-facing feed
+        (the reverse of :meth:`_scrub`; never applied to LLM-facing output)."""
+        import re
+
+        def replace(match: "re.Match[str]") -> str:
+            cid = self.id_by_alias.get(match.group(0))
+            clinician = self.clinicians_by_id.get(cid) if cid else None
+            return clinician.name if clinician else match.group(0)
+
+        return re.sub(r"\bD\d+\b", replace, text)
 
     def _scrub(self, text: str) -> str:
         """Replace clinician names and ids in free text with their aliases

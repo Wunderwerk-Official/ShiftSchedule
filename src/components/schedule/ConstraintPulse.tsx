@@ -27,21 +27,28 @@ function CheckIcon({ className = "" }: { className?: string }) {
   );
 }
 
-/** A hard-constraint chip: green check when clean, count when violated.
- * Re-keyed on state flips so the pop animation replays exactly then. */
-function ConstraintChip({ ok, okLabel, badLabel, value }: {
+/** A constraint chip: green check when clean, count when violated. Hard
+ * constraints show rose, soft targets (tone="warn") amber — being under
+ * contract hours is a balancing goal, not a rule break. Re-keyed on state
+ * flips so the pop animation replays exactly then. */
+function ConstraintChip({ ok, okLabel, badLabel, value, tone = "hard" }: {
   ok: boolean;
   okLabel: string;
   badLabel: string;
   value: number;
+  tone?: "hard" | "warn";
 }) {
+  const badClasses =
+    tone === "warn"
+      ? "border-amber-200 bg-amber-50 text-amber-700 dark:border-amber-900 dark:bg-amber-950/60 dark:text-amber-300"
+      : "border-rose-200 bg-rose-50 text-rose-600 dark:border-rose-900 dark:bg-rose-950/60 dark:text-rose-300";
   return (
     <span
       key={ok ? "ok" : `bad-${value}`}
       className={`solver-pop inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium ${
         ok
           ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-300"
-          : "border-rose-200 bg-rose-50 text-rose-600 dark:border-rose-900 dark:bg-rose-950/60 dark:text-rose-300"
+          : badClasses
       }`}
     >
       {ok ? (
@@ -134,8 +141,9 @@ export default function ConstraintPulse({
           <ConstraintChip
             ok={stats.peopleWeeksWithinHours >= stats.totalPeopleWeeksWithTarget}
             okLabel="Hours in range"
-            badLabel={`of ${stats.totalPeopleWeeksWithTarget} weeks off target`}
+            badLabel={`of ${stats.totalPeopleWeeksWithTarget} weeks off target hours`}
             value={stats.totalPeopleWeeksWithTarget - stats.peopleWeeksWithinHours}
+            tone="warn"
           />
         )}
         {stats.totalClassAssignments > 0 && stats.sectionPreferenceMatches > 0 && (

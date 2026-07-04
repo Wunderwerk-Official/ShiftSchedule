@@ -703,8 +703,13 @@ export default function SolverOverlay({
     // Find the parent of .calendar-scroll which has position:relative
     const scrollEl = document.querySelector('.calendar-scroll');
     const container = scrollEl?.parentElement;
-    if (container instanceof HTMLElement) {
+    // Small calendars (few template rows) clip the modal: the overlay is
+    // bounded by the container, so panels and chart end up behind a scrollbar
+    // in a ~300px window. Fall back to the viewport-centered overlay then.
+    if (container instanceof HTMLElement && container.clientHeight >= 600) {
       setCalendarContainer(container);
+    } else {
+      setCalendarContainer(null);
     }
   }, [isVisible]);
 
