@@ -1,6 +1,6 @@
 const API_BASE = process.env.API_BASE ?? "http://localhost:8000";
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "tE7vcYMzC7ycXXV234s";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "dev-admin-password";
 
 const assertOk = async (res, label) => {
   if (res.ok) return;

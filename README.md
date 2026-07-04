@@ -1,14 +1,15 @@
 # ShiftSchedule
 
-ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend and a FastAPI backend. It supports drag-and-drop scheduling, class qualification rules, vacations, and per-day slot overrides. A small OR-Tools solver can auto-fill required slots.
+ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend and a FastAPI backend. It supports drag-and-drop scheduling, class qualification rules, vacations, and per-day slot overrides. Required slots can be auto-filled by a CP-SAT optimizer (OR-Tools), a heuristic solver, or an LLM agent.
 
 ## Features
 - Weekly schedule view with drag-and-drop within the same day
-- Distribution pool, manual pool, and vacation pool
+- Rest-day and vacation pools
 - Per-class minimum slots (weekday vs weekend) and per-day overrides
 - Clinician qualifications and preferences
 - Vacation tracking
-- Auto-allocate day/week with a solver
+- Auto-allocate day/week with a solver — Optimizer (CP-SAT/heuristic) or AI Agent (Claude), selectable in the planning panel
+- PDF export (A4 landscape) and public iCal subscription feeds (published weeks only)
 
 ## Tech Stack
 - Frontend: React 18, TypeScript, Vite, Tailwind CSS
@@ -16,14 +17,14 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 
 ## Local Development (Step-by-step)
 Prereqs:
-- Python 3.9+
+- Python 3.11 (matches CI and the production image)
 - Node 18+
 
 Auth setup (required for login):
 ```bash
 export ADMIN_USERNAME=admin
-export ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s
-export JWT_SECRET=change-me-too
+export ADMIN_PASSWORD=<choose-a-strong-password>
+export JWT_SECRET=<long-random-string>
 ```
 On first startup, the admin user is created if it doesn't already exist.
 If the admin already exists, the password is not overwritten unless you set
@@ -73,9 +74,11 @@ npm run dev -- --host localhost --port 5175
 CORS_ALLOW_ORIGINS=http://my-host:5173 python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
-## Deployment Notes
-- Build frontend with `VITE_API_URL=https://your-api.example.com npm run build`, then serve `dist/`.
-- Run the backend behind a reverse proxy (or public host) and set `CORS_ALLOW_ORIGINS` to your frontend origin.
+## Deployment
+Production deploys are automated: every green push to `main` runs CI
+(pytest + typecheck/Vitest) and then deploys to the server via SSH.
+See [DEPLOY.md](DEPLOY.md) for the pipeline, server setup, `.env`
+reference, and operations/troubleshooting.
 
 ## Repository Notes
 - `node_modules/`, `dist/`, and local databases are ignored via `.gitignore`.

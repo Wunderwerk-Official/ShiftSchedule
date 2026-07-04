@@ -1,99 +1,154 @@
-# Deployment (Hetzner + Docker)
+# Deployment
 
-This setup runs everything on one server using Docker Compose:
-- `backend` (FastAPI)
-- `frontend` (built static site served by Nginx)
-- `caddy` (HTTPS + reverse proxy)
+Production runs on a single Hetzner Cloud server with Docker Compose
+(`docker-compose.yml`):
 
-If you do not have a domain yet, use the IP-only setup in `docker-compose.ip.yml`.
-It serves the frontend on port 80 and the backend on port 8000 without HTTPS.
+- `backend` — FastAPI (internal port 8000)
+- `frontend` — static Vite build served by Nginx (internal port 80)
+- `caddy` — reverse proxy + automatic HTTPS (Let's Encrypt), the only
+  container with published ports (80/443)
 
-## 1) Create the server
-- Provider: Hetzner Cloud
-- Recommended image: Ubuntu 22.04 LTS
-- Size: any CX/SX is fine for a small demo
-- Add your SSH key
+Routing: `https://<DOMAIN>/` → frontend, `https://<DOMAIN>/api/*` → backend
+(`/api` prefix is stripped by Caddy). App data lives in the `backend_data`
+Docker volume (`/data/schedule.db`), not in the repo directory.
 
-## 2) DNS
-Create an `A` record for a subdomain, pointing to the server IP.
-Example:
-```
-schedule.example.com -> <SERVER_IP>
+## Automated deployment (CI/CD)
+
+Deploys are automated via GitHub Actions
+([.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml)):
+
+1. **CI** on every push to `main` and every PR — two parallel jobs:
+   - Backend: Python 3.11, `pytest` (slow solver benchmark excluded)
+   - Frontend: Node 20, `tsc` typecheck + Vitest
+2. **Deploy** only on push to `main` and only if both CI jobs pass.
+   A `concurrency` group prevents overlapping deploys. The job SSHes into
+   the server and runs:
+   ```
+   cd $DEPLOY_PATH
+   git pull --ff-only
+   docker compose -f docker-compose.yml up -d --build
+   ```
+   followed by an in-container health check (`GET /health` inside the
+   backend container, retried up to 150 s).
+
+So: **merging/pushing to `main` deploys to production.** No PR is deployed.
+
+### GitHub secrets & variables
+
+Configured under *Settings → Secrets and variables → Actions*:
+
+| Kind | Name | Content |
+|------|------|---------|
+| Secret | `SSH_PRIVATE_KEY` | Dedicated ed25519 deploy key (private part) |
+| Secret | `SSH_HOST` | Server IP/hostname |
+| Secret | `SSH_USER` | SSH user |
+| Secret | `SSH_KNOWN_HOSTS` | Pinned `ssh-keyscan` output for the server |
+| Variable | `DEPLOY_PATH` | Repo path on the server |
+| Variable | `COMPOSE_FILE` | Optional; defaults to `docker-compose.yml` |
+| Variable | `SSH_PORT` | Optional; defaults to `22` |
+
+Application secrets (admin credentials, `JWT_SECRET`, `ANTHROPIC_API_KEY`, …)
+live **only** in the server's `.env` — never in GitHub.
+
+### Rotating the deploy key
+
+```bash
+ssh-keygen -t ed25519 -C "gh-actions-deploy shiftschedule" -f deploykey -N ""
+# public part → server:
+ssh <user>@<server> 'cat >> ~/.ssh/authorized_keys' < deploykey.pub
+# private part → GitHub:
+gh secret set SSH_PRIVATE_KEY -R <owner>/<repo> < deploykey
+rm deploykey deploykey.pub
 ```
 
-## 3) Install Docker on the server
-```
-curl -fsSL https://get.docker.com | sh
-sudo usermod -aG docker $USER
-```
-Log out and back in so the group change applies.
+## Manual deploy (fallback)
 
-## 4) Upload the repo
-Option A: git clone
-```
-git clone <YOUR_REPO_URL>
-cd ShiftSchedule
+```bash
+ssh <user>@<server>
+cd /opt/shiftschedule
+git pull --ff-only
+docker compose -f docker-compose.yml up -d --build
+# health:
+docker compose -f docker-compose.yml exec -T backend \
+  python -c "import urllib.request as u; print(u.urlopen('http://localhost:8000/health', timeout=5).read())"
 ```
 
-Option B: scp/rsync the folder to the server.
+## First-time server setup
 
-## 5) Configure environment
-Copy the example file and set your domain/email:
-```
-cp .env.example .env
-```
-Edit `.env`:
+1. Server: Ubuntu 22.04 LTS, your SSH key added.
+2. Install Docker: `curl -fsSL https://get.docker.com | sh`
+3. Clone the repo:
+   ```bash
+   git clone https://github.com/Wunderwerk-Official/ShiftSchedule.git /opt/shiftschedule
+   cd /opt/shiftschedule
+   ```
+4. **DNS**: create an `A` record for your domain pointing to the server IP.
+   This must exist *before* the first start — Caddy needs it to obtain the
+   TLS certificate, and certificate renewals fail without it.
+5. Configure `.env` (see below), then:
+   ```bash
+   docker compose up -d --build
+   ```
+6. Verify: `https://<DOMAIN>` and `https://<DOMAIN>/api/health`.
+
+## Server `.env` reference
+
 ```
 DOMAIN=schedule.example.com
 LETSENCRYPT_EMAIL=admin@example.com
 ADMIN_USERNAME=admin
-ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s
-JWT_SECRET=change-me-too
+ADMIN_PASSWORD=<choose-a-strong-password>
+JWT_SECRET=<long-random-string, e.g. `openssl rand -base64 48`>
 JWT_EXPIRE_MINUTES=720
 PUBLIC_BASE_URL=https://schedule.example.com/api
-```
-`PUBLIC_BASE_URL` is used to build the public iCal subscription URL (the backend is exposed via `/api` in the domain setup).
+FRONTEND_BASE_URL=https://schedule.example.com
 
-## 6) Run the stack
-```
-docker compose up -d --build
-```
-
-## IP-only setup (no domain, no HTTPS)
-1) Copy the example file and set your server IP:
-```
-cp .env.example .env
-```
-Edit `.env` to include:
-```
-APP_ORIGIN=http://SERVER_IP
-VITE_API_URL=http://SERVER_IP:8000
-ADMIN_USERNAME=admin
-ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s
-JWT_SECRET=change-me-too
-JWT_EXPIRE_MINUTES=720
-PUBLIC_BASE_URL=http://SERVER_IP:8000
-```
-2) Start the IP-only stack:
-```
-docker compose -f docker-compose.ip.yml up -d --build
-```
-3) Open the app:
-```
-http://SERVER_IP
+# Optional — AI agent solver (solver_mode="agent"); without a key, agent
+# runs fall back to the heuristic seed plan:
+ANTHROPIC_API_KEY=
 ```
 
-## 7) Verify
-Open:
-```
-https://schedule.example.com
-```
-Health check:
-```
-https://schedule.example.com/api/health
+Notes:
+- `PUBLIC_BASE_URL` is used to build public iCal subscription URLs.
+- `FRONTEND_BASE_URL` is used by the backend's PDF export (Playwright loads
+  the frontend through this URL — it must be reachable *from inside* the
+  backend container, i.e. normally the public domain).
+- To change the admin password of an **existing** installation: set the new
+  `ADMIN_PASSWORD`, additionally set `ADMIN_PASSWORD_RESET=true`, run
+  `docker compose up -d backend`, then remove the flag again.
+- Changing `JWT_SECRET` invalidates all active sessions (users must log in
+  again).
+
+## Operations
+
+Logs:
+```bash
+docker compose -f docker-compose.yml logs -f --tail 100 backend
+docker logs shiftschedule-caddy-1 --since 1h
 ```
 
-## Notes
-- App data is stored in the `backend_data` Docker volume.
-- CORS is set to `https://$DOMAIN`.
-- If you change the domain, update `.env` and re-run `docker compose up -d --build`.
+Backup of the app data (without stopping anything):
+```bash
+docker run --rm -v shiftschedule_backend_data:/data:ro -v /root:/backup alpine \
+  sh -c "cd /data && tar czf /backup/backend_data_backup_$(date +%Y%m%d_%H%M%S).tar.gz ."
+```
+
+## Troubleshooting
+
+- **Site unreachable, certificate expired**: check that the DNS `A` record
+  for `$DOMAIN` still points to the server (`dig +short $DOMAIN`). Without
+  it, Let's Encrypt renewals fail. After fixing DNS,
+  `docker restart shiftschedule-caddy-1` forces an immediate renewal.
+- **Bare-IP access does not work by design**: Caddy only serves the
+  configured `$DOMAIN` host; `https://<server-ip>` is rejected.
+- **iCal feeds are empty**: feeds only contain weeks that were explicitly
+  published in the app (`publishedWeekStartISOs`). Publish weeks in the UI
+  for events to appear in subscribed calendars.
+- **PDF export times out**: the backend container must be able to resolve
+  and reach `FRONTEND_BASE_URL` (public DNS + valid certificate).
+
+## Legacy: IP-only variant
+
+`docker-compose.ip.yml` serves the frontend on port 80 and the backend on
+port 8000 without a domain/HTTPS (`APP_ORIGIN`/`VITE_API_URL` in `.env`).
+Not used in production — kept for local/experimental setups.

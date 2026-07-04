@@ -251,7 +251,7 @@ Testing
   - ColBand explosion tests (`e2e/colband-explosion.spec.ts`): verify colBand counts stay stable through settings, Copy Day, column operations, and solver runs; checks for console explosion errors.
   - Pool removal tests (`e2e/pool-removal.spec.ts`): verify deprecated pools (Distribution Pool, Reserve Pool) are not rendered while Rest Day and Vacation pools remain visible.
   - Full workflow test (`e2e/full-workflow.spec.ts`): UI-only comprehensive test that simulates a user setting up a schedule from scratch:
-    - **Step 1**: Login as admin (`admin` / `tE7vcYMzC7ycXXV234s`)
+    - **Step 1**: Login as admin (`admin` / `<ADMIN_PASSWORD>`)
     - **Step 2**: Create test user `test` with password `test` via User Management UI
     - **Step 3**: Logout from admin
     - **Step 4**: Login as test user
@@ -267,7 +267,7 @@ Testing
     - Takes screenshots at each step (saved to `test-results/` directory)
     - Uses unique clinician names per test run to avoid selector issues with duplicates
     - Timeout: 3 minutes
-    - Run with: `ADMIN_USERNAME=admin ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s PLAYWRIGHT_BASE_URL=http://localhost:5173 npx playwright test e2e/full-workflow.spec.ts`
+    - Run with: `ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> PLAYWRIGHT_BASE_URL=http://localhost:5173 npx playwright test e2e/full-workflow.spec.ts`
     - View results: `npx playwright show-report`
     - **Note**: Eligibility assignment step is currently skipped - clinicians inherit eligibilities from the template. For full eligibility testing, see the eligibility helpers in the test file.
 
@@ -1000,12 +1000,12 @@ lsof -ti:5173 | xargs kill -9 2>/dev/null
 rm /Users/danieltruhn/Workspace/ShiftSchedule/schedule.db
 
 # Start backend (env vars inline - IMPORTANT: must be on same line or exported first)
-ADMIN_USERNAME=admin ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 &
+ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 &
 
 # Start frontend
 npm run dev -- --host 0.0.0.0 --port 5173 &
 ```
-- Default admin credentials: `admin` / `tE7vcYMzC7ycXXV234s`
+- Default admin credentials: `admin` / `<ADMIN_PASSWORD>`
 - Database location: `/Users/danieltruhn/Workspace/ShiftSchedule/schedule.db` (project root, not `backend/`)
 
 **Common pitfalls**
@@ -1016,14 +1016,14 @@ npm run dev -- --host 0.0.0.0 --port 5173 &
 
 2. **Env vars not passed to backend**: If you start the backend without the env vars on the same command line (or without exporting them first), the admin user won't be created or will use wrong defaults.
    - Wrong: `python3 -m uvicorn backend.main:app ...` (no env vars)
-   - Right: `ADMIN_USERNAME=admin ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s python3 -m uvicorn backend.main:app ...`
+   - Right: `ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> python3 -m uvicorn backend.main:app ...`
 
 3. **Database location**: The database is at project root (`schedule.db`), not `backend/schedule.db`.
 
 Auth env (required for login):
 ```bash
 export ADMIN_USERNAME=admin
-export ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s   # local dev password
+export ADMIN_PASSWORD=<ADMIN_PASSWORD>   # local dev password
 export JWT_SECRET=change-me-too
 ```
 
@@ -1039,7 +1039,7 @@ npm install
 
 Step 3: start backend (Terminal 1)
 ```bash
-ADMIN_USERNAME=admin ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
 
 Step 4: start frontend (Terminal 2)
@@ -1049,7 +1049,7 @@ npm run dev -- --host 0.0.0.0 --port 5173
 
 Step 5: open the app
 - http://localhost:5173
-- Login: `admin` / `tE7vcYMzC7ycXXV234s`
+- Login: `admin` / `<ADMIN_PASSWORD>`
 
 Codex CLI sandbox note (local dev)
 - You may see `operation not permitted` when binding to ports (8000/5173) if the sandbox disallows it.
@@ -1177,7 +1177,7 @@ Database Inspector
   - `DOMAIN=shiftplanner.wunderwerk.ai`
   - `LETSENCRYPT_EMAIL=daniel.truhn@gmail.com`
   - `ADMIN_USERNAME=admin`
-  - `ADMIN_PASSWORD=tE7vcYMzC7ycXXV234s`
+  - `ADMIN_PASSWORD=<ADMIN_PASSWORD>`
   - `JWT_SECRET=change-me-too`
   - `JWT_EXPIRE_MINUTES=720` (avoid empty string; backend crashes on startup)
 - `PUBLIC_BASE_URL` is set in `docker-compose.yml` as `https://${DOMAIN}/api` (don’t leave it blank).

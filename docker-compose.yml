@@ -12,6 +12,9 @@ services:
       FRONTEND_BASE_URL: https://${DOMAIN}
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      # Set to "true" (plus a new ADMIN_PASSWORD) to reset an existing admin
+      # user's password on the next container start; remove afterwards.
+      ADMIN_PASSWORD_RESET: ${ADMIN_PASSWORD_RESET:-}
       JWT_SECRET: ${JWT_SECRET}
       JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES}
       # Agent solver (optional; only needed for solver_mode="agent").

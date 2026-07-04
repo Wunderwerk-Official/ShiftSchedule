@@ -17,7 +17,7 @@ import { test, expect, Page, TestInfo } from "@playwright/test";
  */
 
 const ADMIN_USERNAME = process.env.ADMIN_USERNAME ?? "admin";
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "tE7vcYMzC7ycXXV234s";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD ?? "dev-admin-password";
 const TEST_USERNAME = "test";
 const TEST_PASSWORD = "test";
 
