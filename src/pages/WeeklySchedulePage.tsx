@@ -1232,6 +1232,22 @@ export default function WeeklySchedulePage({
         historyStatus = "aborted";
       }
 
+      // Agent mode degrades to the heuristic draft when the LLM cannot start
+      // at all (missing API key, unknown provider). Without a persistent
+      // message that looks like a silent no-op — the overlay just flashes and
+      // closes — so surface it as a real error. The draft assignments below
+      // are still applied.
+      if (
+        args.solverMode === "agent" &&
+        result.debugInfo?.solver_status === "AGENT_FALLBACK_SEED"
+      ) {
+        historyStatus = "error";
+        setAutoPlanError(
+          result.notes.find((n) => n.includes("Agent LLM unavailable")) ??
+            "The AI agent could not start; the heuristic draft plan was applied instead.",
+        );
+      }
+
       // Only show notice for warnings/errors, not for successful completion
       // Detailed debug info is available in the solver history (gear icon)
       const warningNotes = result.notes.filter(

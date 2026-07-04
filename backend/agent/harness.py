@@ -174,9 +174,15 @@ def agent_solve_range(
         try:
             provider = get_provider(config)
         except Exception as exc:
+            # Phrasing matters: the frontend surfaces notes containing
+            # "could not" as a warning toast, and matches "Agent LLM
+            # unavailable" to show a persistent error in the planning panel.
             return finalize(
                 "AGENT_FALLBACK_SEED",
-                [f"Agent LLM unavailable ({exc}); returned the heuristic seed plan."],
+                [
+                    f"Agent LLM unavailable — the AI agent could not start: {exc} "
+                    "The heuristic draft plan was returned instead."
+                ],
             )
 
     on_progress(
