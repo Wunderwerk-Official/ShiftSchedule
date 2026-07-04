@@ -1,0 +1,136 @@
+name: CI / CD
+
+# CI runs on every push to main and on pull requests targeting main.
+# Deploy runs only on push to main, and only after both CI jobs pass.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Never allow two deploys to the server to overlap. A newer push waits for the
+# running deploy to finish instead of cancelling it (safer for build+restart).
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Backend: FastAPI unit/integration tests (pytest). The slow solver benchmark
+  # (~7 min) is excluded from CI via --ignore.
+  # ---------------------------------------------------------------------------
+  backend:
+    name: Backend tests (pytest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt -r backend/requirements-dev.txt
+
+      - name: Run tests (benchmark excluded)
+        working-directory: backend
+        run: python -m pytest tests -q --ignore=tests/test_solver_benchmark.py
+
+  # ---------------------------------------------------------------------------
+  # Frontend: TypeScript typecheck + Vitest. Playwright E2E is NOT run here
+  # (it needs a running app).
+  # ---------------------------------------------------------------------------
+  frontend:
+    name: Frontend (typecheck + vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests (Vitest)
+        run: npm test
+
+  # ---------------------------------------------------------------------------
+  # Deploy: SSH into the Hetzner server, fast-forward the repo and rebuild the
+  # Docker stack, then health-check the backend. Only on push to main, only if
+  # both CI jobs are green.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: Deploy (SSH -> Hetzner)
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH key and known_hosts
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Deploy (git pull + docker compose up)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          # Production runs the domain/Caddy stack (docker-compose.yml). Override
+          # with a repo variable COMPOSE_FILE if the server ever switches stacks.
+          COMPOSE_FILE: ${{ vars.COMPOSE_FILE || 'docker-compose.yml' }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              -i ~/.ssh/id_deploy -p "$SSH_PORT" \
+              "$SSH_USER@$SSH_HOST" bash -s <<EOF
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          git pull --ff-only
+          docker compose -f "$COMPOSE_FILE" up -d --build
+          EOF
+
+      - name: Health check
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+          COMPOSE_FILE: ${{ vars.COMPOSE_FILE || 'docker-compose.yml' }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              -i ~/.ssh/id_deploy -p "$SSH_PORT" \
+              "$SSH_USER@$SSH_HOST" bash -s <<EOF
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          # Query the backend from inside its container: works for both the
+          # domain and IP-only stacks (backend listens on :8000 internally).
+          for i in \$(seq 1 30); do
+            if docker compose -f "$COMPOSE_FILE" exec -T backend \
+                 python -c "import urllib.request,sys; sys.exit(0 if b'ok' in urllib.request.urlopen('http://localhost:8000/health', timeout=5).read() else 1)"; then
+              echo "Backend healthy"
+              exit 0
+            fi
+            echo "Waiting for backend (\$i/30)..."
+            sleep 5
+          done
+          echo "Health check failed after 150s" >&2
+          exit 1
+          EOF
