@@ -99,9 +99,10 @@ class PlanStats(BaseModel):
     working_hours_deviation_minutes: int
     split_shifts: int
     location_changes: int
-    # Clinician-days whose solver-assigned work stays below the derived daily
-    # minimum (same rule as score_plan's minimum_daily_hours penalty) — the
-    # "someone comes in for just 1-2 hours" smell.
+    # Clinician-days whose TOTAL work (fixed + solver) stays below the derived
+    # daily minimum — the "someone comes in for just 1-2 hours" smell. Counts
+    # fixed-only days too, so extending a manually pinned mini-day registers
+    # as an improvement.
     short_days: int = 0
 
 
@@ -562,14 +563,26 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
             deviation = abs(total_minutes - target_minutes)
             hours_deviation += int(round(max(0.0, deviation - tol_minutes)))
 
-    # Short days: mirrors score_plan's minimum_daily_hours rule so the agent
-    # sees the same signal the objective punishes.
+    # Short days over the FULL plan (fixed + working copy): any day someone
+    # comes in only for a stint below their daily minimum, no matter whether
+    # the stint is manual or solver-placed. This matches the agent's
+    # list_short_days tool exactly — previously days consisting ONLY of fixed
+    # assignments were invisible to this metric, so the agent had no measured
+    # incentive to extend e.g. a manually pinned half-day into a full one.
+    # Fixed-only short days the agent cannot fix are a constant offset and
+    # never distort comparisons.
     short_days = 0
-    new_minutes_by_cd: Dict[Tuple[str, str], int] = {}
+    total_minutes_by_cd: Dict[Tuple[str, str], int] = dict(
+        ctx.fixed_minutes_by_clinician_date
+    )
     for a, inst in new:
         key = (a.clinicianId, a.dateISO)
-        new_minutes_by_cd[key] = new_minutes_by_cd.get(key, 0) + max(0, inst.end - inst.start)
-    for (cid, date_iso), new_minutes in new_minutes_by_cd.items():
+        total_minutes_by_cd[key] = (
+            total_minutes_by_cd.get(key, 0) + max(0, inst.end - inst.start)
+        )
+    for (cid, date_iso), total_minutes in total_minutes_by_cd.items():
+        if total_minutes <= 0:
+            continue
         window = ctx.window_by_clinician_date.get((cid, date_iso))
         if window is not None:
             min_minutes = max(1, (window[2] - window[1]) // 2)
@@ -577,10 +590,7 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
             min_minutes = max(1, int(round(ctx.contract_hours[cid] * 60 / 5)) // 2)
         else:
             continue
-        manual_minutes = ctx.fixed_minutes_by_clinician_date.get((cid, date_iso), 0)
-        if manual_minutes >= min_minutes:
-            continue
-        if manual_minutes + new_minutes < min_minutes:
+        if total_minutes < min_minutes:
             short_days += 1
 
     return PlanStats(

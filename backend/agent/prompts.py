@@ -95,6 +95,12 @@ Tool usage policy:
   block and they stay off. The overview reports short_days and
   list_short_days pinpoints every case — drive the count toward zero
   whenever coverage allows.
+- FIXED assignments are anchors: that person is already coming in that day.
+  When staffing a slot next to someone's fixed assignment, extending THEIR
+  day (adjacent_to_existing=true, day_hours already > 0) usually beats
+  bringing in someone whose day would start from zero — fewer short days,
+  longer contiguous blocks. Fixed assignments count fully in day_hours,
+  week_hours and ytd_worked_pct, so trust those numbers.
 - Batch related moves in one apply_moves call (a swap = unassign + assign).
 - A rejected batch returns the violations it would have created — adjust the
   plan instead of retrying the same moves.

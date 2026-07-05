@@ -729,3 +729,33 @@ def test_repairing_seed_violation_by_unassign_counts_as_improvement():
     assert executor.best_quality[1] == 1  # one slot honestly open now
     assert [a.rowId for a in executor.best_assignments] == ["slot-a__mon"]
     assert executor.best_quality < executor.seed_quality  # improvement, not tie
+
+
+def test_extending_a_fixed_short_day_counts_as_improvement():
+    # A manually pinned 1h stint is a short day even though the agent placed
+    # nothing there — and extending that person's day with the adjacent slot
+    # must register as a measured improvement (short_days tier drops).
+    slots = [
+        make_template_slot("slot-early", col_band_id="col-mon-1",
+                           start_time="06:30", end_time="07:30"),
+        make_template_slot("slot-morning", col_band_id="col-mon-1",
+                           start_time="07:30", end_time="12:00"),
+    ]
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40)],
+        slots=slots,
+        assignments=[make_assignment("m1", "slot-early", MON, "clin-1")],
+    )
+    executor = _make_executor(state)
+    # Fixed-only 1h day, minimum 4h -> visible to the quality metric.
+    assert executor.seed_quality[2] == 1, f"seed quality: {executor.seed_quality}"
+
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {"moves": [{"action": "assign", "slot_key": f"slot-morning__{MON}",
+                    "clinicianId": "D1"}]},
+    )
+    assert payload["applied"] is True
+    assert executor.best_quality[2] == 0  # day extended past the minimum
+    assert executor.best_quality < executor.seed_quality
