@@ -217,15 +217,34 @@ def agent_solve_range(
                 for a in best
             ]
         )
-        violation_lines: List[str] = []
-        for v in executor._hard_violations(full):
+        # NEW violations first, then in-range ones — an old plan full of
+        # pre-existing issues (e.g. a year of stale qualification mismatches)
+        # must not truncate away the lines that explain THIS week.
+        hard_all = executor._hard_violations(full)
+        in_range = lambda v: bool(v.date_iso) and v.date_iso in ctx.target_date_set  # noqa: E731
+        hard_all.sort(
+            key=lambda v: (not executor._is_new_hard(v), not in_range(v), v.date_iso or "")
+        )
+        soft_all = validate_solver_rules(state, full)
+        violation_lines: List[str] = [
+            f"summary|hard {len(hard_all)} total"
+            f" (new {sum(1 for v in hard_all if executor._is_new_hard(v))},"
+            f" in solve range {sum(1 for v in hard_all if in_range(v))})"
+            f"|soft {len(soft_all)}"
+        ]
+        for v in hard_all[:60]:
             clinician = executor.clinicians_by_id.get(v.clinician_id or "")
             violation_lines.append(
                 f"hard|{v.code}|{'NEW' if executor._is_new_hard(v) else 'pre-existing'}"
                 f"|{v.date_iso or '-'}|{clinician.name if clinician else v.clinician_id or '-'}"
                 f"|{v.slot_id or '-'}"
             )
-        for v in validate_solver_rules(state, full):
+        if len(hard_all) > 60:
+            violation_lines.append(
+                f"... and {len(hard_all) - 60} more pre-existing hard violations "
+                "outside the solve range"
+            )
+        for v in soft_all[:20]:
             clinician = executor.clinicians_by_id.get(v.clinician_id or "")
             violation_lines.append(
                 f"soft|{v.code}|{v.date_iso or '-'}"
@@ -238,7 +257,7 @@ def agent_solve_range(
             "open_slots_seed": [fmt_open(g) for g in seed_open[:80]],
             "open_slots_final": [fmt_open(g) for g in remaining_open[:80]],
             "final_plan": plan_lines[:300],
-            "violations_final": violation_lines[:80],
+            "violations_final": violation_lines[:90],
             "thoughts": [t[:800] for t in thought_log[:60]],
         }
 

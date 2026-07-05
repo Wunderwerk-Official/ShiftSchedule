@@ -1839,3 +1839,103 @@ def test_v2_weekly_hours_reset_strict_cap():
     assert len(week1) <= 4, f"Week 1: at most 4 slots (16h cap), got {len(week1)}"
     assert len(week2) > 0, "Week 2 should have assignments (proves hours reset)"
     assert len(week2) <= 4, f"Week 2: at most 4 slots (16h cap), got {len(week2)}"
+
+
+# ---------------------------------------------------------------------------
+# 8. On-call rest days: placing the on-call shift itself must respect
+#    already-assigned work on the surrounding rest days
+# ---------------------------------------------------------------------------
+
+class TestOnCallRestReverseDirection:
+    """Regression: the eligibility check used to block only "normal work near
+    an existing on-call", not "on-call near existing work". Depending on fill
+    order the solver could hand someone an on-call duty although they already
+    worked the day before — a rest-day violation in the seed plan."""
+
+    MONDAY = "2026-01-05"
+    TUESDAY = "2026-01-06"
+
+    def _build_state(self) -> AppState:
+        locations = [Location(id="loc-er", name="ER")]
+        blocks = [
+            TemplateBlock(id="block-day", sectionId="day-shift", requiredSlots=0),
+            TemplateBlock(id="block-oncall", sectionId="on-call", requiredSlots=0),
+        ]
+        col_bands = [
+            TemplateColBand(id="col-mon-1", label="", order=0, dayType="mon"),
+            TemplateColBand(id="col-tue-1", label="", order=1, dayType="tue"),
+        ]
+        all_slots = [
+            # Monday day shift comes first in fill order ...
+            _make_slot("day-mon__mon", "loc-er", "block-day", "col-mon-1",
+                       "08:00", "16:00", required=1),
+            # ... then Tuesday's on-call, whose rest day (Monday) is now taken.
+            _make_slot("oncall-tue__tue", "loc-er", "block-oncall", "col-tue-1",
+                       "16:00", "08:00", required=1, end_day_offset=1),
+        ]
+        template = WeeklyCalendarTemplate(
+            version=4, blocks=blocks,
+            locations=[WeeklyTemplateLocation(
+                locationId="loc-er",
+                rowBands=[TemplateRowBand(id="rb-1", label="Row", order=1)],
+                colBands=col_bands,
+                slots=all_slots,
+            )],
+        )
+        clinicians = [
+            Clinician(id="doc-solo", name="Dr. Solo",
+                      qualifiedClassIds=["day-shift", "on-call"],
+                      preferredClassIds=[], vacations=[], workingHoursPerWeek=40.0),
+        ]
+        rows = [
+            WorkplaceRow(id="day-shift", name="Day", kind="class",
+                         dotColorClass="bg-slate-400", blockColor="#E8E1F5",
+                         locationId="loc-er", subShifts=[]),
+            WorkplaceRow(id="on-call", name="On-Call", kind="class",
+                         dotColorClass="bg-red-400", blockColor="#FFCDD2",
+                         locationId="loc-er", subShifts=[]),
+            WorkplaceRow(id="pool-rest-day", name="Rest Day", kind="pool",
+                         dotColorClass="bg-slate-200"),
+            WorkplaceRow(id="pool-vacation", name="Vacation", kind="pool",
+                         dotColorClass="bg-slate-200"),
+        ]
+        return AppState(
+            locations=locations, locationsEnabled=True, rows=rows,
+            clinicians=clinicians, assignments=[], minSlotsByRowId={},
+            slotOverridesByKey={},
+            weeklyTemplate=template, holidays=[],
+            solverSettings={
+                "enforceSameLocationPerDay": False,
+                "preferContinuousShifts": False,
+                "onCallRestEnabled": True,
+                "onCallRestClassId": "on-call",
+                "onCallRestDaysBefore": 1,
+                "onCallRestDaysAfter": 1,
+            },
+            solverRules=[], publishedWeekStartISOs=[],
+        )
+
+    def test_seed_never_contains_rest_day_violations(self):
+        from backend.validation import (
+            VIOLATION_ON_CALL_REST,
+            validate_assignments,
+        )
+
+        state = self._build_state()
+        payload = SolveRangeRequest(
+            startISO=self.MONDAY, endISO=self.TUESDAY,
+            only_fill_required=True, use_heuristic=True,
+        )
+        result = heuristic_solve_range_v2(
+            payload, state, MockCancelEvent(), mock_progress, 0.0
+        )
+        assignments = [Assignment.model_validate(a) for a in result["assignments"]]
+        # The solo doctor cannot legally take both slots: whichever gets
+        # filled, the other must stay open rather than violate the rest rule.
+        assert len(assignments) == 1, (
+            f"Expected exactly one filled slot, got: "
+            f"{[(a.rowId, a.dateISO) for a in assignments]}"
+        )
+        report = validate_assignments(state, assignments, skip_references=True)
+        rest = [v for v in report.violations if v.code == VIOLATION_ON_CALL_REST]
+        assert rest == [], f"Seed plan contains rest-day violations: {rest}"

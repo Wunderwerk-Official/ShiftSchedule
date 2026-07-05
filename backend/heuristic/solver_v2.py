@@ -192,6 +192,29 @@ class ClinicianState:
                 return True
         return False
 
+    def has_any_work_near(self, date_iso: str, days_before: int, days_after: int) -> bool:
+        """Whether the clinician already works on any of the ``days_before``
+        days before or ``days_after`` days after ``date_iso``.
+
+        The reverse of :meth:`is_in_on_call_rest_window`: that one blocks
+        normal work near an EXISTING on-call shift; this one gates placing an
+        ON-CALL shift whose surrounding rest days are not free. Without it the
+        solver could hand someone an on-call duty although they already work
+        the day before/after — a rest-day violation the validator then flags.
+        """
+        base_date = date.fromisoformat(date_iso)
+        for offset in range(1, days_before + 1):
+            if self.assigned_slots_by_date.get(
+                (base_date - timedelta(days=offset)).isoformat()
+            ):
+                return True
+        for offset in range(1, days_after + 1):
+            if self.assigned_slots_by_date.get(
+                (base_date + timedelta(days=offset)).isoformat()
+            ):
+                return True
+        return False
+
     def has_time_overlap(self, date_iso: str, slot: SlotInfo) -> bool:
         """Check if adding this slot would create a time overlap."""
         assigned_slots = self.assigned_slots_by_date.get(date_iso, [])
@@ -1070,6 +1093,17 @@ def _is_doctor_eligible_for_slot(
         if state.is_in_on_call_rest_window(
             slot.date_iso,
             solver_settings.onCallRestClassId,
+            solver_settings.onCallRestDaysBefore,
+            solver_settings.onCallRestDaysAfter,
+        ):
+            return False
+        # Reverse direction: an ON-CALL shift may only go to someone whose
+        # surrounding rest days are still free. Order-dependent gap otherwise:
+        # fill Monday first, then Tuesday's on-call slipped through because
+        # only "work near existing on-call" was checked, not "on-call near
+        # existing work".
+        if slot.section_id == solver_settings.onCallRestClassId and state.has_any_work_near(
+            slot.date_iso,
             solver_settings.onCallRestDaysBefore,
             solver_settings.onCallRestDaysAfter,
         ):
