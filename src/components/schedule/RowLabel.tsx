@@ -44,7 +44,7 @@ export default function RowLabel({ row }: RowLabelProps) {
         </div>
       )}
       {showVacationNote ? (
-        <div className="pointer-events-none absolute left-4 top-full z-30 mt-2 w-max max-w-[260px] rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600 opacity-0 shadow-sm transition-opacity duration-75 group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
+        <div className="pointer-events-none absolute left-4 top-full z-[600] mt-2 w-max max-w-[260px] rounded-md border border-slate-200 bg-white px-3 py-2 text-[11px] font-semibold text-slate-600 opacity-0 shadow-sm transition-opacity duration-75 group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
           Drag people in or out to update vacations automatically.
         </div>
       ) : null}

@@ -219,7 +219,11 @@ function AssignmentPillImpl({
       // safeguards (-webkit-user-drag: element + cursor: grab).
       className={cx(
         "group/pill relative w-full overflow-visible rounded-xl border-2 px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
-        "hover:z-[500]",
+        // Hover z must EXCEED the static z of warning pills (500): the
+        // eligibility tooltip lives inside this pill's stacking context, so
+        // at equal z a warning pill later in the DOM (e.g. directly below)
+        // would paint over the hovered pill's tooltip.
+        "hover:z-[600]",
         hasWarning ? "z-[500]" : "z-[1]",
         (showViolation || showHighlight) &&
           "ring-2 ring-rose-200/80 dark:ring-rose-500/40",
