@@ -2,35 +2,38 @@
 Deterministic plan scoring and statistics for shift-schedule assignments.
 
 Companion to ``validation.py`` (pass/fail hard constraints): this module
-answers "how GOOD is a plan" so two candidate schedules can be compared —
-e.g. an LLM repair loop deciding whether a batch of moves improved the plan,
-or a UI showing why one proposal beats another.
+answers "how GOOD is a plan" so two candidate schedules can be compared.
 
-The score replicates the CP-SAT objective from ``solver._solve_range_impl``
-(same weights from :class:`SolverSettings`, same minimized orientation: LOWER
-IS BETTER) so emitted objective values are directly comparable to the numbers
-the solver streams over SSE. Terms that the CP-SAT model computes over its
-decision variables only (total assignments, slot priority, preferences, time
-windows, YTD bonus) are computed over the *new* assignments only; terms that
-include manual context (coverage, slack, working hours, minimum daily minutes)
-include the pre-existing assignments captured in the context. Constant offsets
-versus the CP-SAT objective are possible (e.g. instances fully covered by
-manual assignments), which never affects comparisons between plans of the same
-problem.
+The AGENT solver does NOT use the weighted score: since the lexicographic
+quality gate (``agent/tools.PlanToolExecutor._quality``) replaced it, the
+agent compares plans tier by tier over ``plan_stats`` + validator counts, and
+``score_plan`` below survives only as the pure-Python replica of the legacy
+CP-SAT objective (same hand-tuned :class:`SolverSettings` weights, same
+minimized orientation: LOWER IS BETTER) for the ``solver_mode="cpsat"`` API
+path and its parity tests. Do not wire the weighted score back into agent
+decisions — its weights are gut-feel calibrations that predate the agent.
+
+Terms that the CP-SAT model computes over its decision variables only (total
+assignments, slot priority, preferences, time windows, YTD bonus) are computed
+over the *new* assignments only; terms that include manual context (coverage,
+slack, working hours, minimum daily minutes) include the pre-existing
+assignments captured in the context. Constant offsets versus the CP-SAT
+objective are possible (e.g. instances fully covered by manual assignments),
+which never affects comparisons between plans of the same problem.
 
 Usage::
 
     ctx = build_scoring_context(state, "2026-01-05", "2026-01-11",
                                 only_fill_required=True)
-    score = score_plan(ctx, proposed_assignments)   # lower is better
-    stats = plan_stats(ctx, proposed_assignments)
+    stats = plan_stats(ctx, proposed_assignments)   # feeds the quality tiers
     gaps = open_slots(ctx, proposed_assignments)
+    score = score_plan(ctx, proposed_assignments)   # CP-SAT replica only
 
 Design notes
 ------------
 - Pure functions over an immutable, precomputed :class:`ScoringContext`; build
-  the context once per solve range and reuse it for every candidate (repair
-  loops call ``score_plan`` after every move batch).
+  the context once per solve range and reuse it for every candidate (the agent
+  loop calls ``plan_stats`` after every move batch).
 - "Fixed" assignments — everything already in ``state.assignments`` for the
   range, regardless of ``source`` — are treated as immovable context, exactly
   like both solvers treat them.

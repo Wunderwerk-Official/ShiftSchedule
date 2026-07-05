@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import type { SolverDebugInfo, SolverDebugSolutionTime, SolverSettings } from "../../api/client";
+import type { SolverDebugInfo, SolverSettings } from "../../api/client";
 import { APP_BUILD, APP_VERSION } from "../../version";
 import { cx } from "../../lib/classNames";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
@@ -296,156 +296,6 @@ function DashboardCard({
       </div>
       <div className="flex flex-1 items-center justify-center p-4">
         {children}
-      </div>
-    </div>
-  );
-}
-
-// Historical solution chart - similar to LiveSolutionChart but for completed runs
-function HistoricalSolutionChart({
-  solutionTimes,
-  totalDurationMs,
-}: {
-  solutionTimes: SolverDebugSolutionTime[];
-  totalDurationMs: number;
-}) {
-  if (solutionTimes.length === 0) return null;
-
-  const chartWidth = 500;
-  const chartHeight = 140;
-  const padding = { top: 15, right: 15, bottom: 25, left: 55 };
-  const innerWidth = chartWidth - padding.left - padding.right;
-  const innerHeight = chartHeight - padding.top - padding.bottom;
-
-  // Time range: 0 to total duration
-  const maxTimeMs = totalDurationMs * 1.1;
-  const maxTimeSec = maxTimeMs / 1000;
-
-  // Get min/max objectives (min is best)
-  const minObjective = Math.min(...solutionTimes.map((s) => s.objective));
-  const maxObjective = Math.max(...solutionTimes.map((s) => s.objective));
-
-  // Calculate distances from minimum (for log scale)
-  const maxDistance = maxObjective - minObjective;
-  const logMaxDistance = maxDistance > 0 ? Math.log10(maxDistance + 1) : 1;
-
-  // Build path points with step function
-  const points: { x: number; y: number }[] = [];
-  for (let i = 0; i < solutionTimes.length; i++) {
-    const s = solutionTimes[i];
-    const distance = s.objective - minObjective;
-    const logDistance = distance > 0 ? Math.log10(distance + 1) : 0;
-    const normalized = 1 - logDistance / logMaxDistance;
-
-    const x = padding.left + (s.time_ms / 1000 / maxTimeSec) * innerWidth;
-    const y = padding.top + (1 - normalized) * innerHeight;
-
-    points.push({ x, y });
-
-    // Extend horizontally to next solution or to total duration
-    const nextTime = i < solutionTimes.length - 1 ? solutionTimes[i + 1].time_ms : totalDurationMs;
-    const nextX = padding.left + (nextTime / 1000 / maxTimeSec) * innerWidth;
-    points.push({ x: nextX, y });
-  }
-
-  const linePath =
-    points.length > 0
-      ? `M ${points.map((p) => `${p.x},${p.y}`).join(" L ")}`
-      : "";
-
-  return (
-    <div className="flex flex-col items-center gap-1">
-      <svg width={chartWidth} height={chartHeight} className="overflow-visible">
-        {/* Grid lines */}
-        <line
-          x1={padding.left}
-          y1={chartHeight - padding.bottom}
-          x2={chartWidth - padding.right}
-          y2={chartHeight - padding.bottom}
-          stroke="currentColor"
-          strokeOpacity={0.2}
-        />
-        <line
-          x1={padding.left}
-          y1={padding.top}
-          x2={padding.left}
-          y2={chartHeight - padding.bottom}
-          stroke="currentColor"
-          strokeOpacity={0.2}
-        />
-
-        {/* Solution line */}
-        {linePath && (
-          <path d={linePath} fill="none" stroke="#6366f1" strokeWidth={2} />
-        )}
-
-        {/* Solution dots */}
-        {points
-          .filter((_, i) => i % 2 === 0)
-          .map((p, i) => (
-            <circle key={i} cx={p.x} cy={p.y} r={3} fill="#6366f1" />
-          ))}
-
-        {/* Y-axis label */}
-        <text
-          x={padding.left - 8}
-          y={chartHeight / 2}
-          textAnchor="middle"
-          transform={`rotate(-90, ${padding.left - 8}, ${chartHeight / 2})`}
-          className="fill-current text-[9px] opacity-50"
-        >
-          Score
-        </text>
-
-        {/* Y-axis values */}
-        <text
-          x={padding.left - 4}
-          y={padding.top + 3}
-          textAnchor="end"
-          className="fill-current text-[9px] opacity-60"
-        >
-          {minObjective}
-        </text>
-        <text
-          x={padding.left - 4}
-          y={chartHeight - padding.bottom}
-          textAnchor="end"
-          className="fill-current text-[9px] opacity-60"
-        >
-          {maxObjective}
-        </text>
-
-        {/* X-axis label */}
-        <text
-          x={chartWidth / 2}
-          y={chartHeight - 2}
-          textAnchor="middle"
-          className="fill-current text-[9px] opacity-50"
-        >
-          Time (s)
-        </text>
-
-        {/* Time markers */}
-        <text
-          x={padding.left}
-          y={chartHeight - 8}
-          textAnchor="start"
-          className="fill-current text-[9px] opacity-40"
-        >
-          0
-        </text>
-        <text
-          x={chartWidth - padding.right}
-          y={chartHeight - 8}
-          textAnchor="end"
-          className="fill-current text-[9px] opacity-40"
-        >
-          {maxTimeSec.toFixed(1)}
-        </text>
-      </svg>
-      <div className="flex items-center gap-2 text-[10px] text-slate-500 dark:text-slate-400">
-        <span>Solutions: {solutionTimes.length}</span>
-        <span>Best: {minObjective}</span>
       </div>
     </div>
   );
@@ -1020,16 +870,6 @@ export default function SolverInfoModal({
                     </div>
                   );
                 })()}
-
-                {/* Optimization Score Chart - dashboard style */}
-                {selectedEntry.debugInfo?.solution_times?.length ? (
-                  <DashboardCard title="Optimization Score" accentColor="#6366f1">
-                    <HistoricalSolutionChart
-                      solutionTimes={selectedEntry.debugInfo.solution_times}
-                      totalDurationMs={selectedEntry.debugInfo.timing.total_ms}
-                    />
-                  </DashboardCard>
-                ) : null}
 
                 {/* Stats Summary - shown if statsHistory is available */}
                 {selectedEntry.statsHistory && selectedEntry.statsHistory.length > 0 && (() => {

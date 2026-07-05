@@ -514,6 +514,7 @@ function SolverDashboard({
   liveStats,
   elapsedMs,
   totalAllowedMs,
+  solverMode,
   onClose,
 }: {
   liveSolutions: LiveSolution[];
@@ -538,6 +539,7 @@ function SolverDashboard({
   } | null;
   elapsedMs: number;
   totalAllowedMs: number;
+  solverMode?: SolverMode;
   onClose: () => void;
 }) {
   const hasStats = liveStats && statsHistory.length > 1;
@@ -572,10 +574,13 @@ function SolverDashboard({
       {/* Dashboard content */}
       <div className="flex-1 overflow-y-auto p-6">
         <div className="mx-auto max-w-6xl">
-          {/* Top row: Score (full width) */}
-          <DashboardCard title="Optimization Score" accentColor="#6366f1" className="mb-6">
-            <LiveSolutionChart solutions={liveSolutions} elapsedMs={elapsedMs} />
-          </DashboardCard>
+          {/* Top row: Score (full width). Hidden for agent runs — the agent
+              optimizes a priority ladder, the encoded scalar means nothing. */}
+          {solverMode !== "agent" && (
+            <DashboardCard title="Optimization Score" accentColor="#6366f1" className="mb-6">
+              <LiveSolutionChart solutions={liveSolutions} elapsedMs={elapsedMs} />
+            </DashboardCard>
+          )}
 
           {/* Stats grid: 2 columns on larger screens */}
           {hasStats && (
@@ -913,8 +918,10 @@ export default function SolverOverlay({
           />
         )}
 
-        {/* Live solutions chart */}
-        {liveSolutions.length > 0 && (
+        {/* Live solutions chart. Agent runs work on a strict priority ladder,
+            not a scalar score — the encoded objective is meaningless to users
+            there, so the chart only renders for the classic optimizer. */}
+        {liveSolutions.length > 0 && solverMode !== "agent" && (
           <LiveSolutionChart solutions={liveSolutions} elapsedMs={elapsedMs} />
         )}
 
@@ -926,6 +933,7 @@ export default function SolverOverlay({
             liveStats={liveStats}
             elapsedMs={elapsedMs}
             totalAllowedMs={totalAllowedMs}
+            solverMode={solverMode}
             onClose={() => setDashboardOpen(false)}
           />
         )}
