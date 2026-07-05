@@ -521,6 +521,13 @@ export type SolverAgentDebug = {
   summary?: string | null;
   /** Every accepted change, in order (real names — browser-only data). */
   moves?: AgentMoveItem[];
+  /** Diagnostics for the copyable run log (compact "a|b|c" lines). */
+  open_slots_seed?: string[];
+  open_slots_final?: string[];
+  final_plan?: string[];
+  violations_final?: string[];
+  /** The model's full reasoning texts, one entry per iteration. */
+  thoughts?: string[];
 };
 
 // Agent runs fill only timing.total_ms, solver_status, num_days, num_slots

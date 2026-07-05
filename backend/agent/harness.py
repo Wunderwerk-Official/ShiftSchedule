@@ -170,6 +170,9 @@ def agent_solve_range(
 
     executor: Optional[PlanToolExecutor] = None
     final_summary: Optional[str] = None
+    # Every text the model produced, in order — surfaced in the copyable run
+    # log so the admin can trace the agent's reasoning after the fact.
+    thought_log: List[str] = []
     emit_agent("stage", {"stage": "seed"})
     executor = PlanToolExecutor(
         state,
@@ -179,6 +182,65 @@ def agent_solve_range(
         on_activity=emit_agent,
     )
     emit_solution(executor.seed_score, seed_assignments)
+    # Computed before finalize() can run: the provider-init failure path
+    # finalizes before the LLM phase would otherwise compute these.
+    seed_stats = plan_stats(ctx, seed_assignments)
+    seed_open = open_slots(ctx, seed_assignments)
+
+    def _fmt_plan_line(a: Assignment, origin: str) -> str:
+        inst = ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+        if inst is not None:
+            time_part = (
+                f"{inst.start // 60:02d}:{inst.start % 60:02d}"
+                f"-{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
+            )
+            section = executor.section_names.get(inst.section_id, inst.section_id)
+        else:
+            time_part, section = "?", a.rowId
+        clinician = executor.clinicians_by_id.get(a.clinicianId)
+        name = clinician.name if clinician else a.clinicianId
+        return f"{a.dateISO}|{section}|{time_part}|{name}|{origin}"
+
+    def _log_extras(best: List[Assignment]) -> dict:
+        """Diagnostic payload for the copyable run log: what was open, what
+        the final plan looks like, and every violation the validator sees
+        (flagged new vs pre-existing). Real names — browser-only data."""
+        full = executor.fixed_assignments + best
+        plan_lines = sorted(
+            [
+                _fmt_plan_line(a, "fixed")
+                for a in executor.fixed_assignments
+                if a.dateISO in ctx.target_date_set and not a.rowId.startswith("pool-")
+            ]
+            + [
+                _fmt_plan_line(a, "agent" if a.id.startswith("agent-") else "seed")
+                for a in best
+            ]
+        )
+        violation_lines: List[str] = []
+        for v in executor._hard_violations(full):
+            clinician = executor.clinicians_by_id.get(v.clinician_id or "")
+            violation_lines.append(
+                f"hard|{v.code}|{'NEW' if executor._is_new_hard(v) else 'pre-existing'}"
+                f"|{v.date_iso or '-'}|{clinician.name if clinician else v.clinician_id or '-'}"
+                f"|{v.slot_id or '-'}"
+            )
+        for v in validate_solver_rules(state, full):
+            clinician = executor.clinicians_by_id.get(v.clinician_id or "")
+            violation_lines.append(
+                f"soft|{v.code}|{v.date_iso or '-'}"
+                f"|{clinician.name if clinician else v.clinician_id or '-'}"
+                f"|{executor.unscrub_text(v.message)[:160]}"
+            )
+        remaining_open = open_slots(ctx, best)
+        fmt_open = lambda g: f"{g.dateISO}|{g.section_id}|{g.start}-{g.end}|missing {g.missing}"  # noqa: E731
+        return {
+            "open_slots_seed": [fmt_open(g) for g in seed_open[:80]],
+            "open_slots_final": [fmt_open(g) for g in remaining_open[:80]],
+            "final_plan": plan_lines[:300],
+            "violations_final": violation_lines[:80],
+            "thoughts": [t[:800] for t in thought_log[:60]],
+        }
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
         emit_agent("stage", {"stage": "finalize"})
@@ -228,6 +290,8 @@ def agent_solve_range(
                     # names restored) and every accepted change.
                     "summary": final_summary[:2000] if final_summary else None,
                     "moves": executor.accepted_move_log[:200],
+                    # Diagnostics for the copyable run log (real names).
+                    **_log_extras(best),
                 },
             },
         }
@@ -263,8 +327,6 @@ def agent_solve_range(
         {"phase": "agent_loop", "label": "Agent (2/3): LLM reviewing and improving the plan..."},
     )
 
-    seed_stats = plan_stats(ctx, seed_assignments)
-    seed_open = open_slots(ctx, seed_assignments)
     soft_count = len(
         validate_solver_rules(state, executor.fixed_assignments + seed_assignments)
     )
@@ -325,6 +387,7 @@ def agent_solve_range(
             # The model writes aliases (D1, ...); restore real names for the
             # user-facing feed and remember the latest text as the run summary.
             final_summary = executor.unscrub_text(response.text.strip())
+            thought_log.append(f"[iteration {iterations_done}] {final_summary}")
             emit_agent("thought", {"text": final_summary[:280]})
 
         if response.stop_reason == "error":

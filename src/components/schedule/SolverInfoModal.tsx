@@ -148,7 +148,38 @@ const buildRunLog = (entry: SolverHistoryEntry): string => {
   if (entry.notes.length) {
     lines.push("", "Notes:", ...entry.notes.map((n) => `- ${n}`));
   }
-  lines.push("", "debugInfo JSON:", JSON.stringify(entry.debugInfo ?? null, null, 2));
+  // Pull the long diagnostic arrays out of the JSON dump and print them as
+  // readable text sections instead (JSON string-escaping makes multi-line
+  // thoughts unreadable and would double the size).
+  const {
+    open_slots_seed,
+    open_slots_final,
+    final_plan,
+    violations_final,
+    thoughts,
+    ...agentRest
+  } = agent ?? {};
+  const section = (title: string, items: string[] | undefined, empty: string) => {
+    lines.push("", `${title}:`);
+    if (items?.length) lines.push(...items.map((item) => `- ${item}`));
+    else lines.push(`(${empty})`);
+  };
+  if (agent) {
+    section("Open slots at seed", open_slots_seed, "none");
+    section("Open slots remaining", open_slots_final, "none — all filled");
+    section("Final plan (date|section|time|clinician|origin)", final_plan, "empty");
+    section("Violations in final plan", violations_final, "none");
+    lines.push("", "Agent reasoning:");
+    if (thoughts?.length) {
+      for (const t of thoughts) lines.push("", t);
+    } else {
+      lines.push("(no reasoning captured)");
+    }
+  }
+  const debugForJson = entry.debugInfo
+    ? { ...entry.debugInfo, ...(agent ? { agent: agentRest } : {}) }
+    : null;
+  lines.push("", "debugInfo JSON:", JSON.stringify(debugForJson, null, 2));
   return lines.join("\n");
 };
 

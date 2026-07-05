@@ -121,6 +121,13 @@ def test_agent_move_improves_plan_and_emits_solution():
     assert solutions[1]["objective"] < solutions[0]["objective"]
     assert result["debugInfo"]["agent"]["best_score"] < result["debugInfo"]["agent"]["seed_score"]
     assert any("improved over the seed" in n.lower() for n in result["notes"])
+    # Run-log diagnostics: seed gaps, final plan with origins, violations list.
+    agent_debug = result["debugInfo"]["agent"]
+    # distribute-all seed already covers the required target -> no open slots
+    assert agent_debug["open_slots_seed"] == []
+    assert any(line.endswith("|agent") for line in agent_debug["final_plan"])
+    assert isinstance(agent_debug["violations_final"], list)
+    assert agent_debug["thoughts"]
 
 
 def test_illegal_moves_leave_seed_untouched():
