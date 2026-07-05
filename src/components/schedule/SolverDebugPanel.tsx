@@ -182,20 +182,29 @@ export default function SolverDebugPanel({ debugInfo }: SolverDebugPanelProps) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* Summary stats */}
+      {/* Summary stats. Agent runs don't report the CP-SAT-only numbers
+          (variables, CPU workers) — render those rows only when present. */}
       <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
         <div className="text-slate-500 dark:text-slate-400">Status</div>
         <div className="font-medium text-slate-700 dark:text-slate-200">{solver_status}</div>
-        <div className="text-slate-500 dark:text-slate-400">Variables</div>
-        <div className="font-medium text-slate-700 dark:text-slate-200">{num_variables.toLocaleString()}</div>
+        {num_variables !== undefined && (
+          <>
+            <div className="text-slate-500 dark:text-slate-400">Variables</div>
+            <div className="font-medium text-slate-700 dark:text-slate-200">{num_variables.toLocaleString()}</div>
+          </>
+        )}
         <div className="text-slate-500 dark:text-slate-400">Days</div>
         <div className="font-medium text-slate-700 dark:text-slate-200">{num_days}</div>
         <div className="text-slate-500 dark:text-slate-400">Slots</div>
         <div className="font-medium text-slate-700 dark:text-slate-200">{num_slots}</div>
         <div className="text-slate-500 dark:text-slate-400">Solutions found</div>
         <div className="font-medium text-slate-700 dark:text-slate-200">{solution_times?.length ?? 0}</div>
-        <div className="text-slate-500 dark:text-slate-400">CPU cores</div>
-        <div className="font-medium text-slate-700 dark:text-slate-200">{cpu_workers_used} / {cpu_cores_available}</div>
+        {cpu_workers_used !== undefined && cpu_cores_available !== undefined && (
+          <>
+            <div className="text-slate-500 dark:text-slate-400">CPU cores</div>
+            <div className="font-medium text-slate-700 dark:text-slate-200">{cpu_workers_used} / {cpu_cores_available}</div>
+          </>
+        )}
         {improvement && (
           <>
             <div className="text-slate-500 dark:text-slate-400">Improvement</div>
@@ -240,7 +249,7 @@ export default function SolverDebugPanel({ debugInfo }: SolverDebugPanelProps) {
       )}
 
       {/* Objective Value Over Time chart - seaborn-inspired style */}
-      {chartData && solution_times.length > 1 && (
+      {chartData && (solution_times?.length ?? 0) > 1 && (
         <div className="flex flex-col gap-2">
           <div className="text-xs font-medium text-slate-600 dark:text-slate-300">
             Objective Value Over Time
@@ -431,7 +440,16 @@ export default function SolverDebugPanel({ debugInfo }: SolverDebugPanelProps) {
         </div>
       )}
 
-      {/* Timing breakdown table */}
+      {/* Timing breakdown table. Agent runs report only the total — show a
+          single line instead of the per-phase table. */}
+      {!timing.checkpoints?.length ? (
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs">
+          <div className="text-slate-500 dark:text-slate-400">Total runtime</div>
+          <div className="font-medium text-slate-700 dark:text-slate-200">
+            {formatMs(timing.total_ms)}
+          </div>
+        </div>
+      ) : (
       <div className="flex flex-col gap-1">
         <div className="text-xs font-medium text-slate-600 dark:text-slate-300">
           Timing Breakdown
@@ -499,6 +517,7 @@ export default function SolverDebugPanel({ debugInfo }: SolverDebugPanelProps) {
           </table>
         </div>
       </div>
+      )}
     </div>
   );
 }

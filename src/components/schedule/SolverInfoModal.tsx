@@ -1,6 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { SolverDebugInfo, SolverDebugSolutionTime, SolverSettings } from "../../api/client";
+import { APP_BUILD, APP_VERSION } from "../../version";
 import { cx } from "../../lib/classNames";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import { formatFeedDate } from "../../lib/agentActivity";
@@ -120,6 +121,58 @@ const formatDuration = (ms: number) => {
   const minutes = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${minutes}m ${secs}s`;
+};
+
+// Plain-text log of one run, made to be pasted into a bug report or an AI
+// chat: human-readable header plus the full debugInfo JSON (which includes
+// the agent's summary, every accepted move, token counts and timing).
+const buildRunLog = (entry: SolverHistoryEntry): string => {
+  const agent = entry.debugInfo?.agent;
+  const lines: string[] = [
+    `ShiftSchedule run log — app v${APP_VERSION} (${APP_BUILD})`,
+    `Range: ${entry.startISO} to ${entry.endISO}`,
+    `Started: ${new Date(entry.startedAt).toISOString()} | ` +
+      `duration: ${formatDuration(entry.endedAt - entry.startedAt)} | status: ${entry.status}`,
+  ];
+  if (entry.debugInfo) {
+    lines.push(`Solver status: ${entry.debugInfo.solver_status}`);
+  }
+  if (agent) {
+    lines.push(
+      `Agent: model ${agent.model ?? "?"} | iterations ${agent.iterations ?? "?"} | ` +
+        `moves accepted ${agent.moves_accepted ?? 0} / rejected ${agent.moves_rejected ?? 0}`,
+      `Tokens: input ${agent.input_tokens ?? 0}, output ${agent.output_tokens ?? 0}, ` +
+        `cache read ${agent.cache_read_input_tokens ?? 0}, cache write ${agent.cache_creation_input_tokens ?? 0}`,
+    );
+  }
+  if (entry.notes.length) {
+    lines.push("", "Notes:", ...entry.notes.map((n) => `- ${n}`));
+  }
+  lines.push("", "debugInfo JSON:", JSON.stringify(entry.debugInfo ?? null, null, 2));
+  return lines.join("\n");
+};
+
+const copyTextToClipboard = async (text: string): Promise<boolean> => {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    // Clipboard API needs a secure context; fall back to the classic
+    // hidden-textarea trick so copying also works over plain http.
+    try {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      const ok = document.execCommand("copy");
+      document.body.removeChild(textarea);
+      return ok;
+    } catch {
+      return false;
+    }
+  }
 };
 
 function GearIcon({ className }: { className?: string }) {
@@ -467,6 +520,23 @@ export default function SolverInfoModal({
   const [selectedEntry, setSelectedEntry] = useState<SolverHistoryEntry | null>(null);
   const [weightsExpanded, setWeightsExpanded] = useState(false);
   const [debugExpanded, setDebugExpanded] = useState(false);
+  const [logCopied, setLogCopied] = useState(false);
+  const logCopiedTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    return () => {
+      if (logCopiedTimerRef.current !== null) {
+        window.clearTimeout(logCopiedTimerRef.current);
+      }
+    };
+  }, []);
+  const handleCopyRunLog = async (entry: SolverHistoryEntry) => {
+    const ok = await copyTextToClipboard(buildRunLog(entry));
+    setLogCopied(ok);
+    if (logCopiedTimerRef.current !== null) {
+      window.clearTimeout(logCopiedTimerRef.current);
+    }
+    logCopiedTimerRef.current = window.setTimeout(() => setLogCopied(false), 2000);
+  };
 
   // Reset view to info when modal opens
   useEffect(() => {
@@ -921,14 +991,14 @@ export default function SolverInfoModal({
                 })()}
 
                 {/* Optimization Score Chart - dashboard style */}
-                {selectedEntry.debugInfo && selectedEntry.debugInfo.solution_times.length > 0 && (
+                {selectedEntry.debugInfo?.solution_times?.length ? (
                   <DashboardCard title="Optimization Score" accentColor="#6366f1">
                     <HistoricalSolutionChart
                       solutionTimes={selectedEntry.debugInfo.solution_times}
                       totalDurationMs={selectedEntry.debugInfo.timing.total_ms}
                     />
                   </DashboardCard>
-                )}
+                ) : null}
 
                 {/* Stats Summary - shown if statsHistory is available */}
                 {selectedEntry.statsHistory && selectedEntry.statsHistory.length > 0 && (() => {
@@ -1010,13 +1080,15 @@ export default function SolverInfoModal({
                   </div>
                 )}
 
-                {/* Debug info - expandable */}
+                {/* Debug info - expandable, plus a copyable run log for bug
+                    reports (works for every run, with or without debugInfo) */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex items-stretch gap-2">
                 {selectedEntry.debugInfo ? (
-                  <div className="flex flex-col gap-2">
                     <button
                       type="button"
                       onClick={() => setDebugExpanded(!debugExpanded)}
-                      className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-left transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
+                      className="flex flex-1 items-center justify-between rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-left transition-colors hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:hover:bg-slate-700"
                     >
                       <div className="flex items-center gap-2">
                         <svg
@@ -1043,19 +1115,33 @@ export default function SolverInfoModal({
                         <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                       </svg>
                     </button>
-                    {debugExpanded && (
-                      <SolverDebugPanel debugInfo={selectedEntry.debugInfo} />
-                    )}
-                  </div>
                 ) : (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
+                  <div className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-4 text-center text-sm text-slate-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-400">
                     Detailed timing data not available for this run.
-                    <br />
-                    <span className="text-xs">
-                      Enable DEBUG_SOLVER=true on the backend for full details.
-                    </span>
                   </div>
                 )}
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyRunLog(selectedEntry)}
+                      title="Copy a technical log of this run (settings, notes, agent summary, moves, tokens) — paste it into a bug report or an AI chat."
+                      className={cx(
+                        "flex items-center gap-1.5 rounded-xl border px-4 py-3 text-sm font-medium transition-colors",
+                        logCopied
+                          ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                          : "border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700",
+                      )}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-4 w-4">
+                        <path d="M7 3.5A1.5 1.5 0 018.5 2h3.879a1.5 1.5 0 011.06.44l3.122 3.12A1.5 1.5 0 0117 6.622V12.5a1.5 1.5 0 01-1.5 1.5h-1v-3.379a3 3 0 00-.879-2.121L10.5 5.379A3 3 0 008.379 4.5H7v-1z" />
+                        <path d="M4.5 6A1.5 1.5 0 003 7.5v9A1.5 1.5 0 004.5 18h7a1.5 1.5 0 001.5-1.5v-5.879a1.5 1.5 0 00-.44-1.06L9.44 6.439A1.5 1.5 0 008.378 6H4.5z" />
+                      </svg>
+                      {logCopied ? "Copied!" : "Copy log"}
+                    </button>
+                  </div>
+                  {debugExpanded && selectedEntry.debugInfo && (
+                    <SolverDebugPanel debugInfo={selectedEntry.debugInfo} />
+                  )}
+                </div>
               </div>
             )}
           </div>

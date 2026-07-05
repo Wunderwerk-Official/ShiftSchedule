@@ -493,7 +493,8 @@ export type SolverDebugCheckpoint = {
 
 export type SolverDebugTiming = {
   total_ms: number;
-  checkpoints: SolverDebugCheckpoint[];
+  /** CP-SAT only — the agent solver reports just the total. */
+  checkpoints?: SolverDebugCheckpoint[];
 };
 
 export type SolverSubScores = {
@@ -522,15 +523,18 @@ export type SolverAgentDebug = {
   moves?: AgentMoveItem[];
 };
 
+// Agent runs fill only timing.total_ms, solver_status, num_days, num_slots
+// and agent; the CP-SAT-specific fields are absent — consumers must treat
+// them as optional (SolverDebugPanel once crashed on exactly this).
 export type SolverDebugInfo = {
   timing: SolverDebugTiming;
-  solution_times: SolverDebugSolutionTime[];
-  num_variables: number;
+  solution_times?: SolverDebugSolutionTime[];
+  num_variables?: number;
   num_days: number;
   num_slots: number;
   solver_status: string;
-  cpu_workers_used: number;
-  cpu_cores_available: number;
+  cpu_workers_used?: number;
+  cpu_cores_available?: number;
   sub_scores?: SolverSubScores;
   agent?: SolverAgentDebug;
 };
