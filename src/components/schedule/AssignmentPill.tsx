@@ -268,12 +268,14 @@ function AssignmentPillImpl({
         </div>
       </div>
       {isManual ? (
-        // Lock badge: manual assignment, the planner never moves it.
-        // pointer-events-none for the same drag-start reason as the warning
-        // dot below.
+        // Lock badge: manual assignment, the planner never moves it. Same
+        // circular badge language as the warning dot below, but in a neutral
+        // tone (no signal color). Kept fully inside the pill so it can't be
+        // painted over by the next pill. pointer-events-none for the same
+        // drag-start reason as the warning dot.
         <span
           aria-hidden="true"
-          className="pointer-events-none absolute bottom-0 right-0.5 z-[150] opacity-60"
+          className="pointer-events-none absolute bottom-0.5 right-0.5 z-[150] inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-slate-200/90 text-slate-500 shadow-sm dark:bg-slate-600/90 dark:text-slate-200"
         >
           <svg viewBox="0 0 24 24" fill="currentColor" className="h-2 w-2">
             <path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9z" />
