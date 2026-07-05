@@ -127,6 +127,18 @@ TOOL_SPECS_RAW = [
         },
     },
     {
+        "name": "list_short_days",
+        "description": (
+            "Find mini work days: clinician-days in the solve range whose "
+            "total assigned time stays below the person's daily minimum "
+            "(e.g. a single 1-2h morning stint). Returns assigned vs minimum "
+            "hours and the slot_keys involved, flagged fixed (immutable) vs "
+            "movable. Fix by extending the day with adjacent slots, or by "
+            "moving the stint to a candidate with adjacent_to_existing=true."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "get_ytd_progress",
         "description": (
             "Year-to-date fairness snapshot: for every clinician, the percent "
@@ -353,6 +365,7 @@ class PlanToolExecutor:
             "list_candidates_for_slot": self._tool_candidates,
             "get_clinician_summary": self._tool_clinician_summary,
             "get_ytd_progress": self._tool_ytd_progress,
+            "list_short_days": self._tool_short_days,
             "apply_moves": self._tool_apply_moves,
         }
         handler = handlers.get(name)
@@ -561,6 +574,65 @@ class PlanToolExecutor:
                 for v in clinician.vacations or []
             ],
             "assignments_by_date": by_date,
+        }
+
+    def _tool_short_days(self, args: dict) -> dict:
+        by_cd: Dict[Tuple[str, str], List[Assignment]] = {}
+        for a in self._full_plan():
+            if a.dateISO not in self.ctx.target_date_set:
+                continue
+            if a.rowId.startswith("pool-"):
+                continue
+            by_cd.setdefault((a.clinicianId, a.dateISO), []).append(a)
+
+        cases = []
+        for (cid, date_iso), assignments in sorted(
+            by_cd.items(), key=lambda kv: (kv[0][1], kv[0][0])
+        ):
+            clinician = self.clinicians_by_id.get(cid)
+            if clinician is None:
+                continue
+            window = self.ctx.window_by_clinician_date.get((cid, date_iso))
+            contract = clinician.workingHoursPerWeek
+            if window is not None:
+                min_minutes = max(1, (window[2] - window[1]) // 2)
+            elif isinstance(contract, (int, float)) and contract > 0:
+                min_minutes = max(1, int(round(contract * 60 / 5)) // 2)
+            else:
+                continue
+            total = 0
+            slots = []
+            for a in assignments:
+                inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+                if inst is not None:
+                    duration = max(0, inst.end - inst.start)
+                else:
+                    interval = self.ctx.all_slot_intervals.get(a.rowId)
+                    duration = max(0, interval[1] - interval[0]) if interval else 0
+                total += duration
+                slots.append(
+                    {
+                        "slot_key": f"{a.rowId}__{a.dateISO}",
+                        "fixed": (a.rowId, a.dateISO, a.clinicianId) in self.fixed_identity,
+                    }
+                )
+            if total >= min_minutes:
+                continue
+            cases.append(
+                {
+                    "clinicianId": self._alias(cid),
+                    "dateISO": date_iso,
+                    "assigned_hours": round(total / 60.0, 1),
+                    "min_hours": round(min_minutes / 60.0, 1),
+                    "slots": slots,
+                }
+            )
+        return {
+            "total": len(cases),
+            "note": "Days below the daily minimum. Extend the day with "
+            "adjacent work, or move non-fixed stints to someone whose "
+            "existing shift they touch.",
+            "short_days": cases[:20],
         }
 
     def _tool_ytd_progress(self, args: dict) -> dict:

@@ -525,3 +525,26 @@ def test_batched_candidates_returns_compact_per_slot_results():
     # single-slot legacy shape unchanged
     single, _ = _run(executor, "list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MON}"})
     assert "candidates" in single
+
+
+def test_list_short_days_flags_mini_days():
+    early = make_template_slot(
+        slot_id="slot-early__mon", col_band_id="col-mon-1",
+        start_time="06:30", end_time="07:30",
+    )
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Dr. Alice", working_hours_per_week=40),
+            make_clinician("clin-2", "Dr. Bob", working_hours_per_week=40),
+        ],
+        slots=[early],
+    )
+    executor = _make_executor(state, [_seed("slot-early__mon", MON, "clin-1")])
+    payload, is_error = _run(executor, "list_short_days", {})
+    assert not is_error
+    assert payload["total"] == 1
+    case = payload["short_days"][0]
+    assert case["clinicianId"] == executor.alias_by_id["clin-1"]
+    assert case["assigned_hours"] == 1.0
+    assert case["min_hours"] == 4.0
+    assert case["slots"][0]["fixed"] is False

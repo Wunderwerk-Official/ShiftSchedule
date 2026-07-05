@@ -75,8 +75,9 @@ Tool usage policy:
   adjacent_to_existing=true — their day stays one contiguous block. If a day
   below the daily minimum is unavoidable, give that person more contiguous
   work the same day or swap assignments so someone else covers the whole
-  block and they stay off. The overview reports short_days — drive it toward
-  zero whenever coverage allows.
+  block and they stay off. The overview reports short_days and
+  list_short_days pinpoints every case — drive the count toward zero
+  whenever coverage allows.
 - Batch related moves in one apply_moves call (a swap = unassign + assign).
 - A rejected batch returns the violations it would have created — adjust the
   plan instead of retrying the same moves.

@@ -1150,6 +1150,7 @@ function RowSection({
                             showNoEligibilityWarning={
                               !getHasEligibleClasses(assignment.clinicianId)
                             }
+                            isManual={row.kind === "class" && assignment.source !== "solver"}
                             isViolation={violatingAssignmentKeys?.has(violationKey)}
                             isDragging={isDraggingAssignment}
                             isDragFocus={isDragFocus || isDraggingAssignment}
@@ -1516,6 +1517,7 @@ function RowSection({
                               row.kind === "class" &&
                               !getIsQualified(assignment.clinicianId, activeRow.id)
                             }
+                            isManual={row.kind === "class" && assignment.source !== "solver"}
                             isHighlighted={highlightedSplitShiftKeys?.has(violationKey)}
                             isViolation={highlightedAssignmentKeys?.has(violationKey)}
                             isDragging={isDraggingAssignment}

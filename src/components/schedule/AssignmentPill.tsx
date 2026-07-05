@@ -112,6 +112,9 @@ type AssignmentPillProps = {
   showIneligibleWarning?: boolean;
   isHighlighted?: boolean;
   isViolation?: boolean;
+  /** Manually placed (source !== "solver"): shows a small lock — automated
+   * planning treats these as fixed and never moves them. */
+  isManual?: boolean;
   isDragging?: boolean;
   isDragFocus?: boolean;
   className?: string;
@@ -130,6 +133,7 @@ function AssignmentPillImpl({
   showIneligibleWarning,
   isHighlighted = false,
   isViolation = false,
+  isManual = false,
   isDragging = false,
   isDragFocus = false,
   className,
@@ -259,6 +263,19 @@ function AssignmentPillImpl({
           </div>
         </div>
       </div>
+      {isManual ? (
+        // Lock badge: manual assignment, the planner never moves it.
+        // pointer-events-none for the same drag-start reason as the warning
+        // dot below.
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute bottom-0 right-0.5 z-[150] opacity-60"
+        >
+          <svg viewBox="0 0 24 24" fill="currentColor" className="h-2 w-2">
+            <path d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5zm-3 8V7a3 3 0 1 1 6 0v3H9z" />
+          </svg>
+        </span>
+      ) : null}
       {hasWarning ? (
         <>
           {/* Warning dot. pointer-events-none so the ~16px-wide hit target doesn't
@@ -345,6 +362,7 @@ function arePillPropsEqual(
     prev.showIneligibleWarning === next.showIneligibleWarning &&
     prev.isHighlighted === next.isHighlighted &&
     prev.isViolation === next.isViolation &&
+    prev.isManual === next.isManual &&
     prev.isDragging === next.isDragging &&
     prev.isDragFocus === next.isDragFocus &&
     prev.draggable === next.draggable &&
