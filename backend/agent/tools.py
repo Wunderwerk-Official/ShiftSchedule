@@ -40,11 +40,11 @@ TOOL_SPECS_RAW = [
         "name": "get_plan_overview",
         "description": (
             "Current plan status: the quality tiers in strict priority order "
-            "(open required slots > short days > soft-rule violations > "
-            "weekly-hours deviation > preference/load bonus), coverage "
-            "statistics, violation counts by code, and the quality of your "
-            "best snapshot so far. Call this to orient yourself and after "
-            "applying moves."
+            "(hard violations in range > open required slots > short days > "
+            "soft-rule violations > weekly-hours deviation > preference/load "
+            "bonus), coverage statistics, violation counts by code, and the "
+            "quality of your best snapshot so far. Call this to orient "
+            "yourself and after applying moves."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -312,7 +312,7 @@ class PlanToolExecutor:
             if v.code == VIOLATION_WEEKLY_HOURS
         }
 
-        self.seed_quality = self._quality(self._working_list())
+        self.seed_quality = self._quality(self._working_list(), hard_violations=baseline)
         self.best_quality = self.seed_quality
         self.best_assignments: List[Assignment] = self._working_list()
         # Encoded scalars kept for the live chart and run history.
@@ -323,10 +323,22 @@ class PlanToolExecutor:
     # plan quality
     # ------------------------------------------------------------------
 
-    def _quality(self, working: List[Assignment]) -> Tuple[int, int, int, int, int]:
+    def _quality(
+        self,
+        working: List[Assignment],
+        hard_violations: Optional[List[Violation]] = None,
+    ) -> Tuple[int, int, int, int, int, int]:
         """Lexicographic plan quality — smaller is better, compared tier by
-        tier: (open required slots, short days, soft-rule violations, weekly
-        hours deviation minutes, -(preference fits + assignments)).
+        tier: (hard violations in the solve range, open required slots, short
+        days, soft-rule violations, weekly hours deviation minutes,
+        -(preference fits + assignments)).
+
+        Hard violations are the TOP tier so the agent is rewarded for
+        REPAIRING what the draft (or manual data) breaks — unassigning a
+        rest-day-violating draft assignment is an improvement even though it
+        opens a slot. Only in-range violations count: year-old mismatches in
+        untouchable manual data would otherwise drown the signal (they are
+        constant anyway, but the numbers shown to the model stay honest).
 
         This replaced the hand-weighted scalar score as the best-plan gate:
         the tiers encode the human priority order directly, so no gut-feel
@@ -334,11 +346,19 @@ class PlanToolExecutor:
         and the agent's own judgment decides everything the tiers don't
         measure (ties keep the newest state)."""
         stats = plan_stats(self.ctx, working)
+        if hard_violations is None:
+            hard_violations = self._hard_violations(self._full_plan(working))
+        hard_in_range = sum(
+            1
+            for v in hard_violations
+            if v.date_iso is None or v.date_iso in self.ctx.target_date_set
+        )
         soft = len(validate_solver_rules(self.state, self._full_plan(working)))
         bonus = stats.section_preference_matches + stats.time_window_fits
         if not self.ctx.only_fill_required:
             bonus += stats.total_assignments
         return (
+            hard_in_range,
             stats.open_slots,
             stats.short_days,
             soft,
@@ -347,26 +367,28 @@ class PlanToolExecutor:
         )
 
     @staticmethod
-    def encode_quality(quality: Tuple[int, int, int, int, int]) -> float:
+    def encode_quality(quality: Tuple[int, int, int, int, int, int]) -> float:
         """Monotone-ish scalar for the live chart/history (lower = better).
         Saturated per tier so a huge lower tier can't visually outrank a
         higher one; NOT used for any accept/best decision."""
-        open_slots_, short, soft, hours_dev, neg_bonus = quality
+        hard, open_slots_, short, soft, hours_dev, neg_bonus = quality
         return float(
-            open_slots_ * 1_000_000
+            hard * 100_000_000
+            + open_slots_ * 1_000_000
             + short * 50_000
             + min(soft, 9) * 5_000
             + min(hours_dev, 4_999)
             + max(-4_999, neg_bonus)
         )
 
-    def quality_dict(self, quality: Tuple[int, int, int, int, int]) -> dict:
+    def quality_dict(self, quality: Tuple[int, int, int, int, int, int]) -> dict:
         return {
-            "open_required_slots": quality[0],
-            "short_days": quality[1],
-            "soft_rule_violations": quality[2],
-            "hours_deviation_minutes": quality[3],
-            "preference_and_load_bonus": -quality[4],
+            "hard_violations_in_range": quality[0],
+            "open_required_slots": quality[1],
+            "short_days": quality[2],
+            "soft_rule_violations": quality[3],
+            "hours_deviation_minutes": quality[4],
+            "preference_and_load_bonus": -quality[5],
         }
 
     # ------------------------------------------------------------------
@@ -417,7 +439,7 @@ class PlanToolExecutor:
         full = self._full_plan(working)
         hard = self._hard_violations(full)
         soft = validate_solver_rules(self.state, full)
-        quality = self._quality(working)
+        quality = self._quality(working, hard_violations=hard)
         stats = plan_stats(self.ctx, working)
         hard_counts: Dict[str, int] = {}
         for v in hard:
@@ -899,15 +921,16 @@ class PlanToolExecutor:
             return {"applied": False, "rejected": rejected}
 
         trial_list = list(trial.values())
+        trial_hard = self._hard_violations(self._full_plan(trial_list))
         new_hard = [
-            {"code": v.code, "message": v.message}
-            for v in self._hard_violations(self._full_plan(trial_list))
+            {"code": v.code, "message": self._scrub(v.message)}
+            for v in trial_hard
             if self._is_new_hard(v)
         ]
         if args.get("dry_run"):
             if new_hard:
                 return {"dry_run": True, "valid": False, "new_hard_violations": new_hard}
-            quality = self._quality(trial_list)
+            quality = self._quality(trial_list, hard_violations=trial_hard)
             return {
                 "dry_run": True,
                 "valid": True,
@@ -933,7 +956,7 @@ class PlanToolExecutor:
 
         self.current = trial
         self.moves_accepted += len(moves)
-        quality = self._quality(trial_list)
+        quality = self._quality(trial_list, hard_violations=trial_hard)
         improved = quality < self.best_quality
         if quality <= self.best_quality:
             # Ties go to the newest state: the agent acted deliberately

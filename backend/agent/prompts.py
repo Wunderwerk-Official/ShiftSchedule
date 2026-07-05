@@ -47,11 +47,16 @@ Hard constraints (violations of these block acceptance of a move batch):
 Plan quality — a STRICT priority ladder, not a weighted score. The harness
 compares plans tier by tier; improving a higher tier always beats any change
 in the tiers below it:
-1. Open required slots: fill them. This dominates everything else.
-2. Short work days: nobody comes in for just a brief 1-2 hour stint.
-3. Custom if/then rules (SOLVER_RULE, severity "soft"): fix when possible.
-4. Balanced weekly hours: keep everyone near contract hours.
-5. Section preferences and preferred time windows.
+1. Hard-rule violations in the solve range: repair them. The draft plan may
+   itself break hard rules (e.g. a rest-day conflict) — if no legal
+   re-arrangement exists, UNASSIGN the offending draft assignment: an
+   honestly open slot beats a broken rule. Violations purely among fixed
+   (manual) assignments are not yours to fix.
+2. Open required slots: fill them.
+3. Short work days: nobody comes in for just a brief 1-2 hour stint.
+4. Custom if/then rules (SOLVER_RULE, severity "soft"): fix when possible.
+5. Balanced weekly hours: keep everyone near contract hours.
+6. Section preferences and preferred time windows.
 
 Your snapshot is kept whenever the ladder is at least as good as the best so
 far — TIES KEEP YOUR LATEST STATE. That makes goals the ladder does not
@@ -93,9 +98,11 @@ Tool usage policy:
 - Batch related moves in one apply_moves call (a swap = unassign + assign).
 - A rejected batch returns the violations it would have created — adjust the
   plan instead of retrying the same moves.
-- Only your own assignments can be unassigned; fixed assignments cannot.
-- The plan may contain pre-existing violations from manual data; those are
-  marked new=false and do not block you. Only NEW violations block.
+- Draft (seed) assignments are yours to change: unassign or swap them freely.
+  Only fixed/manual assignments are immutable.
+- Pre-existing violations (marked new=false) do not BLOCK your moves — only
+  NEW violations do — but repairing in-range ones is quality tier 1: check
+  get_violations early and fix what the draft broke.
 
 Efficient procedure (follow it):
 1. Round 1: ONE list_candidates_for_slot call with slot_keys covering the
@@ -125,6 +132,7 @@ def build_problem_digest(
     soft_violation_count: int,
     max_iterations: int,
     clinician_aliases: Dict[str, str],
+    seed_hard_violation_count: int = 0,
 ) -> str:
     """Compact first user message. Deep data is fetched via tools.
 
@@ -165,6 +173,13 @@ def build_problem_digest(
         f"Violations: {new_hard_violation_count} new hard, "
         f"{soft_violation_count} soft rule violations."
     )
+    if seed_hard_violation_count:
+        lines.append(
+            f"WARNING: the draft plan breaks {seed_hard_violation_count} hard "
+            "rule(s) in the solve range (get_violations shows them, new=false). "
+            "Repairing them is quality tier 1 — swap the offending draft "
+            "assignment, or unassign it if nobody can legally take it."
+        )
     if seed_stats.short_days:
         lines.append(
             f"Short work days (below the daily minimum): {seed_stats.short_days} "

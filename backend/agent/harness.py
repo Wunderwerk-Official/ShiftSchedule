@@ -74,16 +74,17 @@ def _quality_improvement_note(seed_q, best_q) -> str:
     """
     parts: List[str] = []
     for label, idx in (
-        ("open required slots", 0),
-        ("short work days", 1),
-        ("soft-rule violations", 2),
+        ("hard-rule violations", 0),
+        ("open required slots", 1),
+        ("short work days", 2),
+        ("soft-rule violations", 3),
     ):
         if seed_q[idx] != best_q[idx]:
             parts.append(f"{label} {seed_q[idx]} -> {best_q[idx]}")
-    if seed_q[3] != best_q[3]:
-        parts.append(f"weekly-hours deviation {seed_q[3]} -> {best_q[3]} min")
     if seed_q[4] != best_q[4]:
-        parts.append(f"preference/load bonus {-seed_q[4]} -> {-best_q[4]}")
+        parts.append(f"weekly-hours deviation {seed_q[4]} -> {best_q[4]} min")
+    if seed_q[5] != best_q[5]:
+        parts.append(f"preference/load bonus {-seed_q[5]} -> {-best_q[5]}")
     return ", ".join(parts)
 
 
@@ -358,6 +359,7 @@ def agent_solve_range(
         soft_violation_count=soft_count,
         max_iterations=config.max_iterations,
         clinician_aliases=executor.alias_by_id,
+        seed_hard_violation_count=executor.seed_quality[0],
     )
     # Free-text guidance from the admin (Settings -> "AI agent instructions").
     # The admin writes real clinician names; scrub_text swaps them for the

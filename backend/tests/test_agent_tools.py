@@ -690,3 +690,42 @@ def test_mixed_batch_touching_fixed_assignment_rejects_atomically():
     assert executor.current == {}  # the legal half was NOT applied
     # The agent's output never contains (or re-issues) the manual assignment.
     assert executor.best_assignments == []
+
+
+def test_repairing_seed_violation_by_unassign_counts_as_improvement():
+    # The seed hands clin-1 work on Monday AND Tuesday while section-a is the
+    # on-call class with 1 rest day each side -> the seed itself carries
+    # ON_CALL_REST violations. Unassigning the Tuesday draft assignment must
+    # count as an improvement (hard violations are the TOP quality tier),
+    # even though it opens a slot.
+    slots = [
+        make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+        make_template_slot("slot-a__tue", col_band_id="col-tue-1"),
+    ]
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        slots=slots,
+        solver_settings={
+            "enforceSameLocationPerDay": False,
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "section-a",
+            "onCallRestDaysBefore": 1,
+            "onCallRestDaysAfter": 1,
+            "workingHoursToleranceHours": 5,
+        },
+    )
+    seed = [_seed("slot-a__mon", MON, "clin-1"), _seed("slot-a__tue", TUE, "clin-1")]
+    executor = _make_executor(state, seed, start=MON, end=TUE)
+    assert executor.seed_quality[0] > 0, "seed must carry in-range hard violations"
+
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {"moves": [{"action": "unassign", "slot_key": f"slot-a__tue__{TUE}",
+                    "clinicianId": "D1"}]},
+    )
+    assert payload["applied"] is True
+    assert executor.best_quality[0] == 0  # violations repaired
+    assert executor.best_quality[1] == 1  # one slot honestly open now
+    assert [a.rowId for a in executor.best_assignments] == ["slot-a__mon"]
+    assert executor.best_quality < executor.seed_quality  # improvement, not tie

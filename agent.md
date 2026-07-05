@@ -854,10 +854,13 @@ seed and one per accepted improvement, objective on the same minimized scale).
 
 ### Quality gate (`PlanToolExecutor._quality`)
 The best-plan gate is a **lexicographic tuple**, not the hand-weighted scalar
-score: `(open_required_slots, short_days, soft_rule_violations,
-hours_deviation_minutes, -(preference fits [+ assignments in distribute
-mode]))`, compared tier by tier — no weight can trade a required slot against
-preference wins. **Ties keep the agent's newest state**, so quality-neutral
+score: `(hard_violations_in_range, open_required_slots, short_days,
+soft_rule_violations, hours_deviation_minutes, -(preference fits
+[+ assignments in distribute mode]))`, compared tier by tier — no weight can
+trade a required slot against preference wins. Hard violations (in the solve
+range) are the top tier so REPAIRING what the seed or manual data breaks
+outranks filling slots: unassigning a rest-day-violating draft assignment
+counts as an improvement even though it opens a slot. **Ties keep the agent's newest state**, so quality-neutral
 swaps (YTD fairness, admin instructions — goals the tuple doesn't measure)
 survive into the final plan instead of being overridden by an old snapshot.
 `encode_quality` maps the tuple to a saturated scalar ONLY for the live chart
