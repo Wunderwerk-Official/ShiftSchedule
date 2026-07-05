@@ -120,7 +120,7 @@ def test_agent_move_improves_plan_and_emits_solution():
     assert len(solutions) == 2  # seed + improvement
     assert solutions[1]["objective"] < solutions[0]["objective"]
     assert result["debugInfo"]["agent"]["best_score"] < result["debugInfo"]["agent"]["seed_score"]
-    assert any("Score improved" in n for n in result["notes"])
+    assert any("improved over the seed" in n.lower() for n in result["notes"])
 
 
 def test_illegal_moves_leave_seed_untouched():

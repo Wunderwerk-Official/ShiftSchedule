@@ -19,6 +19,9 @@ const TOOL_LABELS: Record<string, string> = {
   list_candidates_for_slot: "compared candidates for a slot",
   get_clinician_summary: "reviewed someone's week",
   get_ytd_progress: "checked year-to-date fairness",
+  list_short_days: "looked for too-short work days",
+  get_hours_overview: "compared everyone's weekly hours",
+  get_day_schedule: "reviewed a full day's schedule",
 };
 
 /** "checked rule violations · compared candidates for a slot" — apply_moves is

@@ -844,17 +844,35 @@ seed and one per accepted improvement, objective on the same minimized scale).
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
 1. **Seed**: `heuristic_solve_range_v2` produces the initial plan (its
    per-day `solution` events are muted; phases are forwarded).
-2. **Loop**: the LLM gets a compact problem digest and six tools; it inspects
+2. **Loop**: the LLM gets a compact problem digest and ten tools; it inspects
    and applies moves on a working copy until it stops, the iteration budget
    (`AGENT_MAX_ITERATIONS`, default 20) runs out, or the wall clock
    (`timeout_seconds`, default 300s for agent mode) expires.
-3. **Finalize**: the best-scoring snapshot is returned — never worse than the
+3. **Finalize**: the best snapshot is returned — never worse than the
    seed. Any LLM failure (missing key, API error, refusal) degrades to the
    seed plan with a note; it never surfaces as a 500 once the seed exists.
 
+### Quality gate (`PlanToolExecutor._quality`)
+The best-plan gate is a **lexicographic tuple**, not the hand-weighted scalar
+score: `(open_required_slots, short_days, soft_rule_violations,
+hours_deviation_minutes, -(preference fits [+ assignments in distribute
+mode]))`, compared tier by tier — no weight can trade a required slot against
+preference wins. **Ties keep the agent's newest state**, so quality-neutral
+swaps (YTD fairness, admin instructions — goals the tuple doesn't measure)
+survive into the final plan instead of being overridden by an old snapshot.
+`encode_quality` maps the tuple to a saturated scalar ONLY for the live chart
+and run history (`seed_score`/`best_score` in `debugInfo.agent`); it gates
+nothing. `score_plan` in `scoring.py` still exists for the CP-SAT path and
+its tests, but the agent no longer sees or optimizes a score.
+
 ### Tools (`backend/agent/tools.py`)
 `get_plan_overview`, `get_violations`, `list_open_slots`,
-`list_candidates_for_slot`, `get_clinician_summary`, `apply_moves`. Guardrails
+`list_candidates_for_slot`, `get_clinician_summary`, `list_short_days`,
+`get_ytd_progress`, `get_hours_overview` (whole-roster weekly hours vs
+contract±tolerance, most-underworked first), `get_day_schedule` (one day's
+slots with assignees/missing), `apply_moves` (supports `dry_run: true` to
+validate a batch and preview the resulting quality tiers without committing —
+previews don't count as rejections or emit activity events). Guardrails
 are structural, not prompt-based: fixed assignments (anything already in app
 state) are immutable, capacity is enforced on assign, and a move batch that
 would create NEW hard violations (relative to the seed baseline — see the

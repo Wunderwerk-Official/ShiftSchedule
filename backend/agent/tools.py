@@ -25,7 +25,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..models import AppState, Assignment, Clinician
-from ..scoring import ScoringContext, open_slots, plan_stats, score_plan
+from ..scoring import ScoringContext, open_slots, plan_stats
 from ..validation import (
     VIOLATION_WEEKLY_HOURS,
     Violation,
@@ -39,10 +39,12 @@ TOOL_SPECS_RAW = [
     {
         "name": "get_plan_overview",
         "description": (
-            "Current plan status: objective score (lower is better), coverage "
-            "statistics, violation counts by code (hard and soft), and the "
-            "number of open slot instances. Call this to orient yourself and "
-            "after applying moves."
+            "Current plan status: the quality tiers in strict priority order "
+            "(open required slots > short days > soft-rule violations > "
+            "weekly-hours deviation > preference/load bonus), coverage "
+            "statistics, violation counts by code, and the quality of your "
+            "best snapshot so far. Call this to orient yourself and after "
+            "applying moves."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -155,6 +157,34 @@ TOOL_SPECS_RAW = [
         },
     },
     {
+        "name": "get_hours_overview",
+        "description": (
+            "Weekly-hours balance for the WHOLE roster in one call: per "
+            "clinician and ISO week, assigned hours (fixed + your working "
+            "copy) vs contract±tolerance, with status under/ok/over and the "
+            "deviation. Sorted most-underworked first. Use it to spot who "
+            "needs more or fewer hours without one get_clinician_summary "
+            "call per person."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
+        "name": "get_day_schedule",
+        "description": (
+            "Full schedule of ONE day: every slot instance with section, "
+            "times, required staffing, who is assigned (fixed vs yours) and "
+            "how many are still missing. The day-level counterpart to "
+            "get_clinician_summary — use it to build contiguous blocks, "
+            "check adjacency, and see coverage gaps in context."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"dateISO": {"type": "string"}},
+            "required": ["dateISO"],
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "apply_moves",
         "description": (
             "Apply a batch of assignment changes to your working copy. "
@@ -163,7 +193,9 @@ TOOL_SPECS_RAW = [
             "removed). The batch is atomic: if it would create new hard "
             "violations or break capacity, nothing is applied and the "
             "violations are returned so you can adjust. Batch related moves "
-            "(e.g. unassign+assign swaps) together."
+            "(e.g. unassign+assign swaps) together. Set dry_run=true to "
+            "validate the batch and preview the resulting quality tiers "
+            "WITHOUT committing anything."
         ),
         "input_schema": {
             "type": "object",
@@ -184,6 +216,7 @@ TOOL_SPECS_RAW = [
                     },
                 },
                 "comment": {"type": "string"},
+                "dry_run": {"type": "boolean"},
             },
             "required": ["moves"],
             "additionalProperties": False,
@@ -279,10 +312,62 @@ class PlanToolExecutor:
             if v.code == VIOLATION_WEEKLY_HOURS
         }
 
-        seed_score = score_plan(ctx, self._working_list())
-        self.best_score: float = seed_score.total
+        self.seed_quality = self._quality(self._working_list())
+        self.best_quality = self.seed_quality
         self.best_assignments: List[Assignment] = self._working_list()
-        self.seed_score: float = seed_score.total
+        # Encoded scalars kept for the live chart and run history.
+        self.seed_score: float = self.encode_quality(self.seed_quality)
+        self.best_score: float = self.seed_score
+
+    # ------------------------------------------------------------------
+    # plan quality
+    # ------------------------------------------------------------------
+
+    def _quality(self, working: List[Assignment]) -> Tuple[int, int, int, int, int]:
+        """Lexicographic plan quality — smaller is better, compared tier by
+        tier: (open required slots, short days, soft-rule violations, weekly
+        hours deviation minutes, -(preference fits + assignments)).
+
+        This replaced the hand-weighted scalar score as the best-plan gate:
+        the tiers encode the human priority order directly, so no gut-feel
+        weight can trade a required slot against a pile of preference wins,
+        and the agent's own judgment decides everything the tiers don't
+        measure (ties keep the newest state)."""
+        stats = plan_stats(self.ctx, working)
+        soft = len(validate_solver_rules(self.state, self._full_plan(working)))
+        bonus = stats.section_preference_matches + stats.time_window_fits
+        if not self.ctx.only_fill_required:
+            bonus += stats.total_assignments
+        return (
+            stats.open_slots,
+            stats.short_days,
+            soft,
+            stats.working_hours_deviation_minutes,
+            -bonus,
+        )
+
+    @staticmethod
+    def encode_quality(quality: Tuple[int, int, int, int, int]) -> float:
+        """Monotone-ish scalar for the live chart/history (lower = better).
+        Saturated per tier so a huge lower tier can't visually outrank a
+        higher one; NOT used for any accept/best decision."""
+        open_slots_, short, soft, hours_dev, neg_bonus = quality
+        return float(
+            open_slots_ * 1_000_000
+            + short * 50_000
+            + min(soft, 9) * 5_000
+            + min(hours_dev, 4_999)
+            + max(-4_999, neg_bonus)
+        )
+
+    def quality_dict(self, quality: Tuple[int, int, int, int, int]) -> dict:
+        return {
+            "open_required_slots": quality[0],
+            "short_days": quality[1],
+            "soft_rule_violations": quality[2],
+            "hours_deviation_minutes": quality[3],
+            "preference_and_load_bonus": -quality[4],
+        }
 
     # ------------------------------------------------------------------
     # plan state helpers
@@ -332,17 +417,18 @@ class PlanToolExecutor:
         full = self._full_plan(working)
         hard = self._hard_violations(full)
         soft = validate_solver_rules(self.state, full)
-        score = score_plan(self.ctx, working)
+        quality = self._quality(working)
         stats = plan_stats(self.ctx, working)
         hard_counts: Dict[str, int] = {}
         for v in hard:
             hard_counts[v.code] = hard_counts.get(v.code, 0) + 1
         new_hard = [v for v in hard if self._is_new_hard(v)]
         return {
-            "score": score.total,
-            "score_components": score.components,
-            "seed_score": self.seed_score,
-            "best_score": self.best_score,
+            "quality": {
+                **self.quality_dict(quality),
+                "note": "strict priority order, improve the highest tier first",
+            },
+            "quality_of_best_snapshot": self.quality_dict(self.best_quality),
             "stats": stats.model_dump(),
             "hard_violations_by_code": hard_counts,
             "new_hard_violations": len(new_hard),
@@ -366,6 +452,8 @@ class PlanToolExecutor:
             "get_clinician_summary": self._tool_clinician_summary,
             "get_ytd_progress": self._tool_ytd_progress,
             "list_short_days": self._tool_short_days,
+            "get_hours_overview": self._tool_hours_overview,
+            "get_day_schedule": self._tool_day_schedule,
             "apply_moves": self._tool_apply_moves,
         }
         handler = handlers.get(name)
@@ -656,6 +744,92 @@ class PlanToolExecutor:
             "clinicians": entries,
         }
 
+    def _tool_hours_overview(self, args: dict) -> dict:
+        # One ISO week appears once even if the range spans its boundary.
+        week_sample_date: Dict[str, str] = {}
+        for date_iso in self.ctx.target_day_isos:
+            week_sample_date.setdefault(self._week_key(date_iso), date_iso)
+
+        clinicians_out = []
+        for clinician in self.state.clinicians:
+            contract = clinician.workingHoursPerWeek
+            _tol = clinician.workingHoursToleranceHours
+            tolerance = _tol if _tol is not None else 5
+            weeks_out: Dict[str, dict] = {}
+            for week_key, sample_date in week_sample_date.items():
+                hours = round(self._week_hours(clinician.id, sample_date), 1)
+                entry: dict = {"hours": hours}
+                if isinstance(contract, (int, float)) and contract > 0:
+                    entry["deviation_h"] = round(hours - contract, 1)
+                    if hours < contract - tolerance:
+                        entry["status"] = "under"
+                    elif hours > contract + tolerance:
+                        entry["status"] = "over"
+                    else:
+                        entry["status"] = "ok"
+                weeks_out[week_key] = entry
+            clinicians_out.append(
+                {
+                    "clinicianId": self._alias(clinician.id),
+                    "contract_hours_per_week": contract,
+                    "tolerance_hours": tolerance,
+                    "weeks": weeks_out,
+                }
+            )
+
+        def most_under(entry: dict) -> float:
+            deviations = [
+                w["deviation_h"]
+                for w in entry["weeks"].values()
+                if w.get("status") == "under"
+            ]
+            return min(deviations) if deviations else 0.0
+
+        clinicians_out.sort(key=most_under)
+        return {
+            "weeks": sorted(week_sample_date),
+            "note": "Hours include fixed assignments and your working copy. "
+            "status under/over = outside contract±tolerance; most underworked "
+            "clinicians first (give them hours before anyone at ok/over).",
+            "clinicians": clinicians_out,
+        }
+
+    def _tool_day_schedule(self, args: dict) -> dict:
+        date_iso = args.get("dateISO")
+        if date_iso not in self.ctx.target_date_set:
+            return {
+                "error": f"{date_iso} is outside the solve range "
+                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
+            }
+        counts = self._counts_by_instance(self._working_list())
+        slots = []
+        for inst in self.ctx.instances.values():
+            if inst.date_iso != date_iso:
+                continue
+            assigned = [
+                {"clinicianId": self._alias(a.clinicianId), "fixed": True}
+                for a in self.fixed_assignments
+                if a.dateISO == date_iso and a.rowId == inst.slot_id
+            ]
+            assigned.extend(
+                {"clinicianId": self._alias(cid), "fixed": False}
+                for (row_id, d, cid) in self.current
+                if d == date_iso and row_id == inst.slot_id
+            )
+            slots.append(
+                {
+                    "slot_key": inst.slot_key,
+                    "section_id": inst.section_id,
+                    "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
+                    "end": f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
+                    "required": inst.target,
+                    "missing": max(0, inst.target - counts.get(inst.slot_key, 0)),
+                    "assigned": assigned,
+                }
+            )
+        slots.sort(key=lambda s: (s["start"], s["section_id"]))
+        return {"dateISO": date_iso, "slots": slots}
+
     def _tool_apply_moves(self, args: dict) -> dict:
         moves = args.get("moves") or []
         rejected: List[dict] = []
@@ -711,6 +885,9 @@ class PlanToolExecutor:
                 rejected.append({"index": index, "reason": f"Unknown action: {action!r}"})
 
         if rejected:
+            if args.get("dry_run"):
+                # Previews don't count as rejections and stay out of the feed.
+                return {"dry_run": True, "valid": False, "rejected": rejected}
             self.moves_rejected += len(moves)
             self._emit_activity(
                 "moves_rejected",
@@ -727,6 +904,16 @@ class PlanToolExecutor:
             for v in self._hard_violations(self._full_plan(trial_list))
             if self._is_new_hard(v)
         ]
+        if args.get("dry_run"):
+            if new_hard:
+                return {"dry_run": True, "valid": False, "new_hard_violations": new_hard}
+            quality = self._quality(trial_list)
+            return {
+                "dry_run": True,
+                "valid": True,
+                "quality_after": self.quality_dict(quality),
+                "improves_best": quality < self.best_quality,
+            }
         if new_hard:
             self.moves_rejected += len(moves)
             self._emit_activity(
@@ -746,13 +933,16 @@ class PlanToolExecutor:
 
         self.current = trial
         self.moves_accepted += len(moves)
-        score = score_plan(self.ctx, trial_list)
-        improved = score.total < self.best_score
-        if improved:
-            self.best_score = score.total
+        quality = self._quality(trial_list)
+        improved = quality < self.best_quality
+        if quality <= self.best_quality:
+            # Ties go to the newest state: the agent acted deliberately
+            # (e.g. admin-instruction compliance the tiers don't measure).
+            self.best_quality = quality
+            self.best_score = self.encode_quality(quality)
             self.best_assignments = list(trial_list)
-            if self.on_improvement is not None:
-                self.on_improvement(score.total, list(trial_list))
+            if improved and self.on_improvement is not None:
+                self.on_improvement(self.best_score, list(trial_list))
         described = [self._describe_move(m) for m in moves]
         self.accepted_move_log.extend(described)
         self._emit_activity(
@@ -760,7 +950,7 @@ class PlanToolExecutor:
             {
                 "moves": described,
                 "improved": improved,
-                "score": score.total,
+                "score": self.encode_quality(quality),
             },
         )
         return {"applied": True, "verification": self._overview()}

@@ -238,7 +238,9 @@ def test_open_slots_and_overview_shapes():
     overview, _ = _run(executor, "get_plan_overview", {})
     assert overview["open_slot_count"] == 1
     assert overview["new_hard_violations"] == 0
-    assert overview["score"] == executor.seed_score
+    assert "score" not in overview  # the scalar score is gone from the LLM payload
+    assert overview["quality"]["open_required_slots"] == 1
+    assert overview["quality_of_best_snapshot"]["open_required_slots"] == 1
 
     summary, _ = _run(executor, "get_clinician_summary", {"clinicianId": "clin-1"})
     assert summary["qualified_sections"] == ["section-a"]
@@ -296,7 +298,7 @@ def test_apply_moves_accepts_aliases_and_returns_real_ids():
 
 def test_problem_digest_uses_aliases_only():
     from backend.agent.prompts import build_problem_digest
-    from backend.scoring import open_slots, plan_stats, score_plan
+    from backend.scoring import open_slots, plan_stats
 
     state = make_app_state(
         clinicians=[make_clinician("clin-secret", "Dr. Carola Verborgen")],
@@ -305,7 +307,6 @@ def test_problem_digest_uses_aliases_only():
     digest = build_problem_digest(
         state,
         executor.ctx,
-        score_plan(executor.ctx, []),
         plan_stats(executor.ctx, []),
         open_slots(executor.ctx, []),
         new_hard_violation_count=0,
@@ -548,3 +549,144 @@ def test_list_short_days_flags_mini_days():
     assert case["assigned_hours"] == 1.0
     assert case["min_hours"] == 4.0
     assert case["slots"][0]["fixed"] is False
+
+
+# ---------------------------------------------------------------------------
+# Quality-tuple gate, dry runs, and the roster/day inspection tools
+# ---------------------------------------------------------------------------
+
+
+def test_dry_run_previews_without_committing():
+    state = make_app_state(clinicians=[make_clinician("clin-1", "Alice")])
+    executor = _make_executor(state)
+    payload, is_error = _run(
+        executor,
+        "apply_moves",
+        {
+            "moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+                       "clinicianId": "D1"}],
+            "dry_run": True,
+        },
+    )
+    assert not is_error
+    assert payload["dry_run"] is True and payload["valid"] is True
+    assert payload["improves_best"] is True
+    assert payload["quality_after"]["open_required_slots"] == 0
+    # Nothing was committed and no counters moved.
+    assert executor.current == {}
+    assert executor.moves_accepted == 0
+    assert executor.best_assignments == []
+
+
+def test_dry_run_reports_structural_rejection_without_counting_it():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        assignments=[make_assignment("m1", "slot-a__mon", MON, "clin-1")],
+    )
+    executor = _make_executor(state)
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {
+            "moves": [{"action": "unassign", "slot_key": f"slot-a__mon__{MON}",
+                       "clinicianId": "D1"}],
+            "dry_run": True,
+        },
+    )
+    assert payload["dry_run"] is True and payload["valid"] is False
+    assert "Fixed" in payload["rejected"][0]["reason"]
+    assert executor.moves_rejected == 0  # previews are free
+
+
+def test_equal_quality_swap_updates_best_snapshot():
+    # Swapping equally-suited clinicians leaves every quality tier unchanged;
+    # the tie must keep the agent's NEWEST state (its judgment on goals the
+    # tiers don't measure, e.g. YTD fairness or admin instructions).
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+    )
+    executor = _make_executor(state, [_seed("slot-a__mon", MON, "clin-1")])
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {
+            "moves": [
+                {"action": "unassign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"},
+                {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D2"},
+            ]
+        },
+    )
+    assert payload["applied"] is True
+    assert executor.best_quality == executor.seed_quality
+    assert [a.clinicianId for a in executor.best_assignments] == ["clin-2"]
+
+
+def test_hours_overview_flags_underworked_first():
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", working_hours_per_week=1),
+        ],
+    )
+    # Bob works the 8h Monday slot -> well over his 1h contract; Alice has
+    # nothing -> far under her 40h contract.
+    executor = _make_executor(state, [_seed("slot-a__mon", MON, "clin-2")])
+    payload, is_error = _run(executor, "get_hours_overview", {})
+    assert not is_error
+    assert payload["weeks"] == ["2026-W02"]
+    assert payload["clinicians"][0]["clinicianId"] == "D1"  # most underworked first
+    alice_week = payload["clinicians"][0]["weeks"]["2026-W02"]
+    assert alice_week["status"] == "under" and alice_week["hours"] == 0.0
+    bob_week = payload["clinicians"][1]["weeks"]["2026-W02"]
+    assert bob_week["status"] == "over"
+
+
+def test_day_schedule_lists_slots_with_assignees():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Dr. Alice"), make_clinician("clin-2", "Bob")],
+        assignments=[make_assignment("m1", "slot-a__mon", MON, "clin-1")],
+    )
+    executor = _make_executor(state, [_seed("slot-a__mon", MON, "clin-2")])
+    payload, is_error = _run(executor, "get_day_schedule", {"dateISO": MON})
+    assert not is_error
+    assert payload["dateISO"] == MON
+    slot = payload["slots"][0]
+    assert slot["slot_key"] == f"slot-a__mon__{MON}"
+    assert slot["missing"] == 0
+    assignees = {(a["clinicianId"], a["fixed"]) for a in slot["assigned"]}
+    assert assignees == {("D1", True), ("D2", False)}
+    assert "Alice" not in json.dumps(payload)  # aliases only
+
+    outside, is_error = _run(executor, "get_day_schedule", {"dateISO": "2027-01-01"})
+    assert not is_error and "error" in outside
+
+
+def test_mixed_batch_touching_fixed_assignment_rejects_atomically():
+    # A batch that mixes one illegal move (unassigning a MANUAL assignment)
+    # with a perfectly legal assign must reject as a whole: manual pills are
+    # untouchable and no partial state may leak in around them.
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+        slots=[
+            make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot("slot-b", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="12:00"),
+        ],
+        assignments=[make_assignment("m1", "slot-a__mon", MON, "clin-1")],
+    )
+    executor = _make_executor(state)
+    payload, _ = _run(
+        executor,
+        "apply_moves",
+        {
+            "moves": [
+                {"action": "unassign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"},
+                {"action": "assign", "slot_key": f"slot-b__{MON}", "clinicianId": "D2"},
+            ]
+        },
+    )
+    assert payload["applied"] is False
+    assert "Fixed" in payload["rejected"][0]["reason"]
+    assert executor.current == {}  # the legal half was NOT applied
+    # The agent's output never contains (or re-issues) the manual assignment.
+    assert executor.best_assignments == []

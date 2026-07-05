@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..heuristic.solver_v2 import heuristic_solve_range_v2
 from ..models import Assignment, SolveRangeRequest, AppState
-from ..scoring import build_scoring_context, open_slots, plan_stats, score_plan
+from ..scoring import build_scoring_context, open_slots, plan_stats
 from ..validation import validate_solver_rules
 from .config import AgentConfig
 from .prompts import DEFAULT_AGENT_INSTRUCTIONS, SYSTEM_PROMPT, build_problem_digest
@@ -64,6 +64,27 @@ MAX_PER_CALL_TIMEOUT_SECONDS = 180.0
 TOOL_SPECS = [
     ToolSpec(t["name"], t["description"], t["input_schema"]) for t in TOOL_SPECS_RAW
 ]
+
+
+def _quality_improvement_note(seed_q, best_q) -> str:
+    """Human-readable summary of which quality tiers the agent improved.
+
+    Mirrors the lexicographic tuple in ``PlanToolExecutor._quality``; only
+    components that actually changed are mentioned.
+    """
+    parts: List[str] = []
+    for label, idx in (
+        ("open required slots", 0),
+        ("short work days", 1),
+        ("soft-rule violations", 2),
+    ):
+        if seed_q[idx] != best_q[idx]:
+            parts.append(f"{label} {seed_q[idx]} -> {best_q[idx]}")
+    if seed_q[3] != best_q[3]:
+        parts.append(f"weekly-hours deviation {seed_q[3]} -> {best_q[3]} min")
+    if seed_q[4] != best_q[4]:
+        parts.append(f"preference/load bonus {-seed_q[4]} -> {-best_q[4]}")
+    return ", ".join(parts)
 
 
 def agent_solve_range(
@@ -166,9 +187,16 @@ def agent_solve_range(
             f"Agent solver: seed by heuristic v2, {iterations_done} LLM iteration(s), "
             f"{executor.moves_accepted} move(s) accepted, {executor.moves_rejected} rejected.",
         ]
-        if executor.best_score < executor.seed_score:
+        if executor.best_quality < executor.seed_quality:
             notes.append(
-                f"Score improved from {executor.seed_score:.0f} to {executor.best_score:.0f}."
+                "Plan improved over the seed: "
+                + _quality_improvement_note(executor.seed_quality, executor.best_quality)
+                + "."
+            )
+        elif executor.moves_accepted:
+            notes.append(
+                "Quality metrics unchanged; kept the agent's adjustments "
+                "(preference/fairness swaps at equal quality)."
             )
         else:
             notes.append("No improvement over the heuristic seed; returning the seed plan.")
@@ -236,7 +264,6 @@ def agent_solve_range(
     )
 
     seed_stats = plan_stats(ctx, seed_assignments)
-    seed_score = score_plan(ctx, seed_assignments)
     seed_open = open_slots(ctx, seed_assignments)
     soft_count = len(
         validate_solver_rules(state, executor.fixed_assignments + seed_assignments)
@@ -244,7 +271,6 @@ def agent_solve_range(
     digest = build_problem_digest(
         state,
         ctx,
-        seed_score,
         seed_stats,
         seed_open,
         new_hard_violation_count=0,  # seed violations ARE the baseline

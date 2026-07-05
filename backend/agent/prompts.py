@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Dict, List
 
 from ..models import AppState
-from ..scoring import PlanScore, PlanStats, OpenSlot, ScoringContext
+from ..scoring import PlanStats, OpenSlot, ScoringContext
 
 # Applied when the admin has not written their own instructions (Settings ->
 # Solver -> "AI agent instructions"). Keep in sync with the frontend copy in
@@ -44,18 +44,26 @@ Hard constraints (violations of these block acceptance of a move batch):
   in distribute-all mode).
 - Fixed assignments (made by humans or previous runs) are immutable.
 
-Soft objectives, in rough order of weight (the score is minimized):
-1. Coverage: fill required slots; open slots are the biggest penalty.
-2. Balanced weekly hours: keep everyone near contract hours.
+Plan quality — a STRICT priority ladder, not a weighted score. The harness
+compares plans tier by tier; improving a higher tier always beats any change
+in the tiers below it:
+1. Open required slots: fill them. This dominates everything else.
+2. Short work days: nobody comes in for just a brief 1-2 hour stint.
 3. Custom if/then rules (SOLVER_RULE, severity "soft"): fix when possible.
-4. Year-to-date fairness: every candidate carries ytd_worked_pct — the
-   percent of their year-to-date target hours already worked up to the
-   slot's day (100 = on target, lower = behind). Prefer the clinician with
-   the LOWEST ytd_worked_pct among equally suitable candidates; the goal is
-   that everyone converges to the same percentage of their contract.
-   list_candidates_for_slot sorts eligible candidates most-behind first;
-   get_ytd_progress shows the whole roster at a glance.
+4. Balanced weekly hours: keep everyone near contract hours.
 5. Section preferences and preferred time windows.
+
+Your snapshot is kept whenever the ladder is at least as good as the best so
+far — TIES KEEP YOUR LATEST STATE. That makes goals the ladder does not
+measure entirely yours to judge: year-to-date fairness and the admin's
+instructions survive as long as the measured tiers do not get worse.
+- Year-to-date fairness: every candidate carries ytd_worked_pct — the percent
+  of their year-to-date target hours already worked up to the slot's day
+  (100 = on target, lower = behind). Prefer the clinician with the LOWEST
+  ytd_worked_pct among equally suitable candidates; the goal is that everyone
+  converges to the same percentage of their contract.
+  list_candidates_for_slot sorts eligible candidates most-behind first;
+  get_ytd_progress shows the whole roster at a glance.
 
 Privacy: clinicians are referred to by anonymized ids (D1, D2, ...) — you
 never see real names. Always use these ids in tool calls.
@@ -68,8 +76,12 @@ Tool usage policy:
 - Inspect before you move: list_candidates_for_slot tells you exactly which
   clinicians are legal for a slot and why others are not.
 - But start changing things quickly: use at most TWO inspection rounds before
-  your first apply_moves call (the digest already contains the roster, score,
-  and top open slots). Long inspection-only stretches waste your budget.
+  your first apply_moves call (the digest already contains the roster, the
+  quality summary, and top open slots). Long inspection-only stretches waste
+  your budget.
+- Unsure whether a batch is legal or actually helps? Call apply_moves with
+  dry_run=true first — it validates and reports the resulting quality without
+  committing anything.
 - Avoid mini work days: nobody should come in for a single 1-2 hour stint.
   For short edge slots (early morning, late evening) prefer a candidate with
   adjacent_to_existing=true — their day stays one contiguous block. If a day
@@ -87,9 +99,10 @@ Tool usage policy:
 
 Efficient procedure (follow it):
 1. Round 1: ONE list_candidates_for_slot call with slot_keys covering the
-   most important open slots (up to 8 at once). Add get_ytd_progress in the
-   same turn if hours balancing matters — several tool calls per turn are
-   allowed and encouraged.
+   most important open slots (up to 8 at once). Add get_hours_overview or
+   get_ytd_progress in the same turn if hours balancing matters — several
+   tool calls per turn are allowed and encouraged. get_day_schedule shows a
+   whole day in context when you plan contiguous blocks.
 2. Round 2: apply ALL clear assignments in ONE apply_moves batch (its
    verification response replaces a separate overview call).
 3. Then fix what remains: leftover open slots, short_days, soft rules —
@@ -106,7 +119,6 @@ every step. Work within your iteration budget: prefer high-impact fixes
 def build_problem_digest(
     state: AppState,
     ctx: ScoringContext,
-    seed_score: PlanScore,
     seed_stats: PlanStats,
     seed_open: List[OpenSlot],
     new_hard_violation_count: int,
@@ -147,7 +159,7 @@ def build_problem_digest(
     lines.append(
         f"Seed plan: {seed_stats.filled_slots}/{seed_stats.total_required_slots} "
         f"required positions filled, {seed_stats.open_slots} open, "
-        f"score {seed_score.total:.0f} (lower is better)."
+        f"weekly-hours deviation {seed_stats.working_hours_deviation_minutes} min."
     )
     lines.append(
         f"Violations: {new_hard_violation_count} new hard, "
