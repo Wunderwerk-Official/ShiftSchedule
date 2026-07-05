@@ -902,8 +902,17 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   `AGENT_MOCK_SCRIPT=<json path>`.
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
 `AGENT_MAX_ITERATIONS`, `AGENT_MAX_TOKENS`) — the spawn subprocess inherits it.
-`solverSettings.agentModel` (set via Settings → Solver → "AI agent model")
-overrides `AGENT_MODEL` per workspace. The frontend planning panel always
+The model is an ADMIN-ONLY global setting (default `claude-sonnet-5`) stored
+in the `agent_settings` table and managed via `GET/PUT /v1/agent/settings`
+(`backend/agent_budget.py`); the solve endpoint injects it into the payload
+(`SolveRangeRequest.agent_model`, server-overwritten so clients can't spoof
+it) where it overrides `AGENT_MODEL`. The old per-user
+`solverSettings.agentModel` is ignored. Every account also has a cumulative
+AI budget (default $5, admin-settable): each run's cost is computed from its
+token counts (pricing table mirrored from `src/lib/llmPricing.ts` — update
+both together) and recorded in `agent_spend`; once over budget the harness
+returns the heuristic draft with an explanatory note
+(`payload.agent_budget_exhausted`, also server-injected). The frontend planning panel always
 sends `solver_mode: "agent"` — the CP-SAT solver remains available through
 the API (`solver_mode: "cpsat"`) and is still used by tests, but the UI no
 longer offers the choice. YTD fairness: `PlanToolExecutor.ytd_completion_pct`

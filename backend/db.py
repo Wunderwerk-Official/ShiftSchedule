@@ -75,6 +75,23 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_spend (
+            username TEXT PRIMARY KEY,
+            total_cost_usd REAL NOT NULL DEFAULT 0,
+            updated_at TEXT
+        )
+        """
+    )
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(app_state)").fetchall()]
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE app_state ADD COLUMN updated_at TEXT")

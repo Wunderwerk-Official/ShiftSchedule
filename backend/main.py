@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from .agent_budget import router as agent_budget_router
 from .auth import _ensure_admin_user, _ensure_test_user, router as auth_router
 from .db import _get_connection
 from .ical_routes import router as ical_router
@@ -131,3 +132,4 @@ app.include_router(web_router)
 app.include_router(pdf_router)
 app.include_router(ical_router)
 app.include_router(solver_router)
+app.include_router(agent_budget_router)

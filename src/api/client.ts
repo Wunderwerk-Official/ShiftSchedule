@@ -292,6 +292,43 @@ export async function getCurrentUser(): Promise<AuthUser> {
   return res.json();
 }
 
+// Global agent settings (model = admin-only, one AI budget per account).
+export type AgentSettings = {
+  model: string;
+  budget_usd: number;
+  spent_usd: number;
+  remaining_usd: number;
+  /** Per-user spend — present only for admins. */
+  usage?: { username: string; spent_usd: number }[];
+};
+
+export async function fetchAgentSettings(): Promise<AgentSettings> {
+  const res = await fetch(`${API_BASE}/v1/agent/settings`, {
+    headers: buildHeaders(),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    throw new Error(`Failed to fetch agent settings: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function updateAgentSettings(payload: {
+  model?: string;
+  budget_usd?: number;
+}): Promise<{ model: string; budget_usd: number }> {
+  const res = await fetch(`${API_BASE}/v1/agent/settings`, {
+    method: "PUT",
+    headers: buildHeaders(),
+    body: JSON.stringify(payload),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    throw new Error(`Failed to update agent settings: ${res.status}`);
+  }
+  return res.json();
+}
+
 export async function listUsers(): Promise<AuthUser[]> {
   const res = await fetch(`${API_BASE}/auth/users`, {
     headers: buildHeaders(),

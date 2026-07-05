@@ -321,12 +321,23 @@ def agent_solve_range(
     # ------------------------------------------------------------------
     if config is None:
         config = AgentConfig.from_env()
-    # The model can be chosen per workspace in the app settings; a value there
-    # overrides the AGENT_MODEL env default. solverSettings is a plain dict on
-    # AppState.
-    settings_model = (state.solverSettings or {}).get("agentModel")
-    if isinstance(settings_model, str) and settings_model.strip():
-        config.model = settings_model.strip()
+    # The model is a GLOBAL admin setting, injected server-side into the
+    # payload by the solve endpoint (see agent_budget). It overrides the
+    # AGENT_MODEL env default; per-user solverSettings.agentModel is ignored.
+    if isinstance(payload.agent_model, str) and payload.agent_model.strip():
+        config.model = payload.agent_model.strip()
+    # Per-user spending cap, also decided server-side: once used up, the run
+    # ends at the heuristic draft instead of starting the LLM.
+    if payload.agent_budget_exhausted:
+        return finalize(
+            "AGENT_FALLBACK_SEED",
+            [
+                "Agent LLM unavailable — the AI agent could not start: this "
+                "account's AI budget is used up. The heuristic draft plan was "
+                "returned instead. An administrator can raise the budget in "
+                "Settings → Solver."
+            ],
+        )
     if provider is None:
         try:
             provider = get_provider(config)

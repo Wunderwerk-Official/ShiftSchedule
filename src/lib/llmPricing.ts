@@ -16,20 +16,20 @@ export type AgentModelOption = {
 
 export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
   {
-    id: "claude-opus-4-8",
-    label: "Opus 4.8",
-    description: "Best quality (default)",
-    inputPerMTok: 5,
-    outputPerMTok: 25,
-    approxRunCost: "≈ $1–3 per run",
-  },
-  {
     id: "claude-sonnet-5",
     label: "Sonnet 5",
-    description: "Balanced quality & cost",
+    description: "Balanced quality & cost (default)",
     inputPerMTok: 3,
     outputPerMTok: 15,
     approxRunCost: "≈ $0.50–1.50 per run",
+  },
+  {
+    id: "claude-opus-4-8",
+    label: "Opus 4.8",
+    description: "Best quality",
+    inputPerMTok: 5,
+    outputPerMTok: 25,
+    approxRunCost: "≈ $1–3 per run",
   },
   {
     id: "claude-haiku-4-5",

@@ -227,6 +227,11 @@ class SolveRangeRequest(BaseModel):
     # Client-generated id echoed on every SSE progress event of this run, so
     # the frontend can ignore stragglers from a previous or foreign run.
     run_token: Optional[str] = None
+    # SERVER-INJECTED fields (the endpoint overwrites whatever a client sends
+    # before dispatching, so they cannot be spoofed): the admin-chosen agent
+    # model and whether this user's AI budget is already used up.
+    agent_model: Optional[str] = None
+    agent_budget_exhausted: bool = False
 
     def resolved_mode(self) -> SolverMode:
         if self.solver_mode is not None:

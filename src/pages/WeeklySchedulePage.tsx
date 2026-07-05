@@ -3473,6 +3473,7 @@ export default function WeeklySchedulePage({
       ) : viewMode === "settings" ? (
         <>
           <SettingsView
+            isAdmin={currentUser.role === "admin"}
             classRows={eligibleClassRows}
             poolRows={poolRows}
             locations={locations}

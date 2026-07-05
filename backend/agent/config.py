@@ -12,7 +12,9 @@ from dataclasses import dataclass
 from typing import Optional
 
 DEFAULT_PROVIDER = "anthropic"
-DEFAULT_MODEL = "claude-opus-4-8"
+# Keep in sync with agent_budget.DEFAULT_AGENT_MODEL and the frontend default
+# in src/lib/llmPricing.ts.
+DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_ITERATIONS = 20
 DEFAULT_MAX_TOKENS = 8000
 

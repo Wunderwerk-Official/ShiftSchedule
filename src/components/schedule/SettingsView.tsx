@@ -1,4 +1,4 @@
-import { useState, type ChangeEvent } from "react";
+import { useEffect, useState, type ChangeEvent } from "react";
 import {
   buttonAdd,
   buttonDanger,
@@ -8,8 +8,9 @@ import {
 } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
 import { Location, WorkplaceRow } from "../../data/mockData";
-import type { Holiday, SolverSettings, WeeklyCalendarTemplate } from "../../api/client";
-import { AGENT_MODEL_OPTIONS, DEFAULT_AGENT_MODEL } from "../../lib/llmPricing";
+import type { AgentSettings, Holiday, SolverSettings, WeeklyCalendarTemplate } from "../../api/client";
+import { fetchAgentSettings, updateAgentSettings } from "../../api/client";
+import { AGENT_MODEL_OPTIONS, formatCostUSD } from "../../lib/llmPricing";
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
 import WeeklyTemplateBuilder from "./WeeklyTemplateBuilder";
 import CustomSelect from "./CustomSelect";
@@ -54,6 +55,7 @@ type SettingsViewProps = {
   onRemoveSection?: (sectionId: string) => void;
   onExportScheduleSnapshot: () => void;
   onImportScheduleSnapshot: (payload: unknown) => Promise<ScheduleSnapshotImportResult>;
+  isAdmin?: boolean;
 };
 
 export default function SettingsView({
@@ -86,8 +88,36 @@ export default function SettingsView({
   onRemoveSection,
   onExportScheduleSnapshot,
   onImportScheduleSnapshot,
+  isAdmin = false,
 }: SettingsViewProps) {
   const confirm = useConfirm();
+  // Global agent settings (admin-chosen model + per-account AI budget).
+  const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
+  const [agentSettingsError, setAgentSettingsError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    fetchAgentSettings()
+      .then((settings) => {
+        if (!cancelled) setAgentSettings(settings);
+      })
+      .catch(() => {
+        if (!cancelled) setAgentSettingsError("Could not load AI agent settings.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const applyAgentSettings = async (patch: { model?: string; budget_usd?: number }) => {
+    try {
+      setAgentSettingsError(null);
+      const updated = await updateAgentSettings(patch);
+      setAgentSettings((prev) =>
+        prev ? { ...prev, ...updated } : prev,
+      );
+    } catch {
+      setAgentSettingsError("Could not save AI agent settings.");
+    }
+  };
   const [newClinicianName, setNewClinicianName] = useState("");
   const [newClinicianHours, setNewClinicianHours] = useState("");
   const [showNewClinician, setShowNewClinician] = useState(false);
@@ -438,27 +468,86 @@ export default function SettingsView({
                 />
               </button>
             </div>
-            <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
-              <div>
-                <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  AI agent model
+            <div className="flex flex-col gap-3 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
+              <div className="flex flex-wrap items-center justify-between gap-4">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    AI agent model
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    {isAdmin
+                      ? "Claude model used by every planning run, for all users. Costs are rough estimates — the exact cost of each run shows in the solver history (gear icon)."
+                      : "Set by your administrator and used for every planning run."}
+                  </div>
                 </div>
-                <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Claude model used by the &ldquo;AI Agent&rdquo; solver. Costs are rough estimates —
-                  the exact cost of each run shows in the solver history (gear icon).
-                </div>
+                {isAdmin ? (
+                  <CustomSelect
+                    className="w-80"
+                    value={agentSettings?.model ?? AGENT_MODEL_OPTIONS[0].id}
+                    onChange={(value) => void applyAgentSettings({ model: value })}
+                    options={AGENT_MODEL_OPTIONS.map((option) => ({
+                      value: option.id,
+                      label: `${option.label} — ${option.description} · ${option.approxRunCost}`,
+                    }))}
+                  />
+                ) : (
+                  <div className="rounded-full border border-slate-200 px-3 py-1 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">
+                    {AGENT_MODEL_OPTIONS.find((o) => o.id === agentSettings?.model)?.label ??
+                      agentSettings?.model ??
+                      "…"}
+                  </div>
+                )}
               </div>
-              <CustomSelect
-                className="w-80"
-                value={solverSettings.agentModel ?? DEFAULT_AGENT_MODEL}
-                onChange={(value) =>
-                  onChangeSolverSettings({ ...solverSettings, agentModel: value })
-                }
-                options={AGENT_MODEL_OPTIONS.map((option) => ({
-                  value: option.id,
-                  label: `${option.label} — ${option.description} · ${option.approxRunCost}`,
-                }))}
-              />
+              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+                <div>
+                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    AI budget per user
+                  </div>
+                  <div className="text-xs text-slate-500 dark:text-slate-400">
+                    {isAdmin
+                      ? "Maximum cumulative AI cost per account (USD — Anthropic bills in USD). Once reached, planning falls back to the draft plan until you raise the budget."
+                      : `Your usage: ${formatCostUSD(agentSettings?.spent_usd ?? 0) ?? "$0.00"} of ${formatCostUSD(agentSettings?.budget_usd ?? 0) ?? "…"} used. When the budget is reached, planning falls back to the draft plan.`}
+                  </div>
+                </div>
+                {isAdmin ? (
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm text-slate-500 dark:text-slate-400">$</span>
+                    <input
+                      type="number"
+                      min={0}
+                      step={0.5}
+                      value={agentSettings?.budget_usd ?? 5}
+                      onChange={(event) => {
+                        const value = Number(event.target.value);
+                        if (Number.isFinite(value) && value >= 0) {
+                          void applyAgentSettings({ budget_usd: value });
+                        }
+                      }}
+                      className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    />
+                  </div>
+                ) : null}
+              </div>
+              {isAdmin && agentSettings?.usage?.length ? (
+                <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <div className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">
+                    AI spend by user
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {agentSettings.usage.map((entry) => (
+                      <span
+                        key={entry.username}
+                        className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+                      >
+                        {entry.username}: {formatCostUSD(entry.spent_usd) ?? "$0.00"}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {agentSettingsError ? (
+                <div className="text-xs text-rose-600 dark:text-rose-400">{agentSettingsError}</div>
+              ) : null}
             </div>
             <div className="flex flex-col gap-2 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <div className="flex flex-wrap items-center justify-between gap-2">

@@ -1550,6 +1550,23 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
     # Capture start time BEFORE anything else - this is used for accurate timeout calculation
     request_start_time = time.time()
 
+    # Agent governance: the model is a global admin setting and every account
+    # has a spending cap. Both are SERVER-injected — whatever the client sent
+    # in these fields is overwritten here, then travels into the solver
+    # subprocess via the pickled payload.
+    from .agent_budget import (
+        add_spend_usd,
+        estimate_cost_usd,
+        get_agent_admin_settings,
+        get_spend_usd,
+    )
+
+    agent_admin = get_agent_admin_settings()
+    payload.agent_model = agent_admin["model"]
+    payload.agent_budget_exhausted = (
+        get_spend_usd(current_user.username) >= agent_admin["budget_usd"]
+    )
+
     # Reconcile solver state before starting a new run.
     # Scenarios we handle here:
     #   (1) Clean slate — no previous run active. Just proceed.
@@ -1694,6 +1711,17 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
 
         # Convert dict result back to response
         response = SolveRangeResponse(**result)
+
+        # Charge this run's LLM cost against the user's AI budget. Token
+        # counts come from the harness; a failed/aborted run bills whatever
+        # it actually consumed.
+        try:
+            agent_debug = (result.get("debugInfo") or {}).get("agent")
+            if isinstance(agent_debug, dict):
+                run_cost = estimate_cost_usd(agent_debug.get("model"), agent_debug)
+                add_spend_usd(current_user.username, run_cost)
+        except Exception as spend_exc:
+            print(f"[solver] Failed to record agent spend: {spend_exc}", file=sys.stderr)
 
         # Broadcast complete event
         _broadcast_solver_progress("complete", {

@@ -329,11 +329,16 @@ def test_agent_activity_events_flow_through_progress():
     assert {a["clinicianId"] for a in result["assignments"]} == {"clin-1", "clin-2"}
 
 
-def test_settings_agent_model_overrides_config():
+def test_server_injected_model_wins_and_user_setting_is_ignored():
     state = _two_clinician_state()
-    state.solverSettings = {"agentModel": "claude-sonnet-5"}
+    # The model became an admin-only GLOBAL setting, injected into the payload
+    # by the solve endpoint. The per-user solverSettings.agentModel relic must
+    # be ignored.
+    state.solverSettings = {"agentModel": "claude-haiku-4-5"}
+    payload = _payload()
+    payload.agent_model = "claude-sonnet-5"
     result = agent_solve_range(
-        _payload(),
+        payload,
         state,
         MockCancelEvent(),
         ProgressRecorder(),
@@ -342,6 +347,24 @@ def test_settings_agent_model_overrides_config():
         config=_config(model="claude-opus-4-8"),
     )
     assert result["debugInfo"]["agent"]["model"] == "claude-sonnet-5"
+
+
+def test_exhausted_budget_skips_llm_and_returns_draft():
+    state = _two_clinician_state()
+    payload = _payload()
+    payload.agent_budget_exhausted = True
+    result = agent_solve_range(
+        payload,
+        state,
+        MockCancelEvent(),
+        ProgressRecorder(),
+        time.time(),
+        provider=MockProvider(),
+        config=_config(),
+    )
+    assert result["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
+    assert any("AI budget" in n for n in result["notes"])
+    assert result["debugInfo"]["agent"]["iterations"] == 0
 
 
 def test_agent_debug_reports_model_and_token_fields():
