@@ -103,6 +103,10 @@ def get_provider(config: AgentConfig) -> LLMProvider:
         from .anthropic_provider import AnthropicProvider
 
         return AnthropicProvider(config)
+    if config.provider == "openai":
+        from .openai_provider import OpenAICompatibleProvider
+
+        return OpenAICompatibleProvider(config)
     if config.provider == "mock":
         from .mock_provider import MockProvider
 

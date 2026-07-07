@@ -895,11 +895,29 @@ acceptance.
 The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
 `ProviderResponse` + `LLMProvider.complete`). Implementations:
 - `AnthropicProvider` — official `anthropic` SDK; prompt-caching breakpoint on
-  the system block, adaptive thinking, no sampling params. Needs
-  `ANTHROPIC_API_KEY`.
+  the system block, adaptive thinking, no sampling params. Key resolution:
+  admin-stored key (Settings → Solver) wins over `ANTHROPIC_API_KEY` env.
+- `OpenAICompatibleProvider` — official `openai` SDK against any
+  OpenAI-compatible endpoint (self-hosted vLLM, llama.cpp, TGI, or OpenAI
+  itself) via `openai_base_url`. Differences handled inside the adapter:
+  tool arguments arrive as JSON strings (parsed defensively — broken JSON
+  from weaker open models degrades to `{}` and the tool executor's own
+  validation answers with a readable error), tool results are one
+  `role="tool"` message per result, `finish_reason` mapping treats
+  `stop`-with-tool-calls as `tool_use`, no `cache_control`/`thinking`
+  params, no raw-content replay. vLLM must run with
+  `--enable-auto-tool-choice` and a tool-call parser.
 - `MockProvider` — deterministic scripted turns for tests; inject in-process
   or across the subprocess boundary via `AGENT_PROVIDER=mock` +
   `AGENT_MOCK_SCRIPT=<json path>`.
+Provider selection and credentials are admin-configurable at runtime
+(Settings → Solver → `agent_settings` table): provider, Anthropic key,
+endpoint base URL + key + model name for the OpenAI-compatible path. The
+solver WORKER overlays these onto the env config in-process
+(`agent_budget.resolve_agent_runtime_config`) so secrets never travel through
+the solve payload, its debug dumps, or any API response (the settings API
+returns set/unset booleans only). The per-user AI budget applies to the
+Anthropic provider only — self-hosted runs are free and never blocked by it.
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
 `AGENT_MAX_ITERATIONS`, `AGENT_MAX_TOKENS`) — the spawn subprocess inherits it.
 The model is an ADMIN-ONLY global setting (default `claude-sonnet-5`) stored

@@ -26,6 +26,12 @@ class AgentConfig:
     max_iterations: int = DEFAULT_MAX_ITERATIONS
     max_tokens: int = DEFAULT_MAX_TOKENS
     mock_script_path: Optional[str] = None
+    # Credentials / endpoints. None = fall back to the environment. These are
+    # SECRETS when set from the admin settings: never put them into payloads,
+    # debug dumps, or API responses.
+    anthropic_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_api_key: Optional[str] = None
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -42,4 +48,6 @@ class AgentConfig:
             max_iterations=_int("AGENT_MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS),
             max_tokens=_int("AGENT_MAX_TOKENS", DEFAULT_MAX_TOKENS),
             mock_script_path=os.environ.get("AGENT_MOCK_SCRIPT") or None,
+            openai_base_url=(os.environ.get("OPENAI_BASE_URL") or "").strip() or None,
+            openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
         )

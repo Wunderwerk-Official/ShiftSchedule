@@ -6,3 +6,4 @@ python-jose==3.5.0
 passlib==1.7.4
 playwright==1.49.0
 anthropic==0.115.1
+openai==2.44.0

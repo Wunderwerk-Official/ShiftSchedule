@@ -72,7 +72,9 @@ def test_admin_can_update_model_and_budget(temp_db):
         json={"model": "claude-opus-4-8", "budget_usd": 12.5},
     )
     assert res.status_code == 200
-    assert get_agent_admin_settings() == {"model": "claude-opus-4-8", "budget_usd": 12.5}
+    settings = get_agent_admin_settings()
+    assert settings["model"] == "claude-opus-4-8"
+    assert settings["budget_usd"] == 12.5
     # Unknown models are refused (the env override remains the escape hatch)
     assert client.put("/v1/agent/settings", json={"model": "gpt-9"}).status_code == 400
     # Admin sees the per-user breakdown
@@ -80,6 +82,65 @@ def test_admin_can_update_model_and_budget(temp_db):
     assert any(
         u["username"] == "someone" for u in client.get("/v1/agent/settings").json()["usage"]
     )
+
+
+def test_provider_settings_roundtrip_and_key_masking(temp_db):
+    client = _client_as("admin")
+    res = client.put(
+        "/v1/agent/settings",
+        json={
+            "provider": "openai",
+            "openai_base_url": "http://10.0.0.5:8000/v1",
+            "openai_model": "meta-llama/Llama-3.3-70B-Instruct",
+            "openai_api_key": "sk-super-secret-vllm",
+            "anthropic_api_key": "sk-ant-super-secret",
+        },
+    )
+    assert res.status_code == 200
+    # The stored secrets NEVER appear in any response — not even for admins.
+    assert "sk-super-secret-vllm" not in res.text
+    assert "sk-ant-super-secret" not in res.text
+    data = client.get("/v1/agent/settings").json()
+    assert "sk-super-secret-vllm" not in json.dumps(data)
+    assert data["provider"] == "openai"
+    assert data["effective_model"] == "meta-llama/Llama-3.3-70B-Instruct"
+    assert data["openai_base_url"] == "http://10.0.0.5:8000/v1"
+    assert data["anthropic_api_key_set"] is True
+    assert data["openai_api_key_set"] is True
+    # Validation: bad provider / bad base URL
+    assert client.put("/v1/agent/settings", json={"provider": "gemini"}).status_code == 400
+    assert (
+        client.put("/v1/agent/settings", json={"openai_base_url": "ftp://x"}).status_code == 400
+    )
+    # Empty string clears a stored key (env fallback)
+    client.put("/v1/agent/settings", json={"anthropic_api_key": ""})
+    assert client.get("/v1/agent/settings").json()["anthropic_api_key_set"] is False
+    # Non-admins never see the provider internals
+    user_view = _client_as("user").get("/v1/agent/settings").json()
+    assert "openai_base_url" not in user_view
+    assert "anthropic_api_key_set" not in user_view
+    assert user_view["effective_model"] == "meta-llama/Llama-3.3-70B-Instruct"
+
+
+def test_runtime_config_overlay_preserves_env_when_unset(temp_db):
+    from backend.agent.config import AgentConfig
+    from backend.agent_budget import resolve_agent_runtime_config
+
+    # Nothing stored -> the env config (e.g. mock in tests) is untouched.
+    base = AgentConfig(provider="mock")
+    assert resolve_agent_runtime_config(base).provider == "mock"
+
+    client = _client_as("admin")
+    client.put(
+        "/v1/agent/settings",
+        json={"provider": "openai", "openai_base_url": "http://h:8000/v1",
+              "openai_api_key": "k1", "anthropic_api_key": "k2"},
+    )
+    overlaid = resolve_agent_runtime_config(AgentConfig(provider="mock"))
+    assert overlaid.provider == "openai"
+    assert overlaid.openai_base_url == "http://h:8000/v1"
+    assert overlaid.openai_api_key == "k1"
+    assert overlaid.anthropic_api_key == "k2"
 
 
 def test_non_admin_cannot_update_settings(temp_db):
@@ -133,6 +194,37 @@ def test_exhausted_budget_falls_back_to_draft(temp_db, monkeypatch):
     assert any("AI budget" in n for n in body["notes"])
     # The seed plan is still returned
     assert isinstance(body["assignments"], list)
+
+
+def test_budget_does_not_block_self_hosted_provider(temp_db, monkeypatch):
+    """A user over the Anthropic budget can still plan on a self-hosted
+    endpoint: the enforcement flag is skipped for provider=openai. (The
+    unreachable endpoint here fails the LLM loop, but the run must NOT be
+    stopped by the budget note.)"""
+    monkeypatch.setenv("AGENT_PROVIDER", "mock")
+    monkeypatch.delenv("AGENT_MOCK_SCRIPT", raising=False)
+    username = "self-hosted-user"
+    state = make_app_state(clinicians=[make_clinician("clin-1", "Alice")])
+    _save_state(state, username)
+    add_spend_usd(username, 99.0)
+
+    admin = _client_as("admin", username="the-admin")
+    admin.put(
+        "/v1/agent/settings",
+        json={"provider": "openai", "openai_base_url": "http://127.0.0.1:1/v1",
+              "openai_model": "local-model"},
+    )
+    client = _client_as("user", username=username)
+    res = client.post(
+        "/v1/solve/range",
+        json={"startISO": MON, "endISO": MON, "solver_mode": "agent",
+              "only_fill_required": True, "timeout_seconds": 60},
+    )
+    assert res.status_code == 200
+    body = res.json()
+    assert not any("AI budget" in n for n in body["notes"])
+    # The self-hosted model name reached the run (server-injected)
+    assert body["debugInfo"]["agent"]["model"] == "local-model"
 
 
 def test_client_cannot_smuggle_model_or_budget_flags(temp_db, monkeypatch):

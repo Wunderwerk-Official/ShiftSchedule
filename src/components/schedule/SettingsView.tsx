@@ -8,7 +8,7 @@ import {
 } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
 import { Location, WorkplaceRow } from "../../data/mockData";
-import type { AgentSettings, Holiday, SolverSettings, WeeklyCalendarTemplate } from "../../api/client";
+import type { AgentSettings, AgentSettingsUpdate, Holiday, SolverSettings, WeeklyCalendarTemplate } from "../../api/client";
 import { fetchAgentSettings, updateAgentSettings } from "../../api/client";
 import { AGENT_MODEL_OPTIONS, formatCostUSD } from "../../lib/llmPricing";
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
@@ -91,14 +91,23 @@ export default function SettingsView({
   isAdmin = false,
 }: SettingsViewProps) {
   const confirm = useConfirm();
-  // Global agent settings (admin-chosen model + per-account AI budget).
+  // Global agent settings (admin-chosen provider/model + per-account budget).
   const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
   const [agentSettingsError, setAgentSettingsError] = useState<string | null>(null);
+  // Local editing state for the self-hosted endpoint + API keys. Key inputs
+  // always start empty — the stored values never come back from the server.
+  const [openaiBaseUrlInput, setOpenaiBaseUrlInput] = useState("");
+  const [openaiModelInput, setOpenaiModelInput] = useState("");
+  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
+  const [anthropicKeyInput, setAnthropicKeyInput] = useState("");
   useEffect(() => {
     let cancelled = false;
     fetchAgentSettings()
       .then((settings) => {
-        if (!cancelled) setAgentSettings(settings);
+        if (cancelled) return;
+        setAgentSettings(settings);
+        setOpenaiBaseUrlInput(settings.openai_base_url ?? "");
+        setOpenaiModelInput(settings.openai_model ?? "");
       })
       .catch(() => {
         if (!cancelled) setAgentSettingsError("Could not load AI agent settings.");
@@ -107,7 +116,7 @@ export default function SettingsView({
       cancelled = true;
     };
   }, []);
-  const applyAgentSettings = async (patch: { model?: string; budget_usd?: number }) => {
+  const applyAgentSettings = async (patch: AgentSettingsUpdate) => {
     try {
       setAgentSettingsError(null);
       const updated = await updateAgentSettings(patch);
@@ -469,6 +478,30 @@ export default function SettingsView({
               </button>
             </div>
             <div className="flex flex-col gap-3 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
+              {isAdmin ? (
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      AI provider
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      Anthropic (paid API), or a self-hosted OpenAI-compatible
+                      endpoint such as vLLM. Applies to every planning run, for all users.
+                    </div>
+                  </div>
+                  <CustomSelect
+                    className="w-80"
+                    value={agentSettings?.provider ?? "anthropic"}
+                    onChange={(value) =>
+                      void applyAgentSettings({ provider: value as "anthropic" | "openai" })
+                    }
+                    options={[
+                      { value: "anthropic", label: "Anthropic (Claude)" },
+                      { value: "openai", label: "Self-hosted / OpenAI-compatible (vLLM, …)" },
+                    ]}
+                  />
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-4">
                 <div>
                   <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -476,11 +509,13 @@ export default function SettingsView({
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
                     {isAdmin
-                      ? "Claude model used by every planning run, for all users. Costs are rough estimates — the exact cost of each run shows in the solver history (gear icon)."
+                      ? agentSettings?.provider === "openai"
+                        ? "Model name served by your endpoint (e.g. meta-llama/Llama-3.3-70B-Instruct)."
+                        : "Claude model used by every planning run, for all users. Costs are rough estimates — the exact cost of each run shows in the solver history (gear icon)."
                       : "Set by your administrator and used for every planning run."}
                   </div>
                 </div>
-                {isAdmin ? (
+                {isAdmin && agentSettings?.provider !== "openai" ? (
                   <CustomSelect
                     className="w-80"
                     value={agentSettings?.model ?? AGENT_MODEL_OPTIONS[0].id}
@@ -490,14 +525,117 @@ export default function SettingsView({
                       label: `${option.label} — ${option.description} · ${option.approxRunCost}`,
                     }))}
                   />
+                ) : isAdmin ? (
+                  <input
+                    type="text"
+                    value={openaiModelInput}
+                    onChange={(event) => setOpenaiModelInput(event.target.value)}
+                    onBlur={() => void applyAgentSettings({ openai_model: openaiModelInput })}
+                    placeholder="model name on your endpoint"
+                    className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  />
                 ) : (
                   <div className="rounded-full border border-slate-200 px-3 py-1 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">
-                    {AGENT_MODEL_OPTIONS.find((o) => o.id === agentSettings?.model)?.label ??
-                      agentSettings?.model ??
+                    {AGENT_MODEL_OPTIONS.find((o) => o.id === agentSettings?.effective_model)
+                      ?.label ??
+                      agentSettings?.effective_model ??
                       "…"}
                   </div>
                 )}
               </div>
+              {isAdmin && agentSettings?.provider === "openai" ? (
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      Endpoint base URL
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      OpenAI-compatible server, e.g. http://10.0.0.5:8000/v1 for vLLM
+                      (start vLLM with --enable-auto-tool-choice and a tool-call parser).
+                    </div>
+                  </div>
+                  <input
+                    type="text"
+                    value={openaiBaseUrlInput}
+                    onChange={(event) => setOpenaiBaseUrlInput(event.target.value)}
+                    onBlur={() => void applyAgentSettings({ openai_base_url: openaiBaseUrlInput })}
+                    placeholder="http://host:8000/v1"
+                    className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  />
+                </div>
+              ) : null}
+              {isAdmin ? (
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      {agentSettings?.provider === "openai"
+                        ? "Endpoint API key (optional)"
+                        : "Anthropic API key"}
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      {agentSettings?.provider === "openai"
+                        ? agentSettings?.openai_api_key_set
+                          ? "A key is stored. Most self-hosted servers don't need one."
+                          : "Most self-hosted servers don't need one — leave empty."
+                        : agentSettings?.anthropic_api_key_set
+                          ? "A key is stored in the app settings and overrides the server .env."
+                          : agentSettings?.anthropic_env_key_present
+                            ? "Currently using the key from the server .env. Enter one here to override it."
+                            : "No key configured yet — agent runs fall back to the draft plan."}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      value={
+                        agentSettings?.provider === "openai" ? openaiKeyInput : anthropicKeyInput
+                      }
+                      onChange={(event) =>
+                        agentSettings?.provider === "openai"
+                          ? setOpenaiKeyInput(event.target.value)
+                          : setAnthropicKeyInput(event.target.value)
+                      }
+                      placeholder={
+                        (agentSettings?.provider === "openai"
+                          ? agentSettings?.openai_api_key_set
+                          : agentSettings?.anthropic_api_key_set)
+                          ? "•••••••• (stored)"
+                          : "paste key"
+                      }
+                      autoComplete="off"
+                      className="w-56 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    />
+                    <button
+                      type="button"
+                      disabled={
+                        !(agentSettings?.provider === "openai" ? openaiKeyInput : anthropicKeyInput)
+                      }
+                      onClick={() => {
+                        if (agentSettings?.provider === "openai") {
+                          void applyAgentSettings({ openai_api_key: openaiKeyInput }).then(() => {
+                            setOpenaiKeyInput("");
+                            setAgentSettings((prev) =>
+                              prev ? { ...prev, openai_api_key_set: true } : prev,
+                            );
+                          });
+                        } else {
+                          void applyAgentSettings({ anthropic_api_key: anthropicKeyInput }).then(
+                            () => {
+                              setAnthropicKeyInput("");
+                              setAgentSettings((prev) =>
+                                prev ? { ...prev, anthropic_api_key_set: true } : prev,
+                              );
+                            },
+                          );
+                        }
+                      }}
+                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      Save key
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-3 dark:border-slate-800">
                 <div>
                   <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
@@ -505,7 +643,7 @@ export default function SettingsView({
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
                     {isAdmin
-                      ? "Maximum cumulative AI cost per account (USD — Anthropic bills in USD). Once reached, planning falls back to the draft plan until you raise the budget."
+                      ? "Maximum cumulative AI cost per account (USD — Anthropic bills in USD). Once reached, planning falls back to the draft plan until you raise the budget. Only applies to Anthropic; self-hosted runs are free."
                       : `Your usage: ${formatCostUSD(agentSettings?.spent_usd ?? 0) ?? "$0.00"} of ${formatCostUSD(agentSettings?.budget_usd ?? 0) ?? "…"} used. When the budget is reached, planning falls back to the draft plan.`}
                   </div>
                 </div>

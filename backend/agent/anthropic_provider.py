@@ -47,15 +47,18 @@ def supports_adaptive_thinking(model: str) -> bool:
 
 class AnthropicProvider(LLMProvider):
     def __init__(self, config: AgentConfig):
-        if not os.environ.get("ANTHROPIC_API_KEY"):
+        # Admin-configured key (Settings → Solver) wins over the server .env.
+        api_key = config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
             raise RuntimeError(
-                "ANTHROPIC_API_KEY is not set; the agent solver needs it "
+                "No Anthropic API key configured; set it in Settings → Solver "
+                "(admin) or via ANTHROPIC_API_KEY in the server .env "
                 "(or set AGENT_PROVIDER=mock for tests)."
             )
         import anthropic  # imported lazily: optional unless agent mode is used
 
         self._anthropic = anthropic
-        self._client = anthropic.Anthropic()
+        self._client = anthropic.Anthropic(api_key=api_key)
         self._config = config
 
     def complete(

@@ -26,6 +26,8 @@ from .db import _get_connection
 
 DEFAULT_AGENT_MODEL = "claude-sonnet-5"
 DEFAULT_BUDGET_USD = 5.0
+DEFAULT_PROVIDER = "anthropic"
+VALID_PROVIDERS = ("anthropic", "openai")
 
 # model id -> (input USD/MTok, output USD/MTok)
 MODEL_PRICES: Dict[str, tuple] = {
@@ -36,18 +38,65 @@ MODEL_PRICES: Dict[str, tuple] = {
 
 _SETTING_MODEL = "agent_model"
 _SETTING_BUDGET = "budget_usd"
+_SETTING_PROVIDER = "provider"
+_SETTING_OPENAI_BASE_URL = "openai_base_url"
+_SETTING_OPENAI_MODEL = "openai_model"
+# Secrets: readable ONLY through resolve_agent_runtime_config (solver side);
+# the API returns set/unset flags, never the values.
+_SETTING_ANTHROPIC_KEY = "anthropic_api_key"
+_SETTING_OPENAI_KEY = "openai_api_key"
+
+
+def _read_rows() -> Dict[str, str]:
+    with _get_connection() as conn:
+        rows = conn.execute("SELECT key, value FROM agent_settings").fetchall()
+    return {row["key"]: row["value"] for row in rows}
 
 
 def get_agent_admin_settings() -> Dict[str, Any]:
-    with _get_connection() as conn:
-        rows = conn.execute("SELECT key, value FROM agent_settings").fetchall()
-    values = {row["key"]: row["value"] for row in rows}
+    """Settings WITHOUT secrets — safe to return from the API. The stored
+    API keys only surface as booleans."""
+    values = _read_rows()
     model = values.get(_SETTING_MODEL) or DEFAULT_AGENT_MODEL
+    provider = values.get(_SETTING_PROVIDER) or DEFAULT_PROVIDER
+    if provider not in VALID_PROVIDERS:
+        provider = DEFAULT_PROVIDER
+    openai_model = values.get(_SETTING_OPENAI_MODEL) or ""
     try:
         budget = float(values.get(_SETTING_BUDGET, DEFAULT_BUDGET_USD))
     except (TypeError, ValueError):
         budget = DEFAULT_BUDGET_USD
-    return {"model": model, "budget_usd": budget}
+    return {
+        "model": model,
+        "budget_usd": budget,
+        "provider": provider,
+        "openai_base_url": values.get(_SETTING_OPENAI_BASE_URL) or "",
+        "openai_model": openai_model,
+        # What actually runs: the Anthropic pick, or the self-hosted model.
+        "effective_model": openai_model if provider == "openai" else model,
+        "anthropic_api_key_set": bool(values.get(_SETTING_ANTHROPIC_KEY)),
+        "openai_api_key_set": bool(values.get(_SETTING_OPENAI_KEY)),
+    }
+
+
+def resolve_agent_runtime_config(base):
+    """Overlay the admin's stored provider settings onto an env-derived
+    :class:`backend.agent.config.AgentConfig` — called by the solver
+    subprocess right before a run. Secrets travel through this in-process
+    path only: they never enter the solve payload (which is written to debug
+    dumps) or any API response. Values the admin never set leave the env
+    config untouched, so AGENT_PROVIDER=mock test setups keep working."""
+    values = _read_rows()
+    provider = (values.get(_SETTING_PROVIDER) or "").strip()
+    if provider in VALID_PROVIDERS:
+        base.provider = provider
+    if values.get(_SETTING_ANTHROPIC_KEY):
+        base.anthropic_api_key = values[_SETTING_ANTHROPIC_KEY]
+    if values.get(_SETTING_OPENAI_BASE_URL):
+        base.openai_base_url = values[_SETTING_OPENAI_BASE_URL]
+    if values.get(_SETTING_OPENAI_KEY):
+        base.openai_api_key = values[_SETTING_OPENAI_KEY]
+    return base
 
 
 def _set_setting(key: str, value: str) -> None:
@@ -130,6 +179,13 @@ router = APIRouter()
 class AgentSettingsUpdate(BaseModel):
     model: Optional[str] = None
     budget_usd: Optional[float] = None
+    provider: Optional[str] = None
+    # Secrets: an empty string clears the stored value (falls back to the
+    # server .env); None leaves it untouched.
+    anthropic_api_key: Optional[str] = None
+    openai_base_url: Optional[str] = None
+    openai_api_key: Optional[str] = None
+    openai_model: Optional[str] = None
 
 
 @router.get("/v1/agent/settings")
@@ -138,12 +194,22 @@ def read_agent_settings(current_user: UserPublic = Depends(_get_current_user)) -
     spent = get_spend_usd(current_user.username)
     out = {
         "model": settings["model"],
+        "provider": settings["provider"],
+        "effective_model": settings["effective_model"],
         "budget_usd": settings["budget_usd"],
         "spent_usd": round(spent, 4),
         "remaining_usd": round(max(0.0, settings["budget_usd"] - spent), 4),
     }
     if current_user.role == "admin":
+        import os
+
         out["usage"] = all_spend_usd()
+        out["openai_base_url"] = settings["openai_base_url"]
+        out["openai_model"] = settings["openai_model"]
+        # Key STATUS only — the stored values never leave the server.
+        out["anthropic_api_key_set"] = settings["anthropic_api_key_set"]
+        out["openai_api_key_set"] = settings["openai_api_key_set"]
+        out["anthropic_env_key_present"] = bool(os.environ.get("ANTHROPIC_API_KEY"))
     return out
 
 
@@ -163,4 +229,28 @@ def update_agent_settings(
         if not (0 <= payload.budget_usd <= 10_000):
             raise HTTPException(status_code=400, detail="Budget must be between 0 and 10000 USD.")
         _set_setting(_SETTING_BUDGET, str(float(payload.budget_usd)))
+    if payload.provider is not None:
+        if payload.provider not in VALID_PROVIDERS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown provider. Choose one of: {', '.join(VALID_PROVIDERS)}",
+            )
+        _set_setting(_SETTING_PROVIDER, payload.provider)
+    if payload.openai_base_url is not None:
+        base_url = payload.openai_base_url.strip()
+        if base_url and not (
+            base_url.startswith("http://") or base_url.startswith("https://")
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="Base URL must start with http:// or https:// "
+                "(e.g. http://host:8000/v1 for vLLM).",
+            )
+        _set_setting(_SETTING_OPENAI_BASE_URL, base_url[:500])
+    if payload.openai_model is not None:
+        _set_setting(_SETTING_OPENAI_MODEL, payload.openai_model.strip()[:200])
+    if payload.anthropic_api_key is not None:
+        _set_setting(_SETTING_ANTHROPIC_KEY, payload.anthropic_api_key.strip()[:500])
+    if payload.openai_api_key is not None:
+        _set_setting(_SETTING_OPENAI_KEY, payload.openai_api_key.strip()[:500])
     return get_agent_admin_settings()

@@ -357,10 +357,19 @@ def _solver_subprocess_worker(
         mode = payload.resolved_mode()
         if mode == "agent":
             print(f"[SOLVER] Using AGENT solver for {payload.startISO} to {payload.endISO}")
+            from .agent.config import AgentConfig
             from .agent.harness import agent_solve_range
+            from .agent_budget import resolve_agent_runtime_config
             from .state import _load_state
             state = _load_state(mock_user.username)
-            result = agent_solve_range(payload, state, cancel_event, on_progress, start_time)
+            # Env config overlaid with the admin's stored provider settings
+            # (endpoint URL, API keys). Resolved HERE, in-process, so secrets
+            # never travel through the payload or its debug dumps.
+            agent_config = resolve_agent_runtime_config(AgentConfig.from_env())
+            result = agent_solve_range(
+                payload, state, cancel_event, on_progress, start_time,
+                config=agent_config,
+            )
         elif mode == "heuristic":
             print(f"[SOLVER] Using HEURISTIC solver v2 for {payload.startISO} to {payload.endISO}")
             from .heuristic.solver_v2 import heuristic_solve_range_v2
@@ -1562,9 +1571,13 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
     )
 
     agent_admin = get_agent_admin_settings()
-    payload.agent_model = agent_admin["model"]
+    payload.agent_model = agent_admin["effective_model"]
+    # The budget only guards PAID usage: self-hosted (OpenAI-compatible)
+    # providers cost nothing, so an exhausted Anthropic budget must not
+    # block them.
     payload.agent_budget_exhausted = (
-        get_spend_usd(current_user.username) >= agent_admin["budget_usd"]
+        agent_admin["provider"] == "anthropic"
+        and get_spend_usd(current_user.username) >= agent_admin["budget_usd"]
     )
 
     # Reconcile solver state before starting a new run.

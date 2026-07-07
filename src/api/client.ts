@@ -292,14 +292,34 @@ export async function getCurrentUser(): Promise<AuthUser> {
   return res.json();
 }
 
-// Global agent settings (model = admin-only, one AI budget per account).
+// Global agent settings (model/provider = admin-only, one AI budget per
+// account). API keys never appear here — only set/unset flags.
 export type AgentSettings = {
   model: string;
+  provider: "anthropic" | "openai";
+  /** The model that actually runs (Anthropic pick or self-hosted name). */
+  effective_model: string;
   budget_usd: number;
   spent_usd: number;
   remaining_usd: number;
-  /** Per-user spend — present only for admins. */
+  /** Admin-only fields: */
   usage?: { username: string; spent_usd: number }[];
+  openai_base_url?: string;
+  openai_model?: string;
+  anthropic_api_key_set?: boolean;
+  openai_api_key_set?: boolean;
+  anthropic_env_key_present?: boolean;
+};
+
+export type AgentSettingsUpdate = {
+  model?: string;
+  budget_usd?: number;
+  provider?: "anthropic" | "openai";
+  /** Secrets: empty string clears the stored value (env fallback). */
+  anthropic_api_key?: string;
+  openai_base_url?: string;
+  openai_api_key?: string;
+  openai_model?: string;
 };
 
 export async function fetchAgentSettings(): Promise<AgentSettings> {
@@ -313,10 +333,9 @@ export async function fetchAgentSettings(): Promise<AgentSettings> {
   return res.json();
 }
 
-export async function updateAgentSettings(payload: {
-  model?: string;
-  budget_usd?: number;
-}): Promise<{ model: string; budget_usd: number }> {
+export async function updateAgentSettings(
+  payload: AgentSettingsUpdate,
+): Promise<Partial<AgentSettings>> {
   const res = await fetch(`${API_BASE}/v1/agent/settings`, {
     method: "PUT",
     headers: buildHeaders(),
