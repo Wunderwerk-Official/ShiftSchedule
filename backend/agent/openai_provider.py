@@ -112,12 +112,19 @@ class OpenAICompatibleProvider(LLMProvider):
         import openai  # imported lazily: optional unless this provider is used
 
         self._openai = openai
-        # vLLM and friends usually don't check the key, but the SDK requires
-        # a non-empty value.
-        self._client = openai.OpenAI(
-            base_url=base_url,
-            api_key=(config.openai_api_key or "not-needed"),
-        )
+        client_kwargs: dict = {
+            "base_url": base_url,
+            # vLLM and friends usually don't check the key, but the SDK
+            # requires a non-empty value.
+            "api_key": (config.openai_api_key or "not-needed"),
+        }
+        if not config.openai_verify_tls:
+            # Self-signed certificate on an internal endpoint (e.g. a LiteLLM
+            # or vLLM server inside the clinic network). Opt-in only.
+            import httpx
+
+            client_kwargs["http_client"] = httpx.Client(verify=False)
+        self._client = openai.OpenAI(**client_kwargs)
         self._config = config
 
     def complete(
@@ -192,8 +199,19 @@ class OpenAICompatibleProvider(LLMProvider):
         else:
             stop_reason = "end_turn"
 
+        # Reasoning models served with a reasoning parser (e.g. vLLM
+        # --reasoning-parser for Qwen3/DeepSeek-R1) put their thoughts into
+        # reasoning_content and only the final answer into content. Surface
+        # the reasoning when there is no answer text (tool-call turns), so
+        # the live activity feed shows what the model is thinking.
+        text = message.content or None
+        if not text:
+            reasoning = getattr(message, "reasoning_content", None)
+            if isinstance(reasoning, str) and reasoning.strip():
+                text = reasoning.strip()
+
         return ProviderResponse(
-            text=(message.content or None),
+            text=text,
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             usage=usage,

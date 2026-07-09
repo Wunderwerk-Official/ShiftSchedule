@@ -167,3 +167,48 @@ def test_complete_maps_length_and_broken_arguments():
     )
     assert response2.stop_reason == "max_tokens"
     assert response2.text == "done"
+
+
+def test_reasoning_content_surfaces_when_no_answer_text():
+    # Reasoning models (Qwen3 via vLLM --reasoning-parser) put thoughts into
+    # reasoning_content; on tool-call turns content is often empty. The feed
+    # should still show what the model is thinking.
+    tool_call = SimpleNamespace(
+        id="call_1",
+        function=SimpleNamespace(name="get_plan_overview", arguments="{}"),
+    )
+    message = SimpleNamespace(
+        content=None, tool_calls=[tool_call],
+        reasoning_content="Let me inspect the open slots first.",
+    )
+    choice = SimpleNamespace(message=message, finish_reason="tool_calls")
+    provider = _provider_with(SimpleNamespace(choices=[choice], usage=None))
+    response = provider.complete(
+        system="s", messages=[ChatMessage(role="user", content="hi")],
+        tools=[], timeout_seconds=10,
+    )
+    assert response.text == "Let me inspect the open slots first."
+    assert response.stop_reason == "tool_use"
+
+    # When there IS answer text, it wins over the reasoning.
+    message2 = SimpleNamespace(
+        content="final answer", tool_calls=None, reasoning_content="hidden thoughts",
+    )
+    choice2 = SimpleNamespace(message=message2, finish_reason="stop")
+    provider2 = _provider_with(SimpleNamespace(choices=[choice2], usage=None))
+    response2 = provider2.complete(
+        system="s", messages=[ChatMessage(role="user", content="hi")],
+        tools=[], timeout_seconds=10,
+    )
+    assert response2.text == "final answer"
+
+
+def test_verify_tls_off_builds_client_with_unverified_http_client():
+    provider = OpenAICompatibleProvider(
+        AgentConfig(provider="openai", model="m",
+                    openai_base_url="https://134.130.13.43:4000/v1",
+                    openai_verify_tls=False)
+    )
+    # The SDK client was constructed with a custom httpx client; enough to
+    # assert construction succeeded and the base_url stuck.
+    assert str(provider._client.base_url).startswith("https://134.130.13.43:4000/v1")

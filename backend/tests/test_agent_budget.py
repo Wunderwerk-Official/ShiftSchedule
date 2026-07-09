@@ -250,3 +250,18 @@ def test_client_cannot_smuggle_model_or_budget_flags(temp_db, monkeypatch):
     # reports the admin-chosen default model, not the client's wish.
     assert body["debugInfo"]["solver_status"] != "AGENT_FALLBACK_SEED"
     assert body["debugInfo"]["agent"]["model"] == "claude-sonnet-5"
+
+
+def test_verify_tls_setting_roundtrip_and_overlay(temp_db):
+    from backend.agent.config import AgentConfig
+    from backend.agent_budget import resolve_agent_runtime_config
+
+    client = _client_as("admin")
+    # Default: verification on
+    assert client.get("/v1/agent/settings").json().get("openai_verify_tls") is True
+    client.put("/v1/agent/settings", json={"openai_verify_tls": False})
+    assert client.get("/v1/agent/settings").json()["openai_verify_tls"] is False
+    overlaid = resolve_agent_runtime_config(AgentConfig(provider="mock"))
+    assert overlaid.openai_verify_tls is False
+    client.put("/v1/agent/settings", json={"openai_verify_tls": True})
+    assert resolve_agent_runtime_config(AgentConfig(provider="mock")).openai_verify_tls is True

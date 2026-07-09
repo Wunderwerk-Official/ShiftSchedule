@@ -1,0 +1,56 @@
+# Stack for hosts where an EXTERNAL reverse proxy terminates TLS and forwards
+# to 127.0.0.1:5000 — e.g. the Proxmox LXC behind shiftplanner.truhn.ai, whose
+# container nginx proxies the domain to exactly that port.
+#
+# Differences from docker-compose.yml (the self-contained Caddy stack):
+# - no caddy service: TLS + domain routing happen outside this compose file
+# - the frontend binds to 127.0.0.1:5000 ONLY (never 0.0.0.0 — the app would
+#   otherwise be reachable unauthenticated from the whole internal subnet)
+# - /api is routed to the backend by the frontend image's own nginx
+#   (see nginx.conf), so one published port serves everything
+# - FRONTEND_BASE_URL for server-side PDF rendering points at the internal
+#   frontend service: the public domain may not be reachable from inside
+#   the container network (hairpin through the bastion).
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      SCHEDULE_DB_PATH: /data/schedule.db
+      CORS_ALLOW_ORIGINS: https://${DOMAIN}
+      # External base URL used to build public iCal subscription links.
+      PUBLIC_BASE_URL: https://${DOMAIN}/api
+      # Internal URL for PDF rendering (Playwright inside the backend).
+      FRONTEND_BASE_URL: ${FRONTEND_INTERNAL_URL:-http://frontend}
+      ADMIN_USERNAME: ${ADMIN_USERNAME}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      ADMIN_PASSWORD_RESET: ${ADMIN_PASSWORD_RESET:-}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_EXPIRE_MINUTES: ${JWT_EXPIRE_MINUTES:-720}
+      # Agent solver env defaults; the admin settings (Settings -> Solver)
+      # override these at runtime, including provider, keys and endpoint.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AGENT_PROVIDER: ${AGENT_PROVIDER:-anthropic}
+      AGENT_MODEL: ${AGENT_MODEL:-claude-sonnet-5}
+      AGENT_MAX_ITERATIONS: ${AGENT_MAX_ITERATIONS:-20}
+      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_VERIFY_TLS: ${OPENAI_VERIFY_TLS:-true}
+    volumes:
+      - backend_data:/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_API_URL: /api
+    ports:
+      # Loopback only — the host reverse proxy is the single public entry.
+      - "127.0.0.1:5000:80"
+    restart: unless-stopped
+
+volumes:
+  backend_data:

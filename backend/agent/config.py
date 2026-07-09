@@ -32,6 +32,9 @@ class AgentConfig:
     anthropic_api_key: Optional[str] = None
     openai_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
+    # False = accept self-signed certificates on the OpenAI-compatible
+    # endpoint (e.g. an internal vLLM/LiteLLM server on a trusted network).
+    openai_verify_tls: bool = True
 
     @classmethod
     def from_env(cls) -> "AgentConfig":
@@ -50,4 +53,8 @@ class AgentConfig:
             mock_script_path=os.environ.get("AGENT_MOCK_SCRIPT") or None,
             openai_base_url=(os.environ.get("OPENAI_BASE_URL") or "").strip() or None,
             openai_api_key=os.environ.get("OPENAI_API_KEY") or None,
+            openai_verify_tls=(
+                (os.environ.get("OPENAI_VERIFY_TLS") or "true").strip().lower()
+                not in ("0", "false", "no")
+            ),
         )

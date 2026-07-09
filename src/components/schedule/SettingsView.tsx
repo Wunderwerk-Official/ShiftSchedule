@@ -564,6 +564,42 @@ export default function SettingsView({
                   />
                 </div>
               ) : null}
+              {isAdmin && agentSettings?.provider === "openai" ? (
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      Verify TLS certificate
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      Switch off only for self-signed certificates on a trusted
+                      internal network (https:// endpoints without a public CA).
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={agentSettings?.openai_verify_tls !== false}
+                    onClick={() =>
+                      void applyAgentSettings({
+                        openai_verify_tls: !(agentSettings?.openai_verify_tls !== false),
+                      })
+                    }
+                    className={cx(
+                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
+                      agentSettings?.openai_verify_tls !== false
+                        ? "bg-emerald-500"
+                        : "bg-slate-300 dark:bg-slate-700",
+                    )}
+                  >
+                    <span
+                      className={cx(
+                        "inline-block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform",
+                        agentSettings?.openai_verify_tls !== false && "translate-x-[22px]",
+                      )}
+                    />
+                  </button>
+                </div>
+              ) : null}
               {isAdmin ? (
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>

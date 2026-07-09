@@ -306,6 +306,7 @@ export type AgentSettings = {
   usage?: { username: string; spent_usd: number }[];
   openai_base_url?: string;
   openai_model?: string;
+  openai_verify_tls?: boolean;
   anthropic_api_key_set?: boolean;
   openai_api_key_set?: boolean;
   anthropic_env_key_present?: boolean;
@@ -320,6 +321,7 @@ export type AgentSettingsUpdate = {
   openai_base_url?: string;
   openai_api_key?: string;
   openai_model?: string;
+  openai_verify_tls?: boolean;
 };
 
 export async function fetchAgentSettings(): Promise<AgentSettings> {

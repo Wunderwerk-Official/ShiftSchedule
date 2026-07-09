@@ -41,6 +41,7 @@ _SETTING_BUDGET = "budget_usd"
 _SETTING_PROVIDER = "provider"
 _SETTING_OPENAI_BASE_URL = "openai_base_url"
 _SETTING_OPENAI_MODEL = "openai_model"
+_SETTING_OPENAI_VERIFY_TLS = "openai_verify_tls"
 # Secrets: readable ONLY through resolve_agent_runtime_config (solver side);
 # the API returns set/unset flags, never the values.
 _SETTING_ANTHROPIC_KEY = "anthropic_api_key"
@@ -72,6 +73,7 @@ def get_agent_admin_settings() -> Dict[str, Any]:
         "provider": provider,
         "openai_base_url": values.get(_SETTING_OPENAI_BASE_URL) or "",
         "openai_model": openai_model,
+        "openai_verify_tls": values.get(_SETTING_OPENAI_VERIFY_TLS) != "false",
         # What actually runs: the Anthropic pick, or the self-hosted model.
         "effective_model": openai_model if provider == "openai" else model,
         "anthropic_api_key_set": bool(values.get(_SETTING_ANTHROPIC_KEY)),
@@ -96,6 +98,8 @@ def resolve_agent_runtime_config(base):
         base.openai_base_url = values[_SETTING_OPENAI_BASE_URL]
     if values.get(_SETTING_OPENAI_KEY):
         base.openai_api_key = values[_SETTING_OPENAI_KEY]
+    if values.get(_SETTING_OPENAI_VERIFY_TLS) in ("true", "false"):
+        base.openai_verify_tls = values[_SETTING_OPENAI_VERIFY_TLS] == "true"
     return base
 
 
@@ -186,6 +190,7 @@ class AgentSettingsUpdate(BaseModel):
     openai_base_url: Optional[str] = None
     openai_api_key: Optional[str] = None
     openai_model: Optional[str] = None
+    openai_verify_tls: Optional[bool] = None
 
 
 @router.get("/v1/agent/settings")
@@ -206,6 +211,7 @@ def read_agent_settings(current_user: UserPublic = Depends(_get_current_user)) -
         out["usage"] = all_spend_usd()
         out["openai_base_url"] = settings["openai_base_url"]
         out["openai_model"] = settings["openai_model"]
+        out["openai_verify_tls"] = settings["openai_verify_tls"]
         # Key STATUS only — the stored values never leave the server.
         out["anthropic_api_key_set"] = settings["anthropic_api_key_set"]
         out["openai_api_key_set"] = settings["openai_api_key_set"]
@@ -249,6 +255,10 @@ def update_agent_settings(
         _set_setting(_SETTING_OPENAI_BASE_URL, base_url[:500])
     if payload.openai_model is not None:
         _set_setting(_SETTING_OPENAI_MODEL, payload.openai_model.strip()[:200])
+    if payload.openai_verify_tls is not None:
+        _set_setting(
+            _SETTING_OPENAI_VERIFY_TLS, "true" if payload.openai_verify_tls else "false"
+        )
     if payload.anthropic_api_key is not None:
         _set_setting(_SETTING_ANTHROPIC_KEY, payload.anthropic_api_key.strip()[:500])
     if payload.openai_api_key is not None:

@@ -134,3 +134,86 @@ jobs:
           echo "Health check failed after 150s" >&2
           exit 1
           EOF
+
+  # ---------------------------------------------------------------------------
+  # Deploy: Proxmox LXC behind shiftplanner.truhn.ai, reached through the
+  # bastion (ForceCommand allows TCP forwarding only, so the bastion is a pure
+  # proxy jump and the script runs on the container itself). First run
+  # bootstraps /opt/app: clone (public repo, no credentials needed on the
+  # box), generate .env secrets locally WITHOUT echoing them, install the
+  # /opt/app/run.sh autostart convention. The stack binds 127.0.0.1:5000 only;
+  # the container's own nginx terminates TLS for the domain.
+  # ---------------------------------------------------------------------------
+  deploy-truhn:
+    name: Deploy (Bastion -> shiftplanner.truhn.ai)
+    needs: [backend, frontend]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Bootstrap + deploy on the LXC container
+        uses: appleboy/ssh-action@v1
+        with:
+          host: 10.10.10.6
+          username: root
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          proxy_host: 49.13.89.75
+          proxy_port: 4444
+          proxy_username: dtruhn
+          proxy_key: ${{ secrets.DEPLOY_SSH_KEY }}
+          # First build compiles the Playwright-enabled backend image — allow
+          # well beyond the action's 10m default.
+          command_timeout: 40m
+          script: |
+            set -euo pipefail
+
+            # First run: clone the (public) repo; afterwards: hard sync.
+            if [ ! -d /opt/app/.git ]; then
+              rm -rf /opt/app
+              git clone https://github.com/Wunderwerk-Official/ShiftSchedule.git /opt/app
+            fi
+            cd /opt/app
+            git fetch origin main
+            git reset --hard origin/main
+
+            # One-time .env bootstrap with locally generated secrets. Nothing
+            # is echoed to the workflow log; read the admin password later via
+            # SSH: sudo cat /opt/app/.env
+            if [ ! -f .env ]; then
+              umask 177
+              {
+                echo "DOMAIN=shiftplanner.truhn.ai"
+                echo "ADMIN_USERNAME=admin"
+                echo "ADMIN_PASSWORD=$(openssl rand -hex 8)"
+                echo "JWT_SECRET=$(openssl rand -hex 32)"
+                echo "JWT_EXPIRE_MINUTES=720"
+                echo "ANTHROPIC_API_KEY="
+              } > .env
+              umask 022
+              echo "Bootstrapped new /opt/app/.env (secrets not shown)."
+            fi
+
+            # Autostart convention: app.service keeps /opt/app/run.sh running.
+            printf '%s\n' \
+              '#!/usr/bin/env bash' \
+              'set -e' \
+              'cd /opt/app' \
+              'docker compose -f docker-compose.proxied.yml up -d' \
+              'exec sleep infinity' \
+              > run.sh
+            chmod +x run.sh
+
+            docker compose -f docker-compose.proxied.yml up -d --build
+
+            # Health check through the exact path the host nginx uses.
+            for i in $(seq 1 30); do
+              if curl -fsS http://127.0.0.1:5000/api/health >/dev/null 2>&1; then
+                echo "Backend healthy behind 127.0.0.1:5000"
+                exit 0
+              fi
+              echo "Waiting for backend ($i/30)..."
+              sleep 5
+            done
+            echo "Health check failed after 150s" >&2
+            docker compose -f docker-compose.proxied.yml ps
+            docker compose -f docker-compose.proxied.yml logs --tail 50 backend
+            exit 1

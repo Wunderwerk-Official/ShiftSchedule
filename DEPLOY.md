@@ -152,3 +152,29 @@ docker run --rm -v shiftschedule_backend_data:/data:ro -v /root:/backup alpine \
 `docker-compose.ip.yml` serves the frontend on port 80 and the backend on
 port 8000 without a domain/HTTPS (`APP_ORIGIN`/`VITE_API_URL` in `.env`).
 Not used in production — kept for local/experimental setups.
+
+## Second target: Proxmox LXC (shiftplanner.truhn.ai)
+
+The `deploy-truhn` job in the same workflow deploys to a Proxmox LXC
+container (VMID 105, internal IP `10.10.10.6`) at the institute. Details:
+
+- **Network path**: public DNS for `shiftplanner.truhn.ai` points at the
+  Hetzner bastion (`49.13.89.75`), which tunnels the domain to the
+  container. SSH reaches the container only THROUGH the bastion
+  (`proxy_*` options of `appleboy/ssh-action`); the bastion's ForceCommand
+  permits pure TCP forwarding, never command execution.
+- **Auth**: one key pair (`secrets.DEPLOY_SSH_KEY`) is authorized for
+  `dtruhn` on the bastion and for `root` inside the container.
+- **Stack**: `docker-compose.proxied.yml` — backend + frontend only, the
+  frontend published on `127.0.0.1:5000` (never `0.0.0.0`: the app would
+  otherwise be reachable unauthenticated from the internal `10.10.10.0/24`
+  subnet). The container's own nginx terminates TLS for the domain and
+  proxies to that port.
+- **Bootstrap**: the job clones the public repo to `/opt/app` on first run,
+  generates `.env` (random admin password + JWT secret, never echoed to
+  logs — read them via `ssh -J dtruhn@49.13.89.75:4444 dtruhn@10.10.10.6`,
+  then `sudo cat /opt/app/.env`), and installs `/opt/app/run.sh` for the
+  provisioned `app.service` autostart convention (compose up + sleep).
+- **LLM config**: no API keys ship with the deploy. An admin sets the
+  Anthropic key OR the self-hosted OpenAI-compatible endpoint (base URL,
+  model, key, TLS verification) in Settings → Solver after first login.
