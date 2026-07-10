@@ -672,37 +672,42 @@ export default function SettingsView({
                   </div>
                 </div>
               ) : null}
-              <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-3 dark:border-slate-800">
-                <div>
-                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    AI budget per user
+              {/* Budget + spend only exist for the metered Anthropic API —
+                  self-hosted runs cost nothing per token and are never
+                  limited, so hide the whole block for provider "openai". */}
+              {agentSettings?.provider !== "openai" ? (
+                <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      AI budget per user
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      {isAdmin
+                        ? "Maximum cumulative AI cost per account (USD — Anthropic bills in USD). Once reached, planning falls back to the draft plan until you raise the budget."
+                        : `Your usage: ${formatCostUSD(agentSettings?.spent_usd ?? 0) ?? "$0.00"} of ${formatCostUSD(agentSettings?.budget_usd ?? 0) ?? "…"} used. When the budget is reached, planning falls back to the draft plan.`}
+                    </div>
                   </div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">
-                    {isAdmin
-                      ? "Maximum cumulative AI cost per account (USD — Anthropic bills in USD). Once reached, planning falls back to the draft plan until you raise the budget. Only applies to Anthropic; self-hosted runs are free."
-                      : `Your usage: ${formatCostUSD(agentSettings?.spent_usd ?? 0) ?? "$0.00"} of ${formatCostUSD(agentSettings?.budget_usd ?? 0) ?? "…"} used. When the budget is reached, planning falls back to the draft plan.`}
-                  </div>
+                  {isAdmin ? (
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-slate-500 dark:text-slate-400">$</span>
+                      <input
+                        type="number"
+                        min={0}
+                        step={0.5}
+                        value={agentSettings?.budget_usd ?? 5}
+                        onChange={(event) => {
+                          const value = Number(event.target.value);
+                          if (Number.isFinite(value) && value >= 0) {
+                            void applyAgentSettings({ budget_usd: value });
+                          }
+                        }}
+                        className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                      />
+                    </div>
+                  ) : null}
                 </div>
-                {isAdmin ? (
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-slate-500 dark:text-slate-400">$</span>
-                    <input
-                      type="number"
-                      min={0}
-                      step={0.5}
-                      value={agentSettings?.budget_usd ?? 5}
-                      onChange={(event) => {
-                        const value = Number(event.target.value);
-                        if (Number.isFinite(value) && value >= 0) {
-                          void applyAgentSettings({ budget_usd: value });
-                        }
-                      }}
-                      className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    />
-                  </div>
-                ) : null}
-              </div>
-              {isAdmin && agentSettings?.usage?.length ? (
+              ) : null}
+              {isAdmin && agentSettings?.provider !== "openai" && agentSettings?.usage?.length ? (
                 <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
                   <div className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">
                     AI spend by user

@@ -3,5 +3,5 @@
 // Convention: bump BOTH values on every delivered iteration of the app —
 // APP_VERSION by +0.01 and APP_BUILD by +1 — so anyone can tell at a glance
 // which build a deployment is running.
-export const APP_VERSION = "1.15";
-export const APP_BUILD = 15;
+export const APP_VERSION = "1.16";
+export const APP_BUILD = 16;
