@@ -190,6 +190,20 @@ def test_reasoning_content_surfaces_when_no_answer_text():
     assert response.text == "Let me inspect the open slots first."
     assert response.stop_reason == "tool_use"
 
+    # LiteLLM proxies name the field "reasoning" instead (their convention
+    # for reasoning models) — both spellings must surface.
+    message_lite = SimpleNamespace(
+        content=None, tool_calls=[tool_call],
+        reasoning="LiteLLM-style chain of thought.",
+    )
+    choice_lite = SimpleNamespace(message=message_lite, finish_reason="tool_calls")
+    provider_lite = _provider_with(SimpleNamespace(choices=[choice_lite], usage=None))
+    response_lite = provider_lite.complete(
+        system="s", messages=[ChatMessage(role="user", content="hi")],
+        tools=[], timeout_seconds=10,
+    )
+    assert response_lite.text == "LiteLLM-style chain of thought."
+
     # When there IS answer text, it wins over the reasoning.
     message2 = SimpleNamespace(
         content="final answer", tool_calls=None, reasoning_content="hidden thoughts",

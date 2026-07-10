@@ -199,16 +199,18 @@ class OpenAICompatibleProvider(LLMProvider):
         else:
             stop_reason = "end_turn"
 
-        # Reasoning models served with a reasoning parser (e.g. vLLM
-        # --reasoning-parser for Qwen3/DeepSeek-R1) put their thoughts into
-        # reasoning_content and only the final answer into content. Surface
-        # the reasoning when there is no answer text (tool-call turns), so
+        # Reasoning models put their thoughts into a separate field and only
+        # the final answer into content — vLLM's reasoning parsers call it
+        # "reasoning_content", LiteLLM proxies call it "reasoning". Surface
+        # the thoughts when there is no answer text (tool-call turns), so
         # the live activity feed shows what the model is thinking.
         text = message.content or None
         if not text:
-            reasoning = getattr(message, "reasoning_content", None)
-            if isinstance(reasoning, str) and reasoning.strip():
-                text = reasoning.strip()
+            for field in ("reasoning_content", "reasoning"):
+                reasoning = getattr(message, field, None)
+                if isinstance(reasoning, str) and reasoning.strip():
+                    text = reasoning.strip()
+                    break
 
         return ProviderResponse(
             text=text,
