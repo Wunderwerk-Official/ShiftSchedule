@@ -1,0 +1,103 @@
+name: LLM endpoint diagnostics (truhn.ai)
+
+# Manual connectivity check for the admin-configured self-hosted LLM
+# endpoint, run FROM the production LXC (the only network position that
+# matters). Reads base URL / key / model from the app's own settings table;
+# the key itself is never printed. Safe to run any time.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH (bastion jump)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.SSH_KEY_FUER_SHIFTSCHEDULE_SERVER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_truhn
+          chmod 600 ~/.ssh/id_truhn
+          cat > ~/.ssh/config <<'CFG'
+          Host truhn-bastion
+            HostName 49.13.89.75
+            Port 4444
+            User dtruhn
+            IdentityFile ~/.ssh/id_truhn
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+
+          Host truhn-target
+            HostName 10.10.10.6
+            User root
+            IdentityFile ~/.ssh/id_truhn
+            ProxyJump truhn-bastion
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Probe the configured endpoint from the LXC
+        run: |
+          ssh truhn-target bash -s <<'EOF'
+          set -euo pipefail
+          cd /opt/app
+          docker compose -f docker-compose.proxied.yml exec -T backend python - <<'PY'
+          import json, socket, sqlite3, time
+          from urllib.parse import urlparse
+
+          rows = dict(
+              sqlite3.connect("/data/schedule.db")
+              .execute("SELECT key, value FROM agent_settings")
+              .fetchall()
+          )
+          base = (rows.get("openai_base_url") or "").strip().rstrip("/")
+          model = (rows.get("openai_model") or "").strip()
+          key = (rows.get("openai_api_key") or "").strip()
+          print(f"provider={rows.get('provider')!r} base_url={base!r} model={model!r} key_set={bool(key)}")
+          if not base:
+              raise SystemExit("no openai_base_url configured — nothing to test")
+
+          parsed = urlparse(base)
+          host, port = parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+          t0 = time.monotonic()
+          try:
+              socket.create_connection((host, port), timeout=10).close()
+              print(f"TCP connect to {host}:{port}: OK ({time.monotonic()-t0:.2f}s)")
+          except OSError as exc:
+              print(f"TCP connect to {host}:{port}: FAILED after {time.monotonic()-t0:.2f}s — {exc}")
+              raise SystemExit(
+                  "endpoint unreachable from this server (firewall/VPN-only?)"
+              )
+
+          import httpx
+          client = httpx.Client(verify=False, timeout=30,
+                                headers={"Authorization": f"Bearer {key}"})
+          r = client.get(f"{base}/models")
+          names = [m.get("id") for m in r.json().get("data", [])][:20] if r.status_code == 200 else []
+          print(f"GET /models: HTTP {r.status_code}; models={names}")
+
+          if model:
+              t1 = time.monotonic()
+              r2 = client.post(
+                  f"{base}/chat/completions",
+                  json={"model": model, "max_tokens": 64,
+                        "messages": [{"role": "user", "content": "Reply with one short sentence."}]},
+                  timeout=120,
+              )
+              dt = time.monotonic() - t1
+              if r2.status_code == 200:
+                  body = r2.json()
+                  usage = body.get("usage") or {}
+                  msg = (body.get("choices") or [{}])[0].get("message", {})
+                  out = usage.get("completion_tokens")
+                  print(f"chat/completions: HTTP 200 in {dt:.1f}s; "
+                        f"completion_tokens={out}; "
+                        f"tok/s={round(out/dt,1) if out else '?'}")
+                  print(f"content={json.dumps(msg.get('content'))[:200]}")
+                  print(f"reasoning_present={bool(msg.get('reasoning') or msg.get('reasoning_content'))}")
+              else:
+                  print(f"chat/completions: HTTP {r2.status_code} in {dt:.1f}s — {r2.text[:400]}")
+          PY
+          EOF
