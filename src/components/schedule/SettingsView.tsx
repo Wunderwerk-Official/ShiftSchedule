@@ -786,6 +786,8 @@ export default function SettingsView({
                   {chatTestPending && (
                     <div className="text-xs text-slate-400 dark:text-slate-500">
                       Waiting for the model… ({chatTestElapsed}s)
+                      {chatTestElapsed > 30 &&
+                        " — slow self-hosted reasoning models can take minutes; the reply will show the measured speed."}
                     </div>
                   )}
                   {chatTestError && (
