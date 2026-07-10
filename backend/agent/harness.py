@@ -63,6 +63,10 @@ DEADLINE_HEADROOM_SECONDS = 5.0
 # (a 100B+ model can spend several minutes thinking through the first digest);
 # the run's own wall-clock deadline still bounds the total via min().
 MAX_PER_CALL_TIMEOUT_SECONDS = 600.0
+# Per-event cap for thought/reasoning text in the live feed. Generous — the
+# UI clamps long entries behind a details toggle — but bounded so a single
+# runaway chain of thought cannot bloat the SSE stream.
+MAX_FEED_TEXT_CHARS = 6000
 
 TOOL_SPECS = [
     ToolSpec(t["name"], t["description"], t["input_schema"]) for t in TOOL_SPECS_RAW
@@ -257,12 +261,26 @@ def agent_solve_range(
             )
         remaining_open = open_slots(ctx, best)
         fmt_open = lambda g: f"{g.dateISO}|{g.section_id}|{g.start}-{g.end}|missing {g.missing}"  # noqa: E731
+        # The plan BEFORE any agent change (fixed + heuristic seed): together
+        # with the ordered moves list this makes every intermediate state
+        # reconstructable when auditing what the agent did.
+        seed_plan_lines = sorted(
+            [
+                _fmt_plan_line(a, "fixed")
+                for a in executor.fixed_assignments
+                if a.dateISO in ctx.target_date_set and not a.rowId.startswith("pool-")
+            ]
+            + [_fmt_plan_line(a, "seed") for a in seed_assignments]
+        )
         return {
             "open_slots_seed": [fmt_open(g) for g in seed_open[:80]],
             "open_slots_final": [fmt_open(g) for g in remaining_open[:80]],
+            "seed_plan": seed_plan_lines[:300],
             "final_plan": plan_lines[:300],
             "violations_final": violation_lines[:90],
-            "thoughts": [t[:800] for t in thought_log[:60]],
+            # Full reasoning chains belong in the copyable log — cap only as
+            # a guard against a runaway model, not as a display truncation.
+            "thoughts": [t[:MAX_FEED_TEXT_CHARS] for t in thought_log[:80]],
         }
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
@@ -406,6 +424,7 @@ def agent_solve_range(
             max(remaining - DEADLINE_HEADROOM_SECONDS, 10.0), MAX_PER_CALL_TIMEOUT_SECONDS
         )
         _compact_tool_history(messages)
+        executor.current_iteration = iterations_done + 1
         emit_agent("iteration", {"iteration": iterations_done + 1})
         response = provider.complete(
             system=SYSTEM_PROMPT,
@@ -418,12 +437,24 @@ def agent_solve_range(
         total_output_tokens += response.usage.get("output_tokens", 0)
         total_cache_read_tokens += response.usage.get("cache_read_input_tokens", 0)
         total_cache_creation_tokens += response.usage.get("cache_creation_input_tokens", 0)
+        if response.reasoning:
+            # Chain of thought of reasoning models — shown expandable in the
+            # live feed and kept in the run log. Aliases restored like text.
+            reasoning_full = executor.unscrub_text(response.reasoning.strip())
+            if reasoning_full:
+                thought_log.append(
+                    f"[iteration {iterations_done}] (reasoning) {reasoning_full}"
+                )
+                emit_agent(
+                    "thought",
+                    {"text": reasoning_full[:MAX_FEED_TEXT_CHARS], "reasoning": True},
+                )
         if response.text:
             # The model writes aliases (D1, ...); restore real names for the
             # user-facing feed and remember the latest text as the run summary.
             final_summary = executor.unscrub_text(response.text.strip())
             thought_log.append(f"[iteration {iterations_done}] {final_summary}")
-            emit_agent("thought", {"text": final_summary[:280]})
+            emit_agent("thought", {"text": final_summary[:MAX_FEED_TEXT_CHARS]})
 
         if response.stop_reason == "error":
             extra_notes.append(

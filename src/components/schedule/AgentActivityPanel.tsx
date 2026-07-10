@@ -83,6 +83,46 @@ function StageStepper({ stage }: { stage: AgentStage }) {
   );
 }
 
+// Long model output stays readable: short texts render inline, anything
+// longer collapses to a preview with a details toggle showing the full
+// (untruncated) text — reasoning chains of large models can be pages long.
+const THOUGHT_PREVIEW_CHARS = 220;
+
+function ThoughtRow({ text, reasoning }: { text: string; reasoning: boolean }) {
+  const [expanded, setExpanded] = useState(false);
+  const long = text.length > THOUGHT_PREVIEW_CHARS;
+  return (
+    <div className="solver-feed-enter flex items-start gap-2 px-2.5 py-1">
+      <SparkleIcon
+        className={`mt-0.5 h-3 w-3 shrink-0 ${
+          reasoning
+            ? "text-violet-300 dark:text-violet-500"
+            : "text-indigo-300 dark:text-indigo-500"
+        }`}
+      />
+      <div className="min-w-0 flex-1">
+        {reasoning && (
+          <span className="mr-1.5 rounded bg-violet-100 px-1 py-px text-[10px] font-medium uppercase tracking-wide text-violet-500 dark:bg-violet-900/50 dark:text-violet-300">
+            reasoning
+          </span>
+        )}
+        <span className="whitespace-pre-wrap text-xs italic leading-snug text-slate-500 dark:text-slate-400">
+          {expanded || !long ? text : `${text.slice(0, THOUGHT_PREVIEW_CHARS)}…`}
+        </span>
+        {long && (
+          <button
+            type="button"
+            onClick={() => setExpanded((prev) => !prev)}
+            className="mt-0.5 block text-[11px] font-medium text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300"
+          >
+            {expanded ? "Show less" : "Show full text"}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function FeedRow({ entry }: { entry: AgentFeedEntry }) {
   if (entry.type === "move") {
     const assign = entry.move.action === "assign";
@@ -116,14 +156,7 @@ function FeedRow({ entry }: { entry: AgentFeedEntry }) {
     );
   }
   if (entry.type === "thought") {
-    return (
-      <div className="solver-feed-enter flex items-start gap-2 px-2.5 py-1">
-        <SparkleIcon className="mt-0.5 h-3 w-3 shrink-0 text-indigo-300 dark:text-indigo-500" />
-        <span className="text-xs italic leading-snug text-slate-500 dark:text-slate-400">
-          {entry.text}
-        </span>
-      </div>
-    );
+    return <ThoughtRow text={entry.text} reasoning={entry.reasoning} />;
   }
   if (entry.type === "tools") {
     return (

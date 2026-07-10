@@ -350,6 +350,47 @@ export async function updateAgentSettings(
   return res.json();
 }
 
+export type AgentChatTestMessage = { role: "user" | "assistant"; content: string };
+
+export type AgentChatTestResult = {
+  provider: string;
+  model: string;
+  text: string | null;
+  /** Chain of thought of reasoning models, when returned alongside text. */
+  reasoning: string | null;
+  error: string | null;
+  duration_seconds: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_input_tokens: number;
+  tokens_per_second: number | null;
+  cost_usd: number | null;
+};
+
+/** Admin-only: one direct chat exchange with the configured model, with
+ * latency and token-throughput measurements. */
+export async function agentChatTest(
+  messages: AgentChatTestMessage[],
+): Promise<AgentChatTestResult> {
+  const res = await fetch(`${API_BASE}/v1/agent/chat-test`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify({ messages }),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    let detail = `Model test failed: ${res.status}`;
+    try {
+      const body = (await res.json()) as { detail?: string };
+      if (typeof body.detail === "string" && body.detail.length > 0) detail = body.detail;
+    } catch {
+      // Non-JSON error body — keep the status-code message.
+    }
+    throw new Error(detail);
+  }
+  return res.json();
+}
+
 export async function listUsers(): Promise<AuthUser[]> {
   const res = await fetch(`${API_BASE}/auth/users`, {
     headers: buildHeaders(),
@@ -582,6 +623,9 @@ export type SolverAgentDebug = {
   /** Diagnostics for the copyable run log (compact "a|b|c" lines). */
   open_slots_seed?: string[];
   open_slots_final?: string[];
+  /** Plan before any agent change (fixed + heuristic seed) — with the
+   * ordered moves list every intermediate state is reconstructable. */
+  seed_plan?: string[];
   final_plan?: string[];
   violations_final?: string[];
   /** The model's full reasoning texts, one entry per iteration. */
@@ -684,6 +728,8 @@ export type AgentMoveItem = {
   dateISO: string;
   start: string;
   end: string;
+  /** LLM iteration that made this change (1-based; absent on old runs). */
+  iteration?: number;
 };
 
 // Live activity from the agent solver (SSE event type "agent").
@@ -695,6 +741,8 @@ export type AgentActivityData = {
   time_ms: number;
   stage?: "seed" | "improve" | "finalize";
   text?: string;
+  /** True when the text is a reasoning model's chain of thought. */
+  reasoning?: boolean;
   moves?: AgentMoveItem[];
   improved?: boolean;
   score?: number;

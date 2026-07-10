@@ -154,9 +154,11 @@ const buildRunLog = (entry: SolverHistoryEntry): string => {
   const {
     open_slots_seed,
     open_slots_final,
+    seed_plan,
     final_plan,
     violations_final,
     thoughts,
+    moves,
     ...agentRest
   } = agent ?? {};
   const section = (title: string, items: string[] | undefined, empty: string) => {
@@ -167,6 +169,20 @@ const buildRunLog = (entry: SolverHistoryEntry): string => {
   if (agent) {
     section("Open slots at seed", open_slots_seed, "none");
     section("Open slots remaining", open_slots_final, "none — all filled");
+    section(
+      "Plan before AI changes (date|section|time|clinician|origin)",
+      seed_plan,
+      "not captured",
+    );
+    section(
+      "Changes in order (#iteration action clinician section date time)",
+      moves?.map(
+        (m) =>
+          `#${m.iteration ?? "?"} ${m.action} ${m.clinician} ${m.section || "shift"} ` +
+          `${m.dateISO}${m.start ? ` ${m.start}-${m.end}` : ""}`,
+      ),
+      "none",
+    );
     section("Final plan (date|section|time|clinician|origin)", final_plan, "empty");
     section("Violations in final plan", violations_final, "none");
     lines.push("", "Agent reasoning:");
@@ -835,37 +851,56 @@ export default function SolverInfoModal({
                         </div>
                       )}
                       {agent.moves && agent.moves.length > 0 && (
-                        <div className="mt-3">
-                          <div className="mb-1 text-xs font-medium text-slate-500 dark:text-slate-400">
-                            Changes made by the agent ({agent.moves.length})
+                        <details className="mt-3">
+                          <summary className="cursor-pointer text-xs font-medium text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200">
+                            Change history ({agent.moves.length} changes
+                            {agent.moves.some((m) => typeof m.iteration === "number")
+                              ? ", grouped by iteration"
+                              : ""}
+                            )
+                          </summary>
+                          <div className="mt-1 flex max-h-64 flex-col gap-1 overflow-y-auto pr-1">
+                            {agent.moves.map((move, index) => {
+                              const prev = index > 0 ? agent.moves?.[index - 1] : undefined;
+                              const newIteration =
+                                typeof move.iteration === "number" &&
+                                move.iteration !== prev?.iteration;
+                              return (
+                                <div key={index}>
+                                  {newIteration && (
+                                    <div className="mt-1 text-[11px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                                      Iteration {move.iteration}
+                                    </div>
+                                  )}
+                                  <div className="text-xs text-slate-600 dark:text-slate-300">
+                                    <span
+                                      className={
+                                        move.action === "assign"
+                                          ? "font-bold text-emerald-600 dark:text-emerald-400"
+                                          : "font-bold text-rose-500 dark:text-rose-300"
+                                      }
+                                    >
+                                      {move.action === "assign" ? "+" : "–"}
+                                    </span>{" "}
+                                    <span className="font-medium">{move.clinician}</span>
+                                    {move.action === "assign" ? " → " : " ← "}
+                                    {move.section || "shift"}
+                                    <span className="text-slate-400 dark:text-slate-500">
+                                      {" · "}
+                                      {formatFeedDate(move.dateISO)}
+                                      {move.start && ` · ${move.start}–${move.end}`}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
-                          <div className="flex max-h-44 flex-col gap-1 overflow-y-auto pr-1">
-                            {agent.moves.map((move, index) => (
-                              <div
-                                key={index}
-                                className="text-xs text-slate-600 dark:text-slate-300"
-                              >
-                                <span
-                                  className={
-                                    move.action === "assign"
-                                      ? "font-bold text-emerald-600 dark:text-emerald-400"
-                                      : "font-bold text-rose-500 dark:text-rose-300"
-                                  }
-                                >
-                                  {move.action === "assign" ? "+" : "–"}
-                                </span>{" "}
-                                <span className="font-medium">{move.clinician}</span>
-                                {move.action === "assign" ? " → " : " ← "}
-                                {move.section || "shift"}
-                                <span className="text-slate-400 dark:text-slate-500">
-                                  {" · "}
-                                  {formatFeedDate(move.dateISO)}
-                                  {move.start && ` · ${move.start}–${move.end}`}
-                                </span>
-                              </div>
-                            ))}
+                          <div className="mt-1 text-[11px] text-slate-400 dark:text-slate-500">
+                            The copyable log additionally contains the full plan before and
+                            after these changes, so every intermediate state can be
+                            reconstructed.
                           </div>
-                        </div>
+                        </details>
                       )}
                     </div>
                   );

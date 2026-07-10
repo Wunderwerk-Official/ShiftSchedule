@@ -8,8 +8,15 @@ import {
 } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
 import { Location, WorkplaceRow } from "../../data/mockData";
-import type { AgentSettings, AgentSettingsUpdate, Holiday, SolverSettings, WeeklyCalendarTemplate } from "../../api/client";
-import { fetchAgentSettings, updateAgentSettings } from "../../api/client";
+import type {
+  AgentChatTestResult,
+  AgentSettings,
+  AgentSettingsUpdate,
+  Holiday,
+  SolverSettings,
+  WeeklyCalendarTemplate,
+} from "../../api/client";
+import { agentChatTest, fetchAgentSettings, updateAgentSettings } from "../../api/client";
 import { AGENT_MODEL_OPTIONS, formatCostUSD } from "../../lib/llmPricing";
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
 import WeeklyTemplateBuilder from "./WeeklyTemplateBuilder";
@@ -125,6 +132,57 @@ export default function SettingsView({
       );
     } catch {
       setAgentSettingsError("Could not save AI agent settings.");
+    }
+  };
+  // Admin model test: a direct chat with the configured model, kept only in
+  // memory. Each reply carries latency / token-throughput measurements.
+  type ChatTestEntry =
+    | { role: "user"; content: string }
+    | { role: "assistant"; content: string; reasoning: string | null; result: AgentChatTestResult };
+  const [chatTestEntries, setChatTestEntries] = useState<ChatTestEntry[]>([]);
+  const [chatTestInput, setChatTestInput] = useState("");
+  const [chatTestPending, setChatTestPending] = useState(false);
+  const [chatTestElapsed, setChatTestElapsed] = useState(0);
+  const [chatTestError, setChatTestError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!chatTestPending) return;
+    const startedAt = Date.now();
+    setChatTestElapsed(0);
+    const id = window.setInterval(
+      () => setChatTestElapsed(Math.floor((Date.now() - startedAt) / 1000)),
+      1000,
+    );
+    return () => window.clearInterval(id);
+  }, [chatTestPending]);
+  const sendChatTest = async () => {
+    const content = chatTestInput.trim();
+    if (!content || chatTestPending) return;
+    const history = [...chatTestEntries, { role: "user" as const, content }];
+    setChatTestEntries(history);
+    setChatTestInput("");
+    setChatTestError(null);
+    setChatTestPending(true);
+    try {
+      const result = await agentChatTest(
+        history.map((entry) => ({ role: entry.role, content: entry.content })),
+      );
+      if (result.error) {
+        setChatTestError(result.error);
+      } else {
+        setChatTestEntries((prev) => [
+          ...prev,
+          {
+            role: "assistant",
+            content: result.text ?? "(empty response)",
+            reasoning: result.reasoning,
+            result,
+          },
+        ]);
+      }
+    } catch (err) {
+      setChatTestError(err instanceof Error ? err.message : "Model test failed.");
+    } finally {
+      setChatTestPending(false);
     }
   };
   const [newClinicianName, setNewClinicianName] = useState("");
@@ -669,6 +727,101 @@ export default function SettingsView({
                     >
                       Save key
                     </button>
+                  </div>
+                </div>
+              ) : null}
+              {isAdmin ? (
+                <div className="flex flex-col gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
+                  <div>
+                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                      Model connection test
+                    </div>
+                    <div className="text-xs text-slate-500 dark:text-slate-400">
+                      Chat directly with the configured model to check that the endpoint
+                      works and how fast it generates. Replies show latency and token
+                      throughput{agentSettings?.provider === "openai"
+                        ? "."
+                        : "; Anthropic test messages count toward the AI budget."}
+                    </div>
+                  </div>
+                  {chatTestEntries.length > 0 && (
+                    <div className="flex max-h-72 flex-col gap-2 overflow-y-auto rounded-lg bg-slate-50 p-2 dark:bg-slate-950/40">
+                      {chatTestEntries.map((entry, index) =>
+                        entry.role === "user" ? (
+                          <div key={index} className="self-end rounded-lg bg-indigo-500/90 px-3 py-1.5 text-xs text-white">
+                            {entry.content}
+                          </div>
+                        ) : (
+                          <div key={index} className="self-start max-w-full">
+                            {entry.reasoning ? (
+                              <details className="mb-1 rounded-lg border border-violet-200 bg-violet-50/60 px-2 py-1 dark:border-violet-900 dark:bg-violet-950/30">
+                                <summary className="cursor-pointer text-[11px] font-medium text-violet-500 dark:text-violet-300">
+                                  Reasoning
+                                </summary>
+                                <div className="mt-1 whitespace-pre-wrap text-xs text-slate-500 dark:text-slate-400">
+                                  {entry.reasoning}
+                                </div>
+                              </details>
+                            ) : null}
+                            <div className="rounded-lg bg-white px-3 py-1.5 text-xs text-slate-700 shadow-sm dark:bg-slate-800 dark:text-slate-200">
+                              <span className="whitespace-pre-wrap">{entry.content}</span>
+                            </div>
+                            <div className="mt-0.5 px-1 text-[11px] tabular-nums text-slate-400 dark:text-slate-500">
+                              {entry.result.duration_seconds}s
+                              {" · "}
+                              {entry.result.input_tokens} in / {entry.result.output_tokens} out
+                              {entry.result.tokens_per_second !== null &&
+                                ` · ${entry.result.tokens_per_second} tok/s`}
+                              {entry.result.cache_read_input_tokens > 0 &&
+                                ` · ${entry.result.cache_read_input_tokens} cached`}
+                              {entry.result.cost_usd !== null &&
+                                entry.result.cost_usd > 0 &&
+                                ` · ${formatCostUSD(entry.result.cost_usd) ?? ""}`}
+                            </div>
+                          </div>
+                        ),
+                      )}
+                    </div>
+                  )}
+                  {chatTestPending && (
+                    <div className="text-xs text-slate-400 dark:text-slate-500">
+                      Waiting for the model… ({chatTestElapsed}s)
+                    </div>
+                  )}
+                  {chatTestError && (
+                    <div className="text-xs text-rose-600 dark:text-rose-400">{chatTestError}</div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={chatTestInput}
+                      onChange={(event) => setChatTestInput(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter") void sendChatTest();
+                      }}
+                      placeholder="Type a test message…"
+                      className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    />
+                    <button
+                      type="button"
+                      disabled={chatTestPending || !chatTestInput.trim()}
+                      onClick={() => void sendChatTest()}
+                      className="rounded-lg bg-indigo-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-40"
+                    >
+                      Send
+                    </button>
+                    {chatTestEntries.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setChatTestEntries([]);
+                          setChatTestError(null);
+                        }}
+                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                      >
+                        Clear
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : null}

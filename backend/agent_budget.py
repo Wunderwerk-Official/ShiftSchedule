@@ -264,3 +264,98 @@ def update_agent_settings(
     if payload.openai_api_key is not None:
         _set_setting(_SETTING_OPENAI_KEY, payload.openai_api_key.strip()[:500])
     return get_agent_admin_settings()
+
+
+# ---------------------------------------------------------------------------
+# Admin connection test: chat directly with the configured model and measure
+# latency / token throughput. Answers "is the endpoint reachable and how fast
+# does it generate" without starting a full planning run.
+# ---------------------------------------------------------------------------
+
+CHAT_TEST_SYSTEM = (
+    "You are the AI model behind a shift-planning app, currently being tested "
+    "by its administrator. Answer briefly and helpfully."
+)
+CHAT_TEST_TIMEOUT_SECONDS = 300.0
+_CHAT_TEST_MAX_MESSAGES = 30
+_CHAT_TEST_MAX_TOTAL_CHARS = 30_000
+
+
+class AgentChatTestMessage(BaseModel):
+    role: str  # "user" | "assistant"
+    content: str
+
+
+class AgentChatTestRequest(BaseModel):
+    messages: List[AgentChatTestMessage]
+
+
+@router.post("/v1/agent/chat-test")
+def agent_chat_test(
+    payload: AgentChatTestRequest,
+    current_user: UserPublic = Depends(_require_admin),
+) -> dict:
+    # Imported lazily so importing this module never pulls provider SDKs.
+    from .agent.config import AgentConfig
+    from .agent.provider import ChatMessage, get_provider
+
+    if not payload.messages or len(payload.messages) > _CHAT_TEST_MAX_MESSAGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Provide 1-{_CHAT_TEST_MAX_MESSAGES} messages.",
+        )
+    total_chars = 0
+    chat: List[ChatMessage] = []
+    for message in payload.messages:
+        if message.role not in ("user", "assistant"):
+            raise HTTPException(status_code=400, detail="Roles: user or assistant.")
+        content = message.content.strip()
+        if not content:
+            raise HTTPException(status_code=400, detail="Empty message.")
+        total_chars += len(content)
+        chat.append(ChatMessage(role=message.role, content=content))
+    if total_chars > _CHAT_TEST_MAX_TOTAL_CHARS:
+        raise HTTPException(status_code=400, detail="Conversation too long for a test.")
+
+    config = resolve_agent_runtime_config(AgentConfig.from_env())
+    try:
+        provider = get_provider(config)
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    import time
+
+    started = time.monotonic()
+    response = provider.complete(
+        system=CHAT_TEST_SYSTEM,
+        messages=chat,
+        tools=[],
+        timeout_seconds=CHAT_TEST_TIMEOUT_SECONDS,
+    )
+    duration = time.monotonic() - started
+
+    usage = response.usage or {}
+    output_tokens = int(usage.get("output_tokens") or 0)
+    tokens_per_second = (
+        round(output_tokens / duration, 1) if duration > 0 and output_tokens else None
+    )
+    cost_usd: Optional[float] = None
+    if config.provider == "anthropic":
+        # Tests hit the paid API like any run — meter them honestly.
+        cost = estimate_cost_usd(config.model, usage)
+        if cost > 0:
+            add_spend_usd(current_user.username, cost)
+        cost_usd = round(cost, 4)
+    return {
+        "provider": config.provider,
+        "model": config.model,
+        "text": response.text,
+        "reasoning": response.reasoning,
+        "error": response.error if response.stop_reason == "error" else None,
+        "duration_seconds": round(duration, 2),
+        "input_tokens": int(usage.get("input_tokens") or 0),
+        "output_tokens": output_tokens,
+        "cache_read_input_tokens": int(usage.get("cache_read_input_tokens") or 0),
+        "tokens_per_second": tokens_per_second,
+        "cost_usd": cost_usd,
+    }

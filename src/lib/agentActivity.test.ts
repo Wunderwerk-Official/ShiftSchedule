@@ -48,6 +48,18 @@ describe("deriveAgentStatus", () => {
     expect(status.feed[0]).toMatchObject({ type: "move", improved: true });
   });
 
+  it("marks reasoning thoughts so the feed can label the chain of thought", () => {
+    const status = deriveAgentStatus([
+      event({ kind: "thought", text: "Let me check the open slots.", reasoning: true }),
+      event({ kind: "thought", text: "Assigning A to CT." }),
+    ]);
+    const thoughts = status.feed.filter((entry) => entry.type === "thought");
+    expect(thoughts).toHaveLength(2);
+    // newest first
+    expect(thoughts[0]).toMatchObject({ text: "Assigning A to CT.", reasoning: false });
+    expect(thoughts[1]).toMatchObject({ text: "Let me check the open slots.", reasoning: true });
+  });
+
   it("builds a newest-first feed from moves, thoughts, and rejections", () => {
     const status = deriveAgentStatus([
       event({ kind: "thought", text: "Filling Monday gaps first." }),

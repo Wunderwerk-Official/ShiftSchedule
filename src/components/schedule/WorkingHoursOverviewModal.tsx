@@ -119,14 +119,14 @@ export default function WorkingHoursOverviewModal({
   const scrollContainerRef = useRef<HTMLDivElement | null>(null);
   const todayColumnRef = useRef<HTMLDivElement | null>(null);
 
-  // Scroll to current week when opening
-  useEffect(() => {
-    if (!open) return;
-    const container = scrollContainerRef.current;
-    const todayCol = todayColumnRef.current;
-    if (!container || !todayCol) return;
-
+  // Center the current-week column in the horizontal scroll area. The rAF
+  // lets a just-triggered re-render (open/year switch) mount the column
+  // first; refs are read inside the frame for the same reason.
+  const scrollToToday = () => {
     window.requestAnimationFrame(() => {
+      const container = scrollContainerRef.current;
+      const todayCol = todayColumnRef.current;
+      if (!container || !todayCol) return;
       const containerRect = container.getBoundingClientRect();
       const todayRect = todayCol.getBoundingClientRect();
       const scrollLeft = todayRect.left - containerRect.left + container.scrollLeft - containerRect.width / 2;
@@ -138,6 +138,13 @@ export default function WorkingHoursOverviewModal({
         container.scrollLeft = Math.max(0, scrollLeft);
       }
     });
+  };
+
+  // Scroll to current week when opening (and after a year switch)
+  useEffect(() => {
+    if (!open) return;
+    scrollToToday();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, selectedYear]);
 
   // Build slot duration map
@@ -286,7 +293,13 @@ export default function WorkingHoursOverviewModal({
 
               <button
                 type="button"
-                onClick={() => setSelectedYear(currentYear)}
+                onClick={() => {
+                  // Jump to today: switch back to the current year if needed
+                  // (the effect scrolls after the re-render) AND re-center
+                  // when the year is already right (no state change fires).
+                  setSelectedYear(currentYear);
+                  if (selectedYear === currentYear) scrollToToday();
+                }}
                 className={buttonSecondary.base}
               >
                 Today
@@ -388,6 +401,12 @@ export default function WorkingHoursOverviewModal({
                   const sectionBg = isEvenSection
                     ? "bg-white dark:bg-slate-900"
                     : "bg-slate-50/50 dark:bg-slate-800/20";
+                  // Sticky cells (name + cumulative columns) need an OPAQUE
+                  // version of the striped background: with the translucent
+                  // gray, week cells scrolling underneath bleed through.
+                  const stickyBg = isEvenSection
+                    ? "bg-white dark:bg-slate-900"
+                    : "bg-slate-50 dark:bg-[#121b2d]";
 
                   return (
                     <div key={clinician.id} className={cx("border-b-2 border-slate-200 dark:border-slate-700", sectionBg)}>
@@ -396,7 +415,7 @@ export default function WorkingHoursOverviewModal({
                         <div
                           className={cx(
                             "sticky left-0 z-40 flex items-center justify-between gap-2 border-r border-slate-200 px-3 dark:border-slate-700",
-                            sectionBg,
+                            stickyBg,
                           )}
                           style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
                         >
@@ -459,7 +478,7 @@ export default function WorkingHoursOverviewModal({
                           <div
                             className={cx(
                               "sticky left-0 z-40 flex items-center border-r border-slate-200 px-3 dark:border-slate-700",
-                              sectionBg,
+                              stickyBg,
                             )}
                             style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
                           >
@@ -499,7 +518,7 @@ export default function WorkingHoursOverviewModal({
                           <div
                             className={cx(
                               "sticky left-0 z-40 flex items-center border-r border-slate-200 px-3 dark:border-slate-700",
-                              sectionBg,
+                              stickyBg,
                             )}
                             style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
                           >
@@ -572,7 +591,7 @@ export default function WorkingHoursOverviewModal({
                           <div
                             className={cx(
                               "sticky left-0 z-40 flex items-center border-r border-slate-200 px-3 dark:border-slate-700",
-                              sectionBg,
+                              stickyBg,
                             )}
                             style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
                           >

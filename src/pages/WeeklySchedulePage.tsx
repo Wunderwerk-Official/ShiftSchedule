@@ -35,6 +35,8 @@ import {
   type IcalPublishStatus,
   type ScheduleSnapshotExport,
   type AgentActivityData,
+  type AgentMoveItem,
+  type SolverAgentDebug,
   type SolverDebugInfo,
   type SolverMode,
   type SolverSettings,
@@ -115,6 +117,28 @@ function scrollToAssignmentKeys(keys: string[], maxWaitMs: number = 1000): void 
         });
         return;
       }
+    }
+    if (performance.now() - startedAt > maxWaitMs) return;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
+
+/**
+ * Scroll a day column into view (same rAF-polling pattern as
+ * scrollToAssignmentKeys: the column may only exist after a week-switch
+ * re-render). Used by the "Today" buttons so wide calendars actually jump
+ * to the day instead of only switching the week.
+ */
+function scrollToDateColumn(dateISO: string, maxWaitMs: number = 1000): void {
+  const startedAt = performance.now();
+  const tick = () => {
+    const element = document.querySelector(
+      `[data-date-iso="${dateISO}"]`,
+    ) as HTMLElement | null;
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      return;
     }
     if (performance.now() - startedAt > maxWaitMs) return;
     requestAnimationFrame(tick);
@@ -364,6 +388,10 @@ export default function WeeklySchedulePage({
   const liveSolutionsRef = useRef<LiveSolution[]>([]);
   const [solverPhase, setSolverPhase] = useState<string | null>(null);
   const [agentEvents, setAgentEvents] = useState<AgentActivityData[]>([]);
+  // Unclamped copy for the run-history log: when the user aborts (or applies
+  // the best plan mid-run) the backend's rich response is lost with the
+  // fetch, so the history entry is reconstructed from these live events.
+  const agentEventsRef = useRef<AgentActivityData[]>([]);
   // Mode + timeout of the CURRENT run (agent runs raise the timeout, so the
   // overlay's time budget must reflect the run, not the settings value).
   const [autoPlanRunConfig, setAutoPlanRunConfig] = useState<{
@@ -453,6 +481,7 @@ export default function WeeklySchedulePage({
     liveSolutionsRef.current = [];
     setSolverPhase(null);
     setAgentEvents([]);
+    agentEventsRef.current = [];
 
     const unsubscribe = subscribeSolverProgress(
       (event) => {
@@ -469,6 +498,9 @@ export default function WeeklySchedulePage({
         } else if (event.event === "agent") {
           // Live agent activity feed (bounded so long runs stay cheap)
           setAgentEvents((prev) => [...prev.slice(-119), event.data]);
+          if (agentEventsRef.current.length < 600) {
+            agentEventsRef.current.push(event.data);
+          }
         } else if (event.event === "solution") {
           // Once we get solutions, clear the phase (we're in solve mode)
           setSolverPhase(null);
@@ -1342,6 +1374,43 @@ export default function WeeklySchedulePage({
         // Get estimated CPU info (browser can't access actual CPU count, so use reasonable defaults)
         const estimatedCpuCores = navigator.hardwareConcurrency ?? 4;
         const estimatedCpuWorkers = Math.max(1, estimatedCpuCores - 2);
+        // The backend's rich aborted response is lost with the fetch abort —
+        // reconstruct the agent section from the live SSE activity so the
+        // run log still shows what the agent thought and actually changed.
+        const capturedAgentEvents = agentEventsRef.current;
+        let agentDebug: SolverAgentDebug | undefined;
+        if (capturedAgentEvents.length > 0) {
+          const thoughts: string[] = [];
+          const moves: AgentMoveItem[] = [];
+          let iterations = 0;
+          let movesAccepted = 0;
+          let summary: string | null = null;
+          for (const agentEvent of capturedAgentEvents) {
+            iterations = Math.max(iterations, agentEvent.iteration ?? 0);
+            movesAccepted = Math.max(movesAccepted, agentEvent.moves_accepted ?? 0);
+            if (agentEvent.kind === "thought" && agentEvent.text) {
+              thoughts.push(
+                agentEvent.reasoning
+                  ? `[iteration ${agentEvent.iteration}] (reasoning) ${agentEvent.text}`
+                  : `[iteration ${agentEvent.iteration}] ${agentEvent.text}`,
+              );
+              if (!agentEvent.reasoning) summary = agentEvent.text;
+            } else if (agentEvent.kind === "moves_applied" && agentEvent.moves) {
+              moves.push(...agentEvent.moves);
+            }
+          }
+          agentDebug = {
+            iterations,
+            moves_accepted: movesAccepted,
+            summary,
+            moves,
+            thoughts,
+          };
+          historyNotes.push(
+            "Run was aborted mid-flight: agent details below were captured " +
+              "live and may miss the very last step.",
+          );
+        }
         historyDebugInfo = {
           timing: {
             total_ms: elapsedMs,
@@ -1358,6 +1427,7 @@ export default function WeeklySchedulePage({
           solver_status: "ABORTED",
           cpu_workers_used: estimatedCpuWorkers,
           cpu_cores_available: estimatedCpuCores,
+          agent: agentDebug,
         };
 
         // Apply the last solution's assignments ONLY if not skipping (i.e., user clicked "Apply")
@@ -3206,7 +3276,10 @@ export default function WeeklySchedulePage({
                       date={anchorDate}
                       onPrevDay={() => setAnchorDate((d) => addDays(d, -1))}
                       onNextDay={() => setAnchorDate((d) => addDays(d, 1))}
-                      onToday={() => setAnchorDate(new Date())}
+                      onToday={() => {
+                        setAnchorDate(new Date());
+                        scrollToDateColumn(toISODate(new Date()));
+                      }}
                     />
                   ) : (
                     <WeekNavigator
@@ -3215,7 +3288,10 @@ export default function WeeklySchedulePage({
                       rangeEndInclusive={weekEndInclusive}
                       onPrevWeek={() => setAnchorDate((d) => addWeeks(d, -1))}
                       onNextWeek={() => setAnchorDate((d) => addWeeks(d, 1))}
-                      onToday={() => setAnchorDate(new Date())}
+                      onToday={() => {
+                        setAnchorDate(new Date());
+                        scrollToDateColumn(toISODate(new Date()));
+                      }}
                       onGoToDate={(date) => setAnchorDate(date)}
                     />
                   )}

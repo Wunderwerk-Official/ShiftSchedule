@@ -69,6 +69,11 @@ class ProviderResponse:
     stop_reason: str
     usage: Dict[str, int] = field(default_factory=dict)  # input_tokens/output_tokens
     error: Optional[str] = None  # set when stop_reason == "error"
+    # Chain of thought of reasoning models (Anthropic thinking blocks, vLLM
+    # reasoning_content, LiteLLM reasoning) when it accompanies answer text.
+    # When a turn has ONLY reasoning, adapters put it into ``text`` instead so
+    # the run summary and feed never end up empty.
+    reasoning: Optional[str] = None
     # Opaque provider content blocks for replaying this assistant turn
     # verbatim (see ChatMessage.raw_content).
     raw_content: Optional[List[dict]] = None

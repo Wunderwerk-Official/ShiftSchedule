@@ -298,6 +298,9 @@ class PlanToolExecutor:
         # Human-readable log of every ACCEPTED move (real names) — surfaced
         # in the run summary of the solver history after the run.
         self.accepted_move_log: List[dict] = []
+        # Stamped by the harness before each LLM turn so accepted moves can
+        # be grouped by iteration in the run-history change list.
+        self.current_iteration = 0
 
         # Baseline = violations of the seed plan. Only NEW hard violations
         # beyond this set block acceptance. For magnitude-typed violations
@@ -1105,6 +1108,7 @@ class PlanToolExecutor:
             "dateISO": date_iso,
             "start": start,
             "end": end,
+            "iteration": self.current_iteration,
         }
 
     def _make_assignment(self, slot_id: str, date_iso: str, clinician_id: str) -> Assignment:

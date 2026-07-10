@@ -78,6 +78,17 @@ class AnthropicProvider(LLMProvider):
             request_kwargs = {}
             if supports_adaptive_thinking(self._config.model):
                 request_kwargs["thinking"] = {"type": "adaptive"}
+            if tools:
+                # Omitted entirely for plain chat calls (admin connection
+                # test) — an empty tools array is pointless on the wire.
+                request_kwargs["tools"] = [
+                    {
+                        "name": t.name,
+                        "description": t.description,
+                        "input_schema": t.input_schema,
+                    }
+                    for t in tools
+                ]
             response = self._client.with_options(
                 timeout=timeout_seconds, max_retries=0
             ).messages.create(
@@ -90,14 +101,6 @@ class AnthropicProvider(LLMProvider):
                         "text": system,
                         "cache_control": {"type": "ephemeral"},
                     }
-                ],
-                tools=[
-                    {
-                        "name": t.name,
-                        "description": t.description,
-                        "input_schema": t.input_schema,
-                    }
-                    for t in tools
                 ],
                 messages=self._convert_messages(messages),
             )
@@ -113,6 +116,7 @@ class AnthropicProvider(LLMProvider):
             )
 
         text_parts: List[str] = []
+        reasoning_parts: List[str] = []
         tool_calls: List[ToolCall] = []
         raw_content: List[dict] = []
         for block in response.content:
@@ -122,6 +126,11 @@ class AnthropicProvider(LLMProvider):
             raw_content.append(block.model_dump(exclude_none=True))
             if block.type == "text":
                 text_parts.append(block.text)
+            elif block.type == "thinking":
+                # Surface the chain of thought for the live feed / run log.
+                thinking_text = getattr(block, "thinking", None)
+                if isinstance(thinking_text, str) and thinking_text.strip():
+                    reasoning_parts.append(thinking_text.strip())
             elif block.type == "tool_use":
                 # block.input is an already-parsed dict — never string-match it
                 tool_calls.append(
@@ -138,11 +147,18 @@ class AnthropicProvider(LLMProvider):
         stop_reason = response.stop_reason or "end_turn"
         if stop_reason not in ("tool_use", "end_turn", "max_tokens", "refusal"):
             stop_reason = "end_turn"
+        text = "\n".join(text_parts) or None
+        reasoning = "\n".join(reasoning_parts) or None
+        if text is None and reasoning is not None:
+            # Reasoning-only turn: promote it to text so the run summary and
+            # feed never end up empty (matches the OpenAI adapter's contract).
+            text, reasoning = reasoning, None
         return ProviderResponse(
-            text="\n".join(text_parts) or None,
+            text=text,
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             usage=usage,
+            reasoning=reasoning,
             raw_content=raw_content,
         )
 

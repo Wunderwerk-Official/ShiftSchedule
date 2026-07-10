@@ -139,14 +139,18 @@ class OpenAICompatibleProvider(LLMProvider):
         try:
             # max_retries=0 for the same reason as the Anthropic adapter: the
             # harness sizes timeout_seconds to the remaining wall clock.
+            request_kwargs: dict = {
+                "model": self._config.model,
+                "max_tokens": self._config.max_tokens,
+                "messages": to_openai_messages(system, messages),
+            }
+            if tools:
+                # Some servers reject an empty tools array — omit it for
+                # plain chat calls (e.g. the admin connection test).
+                request_kwargs["tools"] = to_openai_tools(tools)
             response = self._client.with_options(
                 timeout=timeout_seconds, max_retries=0
-            ).chat.completions.create(
-                model=self._config.model,
-                max_tokens=self._config.max_tokens,
-                messages=to_openai_messages(system, messages),
-                tools=to_openai_tools(tools),
-            )
+            ).chat.completions.create(**request_kwargs)
         except openai.APIStatusError as exc:
             return ProviderResponse(
                 text=None, tool_calls=[], stop_reason="error",
@@ -202,20 +206,24 @@ class OpenAICompatibleProvider(LLMProvider):
         # Reasoning models put their thoughts into a separate field and only
         # the final answer into content — vLLM's reasoning parsers call it
         # "reasoning_content", LiteLLM proxies call it "reasoning". Surface
-        # the thoughts when there is no answer text (tool-call turns), so
-        # the live activity feed shows what the model is thinking.
+        # the chain of thought alongside the answer; a reasoning-only turn
+        # (typical for tool calls) promotes the thoughts to text so the live
+        # feed and run summary never end up empty.
         text = message.content or None
-        if not text:
-            for field in ("reasoning_content", "reasoning"):
-                reasoning = getattr(message, field, None)
-                if isinstance(reasoning, str) and reasoning.strip():
-                    text = reasoning.strip()
-                    break
+        reasoning: Optional[str] = None
+        for field in ("reasoning_content", "reasoning"):
+            candidate = getattr(message, field, None)
+            if isinstance(candidate, str) and candidate.strip():
+                reasoning = candidate.strip()
+                break
+        if not text and reasoning:
+            text, reasoning = reasoning, None
 
         return ProviderResponse(
             text=text,
             tool_calls=tool_calls,
             stop_reason=stop_reason,
             usage=usage,
+            reasoning=reasoning,
             raw_content=None,  # no replay requirement on this API
         )

@@ -159,6 +159,9 @@ def test_complete_maps_length_and_broken_arguments():
     # tool calls still win over the finish_reason.
     assert response.tool_calls[0].arguments == {}
     assert response.stop_reason == "tool_use"
+    # Plain chat calls (tools=[]) omit the parameter — some servers reject
+    # an empty tools array.
+    assert "tools" not in provider._client.last_kwargs
 
     provider2 = _provider_with(_completion(content="done", finish_reason="length"))
     response2 = provider2.complete(
@@ -204,7 +207,8 @@ def test_reasoning_content_surfaces_when_no_answer_text():
     )
     assert response_lite.text == "LiteLLM-style chain of thought."
 
-    # When there IS answer text, it wins over the reasoning.
+    # When there IS answer text, it wins — and the chain of thought comes
+    # along separately for the live feed / run log.
     message2 = SimpleNamespace(
         content="final answer", tool_calls=None, reasoning_content="hidden thoughts",
     )
@@ -215,6 +219,7 @@ def test_reasoning_content_surfaces_when_no_answer_text():
         tools=[], timeout_seconds=10,
     )
     assert response2.text == "final answer"
+    assert response2.reasoning == "hidden thoughts"
 
 
 def test_verify_tls_off_builds_client_with_unverified_http_client():
