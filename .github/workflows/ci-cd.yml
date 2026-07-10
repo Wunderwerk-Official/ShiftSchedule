@@ -105,12 +105,14 @@ jobs:
           cd "$DEPLOY_PATH"
           git pull --ff-only
           docker compose -f "$COMPOSE_FILE" up -d --build
-          # Caddy reads its bind-mounted Caddyfile only at startup, and
-          # compose does not recreate the container for a config-only change,
-          # so apply the current config with a graceful in-place reload.
+          # The Caddyfile is bind-mounted as a single file, and git pull
+          # replaces it with a NEW inode — the running container (and even
+          # 'caddy reload' inside it) keeps seeing the stale pre-pull content.
+          # Only recreating the container re-resolves the mount by path, so
+          # force-recreate caddy whenever the stack defines it. Certificates
+          # live on the caddy_data volume and survive the recreate.
           if docker compose -f "$COMPOSE_FILE" ps --services | grep -qx caddy; then
-            docker compose -f "$COMPOSE_FILE" exec -T caddy \
-              caddy reload --config /etc/caddy/Caddyfile
+            docker compose -f "$COMPOSE_FILE" up -d --force-recreate caddy
           fi
           EOF
 
