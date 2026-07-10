@@ -95,8 +95,11 @@ Tool usage policy:
   below the daily minimum is unavoidable, give that person more contiguous
   work the same day or swap assignments so someone else covers the whole
   block and they stay off. The overview reports short_days and
-  list_short_days pinpoints every case — drive the count toward zero
-  whenever coverage allows.
+  list_short_days pinpoints every case AND precomputes fix_options for each
+  (the adjacent slots that would extend the day, who holds each now, and
+  whether taking it would just shorten that holder instead). Use those
+  options directly — do not re-derive adjacency yourself. An empty
+  fix_options list means the case is structurally unfixable: skip it.
 - FIXED assignments are anchors: that person is already coming in that day.
   When staffing a slot next to someone's fixed assignment, extending THEIR
   day (adjacent_to_existing=true, day_hours already > 0) usually beats

@@ -790,15 +790,113 @@ class PlanToolExecutor:
                     "assigned_hours": round(total / 60.0, 1),
                     "min_hours": round(min_minutes / 60.0, 1),
                     "slots": slots,
+                    # Concrete ways to fix this short day, precomputed so the
+                    # model does not have to reason out adjacency slot by slot
+                    # (that dominated token cost on real cases). Empty list =
+                    # structurally unfixable (no adjacent qualified slot), do
+                    # not chase it.
+                    "fix_options": self._short_day_fix_options(cid, date_iso),
                 }
             )
+        fixable = sum(1 for c in cases if c["fix_options"])
         return {
             "total": len(cases),
-            "note": "Days below the daily minimum. Extend the day with "
-            "adjacent work, or move non-fixed stints to someone whose "
-            "existing shift they touch.",
+            "fixable": fixable,
+            "note": "Days below the daily minimum. fix_options lists the "
+            "adjacent slots that would extend the day (take_from = who holds "
+            "it now; would_shorten_holder = true means the swap just moves the "
+            "problem). Empty fix_options = structurally unfixable, skip it.",
             "short_days": cases[:20],
         }
+
+    def _short_day_fix_options(self, cid: str, date_iso: str) -> List[dict]:
+        """Adjacent, qualified slots that could extend this clinician's day.
+
+        A slot qualifies if it TOUCHES one of the clinician's existing shifts
+        that day (start==prev end or end==next start), the clinician is
+        qualified for its section, and either it is open OR held by a movable
+        (non-fixed) clinician. For held slots we flag whether taking it would
+        push the current holder below THEIR own daily minimum — the common
+        "swap just moves the short day" trap."""
+        clinician = self.clinicians_by_id.get(cid)
+        if clinician is None:
+            return []
+        qualified = set(clinician.qualifiedClassIds or [])
+        my_intervals = self._day_intervals(cid, date_iso)
+        if not my_intervals:
+            return []
+        counts = self._counts_by_instance(self._working_list())
+        options: List[dict] = []
+        for key, inst in self.ctx.instances.items():
+            if inst.date_iso != date_iso or inst.section_id not in qualified:
+                continue
+            touches = any(
+                inst.start == s_end or inst.end == s_start
+                for s_start, s_end in my_intervals
+            )
+            if not touches:
+                continue
+            # already mine? skip
+            if any(
+                a.clinicianId == cid and a.rowId == inst.slot_id
+                for a in self._full_plan()
+                if a.dateISO == date_iso
+            ):
+                continue
+            slot_key = f"{inst.slot_id}__{date_iso}"
+            open_room = inst.capacity - counts.get(slot_key, 0)
+            holders = [
+                a.clinicianId
+                for a in self._full_plan()
+                if a.dateISO == date_iso and a.rowId == inst.slot_id
+            ]
+            movable_holder = None
+            would_shorten = False
+            for h in holders:
+                if (inst.slot_id, date_iso, h) in self.fixed_identity:
+                    continue  # fixed — cannot be moved off
+                movable_holder = h
+                # Would losing this slot push the holder below their minimum?
+                h_intervals = self._day_intervals(h, date_iso)
+                h_total = sum(e - s for s, e in h_intervals)
+                remaining = h_total - (inst.end - inst.start)
+                would_shorten = remaining > 0 and remaining < (
+                    self._daily_min_minutes(h, date_iso) or 0
+                )
+                break
+            if open_room > 0:
+                options.append(
+                    {
+                        "slot_key": self._alias_slot_key(slot_key),
+                        "section": self.section_names.get(inst.section_id, inst.section_id),
+                        "take_from": None,
+                        "would_shorten_holder": False,
+                    }
+                )
+            elif movable_holder is not None:
+                options.append(
+                    {
+                        "slot_key": self._alias_slot_key(slot_key),
+                        "section": self.section_names.get(inst.section_id, inst.section_id),
+                        "take_from": self._alias(movable_holder),
+                        "would_shorten_holder": would_shorten,
+                    }
+                )
+        # Options that don't create a new short day first.
+        options.sort(key=lambda o: (o["would_shorten_holder"], o["take_from"] is not None))
+        return options[:6]
+
+    def _daily_min_minutes(self, cid: str, date_iso: str) -> Optional[int]:
+        clinician = self.clinicians_by_id.get(cid)
+        if clinician is None:
+            return None
+        window = self.ctx.window_by_clinician_date.get((cid, date_iso))
+        if window is not None:
+            return max(1, (window[2] - window[1]) // 2)
+        contract = clinician.workingHoursPerWeek
+        if isinstance(contract, (int, float)) and contract > 0:
+            return max(1, int(round(contract * 60 / 5)) // 2)
+        return None
 
     def _tool_ytd_progress(self, args: dict) -> dict:
         as_of = args.get("dateISO") or self.ctx.start_iso

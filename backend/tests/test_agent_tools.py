@@ -793,3 +793,41 @@ def test_unrepairable_fixed_violations_leave_the_quality_tier():
     payload, _ = _run(executor, "get_violations", {"severity": "hard"})
     overlap = [v for v in payload["violations"] if v["code"] == "OVERLAP"]
     assert overlap and all(v["repairable"] is False for v in overlap)
+
+
+def test_short_days_precompute_fix_options():
+    """list_short_days must precompute adjacent fix options so the model
+    need not re-derive them, and mark structurally unfixable cases (no
+    adjacent qualified slot) with an empty option list."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+        ],
+        slots=[
+            # Alice: 3h (below her 4h daily minimum) -> short day.
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="11:00"),
+            # slot-b touches slot-a at 11:00 and Bob holds it (as a movable
+            # seed assignment, not a fixed manual one).
+            make_template_slot(slot_id="slot-b__mon", col_band_id="col-mon-1",
+                               start_time="11:00", end_time="15:00"),
+            make_template_slot(slot_id="slot-c__mon", col_band_id="col-mon-1",
+                               start_time="15:00", end_time="19:00"),
+        ],
+    )
+    executor = _make_executor(
+        state,
+        seed=[
+            _seed("slot-a__mon", MON, "clin-1"),
+            _seed("slot-b__mon", MON, "clin-2"),
+            _seed("slot-c__mon", MON, "clin-2"),
+        ],
+    )
+    payload, _ = _run(executor, "list_short_days", {})
+    assert "fixable" in payload
+    alice = next(c for c in payload["short_days"] if c["clinicianId"] == "Alice")
+    opts = alice["fix_options"]
+    assert any(o["take_from"] == "Bob" for o in opts)
