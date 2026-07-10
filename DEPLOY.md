@@ -163,7 +163,7 @@ container (VMID 105, internal IP `10.10.10.6`) at the institute. Details:
   container. SSH reaches the container only THROUGH the bastion
   (`proxy_*` options of `appleboy/ssh-action`); the bastion's ForceCommand
   permits pure TCP forwarding, never command execution.
-- **Auth**: one key pair (`secrets.DEPLOY_SSH_KEY`) is authorized for
+- **Auth**: one key pair (`secrets.SSH_KEY_FUER_SHIFTSCHEDULE_SERVER`) is authorized for
   `dtruhn` on the bastion and for `root` inside the container.
 - **Stack**: `docker-compose.proxied.yml` — backend + frontend only, the
   frontend published on `127.0.0.1:5000` (never `0.0.0.0`: the app would
