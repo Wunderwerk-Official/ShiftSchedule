@@ -391,6 +391,7 @@ def agent_solve_range(
         soft_violation_count=soft_count,
         max_iterations=config.max_iterations,
         clinician_aliases=executor.alias_by_id,
+        alias_slot_key=executor._alias_slot_key,
         seed_hard_violation_count=executor.seed_quality[0],
     )
     # Free-text guidance from the admin (Settings -> "AI agent instructions").
@@ -466,9 +467,12 @@ def agent_solve_range(
             extra_notes.append("LLM declined the request; best plan so far returned.")
             break
         if response.stop_reason == "tool_use" and response.tool_calls:
+            # replay_text is the TRUE assistant content: reasoning promoted
+            # into .text for the feed must NOT be replayed into the history —
+            # it ballooned self-hosted runs to ~25k input tokens per turn.
             assistant = ChatMessage(
                 role="assistant",
-                content=response.text,
+                content=response.replay_text,
                 tool_calls=response.tool_calls,
                 raw_content=response.raw_content,
             )
@@ -501,7 +505,7 @@ def agent_solve_range(
                 messages.append(
                     ChatMessage(
                         role="assistant",
-                        content=response.text or "(truncated)",
+                        content=response.replay_text or "(truncated)",
                         tool_calls=response.tool_calls,
                         raw_content=response.raw_content,
                     )

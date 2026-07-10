@@ -542,7 +542,7 @@ export default function SolverInfoModal({
                     Claude reviews and improves it step by step — filling open slots,
                     balancing hours (preferring people behind on their yearly target),
                     and following the free-text instructions from Settings → Solver.
-                    Names are anonymized before anything is sent to the AI, and the
+                    The AI works with the plan data including names, and the
                     hard rules above can never be broken.
                   </p>
                   <p className="text-xs text-slate-400 dark:text-slate-500">

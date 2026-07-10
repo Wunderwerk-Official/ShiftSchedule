@@ -300,7 +300,7 @@ def test_agent_activity_events_flow_through_progress():
     slot_key = f"slot-a__mon__{MON}"
     script = [
         {"text": "Filling the open extra slot.", "tool_calls": [{"name": "apply_moves", "arguments": {
-            "moves": [{"action": "assign", "slot_key": slot_key, "clinicianId": "D2"}]}}]},
+            "moves": [{"action": "assign", "slot_key": slot_key, "clinicianId": "Bob"}]}}]},
         {"text": "Done."},
     ]
     progress = ProgressRecorder()
@@ -400,7 +400,7 @@ class CapturingProvider(MockProvider):
         )
 
 
-def test_admin_instructions_are_scrubbed_into_digest():
+def test_admin_instructions_pass_through_with_real_names():
     state = make_app_state(
         clinicians=[
             make_clinician("clin-1", "Dr. Tom Braun"),
@@ -417,10 +417,9 @@ def test_admin_instructions_are_scrubbed_into_digest():
     )
     digest = provider.seen_messages[0][0].content
     assert "ADMIN INSTRUCTIONS" in digest
-    # Real names (any casing, with or without title) never reach the LLM
-    assert "Braun" not in digest and "braun" not in digest
-    assert "Becker" not in digest
-    assert "D1" in digest and "D2" in digest
+    # Instructions pass through verbatim: the LLM works with real names.
+    assert "braun must never work Fridays" in digest
+    assert "Dr. Anna Becker" in digest
 
 
 def test_default_instructions_apply_when_unset_and_empty_disables():

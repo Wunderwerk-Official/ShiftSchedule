@@ -324,7 +324,7 @@ export default function AutomatedPlanningPanel({
           </div>
           <div className="text-xs text-slate-400 dark:text-slate-500">
             Planning uses the AI agent: it drafts a plan, then Claude improves it
-            step by step. Names are anonymized. Model &amp; instructions: Settings → Solver.
+            step by step. Model &amp; instructions: Settings → Solver.
           </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

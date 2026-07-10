@@ -80,4 +80,5 @@ class MockProvider(LLMProvider):
             tool_calls=calls,
             stop_reason="tool_use" if calls else "end_turn",
             usage={"input_tokens": 0, "output_tokens": 0},
+            replay_text=entry.get("text"),
         )

@@ -233,7 +233,7 @@ def test_open_slots_and_overview_shapes():
     executor = _make_executor(state)
     gaps, _ = _run(executor, "list_open_slots", {})
     assert gaps["total"] == 1
-    assert gaps["open_slots"][0]["slot_key"] == f"slot-a__mon__{MON}"
+    assert gaps["open_slots"][0]["slot_key"] == f"S1__{MON}"
 
     overview, _ = _run(executor, "get_plan_overview", {})
     assert overview["open_slot_count"] == 1
@@ -253,11 +253,11 @@ def test_open_slots_and_overview_shapes():
 
 
 # ---------------------------------------------------------------------------
-# Pseudonymization: real names/ids must never reach the LLM
+# LLM-facing identifiers: real names + short slot codes, never raw ids
 # ---------------------------------------------------------------------------
 
 
-def test_llm_facing_outputs_contain_no_real_names_or_ids():
+def test_llm_facing_outputs_use_names_but_never_raw_ids():
     state = make_app_state(
         clinicians=[
             make_clinician("clin-secret-1", "Dr. Annette Geheimnis", qualified_class_ids=["other"]),
@@ -266,21 +266,28 @@ def test_llm_facing_outputs_contain_no_real_names_or_ids():
         assignments=[make_assignment("m1", "slot-a__mon", MON, "clin-secret-1")],
     )
     executor = _make_executor(state)
-    assert executor.alias_by_id == {"clin-secret-1": "D1", "clin-secret-2": "D2"}
+    assert executor.alias_by_id == {
+        "clin-secret-1": "Dr. Annette Geheimnis",
+        "clin-secret-2": "Dr. Bernd Vertraulich",
+    }
 
     for tool, args in [
         ("get_violations", {}),
         ("list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MON}"}),
-        ("get_clinician_summary", {"clinicianId": "D2"}),
+        ("get_clinician_summary", {"clinicianId": "Dr. Bernd Vertraulich"}),
         ("get_plan_overview", {}),
         ("list_open_slots", {}),
     ]:
         result = executor.execute(tool, args, "call-x")
-        for secret in ("Annette", "Geheimnis", "Bernd", "Vertraulich", "clin-secret"):
-            assert secret not in result.content, f"{tool} leaked {secret!r}: {result.content}"
+        # Raw ids never surface; clinicians are addressed by real name.
+        assert "clin-secret" not in result.content, f"{tool}: {result.content}"
+    candidates = executor.execute(
+        "list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MON}"}, "call-y"
+    )
+    assert "Dr. Bernd Vertraulich" in candidates.content
 
 
-def test_apply_moves_accepts_aliases_and_returns_real_ids():
+def test_apply_moves_accepts_names_and_returns_real_ids():
     state = make_app_state(
         clinicians=[make_clinician("clin-real-id", "Dr. Alice")],
     )
@@ -288,7 +295,7 @@ def test_apply_moves_accepts_aliases_and_returns_real_ids():
     payload, _ = _run(
         executor,
         "apply_moves",
-        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"}]},
+        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Dr. Alice"}]},
     )
     assert payload["applied"] is True
     # The working copy stores the REAL id — the returned plan needs no
@@ -296,7 +303,7 @@ def test_apply_moves_accepts_aliases_and_returns_real_ids():
     assert list(executor.current.keys()) == [("slot-a__mon", MON, "clin-real-id")]
 
 
-def test_problem_digest_uses_aliases_only():
+def test_problem_digest_uses_names_and_slot_codes():
     from backend.agent.prompts import build_problem_digest
     from backend.scoring import open_slots, plan_stats
 
@@ -313,9 +320,11 @@ def test_problem_digest_uses_aliases_only():
         soft_violation_count=0,
         max_iterations=10,
         clinician_aliases=executor.alias_by_id,
+        alias_slot_key=executor._alias_slot_key,
     )
-    assert "D1" in digest
-    assert "Carola" not in digest and "Verborgen" not in digest and "clin-secret" not in digest
+    assert "Dr. Carola Verborgen" in digest
+    assert "clin-secret" not in digest
+    assert "S1__" in digest and "slot-a__mon" not in digest
 
 
 def test_activity_feed_uses_real_names_for_the_ui():
@@ -328,7 +337,7 @@ def test_activity_feed_uses_real_names_for_the_ui():
     payload, _ = _run(
         executor,
         "apply_moves",
-        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"}]},
+        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Dr. Alice"}]},
     )
     assert payload["applied"] is True
     kinds = [k for k, _ in events]
@@ -352,7 +361,7 @@ def test_rejected_batch_emits_activity():
     payload, _ = _run(
         executor,
         "apply_moves",
-        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"}]},
+        {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Dr. Alice"}]},
     )
     assert payload["applied"] is False
     assert events and events[-1][0] == "moves_rejected"
@@ -518,10 +527,11 @@ def test_batched_candidates_returns_compact_per_slot_results():
     )
     assert not is_error
     slots = payload["slots"]
-    assert set(slots) == {f"slot-a__mon__{MON}", f"slot-b__mon__{MON}", "bogus__2026-01-05"}
-    good = slots[f"slot-a__mon__{MON}"]
+    # Result keys are the short LLM-facing codes (raw ids resolve on input)
+    assert set(slots) == {f"S1__{MON}", f"S2__{MON}", "bogus__2026-01-05"}
+    good = slots[f"S1__{MON}"]
     assert {c["clinicianId"] for c in good["eligible"]} == set(executor.alias_by_id.values())
-    assert good["ineligible_counts"] == {}
+    assert good["ineligible"] == {}
     assert "error" in slots["bogus__2026-01-05"]
     # single-slot legacy shape unchanged
     single, _ = _run(executor, "list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MON}"})
@@ -564,7 +574,7 @@ def test_dry_run_previews_without_committing():
         "apply_moves",
         {
             "moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}",
-                       "clinicianId": "D1"}],
+                       "clinicianId": "Alice"}],
             "dry_run": True,
         },
     )
@@ -589,7 +599,7 @@ def test_dry_run_reports_structural_rejection_without_counting_it():
         "apply_moves",
         {
             "moves": [{"action": "unassign", "slot_key": f"slot-a__mon__{MON}",
-                       "clinicianId": "D1"}],
+                       "clinicianId": "Alice"}],
             "dry_run": True,
         },
     )
@@ -611,8 +621,8 @@ def test_equal_quality_swap_updates_best_snapshot():
         "apply_moves",
         {
             "moves": [
-                {"action": "unassign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"},
-                {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D2"},
+                {"action": "unassign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"},
+                {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Bob"},
             ]
         },
     )
@@ -634,7 +644,7 @@ def test_hours_overview_flags_underworked_first():
     payload, is_error = _run(executor, "get_hours_overview", {})
     assert not is_error
     assert payload["weeks"] == ["2026-W02"]
-    assert payload["clinicians"][0]["clinicianId"] == "D1"  # most underworked first
+    assert payload["clinicians"][0]["clinicianId"] == "Alice"  # most underworked first
     alice_week = payload["clinicians"][0]["weeks"]["2026-W02"]
     assert alice_week["status"] == "under" and alice_week["hours"] == 0.0
     bob_week = payload["clinicians"][1]["weeks"]["2026-W02"]
@@ -651,11 +661,11 @@ def test_day_schedule_lists_slots_with_assignees():
     assert not is_error
     assert payload["dateISO"] == MON
     slot = payload["slots"][0]
-    assert slot["slot_key"] == f"slot-a__mon__{MON}"
+    assert slot["slot_key"] == f"S1__{MON}"
     assert slot["missing"] == 0
     assignees = {(a["clinicianId"], a["fixed"]) for a in slot["assigned"]}
-    assert assignees == {("D1", True), ("D2", False)}
-    assert "Alice" not in json.dumps(payload)  # aliases only
+    assert assignees == {("Dr. Alice", True), ("Bob", False)}
+    assert "clin-1" not in json.dumps(payload)  # raw ids never surface
 
     outside, is_error = _run(executor, "get_day_schedule", {"dateISO": "2027-01-01"})
     assert not is_error and "error" in outside
@@ -680,8 +690,8 @@ def test_mixed_batch_touching_fixed_assignment_rejects_atomically():
         "apply_moves",
         {
             "moves": [
-                {"action": "unassign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "D1"},
-                {"action": "assign", "slot_key": f"slot-b__{MON}", "clinicianId": "D2"},
+                {"action": "unassign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"},
+                {"action": "assign", "slot_key": f"slot-b__{MON}", "clinicianId": "Bob"},
             ]
         },
     )
@@ -722,7 +732,7 @@ def test_repairing_seed_violation_by_unassign_counts_as_improvement():
         executor,
         "apply_moves",
         {"moves": [{"action": "unassign", "slot_key": f"slot-a__tue__{TUE}",
-                    "clinicianId": "D1"}]},
+                    "clinicianId": "Alice"}]},
     )
     assert payload["applied"] is True
     assert executor.best_quality[0] == 0  # violations repaired
@@ -754,7 +764,7 @@ def test_extending_a_fixed_short_day_counts_as_improvement():
         executor,
         "apply_moves",
         {"moves": [{"action": "assign", "slot_key": f"slot-morning__{MON}",
-                    "clinicianId": "D1"}]},
+                    "clinicianId": "Alice"}]},
     )
     assert payload["applied"] is True
     assert executor.best_quality[2] == 0  # day extended past the minimum

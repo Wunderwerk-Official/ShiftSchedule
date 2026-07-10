@@ -159,6 +159,9 @@ class AnthropicProvider(LLMProvider):
             stop_reason=stop_reason,
             usage=usage,
             reasoning=reasoning,
+            # raw_content wins on replay (thinking blocks must be echoed
+            # verbatim); replay_text is the fallback for consistency.
+            replay_text=text,
             raw_content=raw_content,
         )
 

@@ -891,9 +891,9 @@ export default function SettingsView({
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
                     Free-text guidance the AI agent follows in addition to the fixed rules above.
-                    You can refer to people and sections by name — names are replaced with
-                    anonymous ids before anything is sent to the AI. Clear the field to run
-                    without extra instructions.
+                    You can refer to people and sections by name — the AI sees the plan with
+                    real names (use a self-hosted endpoint if data must stay in-house).
+                    Clear the field to run without extra instructions.
                   </div>
                 </div>
                 <button

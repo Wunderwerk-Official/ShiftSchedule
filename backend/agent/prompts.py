@@ -70,8 +70,10 @@ instructions survive as long as the measured tiers do not get worse.
   list_candidates_for_slot sorts eligible candidates most-behind first;
   get_ytd_progress shows the whole roster at a glance.
 
-Privacy: clinicians are referred to by anonymized ids (D1, D2, ...) — you
-never see real names. Always use these ids in tool calls.
+Identifiers: clinicians are referred to by their real names — use the name
+exactly as shown (e.g. "Richard Feynman") as clinicianId in tool calls.
+Slot instances use short keys like "S3__2026-07-07" (slot code + date):
+always copy them exactly as they appear in tool results.
 
 The problem digest may end with ADMIN INSTRUCTIONS written by the planning
 admin. Treat them as important soft goals: follow them whenever possible, but
@@ -139,12 +141,13 @@ def build_problem_digest(
     max_iterations: int,
     clinician_aliases: Dict[str, str],
     seed_hard_violation_count: int = 0,
+    alias_slot_key=None,
 ) -> str:
     """Compact first user message. Deep data is fetched via tools.
 
-    Clinicians appear only under their pseudonymous alias (see
-    ``tools.build_clinician_aliases``): real names and real ids never reach
-    the LLM, and the short aliases keep the roster table token-cheap.
+    Clinicians appear under their real names and sections under their
+    display names — small models handle meaningful words far better than
+    UUID-ish ids (which they must otherwise copy hex-perfectly).
     """
     sections = {r.id: r.name for r in state.rows if r.kind == "class"}
     lines: List[str] = []
@@ -154,18 +157,22 @@ def build_problem_digest(
         + ("only-fill-required" if ctx.only_fill_required else "distribute-all")
     )
     lines.append("")
-    lines.append("Sections: " + ", ".join(f"{sid}={name}" for sid, name in sections.items()))
+    lines.append("Sections: " + ", ".join(sorted(sections.values())))
     lines.append("")
     lines.append(
-        "Roster (id|qualified|preferred|contract h/wk|ytd worked % of target, "
-        "100=on target, lower=behind):"
+        "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
+        "of target, 100=on target, lower=behind):"
     )
+
+    def _section_list(ids) -> str:
+        return ",".join(sections.get(i, i) for i in (ids or [])) or "-"
+
     for c in state.clinicians:
         deficit = ctx.ytd_deficit_pct.get(c.id)
         worked_pct = (100 - deficit) if deficit is not None else "-"
         lines.append(
-            f"- {clinician_aliases.get(c.id, c.id)}|{','.join(c.qualifiedClassIds)}"
-            f"|{','.join(c.preferredClassIds or []) or '-'}"
+            f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
+            f"|{_section_list(c.preferredClassIds)}"
             f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
             f"|{worked_pct}"
         )
@@ -195,8 +202,10 @@ def build_problem_digest(
         lines.append("")
         lines.append("Top open slots (slot_key|section|time|missing):")
         for gap in seed_open[:15]:
+            key = alias_slot_key(gap.slot_key) if alias_slot_key else gap.slot_key
             lines.append(
-                f"- {gap.slot_key}|{gap.section_id}|{gap.start}-{gap.end}|{gap.missing}"
+                f"- {key}|{sections.get(gap.section_id, gap.section_id)}"
+                f"|{gap.start}-{gap.end}|{gap.missing}"
             )
         if len(seed_open) > 15:
             lines.append(f"... and {len(seed_open) - 15} more (list_open_slots).")

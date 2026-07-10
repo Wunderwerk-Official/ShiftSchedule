@@ -71,7 +71,8 @@ TOOL_SPECS_RAW = [
         "name": "list_open_slots",
         "description": (
             "Slot instances still below their required staffing, sorted by "
-            "date then priority. slot_key identifies an instance "
+            "date then priority. slot_key identifies an instance like "
+            "'S3__2026-07-07' "
             "('<slotId>__<dateISO>') and is what apply_moves expects."
         ),
         "input_schema": {
@@ -247,14 +248,20 @@ def _split_slot_key(slot_key: str) -> Tuple[str, str]:
 
 
 def build_clinician_aliases(state: AppState) -> Dict[str, str]:
-    """Stable pseudonyms (D1, D2, ...) for clinicians, in roster order.
+    """LLM-facing clinician identifiers: the real names.
 
-    Everything the LLM sees uses these aliases: real names never leave the
-    backend, and short aliases beat long UUID-ish ids on token count. The
-    mapping lives only in this process; tool inputs are translated back, so
-    the returned plan carries real ids and the UI never sees an alias.
+    Pseudonymization was dropped deliberately (admin decision): real names
+    are far easier for a model to track through a long plan than D1/D2
+    codes, and self-hosted endpoints keep the data in-house anyway.
+    Duplicate names get a numeric suffix so every identifier stays unique.
     """
-    return {c.id: f"D{i + 1}" for i, c in enumerate(state.clinicians)}
+    aliases: Dict[str, str] = {}
+    seen: Dict[str, int] = {}
+    for c in state.clinicians:
+        name = (c.name or c.id).strip()
+        seen[name] = seen.get(name, 0) + 1
+        aliases[c.id] = name if seen[name] == 1 else f"{name} ({seen[name]})"
+    return aliases
 
 
 class PlanToolExecutor:
@@ -277,9 +284,30 @@ class PlanToolExecutor:
         self.on_activity = on_activity
         self.clinicians_by_id: Dict[str, Clinician] = {c.id: c for c in state.clinicians}
         self.section_names: Dict[str, str] = {r.id: r.name for r in state.rows}
-        # Pseudonymization boundary: the LLM only ever sees aliases.
+        # LLM-facing clinician identifiers: real (deduplicated) names.
         self.alias_by_id: Dict[str, str] = build_clinician_aliases(state)
         self.id_by_alias: Dict[str, str] = {v: k for k, v in self.alias_by_id.items()}
+        # Short slot codes (S1, S2, ...): the raw template-slot ids are
+        # UUIDs — token-heavy and easy for a model to mistype (one wrong
+        # hex char = invalid move). Deterministic order: section name,
+        # start time, id. The LLM only ever sees "S3__2026-07-07" keys;
+        # raw ids are still accepted on input for robustness.
+        slot_meta = {}
+        for key, inst in ctx.instances.items():
+            sid, _ = _split_slot_key(key)
+            if sid not in slot_meta:
+                slot_meta[sid] = (
+                    self.section_names.get(inst.section_id, inst.section_id),
+                    inst.start,
+                    sid,
+                )
+        ordered = sorted(slot_meta, key=lambda sid: slot_meta[sid])
+        self.slot_code_by_id: Dict[str, str] = {
+            sid: f"S{i + 1}" for i, sid in enumerate(ordered)
+        }
+        self.slot_id_by_code: Dict[str, str] = {
+            v: k for k, v in self.slot_code_by_id.items()
+        }
 
         # Fixed context: everything already in app state. Kept in full so
         # boundary checks (overlap/rest across the range edges) see it.
@@ -545,10 +573,16 @@ class PlanToolExecutor:
         gaps = open_slots(self.ctx, self._working_list())
         if date_filter:
             gaps = [g for g in gaps if g.dateISO == date_filter]
+        def _gap_out(g) -> dict:
+            d = g.model_dump()
+            d["slot_key"] = self._alias_slot_key(d["slot_key"])
+            d["section"] = self.section_names.get(d.pop("section_id"), "?")
+            return d
+
         return {
             "total": len(gaps),
             "offset": offset,
-            "open_slots": [g.model_dump() for g in gaps[offset : offset + limit]],
+            "open_slots": [_gap_out(g) for g in gaps[offset : offset + limit]],
         }
 
     def _tool_candidates(self, args: dict) -> dict:
@@ -562,23 +596,26 @@ class PlanToolExecutor:
                 result = self._candidates_for_slot(key)
                 if "candidates" in result:
                     eligible = [c for c in result["candidates"] if c["eligible"]][:8]
-                    ineligible_counts: Dict[str, int] = {}
-                    for c in result["candidates"]:
-                        if not c["eligible"]:
-                            for reason in c["reasons"] or ["OTHER"]:
-                                ineligible_counts[reason] = ineligible_counts.get(reason, 0) + 1
+                    # Per-person reasons, not just counts: "who is blocked by
+                    # what" is exactly the question the model asks next.
+                    ineligible = {
+                        c["clinicianId"]: c["reasons"] or ["OTHER"]
+                        for c in result["candidates"]
+                        if not c["eligible"]
+                    }
                     result = {
                         "capacity_left": result["capacity_left"],
                         "eligible": eligible,
-                        "ineligible_counts": ineligible_counts,
+                        "ineligible": ineligible,
                     }
-                out[key] = result
+                out[self._alias_slot_key(self._resolve_slot_key(key))] = result
             return {"slots": out}
         if not args.get("slot_key"):
             return {"error": "Provide slot_key or slot_keys"}
         return self._candidates_for_slot(args["slot_key"])
 
     def _candidates_for_slot(self, slot_key: str) -> dict:
+        slot_key = self._resolve_slot_key(slot_key)
         inst = self.ctx.instances.get(slot_key)
         if inst is None:
             return {"error": f"Unknown or inactive slot instance: {slot_key}"}
@@ -642,7 +679,11 @@ class PlanToolExecutor:
                 c.get("ytd_worked_pct") if c.get("ytd_worked_pct") is not None else 999,
             )
         )
-        return {"slot_key": slot_key, "capacity_left": capacity_left, "candidates": candidates}
+        return {
+            "slot_key": self._alias_slot_key(slot_key),
+            "capacity_left": capacity_left,
+            "candidates": candidates,
+        }
 
     def _tool_clinician_summary(self, args: dict) -> dict:
         cid = self._resolve_clinician(args["clinicianId"])
@@ -653,12 +694,12 @@ class PlanToolExecutor:
         for a in self.fixed_assignments:
             if a.dateISO in self.ctx.target_date_set and a.clinicianId == cid:
                 by_date.setdefault(a.dateISO, []).append(
-                    {"slot_key": f"{a.rowId}__{a.dateISO}", "fixed": True}
+                    {"slot_key": self._alias_slot_key(f"{a.rowId}__{a.dateISO}"), "fixed": True}
                 )
         for (row_id, date_iso, c), _a in self.current.items():
             if c == cid and date_iso in self.ctx.target_date_set:
                 by_date.setdefault(date_iso, []).append(
-                    {"slot_key": f"{row_id}__{date_iso}", "fixed": False}
+                    {"slot_key": self._alias_slot_key(f"{row_id}__{date_iso}"), "fixed": False}
                 )
         weeks: Dict[str, float] = {}
         for date_iso in self.ctx.target_day_isos:
@@ -725,7 +766,7 @@ class PlanToolExecutor:
                 total += duration
                 slots.append(
                     {
-                        "slot_key": f"{a.rowId}__{a.dateISO}",
+                        "slot_key": self._alias_slot_key(f"{a.rowId}__{a.dateISO}"),
                         "fixed": (a.rowId, a.dateISO, a.clinicianId) in self.fixed_identity,
                     }
                 )
@@ -843,7 +884,7 @@ class PlanToolExecutor:
             )
             slots.append(
                 {
-                    "slot_key": inst.slot_key,
+                    "slot_key": self._alias_slot_key(inst.slot_key),
                     "section_id": inst.section_id,
                     "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
                     "end": f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
@@ -864,7 +905,9 @@ class PlanToolExecutor:
         for index, move in enumerate(moves):
             action = move.get("action")
             try:
-                slot_id, date_iso = _split_slot_key(move.get("slot_key") or "")
+                slot_id, date_iso = _split_slot_key(
+                    self._resolve_slot_key(move.get("slot_key") or "")
+                )
             except ValueError as exc:
                 rejected.append({"index": index, "reason": str(exc)})
                 continue
@@ -971,6 +1014,17 @@ class PlanToolExecutor:
                 self.on_improvement(self.best_score, list(trial_list))
         described = [self._describe_move(m) for m in moves]
         self.accepted_move_log.extend(described)
+        # Small models miss regressions in the raw counters: say it plainly
+        # when the working copy just got worse than the snapshot that will
+        # actually be returned.
+        quality_note = None
+        if quality > self.best_quality:
+            quality_note = (
+                "WARNING: this state is WORSE than the best snapshot "
+                "(more open slots, short days or hours deviation). The run "
+                "returns the best snapshot, not this state - revert these "
+                "moves or improve beyond the previous best."
+            )
         self._emit_activity(
             "moves_applied",
             {
@@ -979,7 +1033,10 @@ class PlanToolExecutor:
                 "score": self.encode_quality(quality),
             },
         )
-        return {"applied": True, "verification": self._overview()}
+        result = {"applied": True, "verification": self._overview()}
+        if quality_note:
+            result["note"] = quality_note
+        return result
 
     # ------------------------------------------------------------------
     # small helpers
@@ -993,6 +1050,22 @@ class PlanToolExecutor:
         except Exception:
             pass  # UI hook failures must never affect the solve
 
+    def _alias_slot_key(self, slot_key: str) -> str:
+        """Raw "slot-<uuid>__date" -> LLM-facing "S3__date"."""
+        try:
+            sid, date_iso = _split_slot_key(slot_key)
+        except ValueError:
+            return slot_key
+        return f"{self.slot_code_by_id.get(sid, sid)}__{date_iso}"
+
+    def _resolve_slot_key(self, slot_key: str) -> str:
+        """LLM-facing "S3__date" (or raw id) -> canonical raw key."""
+        try:
+            sid, date_iso = _split_slot_key(str(slot_key))
+        except ValueError:
+            return str(slot_key)
+        return f"{self.slot_id_by_code.get(sid, sid)}__{date_iso}"
+
     def _resolve_clinician(self, alias_or_id: str) -> str:
         """Translate an LLM-facing alias (D1, ...) back to the real id.
         Real ids are accepted too, so in-process callers/tests keep working."""
@@ -1004,63 +1077,22 @@ class PlanToolExecutor:
         return self.alias_by_id.get(clinician_id, clinician_id)
 
     def _unscrub(self, text: str) -> str:
-        """Replace aliases (D1, ...) with real names for the UI-facing feed
-        (the reverse of :meth:`_scrub`; never applied to LLM-facing output)."""
-        import re
-
-        def replace(match: "re.Match[str]") -> str:
-            cid = self.id_by_alias.get(match.group(0))
-            clinician = self.clinicians_by_id.get(cid) if cid else None
-            return clinician.name if clinician else match.group(0)
-
-        return re.sub(r"\bD\d+\b", replace, text)
-
-    def _scrub(self, text: str) -> str:
-        """Replace clinician names and ids in free text with their aliases.
-
-        Applied to every LLM-facing string that can embed identity: violation
-        messages and the admin's free-text instructions. Matching is
-        case-insensitive on word boundaries and also covers the name without
-        a leading academic title plus the bare surname, so "Dr. Tom Braun",
-        "tom braun" and "Braun" all become the same alias. Over-scrubbing is
-        safe (stays private); under-scrubbing would leak a name. Longest
-        needles run first so partial matches don't clobber longer ones.
-        """
-        import re
-
-        replacements: List[Tuple[str, str]] = []
-        for cid, alias in self.alias_by_id.items():
-            clinician = self.clinicians_by_id.get(cid)
-            replacements.append((cid, alias))
-            if clinician and clinician.name:
-                name = clinician.name.strip()
-                replacements.append((name, alias))
-                bare = name
-                while True:
-                    stripped = re.sub(
-                        r"^(dr\.?|prof\.?|pd|med\.?)\s+", "", bare, flags=re.IGNORECASE
-                    )
-                    if stripped == bare:
-                        break
-                    bare = stripped.strip()
-                if bare and bare != name:
-                    replacements.append((bare, alias))
-                surname = bare.split()[-1] if bare else ""
-                if len(surname) >= 3:
-                    replacements.append((surname, alias))
-        replacements.sort(key=lambda pair: len(pair[0]), reverse=True)
-        for needle, alias in replacements:
-            if needle:
-                text = re.sub(
-                    r"(?<!\w)" + re.escape(needle) + r"(?!\w)",
-                    alias,
-                    text,
-                    flags=re.IGNORECASE,
-                )
+        """Kept for the harness contract: with real names as the LLM-facing
+        identifiers there is nothing to restore — raw ids (should one ever
+        appear in free text) are still mapped to names."""
+        for cid, name in self.alias_by_id.items():
+            if cid in text:
+                text = text.replace(cid, name)
         return text
 
+    def _scrub(self, text: str) -> str:
+        """LLM-bound free text passes through with real names (the admin
+        chose to drop pseudonymization); only raw ids are replaced by names
+        so the model never has to deal with UUID-ish identifiers."""
+        return self._unscrub(text)
+
     def scrub_text(self, text: str) -> str:
-        """Public entry point for pseudonymizing LLM-bound free text."""
+        """Public entry point for preparing LLM-bound free text."""
         return self._scrub(text)
 
     def unscrub_text(self, text: str) -> str:
@@ -1089,7 +1121,9 @@ class PlanToolExecutor:
         """Humanize one accepted move for the live UI feed (real names are
         fine here: this goes to the user's browser, never to the LLM)."""
         try:
-            slot_id, date_iso = _split_slot_key(move.get("slot_key") or "")
+            slot_id, date_iso = _split_slot_key(
+                self._resolve_slot_key(move.get("slot_key") or "")
+            )
         except ValueError:
             slot_id, date_iso = move.get("slot_key") or "?", ""
         cid = self._resolve_clinician(move.get("clinicianId") or "")

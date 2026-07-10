@@ -74,6 +74,11 @@ class ProviderResponse:
     # When a turn has ONLY reasoning, adapters put it into ``text`` instead so
     # the run summary and feed never end up empty.
     reasoning: Optional[str] = None
+    # What to REPLAY as the assistant turn's content in the next request:
+    # the true answer content only, never promoted reasoning (feeding chains
+    # of thought back in balloons the context — ~25k input tokens/turn on
+    # self-hosted reasoning models — and Qwen explicitly advises against it).
+    replay_text: Optional[str] = None
     # Opaque provider content blocks for replaying this assistant turn
     # verbatim (see ChatMessage.raw_content).
     raw_content: Optional[List[dict]] = None

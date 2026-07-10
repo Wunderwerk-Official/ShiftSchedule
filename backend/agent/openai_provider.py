@@ -210,6 +210,7 @@ class OpenAICompatibleProvider(LLMProvider):
         # (typical for tool calls) promotes the thoughts to text so the live
         # feed and run summary never end up empty.
         text = message.content or None
+        replay_text = text  # true content only; reasoning is never replayed
         reasoning: Optional[str] = None
         for field in ("reasoning_content", "reasoning"):
             candidate = getattr(message, field, None)
@@ -225,5 +226,6 @@ class OpenAICompatibleProvider(LLMProvider):
             stop_reason=stop_reason,
             usage=usage,
             reasoning=reasoning,
+            replay_text=replay_text,
             raw_content=None,  # no replay requirement on this API
         )
