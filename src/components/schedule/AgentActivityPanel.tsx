@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { AgentActivityData } from "../../api/client";
 import {
   deriveAgentStatus,
@@ -83,13 +84,23 @@ function StageStepper({ stage }: { stage: AgentStage }) {
   );
 }
 
-// Long model output stays readable: short texts render inline, anything
-// longer collapses to a preview with a details toggle showing the full
-// (untruncated) text — reasoning chains of large models can be pages long.
+// Long model output stays readable: short texts render inline; anything
+// longer shows a preview plus a button that opens the COMPLETE text in a
+// dedicated dialog (reasoning chains of large models are pages long — an
+// inline toggle inside the small scroll area could never show them whole).
 const THOUGHT_PREVIEW_CHARS = 220;
 
-function ThoughtRow({ text, reasoning }: { text: string; reasoning: boolean }) {
-  const [expanded, setExpanded] = useState(false);
+export type ThoughtDetails = { text: string; reasoning: boolean };
+
+function ThoughtRow({
+  text,
+  reasoning,
+  onShowFull,
+}: {
+  text: string;
+  reasoning: boolean;
+  onShowFull: (details: ThoughtDetails) => void;
+}) {
   const long = text.length > THOUGHT_PREVIEW_CHARS;
   return (
     <div className="solver-feed-enter flex items-start gap-2 px-2.5 py-1">
@@ -107,15 +118,15 @@ function ThoughtRow({ text, reasoning }: { text: string; reasoning: boolean }) {
           </span>
         )}
         <span className="whitespace-pre-wrap text-xs italic leading-snug text-slate-500 dark:text-slate-400">
-          {expanded || !long ? text : `${text.slice(0, THOUGHT_PREVIEW_CHARS)}…`}
+          {long ? `${text.slice(0, THOUGHT_PREVIEW_CHARS)}…` : text}
         </span>
         {long && (
           <button
             type="button"
-            onClick={() => setExpanded((prev) => !prev)}
+            onClick={() => onShowFull({ text, reasoning })}
             className="mt-0.5 block text-[11px] font-medium text-indigo-500 hover:text-indigo-600 dark:text-indigo-400 dark:hover:text-indigo-300"
           >
-            {expanded ? "Show less" : "Show full text"}
+            Show full text
           </button>
         )}
       </div>
@@ -123,7 +134,86 @@ function ThoughtRow({ text, reasoning }: { text: string; reasoning: boolean }) {
   );
 }
 
-function FeedRow({ entry }: { entry: AgentFeedEntry }) {
+function ThoughtDialog({
+  details,
+  onClose,
+}: {
+  details: ThoughtDetails;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(details.text);
+      setCopied(true);
+    } catch {
+      const textarea = document.createElement("textarea");
+      textarea.value = details.text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textarea);
+      setCopied(true);
+    }
+    window.setTimeout(() => setCopied(false), 1500);
+  };
+  return createPortal(
+    <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-8">
+      <button
+        type="button"
+        aria-label="Close"
+        onClick={onClose}
+        className="absolute inset-0 cursor-default bg-slate-900/50 backdrop-blur-[1px]"
+      />
+      <div className="relative flex max-h-full w-full max-w-3xl flex-col rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
+        <div className="flex items-center justify-between gap-3 border-b border-slate-100 px-4 py-2.5 dark:border-slate-800">
+          <div className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+            {details.reasoning ? "Model reasoning (full text)" : "Model output (full text)"}
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => void copy()}
+              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              {copied ? "Copied ✓" : "Copy"}
+            </button>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+        <div className="overflow-y-auto px-4 py-3">
+          <pre className="whitespace-pre-wrap break-words font-sans text-sm leading-relaxed text-slate-700 dark:text-slate-200">
+            {details.text}
+          </pre>
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
+function FeedRow({
+  entry,
+  onShowFullThought,
+}: {
+  entry: AgentFeedEntry;
+  onShowFullThought: (details: ThoughtDetails) => void;
+}) {
   if (entry.type === "move") {
     const assign = entry.move.action === "assign";
     return (
@@ -156,7 +246,13 @@ function FeedRow({ entry }: { entry: AgentFeedEntry }) {
     );
   }
   if (entry.type === "thought") {
-    return <ThoughtRow text={entry.text} reasoning={entry.reasoning} />;
+    return (
+      <ThoughtRow
+        text={entry.text}
+        reasoning={entry.reasoning}
+        onShowFull={onShowFullThought}
+      />
+    );
   }
   if (entry.type === "tools") {
     return (
@@ -180,6 +276,7 @@ function FeedRow({ entry }: { entry: AgentFeedEntry }) {
 
 export default function AgentActivityPanel({ events }: { events: AgentActivityData[] }) {
   const status = useMemo(() => deriveAgentStatus(events), [events]);
+  const [fullThought, setFullThought] = useState<ThoughtDetails | null>(null);
   // Seconds since the last live event: with adaptive thinking a single model
   // step can take minutes on large plans, which used to look like a hang.
   const lastEventAtRef = useRef(Date.now());
@@ -230,7 +327,7 @@ export default function AgentActivityPanel({ events }: { events: AgentActivityDa
           </div>
         )}
         {status.feed.map((entry) => (
-          <FeedRow key={entry.key} entry={entry} />
+          <FeedRow key={entry.key} entry={entry} onShowFullThought={setFullThought} />
         ))}
         {status.feed.length === 0 && !status.thinking && (
           <div className="flex items-center gap-2 px-2.5 py-1">
@@ -243,6 +340,9 @@ export default function AgentActivityPanel({ events }: { events: AgentActivityDa
           </div>
         )}
       </div>
+      {fullThought && (
+        <ThoughtDialog details={fullThought} onClose={() => setFullThought(null)} />
+      )}
     </div>
   );
 }

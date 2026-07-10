@@ -19,6 +19,9 @@ on:
       model:
         description: "Model override (empty = admin setting)"
         default: ""
+      scenario:
+        description: "base | vacation-wave | understaffed"
+        default: "base"
 
 jobs:
   arena:
@@ -58,12 +61,14 @@ jobs:
           DAYS: ${{ inputs.days }}
           TIMEOUT: ${{ inputs.timeout }}
           MODEL: ${{ inputs.model }}
+          SCENARIO: ${{ inputs.scenario }}
         run: |
-          ssh truhn-target START="$START" DAYS="$DAYS" TIMEOUT="$TIMEOUT" MODEL="$MODEL" bash -s <<'EOF'
+          ssh truhn-target START="$START" DAYS="$DAYS" TIMEOUT="$TIMEOUT" MODEL="$MODEL" SCENARIO="$SCENARIO" bash -s <<'EOF'
           set -euo pipefail
           cd /opt/app
           EXTRA=()
           [ -n "$MODEL" ] && EXTRA=(--model "$MODEL")
+          [ -n "$SCENARIO" ] && EXTRA+=(--scenario "$SCENARIO")
           docker compose -f docker-compose.proxied.yml exec -T backend \
             python -m backend.arena.run \
               --start "$START" --days "$DAYS" --timeout "$TIMEOUT" "${EXTRA[@]}"

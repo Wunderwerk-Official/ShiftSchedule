@@ -64,9 +64,16 @@ DEADLINE_HEADROOM_SECONDS = 5.0
 # the run's own wall-clock deadline still bounds the total via min().
 MAX_PER_CALL_TIMEOUT_SECONDS = 600.0
 # Per-event cap for thought/reasoning text in the live feed. Generous — the
-# UI clamps long entries behind a details toggle — but bounded so a single
-# runaway chain of thought cannot bloat the SSE stream.
-MAX_FEED_TEXT_CHARS = 6000
+# admin wants to read chains of thought in FULL (the UI opens them in a
+# dedicated dialog) — but bounded so a runaway model cannot bloat the SSE
+# stream. Texts that do exceed it get an explicit truncation marker.
+MAX_FEED_TEXT_CHARS = 24000
+
+
+def _feed_text(text: str) -> str:
+    if len(text) <= MAX_FEED_TEXT_CHARS:
+        return text
+    return text[:MAX_FEED_TEXT_CHARS] + "\n… [truncated]"
 
 TOOL_SPECS = [
     ToolSpec(t["name"], t["description"], t["input_schema"]) for t in TOOL_SPECS_RAW
@@ -307,7 +314,7 @@ def agent_solve_range(
             "violations_final": violation_lines[:90],
             # Full reasoning chains belong in the copyable log — cap only as
             # a guard against a runaway model, not as a display truncation.
-            "thoughts": [t[:MAX_FEED_TEXT_CHARS] for t in thought_log[:80]],
+            "thoughts": [_feed_text(t) for t in thought_log[:80]],
         }
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
@@ -478,14 +485,14 @@ def agent_solve_range(
                 )
                 emit_agent(
                     "thought",
-                    {"text": reasoning_full[:MAX_FEED_TEXT_CHARS], "reasoning": True},
+                    {"text": _feed_text(reasoning_full), "reasoning": True},
                 )
         if response.text:
             # The model writes aliases (D1, ...); restore real names for the
             # user-facing feed and remember the latest text as the run summary.
             final_summary = executor.unscrub_text(response.text.strip())
             thought_log.append(f"[iteration {iterations_done}] {final_summary}")
-            emit_agent("thought", {"text": final_summary[:MAX_FEED_TEXT_CHARS]})
+            emit_agent("thought", {"text": _feed_text(final_summary)})
 
         if response.stop_reason == "error":
             extra_notes.append(
