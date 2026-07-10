@@ -1,13 +1,9 @@
+# The app moved to shiftplanner.truhn.ai (2026-07). This server only issues
+# permanent redirects now — paths are preserved, so bookmarks, iCal
+# subscription URLs and published web links keep working through the
+# redirect (their tokens were migrated with the database). The tls directive
+# stays so the certificate keeps renewing for the redirect itself.
 {$DOMAIN} {
-  encode gzip
-
-  handle_path /api/* {
-    reverse_proxy backend:8000
-  }
-
-  handle {
-    reverse_proxy frontend:80
-  }
-
+  redir https://shiftplanner.truhn.ai{uri} permanent
   tls {$LETSENCRYPT_EMAIL}
 }
