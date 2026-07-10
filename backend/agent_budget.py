@@ -100,6 +100,17 @@ def resolve_agent_runtime_config(base):
         base.openai_api_key = values[_SETTING_OPENAI_KEY]
     if values.get(_SETTING_OPENAI_VERIFY_TLS) in ("true", "false"):
         base.openai_verify_tls = values[_SETTING_OPENAI_VERIFY_TLS] == "true"
+    # The model name is provider-specific. Planning runs get it injected via
+    # the solve payload (effective_model), but direct in-process users of
+    # this config — the admin chat test — call the provider straight from
+    # here and would otherwise send an Anthropic model id to a self-hosted
+    # endpoint. Mock setups fall through both branches untouched.
+    if base.provider == "openai":
+        if values.get(_SETTING_OPENAI_MODEL):
+            base.model = values[_SETTING_OPENAI_MODEL]
+    elif base.provider == "anthropic":
+        if values.get(_SETTING_MODEL):
+            base.model = values[_SETTING_MODEL]
     return base
 
 

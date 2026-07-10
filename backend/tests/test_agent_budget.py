@@ -143,6 +143,34 @@ def test_runtime_config_overlay_preserves_env_when_unset(temp_db):
     assert overlaid.anthropic_api_key == "k2"
 
 
+def test_runtime_config_overlay_resolves_provider_specific_model(temp_db):
+    """The chat test calls providers straight from this config: with a
+    self-hosted provider it must carry the admin's openai_model, never the
+    Anthropic id (a vLLM/LiteLLM server 400s on model=claude-...)."""
+    from backend.agent.config import AgentConfig
+    from backend.agent_budget import resolve_agent_runtime_config
+
+    client = _client_as("admin")
+    client.put(
+        "/v1/agent/settings",
+        json={"provider": "openai", "openai_base_url": "http://h:8000/v1",
+              "openai_model": "Qwen/Qwen3.5-122B", "model": "claude-opus-4-8"},
+    )
+    overlaid = resolve_agent_runtime_config(AgentConfig(model="claude-sonnet-5"))
+    assert overlaid.model == "Qwen/Qwen3.5-122B"
+
+    # Back on Anthropic, the admin's Claude choice wins again.
+    client.put("/v1/agent/settings", json={"provider": "anthropic"})
+    overlaid2 = resolve_agent_runtime_config(AgentConfig(model="claude-sonnet-5"))
+    assert overlaid2.model == "claude-opus-4-8"
+
+    # A cleared openai_model leaves the env model untouched (the escape
+    # hatch for AGENT_MODEL-driven setups).
+    client.put("/v1/agent/settings", json={"provider": "openai", "openai_model": ""})
+    overlaid3 = resolve_agent_runtime_config(AgentConfig(model="m0"))
+    assert overlaid3.model == "m0"
+
+
 def test_non_admin_cannot_update_settings(temp_db):
     client = _client_as("user")
     res = client.put("/v1/agent/settings", json={"model": "claude-haiku-4-5"})
