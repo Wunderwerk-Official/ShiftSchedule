@@ -169,7 +169,11 @@ container (VMID 105, internal IP `10.10.10.6`) at the institute. Details:
   frontend published on `127.0.0.1:5000` (never `0.0.0.0`: the app would
   otherwise be reachable unauthenticated from the internal `10.10.10.0/24`
   subnet). The container's own nginx terminates TLS for the domain and
-  proxies to that port.
+  proxies to that port. The deploy drops
+  `/etc/nginx/conf.d/zz-shiftschedule-proxy.conf` onto that host nginx
+  (read/send timeout 3600s, `proxy_buffering off`) — solver POSTs answer
+  only after minutes and progress streams as SSE, which the nginx defaults
+  (60s timeout, buffering) would cut off or freeze.
 - **Bootstrap**: the job clones the public repo to `/opt/app` on first run,
   generates `.env` (random admin password + JWT secret, never echoed to
   logs — read them via `ssh -J dtruhn@49.13.89.75:4444 dtruhn@10.10.10.6`,

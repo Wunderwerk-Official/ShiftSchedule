@@ -59,7 +59,10 @@ def _compact_tool_history(messages) -> None:
                 result.content = TOOL_RESULT_STUB
 # Leave this many seconds of headroom before the deadline for finalization.
 DEADLINE_HEADROOM_SECONDS = 5.0
-MAX_PER_CALL_TIMEOUT_SECONDS = 180.0
+# Cap for a single LLM request. Sized for slow self-hosted reasoning models
+# (a 100B+ model can spend several minutes thinking through the first digest);
+# the run's own wall-clock deadline still bounds the total via min().
+MAX_PER_CALL_TIMEOUT_SECONDS = 600.0
 
 TOOL_SPECS = [
     ToolSpec(t["name"], t["description"], t["input_schema"]) for t in TOOL_SPECS_RAW

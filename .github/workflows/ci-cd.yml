@@ -211,6 +211,30 @@ jobs:
               > run.sh
             chmod +x run.sh
 
+            # The host nginx (TLS for the domain) fronts the container stack.
+            # Its defaults cut idle proxied requests after 60s and buffer SSE
+            # — both break long solver runs. Fallback directives at http level
+            # via conf.d drop-in (site/location settings still win if set).
+            if [ -d /etc/nginx/conf.d ]; then
+              printf '%s\n' \
+                '# ShiftSchedule: solver POSTs idle for minutes, progress is SSE.' \
+                'proxy_read_timeout 3600s;' \
+                'proxy_send_timeout 3600s;' \
+                'proxy_buffering off;' \
+                > /etc/nginx/conf.d/zz-shiftschedule-proxy.conf
+              if nginx -t >/dev/null 2>&1; then
+                systemctl reload nginx 2>/dev/null || nginx -s reload
+                if nginx -T 2>/dev/null | grep -q zz-shiftschedule-proxy; then
+                  echo "Host nginx proxy drop-in active."
+                else
+                  echo "WARNING: host nginx does not include conf.d — add proxy timeouts manually."
+                fi
+              else
+                rm -f /etc/nginx/conf.d/zz-shiftschedule-proxy.conf
+                echo "WARNING: host nginx config test failed with the drop-in; removed it again."
+              fi
+            fi
+
             docker compose -f docker-compose.proxied.yml up -d --build
 
             # Health check through the exact path the host nginx uses.
