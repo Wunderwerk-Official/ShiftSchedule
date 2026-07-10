@@ -16,7 +16,7 @@ DEFAULT_PROVIDER = "anthropic"
 # in src/lib/llmPricing.ts.
 DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_ITERATIONS = 100
-DEFAULT_MAX_TOKENS = 8000
+DEFAULT_MAX_TOKENS = 16000
 
 
 @dataclass

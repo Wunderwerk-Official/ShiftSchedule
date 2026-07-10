@@ -59,11 +59,20 @@ def main() -> None:
     if args.max_iterations:
         config.max_iterations = args.max_iterations
 
-    events: list = []
+    def on_progress(kind: str, data: dict) -> None:
+        # One line per iteration: progress for the human AND keepalive
+        # traffic for the SSH channel (slow models are silent for minutes,
+        # which killed a 122B run after 20 idle minutes).
+        if kind == "agent" and data.get("kind") == "iteration":
+            print(
+                f"[arena] iteration {data.get('iteration')} "
+                f"moves={data.get('moves_accepted')}",
+                flush=True,
+            )
+
     started = time.time()
     result = agent_solve_range(
-        payload, state, Event(), lambda kind, data: events.append(kind),
-        started, config=config,
+        payload, state, Event(), on_progress, started, config=config,
     )
     duration = time.time() - started
 

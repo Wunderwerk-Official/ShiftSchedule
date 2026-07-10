@@ -896,7 +896,7 @@ class PlanToolExecutor:
             slots.append(
                 {
                     "slot_key": self._alias_slot_key(inst.slot_key),
-                    "section_id": inst.section_id,
+                    "section": self.section_names.get(inst.section_id, inst.section_id),
                     "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
                     "end": f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
                     "required": inst.target,
@@ -904,7 +904,7 @@ class PlanToolExecutor:
                     "assigned": assigned,
                 }
             )
-        slots.sort(key=lambda s: (s["start"], s["section_id"]))
+        slots.sort(key=lambda s: (s["start"], s["section"]))
         return {"dateISO": date_iso, "slots": slots}
 
     def _tool_apply_moves(self, args: dict) -> dict:

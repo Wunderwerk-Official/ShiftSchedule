@@ -437,7 +437,7 @@ def agent_solve_range(
         )
     messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
     extra_notes: List[str] = []
-    nudged_on_truncation = False
+    truncation_nudges = 0
     emit_agent("stage", {"stage": "improve"})
 
     while iterations_done < config.max_iterations:
@@ -527,8 +527,8 @@ def agent_solve_range(
             )
             continue
         if response.stop_reason == "max_tokens":
-            if not nudged_on_truncation:
-                nudged_on_truncation = True
+            if truncation_nudges < 2:
+                truncation_nudges += 1
                 messages.append(
                     ChatMessage(
                         role="assistant",

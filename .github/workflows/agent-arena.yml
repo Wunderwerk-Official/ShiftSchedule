@@ -39,6 +39,8 @@ jobs:
             IdentityFile ~/.ssh/id_truhn
             StrictHostKeyChecking accept-new
             BatchMode yes
+            ServerAliveInterval 30
+            ServerAliveCountMax 120
 
           Host truhn-target
             HostName 10.10.10.6
