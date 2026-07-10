@@ -1,0 +1,62 @@
+name: Agent arena (truhn.ai)
+
+# Benchmark the agent solver against the complex-practice fixture, ON the
+# production LXC (the only place that reaches the self-hosted LLM endpoint).
+# Uses the admin-configured provider/model; prints an ARENA_REPORT line.
+
+on:
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "First day to solve (ISO)"
+        default: "2026-02-02"
+      days:
+        description: "Number of days"
+        default: "1"
+      timeout:
+        description: "Wall-clock budget in seconds"
+        default: "600"
+
+jobs:
+  arena:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH (bastion jump)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.SSH_KEY_FUER_SHIFTSCHEDULE_SERVER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_truhn
+          chmod 600 ~/.ssh/id_truhn
+          cat > ~/.ssh/config <<'CFG'
+          Host truhn-bastion
+            HostName 49.13.89.75
+            Port 4444
+            User dtruhn
+            IdentityFile ~/.ssh/id_truhn
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+
+          Host truhn-target
+            HostName 10.10.10.6
+            User root
+            IdentityFile ~/.ssh/id_truhn
+            ProxyJump truhn-bastion
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Run the arena case on the LXC
+        env:
+          START: ${{ inputs.start }}
+          DAYS: ${{ inputs.days }}
+          TIMEOUT: ${{ inputs.timeout }}
+        run: |
+          ssh truhn-target START="$START" DAYS="$DAYS" TIMEOUT="$TIMEOUT" bash -s <<'EOF'
+          set -euo pipefail
+          cd /opt/app
+          docker compose -f docker-compose.proxied.yml exec -T backend \
+            python -m backend.arena.run \
+              --start "$START" --days "$DAYS" --timeout "$TIMEOUT"
+          EOF

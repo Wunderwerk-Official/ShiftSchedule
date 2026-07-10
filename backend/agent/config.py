@@ -15,7 +15,7 @@ DEFAULT_PROVIDER = "anthropic"
 # Keep in sync with agent_budget.DEFAULT_AGENT_MODEL and the frontend default
 # in src/lib/llmPricing.ts.
 DEFAULT_MODEL = "claude-sonnet-5"
-DEFAULT_MAX_ITERATIONS = 20
+DEFAULT_MAX_ITERATIONS = 100
 DEFAULT_MAX_TOKENS = 8000
 
 
