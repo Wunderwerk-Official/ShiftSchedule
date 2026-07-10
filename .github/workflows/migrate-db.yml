@@ -1,0 +1,105 @@
+name: Migrate DB (Hetzner -> truhn.ai)
+
+# ONE-SHOT data migration: copies the SQLite database (users, schedules,
+# publications, agent settings/spend) from the old Hetzner server to the
+# Proxmox LXC behind shiftplanner.truhn.ai. Manual trigger only.
+#
+# Order of the migration playbook:
+#   1. deploy both targets from main (ci-cd.yml)
+#   2. run THIS workflow once
+#   3. only then switch the old server's Caddyfile to a redirect
+#
+# Safety: the source snapshot is taken with SQLite's online-backup API (safe
+# while the old backend is running); the target backend is stopped during the
+# swap and the previous target DB is kept on the volume as
+# schedule.pre-migration.db.
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: production-deploy
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH keys
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_hetzner
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_truhn
+          chmod 600 ~/.ssh/id_hetzner ~/.ssh/id_truhn
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Snapshot DB on the old server (online backup)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          SSH_PORT: ${{ vars.SSH_PORT || '22' }}
+          DEPLOY_PATH: ${{ vars.DEPLOY_PATH }}
+        run: |
+          ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              -i ~/.ssh/id_hetzner -p "$SSH_PORT" \
+              "$SSH_USER@$SSH_HOST" bash -s <<EOF
+          set -euo pipefail
+          cd "$DEPLOY_PATH"
+          docker compose exec -T backend python - <<'PY'
+          import sqlite3
+          src = sqlite3.connect("/data/schedule.db")
+          dst = sqlite3.connect("/data/migration-snapshot.db")
+          src.backup(dst)
+          users = dst.execute("SELECT count(*) FROM users").fetchone()[0]
+          states = dst.execute("SELECT count(*) FROM app_state").fetchone()[0]
+          print(f"snapshot ok: {users} users, {states} app states")
+          dst.close(); src.close()
+          PY
+          docker compose cp backend:/data/migration-snapshot.db /tmp/shiftschedule-migration.db
+          EOF
+          scp -o StrictHostKeyChecking=yes -o BatchMode=yes \
+              -i ~/.ssh/id_hetzner -P "$SSH_PORT" \
+              "$SSH_USER@$SSH_HOST:/tmp/shiftschedule-migration.db" /tmp/shiftschedule-migration.db
+          ls -la /tmp/shiftschedule-migration.db
+
+      - name: Swap DB on the new server (backend stopped during copy)
+        run: |
+          scp -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+              -i ~/.ssh/id_truhn \
+              -o "ProxyJump dtruhn@49.13.89.75:4444" \
+              /tmp/shiftschedule-migration.db root@10.10.10.6:/tmp/shiftschedule-migration.db
+          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
+              -i ~/.ssh/id_truhn \
+              -o "ProxyJump dtruhn@49.13.89.75:4444" \
+              root@10.10.10.6 bash -s <<'EOF'
+          set -euo pipefail
+          cd /opt/app
+          docker compose -f docker-compose.proxied.yml stop backend
+          # Keep the pre-migration DB on the volume, then swap in the snapshot
+          # and drop stale WAL/SHM sidecars from the previous database.
+          docker run --rm -v app_backend_data:/data -v /tmp:/src alpine sh -c '
+            set -e
+            [ -f /data/schedule.db ] && cp /data/schedule.db /data/schedule.pre-migration.db || true
+            cp /src/shiftschedule-migration.db /data/schedule.db
+            rm -f /data/schedule.db-wal /data/schedule.db-shm
+            chmod 644 /data/schedule.db
+          '
+          rm -f /tmp/shiftschedule-migration.db
+          docker compose -f docker-compose.proxied.yml start backend
+          for i in $(seq 1 24); do
+            if curl -fsS http://127.0.0.1:5000/api/health >/dev/null 2>&1; then
+              echo "backend healthy after swap"
+              docker compose -f docker-compose.proxied.yml exec -T backend python -c "import sqlite3; c = sqlite3.connect('/data/schedule.db'); print('users on new server:', c.execute('SELECT count(*) FROM users').fetchone()[0])"
+              exit 0
+            fi
+            echo "waiting for backend ($i/24)..."
+            sleep 5
+          done
+          echo "backend did not come back after swap" >&2
+          exit 1
+          EOF
