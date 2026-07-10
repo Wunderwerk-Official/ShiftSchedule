@@ -769,3 +769,27 @@ def test_extending_a_fixed_short_day_counts_as_improvement():
     assert payload["applied"] is True
     assert executor.best_quality[2] == 0  # day extended past the minimum
     assert executor.best_quality < executor.seed_quality
+
+
+def test_unrepairable_fixed_violations_leave_the_quality_tier():
+    """Hard violations among FIXED assignments alone (e.g. a manually
+    double-booked clinician) cannot be repaired by the agent: they must not
+    count in quality tier 1 and get flagged repairable=false."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        assignments=[
+            make_assignment("m1", "slot-a__mon", MON, "clin-1"),
+            make_assignment("m2", "slot-b__mon", MON, "clin-1"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-b__mon", col_band_id="col-mon-1",
+                               start_time="09:00", end_time="13:00"),
+        ],
+    )
+    executor = _make_executor(state)
+    # The manual overlap exists but is nobody's job to fix:
+    assert executor.seed_quality[0] == 0
+    payload, _ = _run(executor, "get_violations", {"severity": "hard"})
+    overlap = [v for v in payload["violations"] if v["code"] == "OVERLAP"]
+    assert overlap and all(v["repairable"] is False for v in overlap)

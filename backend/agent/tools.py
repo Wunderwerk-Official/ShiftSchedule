@@ -337,6 +337,13 @@ class PlanToolExecutor:
         # otherwise be masked by the set diff.
         baseline = self._hard_violations(self._full_plan())
         self.baseline_hard_keys: Set[Tuple] = {_violation_key(v) for v in baseline}
+        # Violations that exist among the FIXED assignments alone are not
+        # repairable by the agent (it may only move drafts) — they are
+        # excluded from the quality tier and flagged in get_violations so
+        # the model does not burn iterations chasing them.
+        self.unrepairable_hard_keys: Set[Tuple] = {
+            _violation_key(v) for v in self._hard_violations(list(self.fixed_assignments))
+        }
         self.baseline_week_minutes: Dict[Tuple, int] = {
             _violation_key(v): int((v.context or {}).get("assigned_minutes") or 0)
             for v in baseline
@@ -365,7 +372,7 @@ class PlanToolExecutor:
         -(preference fits + assignments)).
 
         Hard violations are the TOP tier so the agent is rewarded for
-        REPAIRING what the draft (or manual data) breaks — unassigning a
+        REPAIRING what the draft breaks — unassigning a
         rest-day-violating draft assignment is an improvement even though it
         opens a slot. Only in-range violations count: year-old mismatches in
         untouchable manual data would otherwise drown the signal (they are
@@ -382,7 +389,8 @@ class PlanToolExecutor:
         hard_in_range = sum(
             1
             for v in hard_violations
-            if v.date_iso is None or v.date_iso in self.ctx.target_date_set
+            if (v.date_iso is None or v.date_iso in self.ctx.target_date_set)
+            and _violation_key(v) not in self.unrepairable_hard_keys
         )
         soft = len(validate_solver_rules(self.state, self._full_plan(working)))
         bonus = stats.section_preference_matches + stats.time_window_fits
@@ -543,6 +551,9 @@ class PlanToolExecutor:
                         "dateISO": v.date_iso,
                         "slot_id": v.slot_id,
                         "new": self._is_new_hard(v),
+                        # False = exists among fixed assignments alone: you
+                        # cannot repair it, do not try.
+                        "repairable": _violation_key(v) not in self.unrepairable_hard_keys,
                     }
                 )
         if severity in (None, "soft"):

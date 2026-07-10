@@ -526,3 +526,29 @@ def test_tool_history_is_compacted_in_one_chunk():
     small = [ChatMessage(role="tool", tool_results=[ToolResult("c", "tiny", False)])]
     _compact_tool_history(small)
     assert small[0].tool_results[0].content == "tiny"
+
+
+def test_in_range_solver_assignments_are_replaced_not_fixed():
+    """Previous solver output inside the range is replan material: it must
+    not sit in the fixed set (double-booking the seed) — real practice data
+    produced 29 duplicate drafts before this rule."""
+    from backend.models import Assignment
+
+    state = _two_clinician_state()
+    state.assignments = list(state.assignments) + [
+        Assignment(id="old-solver", rowId="slot-a__mon", dateISO=MON,
+                   clinicianId="clin-1", source="solver"),
+        Assignment(id="manual-keep", rowId="slot-a__mon", dateISO=MON,
+                   clinicianId="clin-2", source="manual"),
+    ]
+    provider = CapturingProvider()
+    result = agent_solve_range(
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    # The old solver assignment was dropped from the fixed context and the
+    # slot re-planned; the manual one stays fixed (never in the agent's
+    # returned assignments) and no returned row carries the old id.
+    assert all(a["id"] != "old-solver" for a in result["assignments"])
+    returned = {(a["rowId"], a["clinicianId"]) for a in result["assignments"]}
+    assert ("slot-a__mon", "clin-2") not in returned

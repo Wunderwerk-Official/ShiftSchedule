@@ -34,7 +34,7 @@ DEFAULT_AGENT_TIMEOUT_SECONDS = 300.0
 # ONE go. Chunked (not per-iteration) so the prompt-cache prefix stays
 # byte-stable between compactions — trimming one message per round would
 # invalidate the cache on every call.
-TOOL_HISTORY_BUDGET_CHARS = 120_000
+TOOL_HISTORY_BUDGET_CHARS = 60_000
 TOOL_HISTORY_KEEP_RECENT = 4
 TOOL_RESULT_STUB = '{"trimmed":"stale tool result removed - re-query if needed"}'
 
@@ -107,6 +107,33 @@ def agent_solve_range(
 ) -> dict:
     timeout = payload.timeout_seconds or DEFAULT_AGENT_TIMEOUT_SECONDS
     deadline = start_time + timeout
+
+    # Replan semantics: assignments a previous SOLVER run left inside the
+    # solve range are replaceable, not fixed — only manual ones are
+    # untouchable (the UI deletes in-range solver assignments when applying
+    # a new plan anyway). Leaving them in `state` made the seed heuristic
+    # double-book fully pre-planned days (observed on real practice data:
+    # 29 duplicate drafts, 30 hard violations on a single day) and welded
+    # the executor's fixed set shut. Out-of-range solver assignments stay:
+    # they are context for rest/overlap checks at the boundaries.
+    from datetime import date as _date, timedelta as _timedelta
+
+    range_start = _date.fromisoformat(payload.startISO)
+    range_end = _date.fromisoformat(payload.endISO or payload.startISO)
+    target_days = {
+        (range_start + _timedelta(days=i)).isoformat()
+        for i in range((range_end - range_start).days + 1)
+    }
+    replaced = [
+        a
+        for a in state.assignments
+        if a.dateISO in target_days
+        and getattr(a, "source", "manual") == "solver"
+        and not a.rowId.startswith("pool-")
+    ]
+    if replaced:
+        state = state.model_copy(deep=False)
+        state.assignments = [a for a in state.assignments if a not in replaced]
 
     # ------------------------------------------------------------------
     # Phase 1: seed plan from the heuristic
