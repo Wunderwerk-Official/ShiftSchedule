@@ -444,7 +444,10 @@ def agent_solve_range(
         if cancel_event.is_set():
             return finalize("ABORTED", ["Agent run aborted by user; best plan so far returned."])
         remaining = deadline - time.time()
-        if remaining <= DEADLINE_HEADROOM_SECONDS:
+        # Below ~30s a call cannot finish anything useful on slow self-hosted
+        # models — it just dies in a timeout and pollutes the notes with
+        # "endpoint unreachable". Finalize cleanly instead.
+        if remaining <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
             extra_notes.append("Agent time budget exhausted; best plan so far returned.")
             break
 

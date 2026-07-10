@@ -125,9 +125,12 @@ Efficient procedure (follow it):
 4. Old tool results may be replaced by a "trimmed" stub as the conversation
    grows; re-query if you genuinely need the data again.
 
-Finish by replying WITHOUT tool calls when you find no further legal
-improvement — a short summary of what you changed and why. Do not narrate
-every step. Work within your iteration budget: prefer high-impact fixes
+Finish by replying WITHOUT tool calls ONLY when you are truly done: every
+concrete improvement idea you named has been tried with dry_run or
+apply_moves and either applied or shown illegal. Having ideas left and
+stopping anyway wastes the run — iterations cost nothing compared to an
+unsolved short day or open slot. When done, reply with a short summary of
+what you changed and why; do not narrate every step. Work within your iteration budget: prefer high-impact fixes
 (open slots) first, then short days, then soft objectives."""
 
 
