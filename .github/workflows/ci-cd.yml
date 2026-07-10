@@ -105,6 +105,13 @@ jobs:
           cd "$DEPLOY_PATH"
           git pull --ff-only
           docker compose -f "$COMPOSE_FILE" up -d --build
+          # Caddy reads its bind-mounted Caddyfile only at startup, and
+          # compose does not recreate the container for a config-only change,
+          # so apply the current config with a graceful in-place reload.
+          if docker compose -f "$COMPOSE_FILE" ps --services | grep -qx caddy; then
+            docker compose -f "$COMPOSE_FILE" exec -T caddy \
+              caddy reload --config /etc/caddy/Caddyfile
+          fi
           EOF
 
       - name: Health check
