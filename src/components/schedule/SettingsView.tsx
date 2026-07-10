@@ -16,8 +16,20 @@ import type {
   SolverSettings,
   WeeklyCalendarTemplate,
 } from "../../api/client";
-import { agentChatTest, fetchAgentSettings, updateAgentSettings } from "../../api/client";
+import {
+  agentChatTest,
+  agentModelCheck,
+  fetchAgentSettings,
+  updateAgentSettings,
+} from "../../api/client";
 import { AGENT_MODEL_OPTIONS, formatCostUSD } from "../../lib/llmPricing";
+
+// Self-hosted models offered as one-click presets (both served by the
+// clinic's LiteLLM endpoint); anything else via "Custom model name".
+const SELF_HOSTED_MODEL_PRESETS = [
+  "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4",
+  "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+];
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
 import WeeklyTemplateBuilder from "./WeeklyTemplateBuilder";
 import CustomSelect from "./CustomSelect";
@@ -105,6 +117,33 @@ export default function SettingsView({
   // always start empty — the stored values never come back from the server.
   const [openaiBaseUrlInput, setOpenaiBaseUrlInput] = useState("");
   const [openaiModelInput, setOpenaiModelInput] = useState("");
+  // Responsiveness check of a freshly selected self-hosted model: verifies
+  // the endpoint serves it and answers a 1-token completion.
+  const [modelCheck, setModelCheck] = useState<
+    { status: "checking" } | { status: "ok"; latency?: number } | { status: "error"; message: string } | null
+  >(null);
+  const applyOpenaiModel = async (model: string) => {
+    setOpenaiModelInput(model);
+    await applyAgentSettings({ openai_model: model });
+    if (!model.trim()) {
+      setModelCheck(null);
+      return;
+    }
+    setModelCheck({ status: "checking" });
+    try {
+      const result = await agentModelCheck(model.trim());
+      setModelCheck(
+        result.ok
+          ? { status: "ok", latency: result.latency_seconds }
+          : { status: "error", message: result.error ?? "Model did not respond." },
+      );
+    } catch (err) {
+      setModelCheck({
+        status: "error",
+        message: err instanceof Error ? err.message : "Model check failed.",
+      });
+    }
+  };
   const [openaiKeyInput, setOpenaiKeyInput] = useState("");
   const [anthropicKeyInput, setAnthropicKeyInput] = useState("");
   useEffect(() => {
@@ -584,14 +623,52 @@ export default function SettingsView({
                     }))}
                   />
                 ) : isAdmin ? (
-                  <input
-                    type="text"
-                    value={openaiModelInput}
-                    onChange={(event) => setOpenaiModelInput(event.target.value)}
-                    onBlur={() => void applyAgentSettings({ openai_model: openaiModelInput })}
-                    placeholder="model name on your endpoint"
-                    className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                  />
+                  <div className="flex w-80 flex-col gap-1">
+                    <CustomSelect
+                      className="w-80"
+                      value={
+                        SELF_HOSTED_MODEL_PRESETS.includes(openaiModelInput)
+                          ? openaiModelInput
+                          : "__custom__"
+                      }
+                      onChange={(value) => {
+                        if (value === "__custom__") return;
+                        void applyOpenaiModel(value);
+                      }}
+                      options={[
+                        ...SELF_HOSTED_MODEL_PRESETS.map((id) => ({
+                          value: id,
+                          label: id.replace("Qwen/", ""),
+                        })),
+                        { value: "__custom__", label: "Custom model name…" },
+                      ]}
+                    />
+                    {!SELF_HOSTED_MODEL_PRESETS.includes(openaiModelInput) && (
+                      <input
+                        type="text"
+                        value={openaiModelInput}
+                        onChange={(event) => setOpenaiModelInput(event.target.value)}
+                        onBlur={() => void applyOpenaiModel(openaiModelInput)}
+                        placeholder="model name on your endpoint"
+                        className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                      />
+                    )}
+                    {modelCheck && (
+                      <div
+                        className={
+                          modelCheck.status === "error"
+                            ? "text-xs text-rose-600 dark:text-rose-400"
+                            : "text-xs text-slate-400 dark:text-slate-500"
+                        }
+                      >
+                        {modelCheck.status === "checking"
+                          ? "Checking model responsiveness…"
+                          : modelCheck.status === "ok"
+                            ? `Model responds${modelCheck.latency ? ` (${modelCheck.latency}s)` : ""} ✓`
+                            : `Model not usable: ${modelCheck.message}`}
+                      </div>
+                    )}
+                  </div>
                 ) : (
                   <div className="rounded-full border border-slate-200 px-3 py-1 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">
                     {AGENT_MODEL_OPTIONS.find((o) => o.id === agentSettings?.effective_model)

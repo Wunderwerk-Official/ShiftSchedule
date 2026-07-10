@@ -41,6 +41,7 @@ def main() -> None:
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=600.0)
     parser.add_argument("--max-iterations", type=int, default=None)
+    parser.add_argument("--model", default=None, help="override the configured model")
     args = parser.parse_args()
 
     end = date.fromisoformat(args.start) + timedelta(days=args.days - 1)
@@ -53,6 +54,8 @@ def main() -> None:
         solver_mode="agent",
     )
     config = resolve_agent_runtime_config(AgentConfig.from_env())
+    if args.model:
+        config.model = args.model
     if args.max_iterations:
         config.max_iterations = args.max_iterations
 

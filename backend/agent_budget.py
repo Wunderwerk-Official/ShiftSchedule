@@ -370,3 +370,76 @@ def agent_chat_test(
         "tokens_per_second": tokens_per_second,
         "cost_usd": cost_usd,
     }
+
+
+# ---------------------------------------------------------------------------
+# Model responsiveness check: used by the settings UI when the admin picks a
+# self-hosted model from the preset list. Verifies the endpoint serves the
+# model and answers a 1-token completion — cheap even on slow deployments.
+# ---------------------------------------------------------------------------
+
+MODEL_CHECK_TIMEOUT_SECONDS = 20.0
+
+
+class AgentModelCheckRequest(BaseModel):
+    model: str
+
+
+@router.post("/v1/agent/model-check")
+def agent_model_check(
+    payload: AgentModelCheckRequest,
+    _: UserPublic = Depends(_require_admin),
+) -> dict:
+    from .agent.config import AgentConfig
+
+    model = payload.model.strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="Provide a model name.")
+    config = resolve_agent_runtime_config(AgentConfig.from_env())
+    if config.provider != "openai":
+        return {"ok": True, "note": "Only self-hosted endpoints are probed."}
+    base = (config.openai_base_url or "").strip().rstrip("/")
+    if not base:
+        return {"ok": False, "error": "No endpoint base URL configured."}
+
+    import time as _time
+
+    import httpx
+
+    headers = (
+        {"Authorization": f"Bearer {config.openai_api_key}"}
+        if config.openai_api_key
+        else {}
+    )
+    started = _time.monotonic()
+    try:
+        with httpx.Client(
+            verify=config.openai_verify_tls,
+            timeout=MODEL_CHECK_TIMEOUT_SECONDS,
+            headers=headers,
+        ) as client:
+            listing = client.get(f"{base}/models")
+            if listing.status_code == 200:
+                ids = [m.get("id") for m in listing.json().get("data", [])]
+                if ids and model not in ids:
+                    return {
+                        "ok": False,
+                        "error": f"The endpoint does not serve '{model}'.",
+                        "available": ids[:20],
+                    }
+            probe = client.post(
+                f"{base}/chat/completions",
+                json={
+                    "model": model,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "ping"}],
+                },
+            )
+            if probe.status_code != 200:
+                return {
+                    "ok": False,
+                    "error": f"HTTP {probe.status_code}: {probe.text[:200]}",
+                }
+    except Exception as exc:  # httpx transport errors: unreachable, TLS, DNS
+        return {"ok": False, "error": f"Endpoint not reachable: {exc}"}
+    return {"ok": True, "latency_seconds": round(_time.monotonic() - started, 2)}

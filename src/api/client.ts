@@ -391,6 +391,26 @@ export async function agentChatTest(
   return res.json();
 }
 
+export type AgentModelCheckResult = {
+  ok: boolean;
+  latency_seconds?: number;
+  error?: string;
+  available?: string[];
+  note?: string;
+};
+
+/** Admin-only: verify the self-hosted endpoint serves a model and answers. */
+export async function agentModelCheck(model: string): Promise<AgentModelCheckResult> {
+  const res = await fetch(`${API_BASE}/v1/agent/model-check`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify({ model }),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Model check failed: ${res.status}`);
+  return res.json();
+}
+
 export async function listUsers(): Promise<AuthUser[]> {
   const res = await fetch(`${API_BASE}/auth/users`, {
     headers: buildHeaders(),

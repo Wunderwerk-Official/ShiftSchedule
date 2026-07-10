@@ -16,6 +16,9 @@ on:
       timeout:
         description: "Wall-clock budget in seconds"
         default: "600"
+      model:
+        description: "Model override (empty = admin setting)"
+        default: ""
 
 jobs:
   arena:
@@ -52,11 +55,14 @@ jobs:
           START: ${{ inputs.start }}
           DAYS: ${{ inputs.days }}
           TIMEOUT: ${{ inputs.timeout }}
+          MODEL: ${{ inputs.model }}
         run: |
-          ssh truhn-target START="$START" DAYS="$DAYS" TIMEOUT="$TIMEOUT" bash -s <<'EOF'
+          ssh truhn-target START="$START" DAYS="$DAYS" TIMEOUT="$TIMEOUT" MODEL="$MODEL" bash -s <<'EOF'
           set -euo pipefail
           cd /opt/app
+          EXTRA=()
+          [ -n "$MODEL" ] && EXTRA=(--model "$MODEL")
           docker compose -f docker-compose.proxied.yml exec -T backend \
             python -m backend.arena.run \
-              --start "$START" --days "$DAYS" --timeout "$TIMEOUT"
+              --start "$START" --days "$DAYS" --timeout "$TIMEOUT" "${EXTRA[@]}"
           EOF
