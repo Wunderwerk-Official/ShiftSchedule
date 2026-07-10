@@ -37,6 +37,26 @@ jobs:
           chmod 600 ~/.ssh/id_hetzner ~/.ssh/id_truhn
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
+          # ProxyJump sub-connections don't inherit -o command-line flags, so
+          # the bastion hop needs its host-key policy from the config file.
+          cat > ~/.ssh/config <<'CFG'
+          Host truhn-bastion
+            HostName 49.13.89.75
+            Port 4444
+            User dtruhn
+            IdentityFile ~/.ssh/id_truhn
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+
+          Host truhn-target
+            HostName 10.10.10.6
+            User root
+            IdentityFile ~/.ssh/id_truhn
+            ProxyJump truhn-bastion
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
 
       - name: Snapshot DB on the old server (online backup)
         env:
@@ -69,14 +89,8 @@ jobs:
 
       - name: Swap DB on the new server (backend stopped during copy)
         run: |
-          scp -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-              -i ~/.ssh/id_truhn \
-              -o "ProxyJump dtruhn@49.13.89.75:4444" \
-              /tmp/shiftschedule-migration.db root@10.10.10.6:/tmp/shiftschedule-migration.db
-          ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes \
-              -i ~/.ssh/id_truhn \
-              -o "ProxyJump dtruhn@49.13.89.75:4444" \
-              root@10.10.10.6 bash -s <<'EOF'
+          scp /tmp/shiftschedule-migration.db truhn-target:/tmp/shiftschedule-migration.db
+          ssh truhn-target bash -s <<'EOF'
           set -euo pipefail
           cd /opt/app
           docker compose -f docker-compose.proxied.yml stop backend
