@@ -329,10 +329,6 @@ def agent_chat_test(
         raise HTTPException(status_code=400, detail="Conversation too long for a test.")
 
     config = resolve_agent_runtime_config(AgentConfig.from_env())
-    # A speed test needs a bounded answer: slow self-hosted reasoning models
-    # (measured at ~3.5 tok/s) would otherwise generate for many minutes
-    # before returning. 400 tokens is enough for a solid tok/s reading.
-    config.max_tokens = min(config.max_tokens, 400)
     try:
         provider = get_provider(config)
     except (RuntimeError, ValueError) as exc:
