@@ -1210,3 +1210,119 @@ def test_suggest_day_blocks_exposes_personal_weekly_limit():
     alice = payload["candidates"][0]
     assert alice["contract_hours"] == 36
     assert alice["week_hours_max"] == 46
+
+
+def test_suggest_rescue_moves_frees_blocked_clinician_with_substitute():
+    """The 'X could do it if Y took over X's afternoon' move: a stuck slot
+    (only Alice qualified, Alice busy in an overlapping slot Bob could also
+    take) must yield a pre-validated 3-move batch that applies verbatim."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           qualified_class_ids=["section-a", "section-b"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob",
+                           qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "Section B"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-x__mon", col_band_id="col-mon-1",
+                               block_id="block-b",
+                               start_time="08:00", end_time="16:00"),
+        ],
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+    executor = _make_executor(state)
+    # Alice takes the flexible slot first (the greedy trap).
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"}]})
+    assert applied["applied"] is True
+    stuck, _ = _run(executor, "get_day_priorities", {"dateISO": MON})
+    assert stuck["slots"][0]["eligible_count"] == 0  # section-b slot is stuck
+
+    payload, is_error = _run(executor, "suggest_rescue_moves", {"dateISO": MON})
+    assert not is_error
+    assert payload["truly_unfillable"] == []
+    rescue = payload["rescues"][0]
+    assert rescue["frees"] == "Alice"
+    assert rescue["substitute"] == "Bob"
+    assert rescue["fills"] == executor._alias_slot_key(f"slot-x__mon__{MON}")
+    applied2, _ = _run(executor, "apply_moves", {"moves": rescue["batch"]})
+    assert applied2["applied"] is True
+    after, _ = _run(executor, "get_day_priorities", {"dateISO": MON})
+    assert after["open_positions"] == 0
+
+    # No stuck slots -> explicit no-op answer, not an error.
+    calm, _ = _run(executor, "suggest_rescue_moves", {"dateISO": MON})
+    assert calm["rescues"] == []
+    outside, _ = _run(executor, "suggest_rescue_moves", {"dateISO": "2027-01-01"})
+    assert "error" in outside
+
+
+def _day_night_duty_state():
+    """The production trap: a 12h day duty and a 12h night duty on the same
+    day. Richard is free for both; stacking both would be a 24h shift."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Richard", working_hours_per_week=50),
+            make_clinician("clin-2", "Bob", working_hours_per_week=40),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-day__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="20:00"),
+            make_template_slot(slot_id="slot-night__mon", col_band_id="col-mon-1",
+                               start_time="20:00", end_time="08:00",
+                               end_day_offset=1),
+        ],
+    )
+    return state
+
+
+def test_suggest_day_blocks_flags_24h_stacking_as_overloaded():
+    executor = _make_executor(_day_night_duty_state())
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-day__mon__{MON}", "clinicianId": "Richard"}]})
+    assert applied["applied"] is True
+
+    payload, _ = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-night__mon__{MON}"}
+    )
+    by_name = {c["clinicianId"]: c for c in payload["candidates"]}
+    assert by_name["Richard"]["overloaded"] is True   # 24h day
+    assert by_name["Richard"]["day_hours_after"] == 24.0
+    assert by_name["Bob"]["overloaded"] is False
+    # The fresh clinician sorts FIRST even though both blocks are equal.
+    assert payload["candidates"][0]["clinicianId"] == "Bob"
+
+
+def test_suggest_day_blocks_single_mode_skips_chaining():
+    """Duty mode: single=true must suggest exactly the requested slot, no
+    Anschluss chain."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40)],
+        slots=[
+            make_template_slot(slot_id="slot-1__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="10:00"),
+            make_template_slot(slot_id="slot-2__mon", col_band_id="col-mon-1",
+                               start_time="10:00", end_time="13:00"),
+        ],
+    )
+    executor = _make_executor(state)
+    payload, _ = _run(
+        executor,
+        "suggest_day_blocks",
+        {"slot_key": f"slot-1__mon__{MON}", "single": True},
+    )
+    alice = payload["candidates"][0]
+    assert alice["block"] == [executor._alias_slot_key(f"slot-1__mon__{MON}")]
+    assert alice["block_hours"] == 2.0

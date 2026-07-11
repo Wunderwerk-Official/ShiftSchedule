@@ -20,7 +20,7 @@ on:
         description: "Model override (empty = admin setting)"
         default: ""
       scenario:
-        description: "base | vacation-wave | understaffed | crunch | oncall"
+        description: "base | vacation-wave | understaffed | crunch | oncall | pinned | daynight"
         default: "base"
       strategy:
         description: "repair | day_by_day"

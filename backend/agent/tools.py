@@ -38,7 +38,11 @@ AGENT_ASSIGNMENT_SOURCE = "solver"
 # Tools that only exist for the day-by-day strategy. The repair strategy's
 # tool list stays byte-identical to before the strategy split, so the two
 # modes remain comparable (and repair keeps its prompt-cache prefix).
-DAY_ONLY_TOOL_NAMES = {"get_day_priorities", "suggest_day_blocks"}
+DAY_ONLY_TOOL_NAMES = {
+    "get_day_priorities",
+    "suggest_day_blocks",
+    "suggest_rescue_moves",
+}
 
 TOOL_SPECS_RAW = [
     {
@@ -242,7 +246,35 @@ TOOL_SPECS_RAW = [
             "properties": {
                 "slot_key": {"type": "string"},
                 "dateISO": {"type": "string"},
+                "single": {
+                    "type": "boolean",
+                    "description": "true = no Anschluss chaining, suggest "
+                    "just this one slot (used for duty slots: a 12h service "
+                    "is taken alone).",
+                },
             },
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "suggest_rescue_moves",
+        "description": (
+            "Day-by-day planning, the LAST resort before declaring a slot "
+            "unfillable: for every open slot of dateISO that currently has "
+            "eligible_count 0, search whether moving ONE of YOUR OWN earlier "
+            "placements would free a qualified clinician for it, with a "
+            "substitute taking the vacated slot. Returns ready-to-apply "
+            "3-move batches (unassign the blocker, assign the substitute, "
+            "assign the freed clinician to the stuck slot), each validated "
+            "against the exact apply gate — apply a rescue batch EXACTLY as "
+            "given, then re-check with suggest_day_blocks. Fixed/manual "
+            "assignments are never touched. Use it when suggest_day_blocks "
+            "reports day_complete=true but unfillable_slots remain."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"dateISO": {"type": "string"}},
+            "required": ["dateISO"],
             "additionalProperties": False,
         },
     },
@@ -609,6 +641,7 @@ class PlanToolExecutor:
             "get_day_schedule": self._tool_day_schedule,
             "get_day_priorities": self._tool_day_priorities,
             "suggest_day_blocks": self._tool_suggest_day_blocks,
+            "suggest_rescue_moves": self._tool_suggest_rescue_moves,
             "apply_moves": self._tool_apply_moves,
         }
         handler = handlers.get(name)
@@ -1295,9 +1328,18 @@ class PlanToolExecutor:
                     "day_complete": True,
                     "open_positions": sum(e["missing"] for e in entries),
                     "unfillable_slots": unfillable,
-                    "note": "No open slot of this day has a legal candidate "
-                    "left. Finish the day now: reply WITHOUT tool calls, "
-                    "naming the unfillable slots (do not force a move).",
+                    "note": (
+                        "No open slot of this day has a legal candidate "
+                        "left. Call suggest_rescue_moves ONCE before "
+                        "finishing — moving one of your own placements may "
+                        "still free a qualified person. If it offers "
+                        "nothing, reply WITHOUT tool calls, naming the "
+                        "unfillable slots (do not force a move)."
+                        if unfillable
+                        else "The day is fully staffed. Finish now: reply "
+                        "WITHOUT tool calls with your one-paragraph day "
+                        "summary."
+                    ),
                 }
             chosen = fillable[0]
             slot_key = chosen["raw_slot_key"]
@@ -1317,6 +1359,7 @@ class PlanToolExecutor:
         eligible = [
             c for c in start_candidates.get("candidates", []) if c["eligible"]
         ][:6]
+        single = bool(args.get("single"))
         out = []
         for cand in eligible:
             cid = self._resolve_clinician(cand["clinicianId"])
@@ -1326,6 +1369,10 @@ class PlanToolExecutor:
                 # the start slot — apply_moves would too, so do not offer a
                 # candidate whose every move is doomed.
                 continue
+            if single:
+                # Duty mode: the slot is taken alone, no chained day work.
+                block_keys = block_keys[:1]
+                block_minutes = inst.end - inst.start
             day_before = sum(
                 e - s for s, e in self._day_intervals(cid, inst.date_iso)
             )
@@ -1349,6 +1396,11 @@ class PlanToolExecutor:
                     "meets_daily_minimum": (
                         daily_min is None or day_before + block_minutes >= daily_min
                     ),
+                    # No human works a 24h day because two 12h duties happen
+                    # to be adjacent (observed in production: day on-call +
+                    # night on-call on the same person). Not a hard rule, so
+                    # the gate cannot reject it — flag it and sort it last.
+                    "overloaded": day_before + block_minutes > 16 * 60,
                     "week_hours": cand.get("week_hours"),
                     "contract_hours": cand.get("contract_hours"),
                     "week_hours_max": week_max,
@@ -1356,10 +1408,12 @@ class PlanToolExecutor:
                     "prefers_section": cand.get("prefers_section", False),
                 }
             )
-        # Long-enough blocks first (the whole point of the strategy), most
-        # YTD-behind first within that — the model still makes the final call.
+        # Overloaded days are a last resort, then long-enough blocks first
+        # (the whole point of the strategy), most YTD-behind first within
+        # that — the model still makes the final call.
         out.sort(
             key=lambda c: (
+                c["overloaded"],
                 not c["meets_daily_minimum"],
                 c["ytd_worked_pct"] if c["ytd_worked_pct"] is not None else 999,
                 -c["block_hours"],
@@ -1386,6 +1440,143 @@ class PlanToolExecutor:
             "(all assigns together). meets_daily_minimum=false = would "
             "stay a short day - prefer candidates above it.",
             "candidates": out,
+        }
+
+    def _tool_suggest_rescue_moves(self, args: dict) -> dict:
+        """Depth-1 rearrangement for the day's unfillable open slots: free a
+        qualified clinician by unassigning ONE of their own working-copy
+        assignments, put a substitute on the vacated slot, put the freed
+        clinician on the stuck slot. Only net-gain, fully gate-validated
+        batches are offered — the model applies them verbatim.
+
+        This is what a human planner does before declaring a hole
+        unfillable: 'X could do it if Y took over X's afternoon.'"""
+        date_iso = args.get("dateISO")
+        if date_iso not in self.ctx.target_date_set:
+            return {
+                "error": f"{date_iso} is outside the solve range "
+                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
+            }
+        entries = self._day_open_entries(date_iso)
+        stuck = [e for e in entries if e["eligible_count"] == 0][:8]
+        fillable_left = sum(1 for e in entries if e["eligible_count"] > 0)
+        if not stuck:
+            return {
+                "dateISO": date_iso,
+                "rescues": [],
+                "note": "No unfillable open slot on this day — nothing to "
+                "rescue."
+                + (
+                    " Fillable open slots remain: use suggest_day_blocks."
+                    if fillable_left
+                    else ""
+                ),
+            }
+
+        def _new_hard(trial: Dict[Tuple[str, str, str], Assignment]) -> bool:
+            hard = self._hard_violations(self._full_plan(list(trial.values())))
+            return any(self._is_new_hard(v) for v in hard)
+
+        rescues: List[dict] = []
+        no_rescue: List[str] = []
+        for entry in stuck:
+            inst = self.ctx.instances[entry["raw_slot_key"]]
+            found: List[dict] = []
+            for clinician in self.state.clinicians:
+                if len(found) >= 2:
+                    break
+                if inst.section_id not in (clinician.qualifiedClassIds or []):
+                    continue
+                cid = clinician.id
+                identity = (inst.slot_id, date_iso, cid)
+                if identity in self.current or identity in self.fixed_identity:
+                    continue
+                own_today = [
+                    key
+                    for key in self.current
+                    if key[2] == cid and key[1] == date_iso
+                ]
+                if not own_today:
+                    continue  # blocked by something no same-day move can fix
+                # Cheap prune: if C cannot take the slot even with their
+                # WHOLE day cleared, no single-move rescue exists either.
+                trial_free = {
+                    k: v for k, v in self.current.items() if k not in own_today
+                }
+                trial_free[identity] = self._make_assignment(
+                    inst.slot_id, date_iso, cid
+                )
+                if _new_hard(trial_free):
+                    continue
+                for blocker in own_today:
+                    trial = dict(self.current)
+                    del trial[blocker]
+                    trial[identity] = self._make_assignment(
+                        inst.slot_id, date_iso, cid
+                    )
+                    if _new_hard(trial):
+                        continue
+                    vacated_key = f"{blocker[0]}__{date_iso}"
+                    vac_inst = self.ctx.instances.get(vacated_key)
+                    if vac_inst is None:
+                        continue
+                    # Net gain only: a substitute must cover the vacated
+                    # slot in the SAME batch, else the hole just moves.
+                    for sub in self.state.clinicians:
+                        if vac_inst.section_id not in (sub.qualifiedClassIds or []):
+                            continue
+                        sub_id = (blocker[0], date_iso, sub.id)
+                        if sub_id in trial or sub_id in self.fixed_identity:
+                            continue
+                        trial2 = dict(trial)
+                        trial2[sub_id] = self._make_assignment(
+                            blocker[0], date_iso, sub.id
+                        )
+                        if _new_hard(trial2):
+                            continue
+                        found.append(
+                            {
+                                "fills": entry["slot_key"],
+                                "section": entry["section"],
+                                "frees": self._alias(cid),
+                                "vacated_slot": self._alias_slot_key(vacated_key),
+                                "substitute": self._alias(sub.id),
+                                "batch": [
+                                    {
+                                        "action": "unassign",
+                                        "slot_key": self._alias_slot_key(vacated_key),
+                                        "clinicianId": self._alias(cid),
+                                    },
+                                    {
+                                        "action": "assign",
+                                        "slot_key": self._alias_slot_key(vacated_key),
+                                        "clinicianId": self._alias(sub.id),
+                                    },
+                                    {
+                                        "action": "assign",
+                                        "slot_key": entry["slot_key"],
+                                        "clinicianId": self._alias(cid),
+                                    },
+                                ],
+                            }
+                        )
+                        break  # one substitute per blocker is enough
+                    if len(found) >= 2:
+                        break
+            if found:
+                rescues.extend(found)
+            else:
+                no_rescue.append(entry["slot_key"])
+        return {
+            "dateISO": date_iso,
+            "note": "Each rescue is a pre-validated NET-GAIN batch: apply "
+            "its 3 moves EXACTLY as given in ONE apply_moves call, then "
+            "re-check with suggest_day_blocks (other rescues may have gone "
+            "stale — re-query instead of applying several at once). Slots "
+            "in truly_unfillable have no single-move rescue either: report "
+            "them in your summary.",
+            "rescues": rescues,
+            "truly_unfillable": no_rescue,
         }
 
     def _greedy_day_block(

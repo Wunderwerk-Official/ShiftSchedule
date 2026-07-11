@@ -22,6 +22,9 @@ const TOOL_LABELS: Record<string, string> = {
   list_short_days: "looked for too-short work days",
   get_hours_overview: "compared everyone's weekly hours",
   get_day_schedule: "reviewed a full day's schedule",
+  get_day_priorities: "ranked the day's open slots",
+  suggest_day_blocks: "compared work blocks for the next slot",
+  suggest_rescue_moves: "searched for rescue swaps",
 };
 
 /** "checked rule violations · compared candidates for a slot" — apply_moves is
@@ -45,7 +48,8 @@ export type AgentStatus = {
   /** True while the LLM is working on its next step (last signal was an
    * iteration tick with nothing after it yet). Drives the thinking shimmer. */
   thinking: boolean;
-  /** Newest first, capped. */
+  /** Chronological (newest LAST), capped to the most recent entries — new
+   * rows append at the bottom so a reader's scroll position never jumps. */
   feed: AgentFeedEntry[];
 };
 
@@ -111,7 +115,7 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
     maxIterations,
     movesAccepted,
     thinking,
-    feed: feed.reverse().slice(0, FEED_CAP),
+    feed: feed.slice(-FEED_CAP),
   };
 }
 

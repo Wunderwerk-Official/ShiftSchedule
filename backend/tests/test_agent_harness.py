@@ -202,6 +202,8 @@ def test_missing_provider_falls_back_to_seed(monkeypatch):
 
 
 def test_iteration_budget_is_honored():
+    """The budget follows the admin rule (slot instances x 10, floor 10) and
+    supersedes any configured flat cap — here: 1 slot -> 10 iterations."""
     state = _two_clinician_state()
     endless = [{"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]}] * 50
     result = agent_solve_range(
@@ -213,7 +215,7 @@ def test_iteration_budget_is_honored():
         provider=MockProvider(endless),
         config=_config(max_iterations=3),
     )
-    assert result["debugInfo"]["agent"]["iterations"] == 3
+    assert result["debugInfo"]["agent"]["iterations"] == 10
     assert any("iteration budget exhausted" in n for n in result["notes"])
 
 
@@ -731,3 +733,87 @@ def test_day_by_day_pipelined_turn_gets_post_apply_suggestion():
     suggestion = json.loads(day1_tool_msg.tool_results[1].content)
     assert suggestion["day_complete"] is True
     assert suggestion["unfillable_slots"] == []
+
+
+def test_duty_pre_pass_runs_before_day_planning():
+    """With on-call duties in the range, a duty pre-pass conversation staffs
+    them FIRST (its own digest, DUTY prompt), and only then the per-day
+    conversations start — duties placed last starved on weekly hours."""
+    from .conftest import make_template_slot, make_workplace_row, make_pool_row
+    from backend.models import TemplateBlock
+
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           qualified_class_ids=["section-a", "section-oc"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob",
+                           qualified_class_ids=["section-a", "section-oc"],
+                           working_hours_per_week=40),
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-oc", "On Call"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-oc__mon", col_band_id="col-mon-1",
+                               block_id="block-oc",
+                               start_time="19:00", end_time="07:00",
+                               end_day_offset=1),
+        ],
+        solver_settings={
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "section-oc",
+            "onCallRestDaysBefore": 0,
+            "onCallRestDaysAfter": 0,
+        },
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-oc", sectionId="section-oc", requiredSlots=0)
+    )
+    script = [
+        # Duty pass: one round staffs the on-call duty.
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-oc__mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        # Day conversation: staff the ordinary slot, then done.
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+             "clinicianId": "Bob"}]}}]},
+        {"text": "Day complete."},
+    ]
+    provider = CapturingProvider(script)
+    payload = _payload()
+    payload.agent_strategy = "day_by_day"
+    result = agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    assert result["debugInfo"]["agent"]["moves_accepted"] == 2
+    duty_digest = provider.seen_messages[0][0].content
+    assert "Duty pre-pass" in duty_digest
+    assert "Open duty slots" in duty_digest
+    # The duty pass ended as soon as every duty was staffed (no extra
+    # round), so the SECOND conversation is the day-1 digest and reports
+    # the pre-pass result.
+    day_digest = provider.seen_messages[1][0].content
+    assert "Build day 1 of 1" in day_digest
+    assert "duty pre-pass: 1 of 1" in day_digest
+
+
+def test_iteration_budget_scales_with_slot_count():
+    """Admin rule: the iteration budget is total slot instances x 10,
+    superseding the configured flat cap — here: 2 slots -> 20 iterations."""
+    state = _two_day_state()  # 2 slot instances -> budget 20
+    endless = [{"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]}] * 50
+    result = agent_solve_range(
+        _payload(endISO=TUE), state, MockCancelEvent(), ProgressRecorder(),
+        time.time(),
+        provider=MockProvider(endless), config=_config(max_iterations=999),
+    )
+    assert result["debugInfo"]["agent"]["iterations"] == 20
+    assert any("iteration budget exhausted" in n for n in result["notes"])

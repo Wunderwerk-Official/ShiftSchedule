@@ -33,6 +33,13 @@ printed for qualitative review.
   by hand in the real practice) becomes required: 1 person per on-call slot,
   in-range on-call assignments cleared. Hard because of the rest-day rule —
   each on-call consumes the clinician's neighbouring days too.
+- `pinned` — on each day the two most-flexible available clinicians are
+  pre-booked (manual, immutable) on the day's lowest-priority slots: the
+  "boss has an evening meeting" anchors the agent must plan around.
+- `daynight` — `oncall` plus the production trap: the weekend on-call
+  becomes a day duty 08:00-20:00 AND a night duty 20:00-08:00(+1) on the
+  same day. A naive solver put the SAME person on both (a 24h shift); two
+  different people is the only humane answer.
 
 ## Two ways to run it
 
@@ -46,7 +53,7 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | days | `3` or `7` |
 | timeout | `900` (35B) / `1800` (122B, it is ~40× slower) |
 | model | `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` or `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` |
-| scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` |
+| scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` |
 | strategy | `repair` (heuristic seed + LLM repair) / `day_by_day` (LLM builds each day from scratch) |
 
 Run **one at a time** (the endpoint shares a GPU). Open the finished run →

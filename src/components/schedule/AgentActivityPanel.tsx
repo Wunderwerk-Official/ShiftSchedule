@@ -277,6 +277,22 @@ function FeedRow({
 export default function AgentActivityPanel({ events }: { events: AgentActivityData[] }) {
   const status = useMemo(() => deriveAgentStatus(events), [events]);
   const [fullThought, setFullThought] = useState<ThoughtDetails | null>(null);
+  // The feed is chronological (newest at the BOTTOM) and only follows new
+  // rows when the reader is already at the bottom — someone scrolled up to
+  // read an earlier thought must never be yanked away from it.
+  const feedRef = useRef<HTMLDivElement | null>(null);
+  const atBottomRef = useRef(true);
+  const onFeedScroll = () => {
+    const el = feedRef.current;
+    if (!el) return;
+    atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
+  useEffect(() => {
+    const el = feedRef.current;
+    if (el && atBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [status.feed.length, status.thinking]);
   // Seconds since the last live event: with adaptive thinking a single model
   // step can take minutes on large plans, which used to look like a hang.
   const lastEventAtRef = useRef(Date.now());
@@ -315,7 +331,14 @@ export default function AgentActivityPanel({ events }: { events: AgentActivityDa
         </div>
       )}
 
-      <div className="mt-3 flex max-h-40 flex-col gap-1 overflow-y-auto pr-1">
+      <div
+        ref={feedRef}
+        onScroll={onFeedScroll}
+        className="mt-3 flex max-h-40 flex-col gap-1 overflow-y-auto pr-1"
+      >
+        {status.feed.map((entry) => (
+          <FeedRow key={entry.key} entry={entry} onShowFullThought={setFullThought} />
+        ))}
         {status.thinking && (
           <div className="flex items-center gap-2 px-2.5 py-1">
             <SparkleIcon className="solver-float h-3.5 w-3.5 text-violet-400" />
@@ -326,9 +349,6 @@ export default function AgentActivityPanel({ events }: { events: AgentActivityDa
             </span>
           </div>
         )}
-        {status.feed.map((entry) => (
-          <FeedRow key={entry.key} entry={entry} onShowFullThought={setFullThought} />
-        ))}
         {status.feed.length === 0 && !status.thinking && (
           <div className="flex items-center gap-2 px-2.5 py-1">
             <SparkleIcon className="solver-float h-3.5 w-3.5 text-indigo-300 dark:text-indigo-500" />
