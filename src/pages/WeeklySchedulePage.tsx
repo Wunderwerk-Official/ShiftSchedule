@@ -38,7 +38,6 @@ import {
   type AgentMoveItem,
   type SolverAgentDebug,
   type SolverDebugInfo,
-  type AgentStrategy,
   type SolverMode,
   type SolverSettings,
   type WeeklyCalendarTemplate,
@@ -1213,7 +1212,6 @@ export default function WeeklySchedulePage({
     onlyFillRequired: boolean;
     timeoutSeconds: number;
     solverMode?: SolverMode;
-    agentStrategy?: AgentStrategy;
   }) => {
     if (autoPlanRunning) return;
     setAutoPlanError(null);
@@ -1291,7 +1289,6 @@ export default function WeeklySchedulePage({
         onlyFillRequired: args.onlyFillRequired,
         timeoutSeconds: args.timeoutSeconds,
         solverMode: args.solverMode,
-        agentStrategy: args.agentStrategy,
         runToken,
         signal: abortController.signal,
       });

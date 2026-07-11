@@ -39,7 +39,12 @@ class ProgressRecorder:
 
 
 def _payload(**kwargs) -> SolveRangeRequest:
-    defaults = dict(startISO=MON, endISO=MON, only_fill_required=True, timeout_seconds=60.0)
+    # Most tests here exercise the REPAIR loop explicitly — since v1.38 the
+    # harness defaults to day_by_day, so the strategy must be named.
+    defaults = dict(
+        startISO=MON, endISO=MON, only_fill_required=True,
+        timeout_seconds=60.0, agent_strategy="repair",
+    )
     defaults.update(kwargs)
     return SolveRangeRequest(**defaults)
 
@@ -623,23 +628,40 @@ def test_day_by_day_runs_one_conversation_per_day():
     assert "Days already built in this run" in first_day2
 
 
-def test_day_by_day_strategy_reported_and_repair_unchanged():
-    """The default stays 'repair' and keeps its tool list; day mode exposes
-    the two extra tools."""
+def test_day_by_day_is_default_and_repair_stays_selectable():
+    """day_by_day is the STANDARD since v1.38 (a payload without a strategy
+    gets it); 'repair' remains reachable for benchmarks/API calls and keeps
+    its own tool list without the day-only tools."""
     from backend.agent.harness import DAY_TOOL_SPECS, TOOL_SPECS
 
     repair_names = {t.name for t in TOOL_SPECS}
     day_names = {t.name for t in DAY_TOOL_SPECS}
     assert "get_day_priorities" not in repair_names
     assert "suggest_day_blocks" not in repair_names
-    assert {"get_day_priorities", "suggest_day_blocks"} <= day_names
+    assert "suggest_rescue_moves" not in repair_names
+    assert {"get_day_priorities", "suggest_day_blocks", "suggest_rescue_moves"} <= day_names
 
+    default_payload = _payload()
+    default_payload.agent_strategy = None
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        {"text": "Day complete."},
+    ]
     result = agent_solve_range(
+        default_payload, _two_clinician_state(), MockCancelEvent(),
+        ProgressRecorder(), time.time(),
+        provider=MockProvider(script), config=_config(),
+    )
+    assert result["debugInfo"]["agent"]["strategy"] == "day_by_day"
+
+    result_repair = agent_solve_range(
         _payload(), _two_clinician_state(), MockCancelEvent(),
         ProgressRecorder(), time.time(),
         provider=MockProvider(), config=_config(),
     )
-    assert result["debugInfo"]["agent"]["strategy"] == "repair"
+    assert result_repair["debugInfo"]["agent"]["strategy"] == "repair"
 
 
 def test_day_by_day_budget_exhausted_falls_back_to_heuristic():

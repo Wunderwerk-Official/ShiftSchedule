@@ -842,9 +842,11 @@ other solve (`phase` events for loop progress, one `solution` event for the
 seed and one per accepted improvement, objective on the same minimized scale).
 
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
-Two strategies, selectable per solve via `SolveRangeRequest.agent_strategy`:
+Two strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
+(**day_by_day is the default since v1.38**; the UI no longer offers repair —
+it remains for the arena benchmarks and explicit API calls):
 
-**repair** (default): the classic improve-the-draft loop.
+**repair**: the classic improve-the-draft loop.
 1. **Seed**: `heuristic_solve_range_v2` produces the initial plan (its
    per-day `solution` events are muted; phases are forwarded).
 2. **Loop**: the LLM gets a compact problem digest and the inspection/move

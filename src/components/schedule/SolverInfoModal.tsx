@@ -538,10 +538,12 @@ export default function SolverInfoModal({
                     <li>Fair distribution of workload across the team</li>
                   </ul>
                   <p>
-                    Planning runs as an AI agent: a fast draft plan is built first, then
-                    Claude reviews and improves it step by step — filling open slots,
-                    balancing hours (preferring people behind on their yearly target),
-                    and following the free-text instructions from Settings → Solver.
+                    Planning runs as an AI agent that builds each day the way an
+                    experienced human planner does: on-call duties and scarce slots
+                    are staffed first, every clinician is placed with a contiguous
+                    block of work (no short stints, no 24-hour double duties), hours
+                    are balanced towards people behind on their yearly target, and
+                    the free-text instructions from Settings → Solver are followed.
                     The AI works with the plan data including names, and the
                     hard rules above can never be broken.
                   </p>

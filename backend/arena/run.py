@@ -252,9 +252,10 @@ def main() -> None:
         help="transform the fixture into a harder case",
     )
     parser.add_argument(
-        "--strategy", default="repair",
+        "--strategy", default="day_by_day",
         choices=["repair", "day_by_day"],
-        help="agent approach: repair the heuristic draft, or build day by day",
+        help="agent approach: build day by day (the standard), or repair "
+             "the heuristic draft (kept for benchmarks)",
     )
     args = parser.parse_args()
 

@@ -161,13 +161,14 @@ def agent_solve_range(
     # ------------------------------------------------------------------
     # Phase 1: seed plan
     # ------------------------------------------------------------------
-    # Strategy: "repair" (default) seeds from the heuristic and lets the LLM
-    # improve the draft; "day_by_day" builds the range from scratch, one day
-    # per conversation, the way a human planner works.
+    # Strategy: "day_by_day" (the STANDARD since v1.38) builds the range
+    # from scratch, one day per conversation, the way a human planner works.
+    # "repair" (heuristic seed + LLM improvement) is deactivated in the UI
+    # and kept only for the arena benchmarks and explicit API calls.
     strategy = (
-        "day_by_day"
-        if getattr(payload, "agent_strategy", None) == "day_by_day"
-        else "repair"
+        "repair"
+        if getattr(payload, "agent_strategy", None) == "repair"
+        else "day_by_day"
     )
 
     def muted_progress(event_type: str, data: dict) -> None:

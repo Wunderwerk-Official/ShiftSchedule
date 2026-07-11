@@ -246,6 +246,7 @@ def test_budget_does_not_block_self_hosted_provider(temp_db, monkeypatch):
     res = client.post(
         "/v1/solve/range",
         json={"startISO": MON, "endISO": MON, "solver_mode": "agent",
+              "agent_strategy": "repair",
               "only_fill_required": True, "timeout_seconds": 60},
     )
     assert res.status_code == 200
@@ -268,6 +269,7 @@ def test_client_cannot_smuggle_model_or_budget_flags(temp_db, monkeypatch):
     res = client.post(
         "/v1/solve/range",
         json={"startISO": MON, "endISO": MON, "solver_mode": "agent",
+              "agent_strategy": "repair",
               "only_fill_required": True, "timeout_seconds": 60,
               # Lies: pretend to pick an expensive model and an exhausted flag
               "agent_model": "claude-opus-4-8", "agent_budget_exhausted": True},
