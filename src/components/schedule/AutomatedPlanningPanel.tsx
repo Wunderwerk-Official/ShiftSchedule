@@ -10,7 +10,7 @@ import { toISODate } from "../../lib/date";
 import CustomDatePicker from "./CustomDatePicker";
 import { SolverInfoButton } from "./SolverInfoModal";
 
-import type { AgentStrategy, SolverMode } from "../../api/client";
+import type { SolverMode } from "../../api/client";
 
 // LLM agent runs need more wall clock than the optimizer default of 60s.
 const AGENT_TIMEOUT_SECONDS = 300;
@@ -31,7 +31,6 @@ type AutomatedPlanningPanelProps = {
     onlyFillRequired: boolean;
     timeoutSeconds: number;
     solverMode: SolverMode;
-    agentStrategy: AgentStrategy;
   }) => void;
   onResetSolver: (args: { startISO: string; endISO: string }) => void;
   onResetAll: (args: { startISO: string; endISO: string }) => void;
@@ -85,10 +84,6 @@ export default function AutomatedPlanningPanel({
   const [endInput, setEndInput] = useState("");
   const [hasTouched, setHasTouched] = useState(false);
   const [strategy, setStrategy] = useState<"fill" | "distribute">("fill");
-  // Agent approach: "repair" = heuristic draft + LLM improvement (default);
-  // "day_by_day" = the LLM builds each day like a human planner. Both are
-  // kept selectable so results can be compared on the same range.
-  const [agentStrategy, setAgentStrategy] = useState<AgentStrategy>("repair");
   const [localError, setLocalError] = useState<string | null>(null);
   const [resetPanelOpen, setResetPanelOpen] = useState(false);
   const [resetPanelAbove, setResetPanelAbove] = useState(false);
@@ -187,16 +182,17 @@ export default function AutomatedPlanningPanel({
   const handleRun = () => {
     const range = parseRange();
     if (!range) return;
-    // Planning always runs through the AI agent pipeline (heuristic draft +
-    // Claude refinement). The CP-SAT optimizer still exists in the backend
-    // for tests/API use, but offering both in the UI only confused users.
+    // Planning always runs through the AI agent's day-by-day planner (the
+    // standard since v1.38; it beat the older draft+improve approach on
+    // every real-world benchmark — see backend/arena/README.md). The CP-SAT
+    // optimizer and the repair strategy still exist in the backend for
+    // tests/benchmarks, but offering them in the UI only confused users.
     onRun({
       startISO: range.startISO,
       endISO: range.endISO,
       onlyFillRequired: strategy === "fill",
       timeoutSeconds: Math.max(timeoutSeconds, AGENT_TIMEOUT_SECONDS),
       solverMode: "agent",
-      agentStrategy,
     });
   };
 
@@ -328,35 +324,10 @@ export default function AutomatedPlanningPanel({
               </button>
             </div>
           </div>
-          <div className="flex flex-col gap-3">
-            <div className="text-xs font-normal uppercase tracking-wide text-slate-400 dark:text-slate-500">
-              Planning method
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setAgentStrategy("repair")}
-                disabled={isRunning}
-                title="A fast draft plan is generated first, then the AI improves it step by step."
-                className={getPillToggleClasses(agentStrategy === "repair")}
-              >
-                Draft + improve
-              </button>
-              <button
-                type="button"
-                onClick={() => setAgentStrategy("day_by_day")}
-                disabled={isRunning}
-                title="The AI builds each day from scratch like a human planner: scarcest slots first, each person placed with a long contiguous block."
-                className={getPillToggleClasses(agentStrategy === "day_by_day")}
-              >
-                Day by day
-              </button>
-            </div>
-          </div>
           <div className="text-xs text-slate-400 dark:text-slate-500">
-            {agentStrategy === "repair"
-              ? "Planning uses the AI agent: it drafts a plan, then the AI improves it step by step. Model & instructions: Settings → Solver."
-              : "The AI plans each day like a human: priority slots first, every clinician placed with a contiguous block of work. Model & instructions: Settings → Solver."}
+            The AI plans each day like a human: on-call and priority slots
+            first, every clinician placed with a contiguous block of work.
+            Model &amp; instructions: Settings → Solver.
           </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">

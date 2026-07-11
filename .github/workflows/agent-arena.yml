@@ -23,8 +23,8 @@ on:
         description: "base | vacation-wave | understaffed | crunch | oncall | pinned | daynight"
         default: "base"
       strategy:
-        description: "repair | day_by_day"
-        default: "repair"
+        description: "day_by_day (standard) | repair (benchmark reference)"
+        default: "day_by_day"
 
 jobs:
   arena:

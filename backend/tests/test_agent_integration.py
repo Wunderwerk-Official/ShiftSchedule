@@ -81,6 +81,7 @@ def test_agent_mode_through_endpoint_with_mock_script(solve_client, tmp_path, mo
             "endISO": MON,
             "only_fill_required": True,
             "solver_mode": "agent",
+            "agent_strategy": "repair",
             "timeout_seconds": 60,
         },
     )
@@ -103,12 +104,36 @@ def test_agent_mode_without_script_uses_default_mock_behaviour(solve_client):
             "endISO": MON,
             "only_fill_required": True,
             "solver_mode": "agent",
+            "agent_strategy": "repair",
             "timeout_seconds": 60,
         },
     )
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["debugInfo"]["solver_status"] == "AGENT_COMPLETE"
+    assert len(body["assignments"]) == 1
+
+
+def test_agent_mode_defaults_to_day_by_day(solve_client):
+    """Since v1.38 a solve WITHOUT agent_strategy runs the day-by-day
+    planner (the mock's inspection-only default applies no moves, so the
+    zero-progress guard returns the heuristic draft — but the strategy
+    decision itself is what this pins down)."""
+    _seeded_state()
+    response = solve_client.post(
+        "/v1/solve/range",
+        json={
+            "startISO": MON,
+            "endISO": MON,
+            "only_fill_required": True,
+            "solver_mode": "agent",
+            "timeout_seconds": 60,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
+    assert any("day-by-day" in n for n in body["notes"])
     assert len(body["assignments"]) == 1
 
 
