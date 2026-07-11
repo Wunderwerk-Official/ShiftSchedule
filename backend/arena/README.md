@@ -89,13 +89,18 @@ as a "quality mode" for important weeks with a 20–30 min budget.
 
 ## Evaluation round 3 (v1.29 fix_options, multi-day, on the real endpoint)
 
-Qwen 35B-A3B, start 2026-02-02:
+Start 2026-02-02:
 
-| scenario | days | duration | iter | moves acc/rej | short days | open slots |
-|---|---|---|---|---|---|---|
-| base | 3 | 402 s | 51 | 20/0 | 15 → 5 | 0 → 0 |
-| understaffed | 3 | 696 s | 97 | 24/37 | 10 → 5 | 0 → 0 |
-| base | 7 | 317 s | 55 | 30/84 | 22 → 19 | 2 → 0 |
+| model | scenario | days | duration | iter | moves acc/rej | short days | open slots |
+|---|---|---|---|---|---|---|---|
+| 35B | base | 3 | 402 s | 51 | 20/0 | 15 → 5 | 0 → 0 |
+| 35B | understaffed | 3 | 696 s | 97 | 24/37 | 10 → 5 | 0 → 0 |
+| 35B | base | 7 | 317 s | 55 | 30/84 | 22 → 19 | 2 → 0 |
+| 122B | base | 3 | 1110 s | 67 | 22/0 | 15 → 4 | 0 → 0 |
+
+The 122B confirms its "quality mode" role: best short-day reduction of the
+round (15 → 4, every batch dry-run-validated, zero rejections, remaining
+cases correctly explained), at ~2.8× the 35B's wall clock on the same case.
 
 What worked: the structurally-unfixable flag is respected (empty
 `fix_options` cases are skipped and named as such in the summaries), and on
