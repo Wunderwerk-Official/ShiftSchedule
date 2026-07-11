@@ -15,7 +15,10 @@ DEFAULT_PROVIDER = "anthropic"
 # Keep in sync with agent_budget.DEFAULT_AGENT_MODEL and the frontend default
 # in src/lib/llmPricing.ts.
 DEFAULT_MODEL = "claude-sonnet-5"
-DEFAULT_MAX_ITERATIONS = 100
+# Backstop against runaway loops, not a working budget: the wall-clock
+# timeout is the real limit. 100 starved day-by-day runs mid-construction
+# (both round-1 arena runs hit it with ~500s of budget unused).
+DEFAULT_MAX_ITERATIONS = 1000
 DEFAULT_MAX_TOKENS = 16000
 
 
