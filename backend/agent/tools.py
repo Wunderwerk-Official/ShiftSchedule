@@ -497,17 +497,23 @@ class PlanToolExecutor:
         soft = validate_solver_rules(self.state, full)
         quality = self._quality(working, hard_violations=hard)
         stats = plan_stats(self.ctx, working)
-        # Only violations INSIDE the solve range: the fixture-scale history of
-        # pre-existing out-of-range violations (dozens of codes) misled models
-        # into reasoning about problems that are constant, unfixable, and
-        # excluded from every quality tier anyway.
+        # Only REPAIRABLE violations INSIDE the solve range: the fixture-scale
+        # history of pre-existing out-of-range violations (dozens of codes)
+        # misled models into reasoning about constant, unfixable problems, and
+        # unrepairable fixed-only cases made the by-code counts contradict the
+        # quality tier (which excludes them) — both burned iterations.
         in_range = [
             v
             for v in hard
             if v.date_iso is None or v.date_iso in self.ctx.target_date_set
         ]
+        repairable = [
+            v
+            for v in in_range
+            if _violation_key(v) not in self.unrepairable_hard_keys
+        ]
         hard_counts: Dict[str, int] = {}
-        for v in in_range:
+        for v in repairable:
             hard_counts[v.code] = hard_counts.get(v.code, 0) + 1
         new_hard = [v for v in hard if self._is_new_hard(v)]
         return {
@@ -517,10 +523,11 @@ class PlanToolExecutor:
             },
             "quality_of_best_snapshot": self.quality_dict(self.best_quality),
             "stats": stats.model_dump(),
+            # Matches quality.hard_violations_in_range exactly.
             "hard_violations_in_range_by_code": hard_counts,
-            "hard_violations_outside_range": len(hard) - len(in_range),
-            "note": "out-of-range violations are pre-existing history: "
-            "constant, not yours, ignore them",
+            "hard_violations_not_yours": len(hard) - len(repairable),
+            "note": "hard_violations_not_yours = pre-existing history and "
+            "fixed-only cases: constant, unrepairable, ignore them",
             "new_hard_violations": len(new_hard),
             "soft_rule_violations": len(soft),
             "open_slot_count": stats.open_slots,
