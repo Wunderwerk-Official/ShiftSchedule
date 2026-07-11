@@ -324,3 +324,10 @@ not_searched list), and already-complete days still opened a conversation
 that burned 2-3 rounds confirming emptiness (now skipped with an "already
 fully staffed" digest line — the Easter run spent ~12 of its 31 iterations
 on exactly this).
+
+v1.36 verification (daynight 2026-02-16 +7d re-run): 550 s, 148 iter,
+111/0 moves, identical quality (137 → 34 open, 5 short, 9/9 duties, hours
+deviation 7911) — and the frictions are gone: the model now reads
+not_searched cleanly ("the COR tout slot was not searched and remains
+open") instead of puzzling over silently missing slots, and rescue is
+invoked exactly once per stuck day before the summary.
