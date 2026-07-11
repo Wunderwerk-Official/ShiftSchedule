@@ -817,3 +817,33 @@ def test_iteration_budget_scales_with_slot_count():
     )
     assert result["debugInfo"]["agent"]["iterations"] == 20
     assert any("iteration budget exhausted" in n for n in result["notes"])
+
+
+def test_fully_staffed_day_is_skipped_without_a_conversation():
+    """A day with zero open positions (fixed assignments or duty pre-pass
+    covered it) must not start a conversation — the observed runs burned
+    2-3 rounds per already-complete day just confirming emptiness."""
+    from .conftest import make_assignment
+
+    state = _two_day_state()
+    # Monday's only slot is already covered by a manual assignment.
+    state.assignments = [make_assignment("m1", "slot-a__mon", MON, "clin-1")]
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-b__tue__{TUE}",
+             "clinicianId": "Bob"}]}}]},
+        {"text": "Day 2 complete."},
+    ]
+    provider = CapturingProvider(script)
+    payload = _payload(endISO=TUE)
+    payload.agent_strategy = "day_by_day"
+    result = agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    assert result["debugInfo"]["agent"]["moves_accepted"] == 1
+    # The FIRST conversation is already day 2; day 1 was skipped and the
+    # digest says so.
+    first = provider.seen_messages[0][0].content
+    assert "Build day 2 of 2" in first
+    assert f"{MON}: already fully staffed, skipped" in first

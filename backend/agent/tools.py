@@ -1458,7 +1458,12 @@ class PlanToolExecutor:
                 f"({self.ctx.start_iso} to {self.ctx.end_iso})."
             }
         entries = self._day_open_entries(date_iso)
-        stuck = [e for e in entries if e["eligible_count"] == 0][:8]
+        stuck_all = [e for e in entries if e["eligible_count"] == 0]
+        # Search cap: a real production day showed 14 stuck slots — an
+        # unexplained cap made the model puzzle over the missing ones, so
+        # anything beyond it is reported as not_searched instead of silence.
+        stuck = stuck_all[:16]
+        not_searched = [e["slot_key"] for e in stuck_all[16:]]
         fillable_left = sum(1 for e in entries if e["eligible_count"] > 0)
         if not stuck:
             return {
@@ -1567,7 +1572,7 @@ class PlanToolExecutor:
                 rescues.extend(found)
             else:
                 no_rescue.append(entry["slot_key"])
-        return {
+        out = {
             "dateISO": date_iso,
             "note": "Each rescue is a pre-validated NET-GAIN batch: apply "
             "its 3 moves EXACTLY as given in ONE apply_moves call, then "
@@ -1578,6 +1583,14 @@ class PlanToolExecutor:
             "rescues": rescues,
             "truly_unfillable": no_rescue,
         }
+        if not_searched:
+            out["not_searched"] = not_searched
+            out["note"] += (
+                " not_searched lists stuck slots beyond this call's search "
+                "cap — call suggest_rescue_moves again after applying the "
+                "offered rescues to cover them."
+            )
+        return out
 
     def _greedy_day_block(
         self, cid: str, start_inst, counts: Dict[str, int]

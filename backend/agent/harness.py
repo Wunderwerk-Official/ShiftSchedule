@@ -786,6 +786,14 @@ def agent_solve_range(
                     f"|prio {inst.order_weight}"
                     + ("|ON-CALL" if inst.section_id == on_call_class else "")
                 )
+            if ctx.only_fill_required and open_positions == 0:
+                # Nothing to do (e.g. the duty pre-pass covered the whole
+                # day, or fixed assignments already fill it): starting a
+                # conversation just burns 2-3 rounds confirming emptiness.
+                previous_day_lines.append(
+                    f"- {date_iso}: already fully staffed, skipped"
+                )
+                continue
             fixed_anchor_lines = sorted(
                 {
                     f"- {executor._alias(a.clinicianId)}"
