@@ -383,3 +383,17 @@ Repair strategy untouched. Unit coverage: window-as-bound-not-target,
 longest-block-first below the minimum (with real YTD numbers that would
 have flipped the old order), mini-stint clearing round-trip, over-long
 shedding until `balanced=true`, fixed stints left alone.
+
+v1.40 verification (base 2026-02-16 +5d re-run, 35B, on the deployed
+backend): 635 s, 183 iterations, 115/0 moves, 127 → 18 open, short days
+→ **4** (v1.35/36 same case: 5), weekly-hours deviation → 9371 min, zero
+new hard violations. The new machinery is visibly active end-to-end: the
+final day summary quotes the balance review ("overlong shifts for Marie
+Curie (13.5h), ... and a mini-stint for Enrico Fermi (3h). No legal
+transfer existed"), i.e. on this crisis week (nine clinicians on
+vacation) the long days that remain are ones the review PROVED
+untransferable — piling on is now the last resort, not the default. The
+two extra open slots vs the v1.35 line (18 vs 16) are the expected trade
+of the humane chain cap on a crisis week (same pattern as crunch in
+round 6); on ordinary weeks fill is unaffected (the live week that
+triggered this round filled 147/147).
