@@ -341,3 +341,45 @@ and half are the greedy-construction gap to a global packer. Every agent
 search); closing the remaining gap to CP-SAT (deeper rearrangement, or a
 coverage-first CP-SAT seed for crisis weeks) is the known next frontier.
 On ordinary weeks the gap is zero — base 2026-02-02 fills 87/87.
+
+## Evaluation round 7 (v1.40 fairness pass, from a real production week)
+
+Source this time was not an arena run but the admin's live run log of the
+real week 2026-07-06 → 07-12 (v1.39, 182 iterations, 147 → 0 open, 3 short
+days). Coverage was perfect; the DISTRIBUTION was not, and both flaws were
+mechanical, not model errors:
+
+1. **A 13.5h auto-chain.** One clinician got Tout matin 06:30 through Tout
+   soir 20:00 as ONE `suggest_day_blocks` block (five slots, applied in a
+   single iteration-3 batch). Root cause: `_greedy_day_block` used the
+   mandatory working-time window's SPAN as the daily chain target — a
+   06:30-20:00 presence window became a 13.5h workload target. Fix: the
+   window now only bounds the target (it says when, not how much); the
+   target is the contract workday (contract/5, else 8h), hard-capped at
+   10h. Long single duty slots are unaffected (the start slot is never
+   span-capped) — only auto-glued chains of ordinary day work.
+2. **Two 1h mini-days instead of one 2h day.** With only two 1h staff
+   slots left, the candidate sort ranked by ytd among sub-minimum blocks
+   and picked a 1h candidate over the candidate whose 2h block covered
+   BOTH slots (the run's thought block even noticed the 2h option). Fix:
+   when NO candidate reaches the daily minimum, the longest block sorts
+   first and ytd only breaks ties — one person on a longer stint beats
+   two people on mini-stints, and the second person stays off entirely
+   (the admin's standing instruction).
+3. **No final read-through existed.** New day-only tool
+   `suggest_balance_moves(dateISO)`, wired into the procedure as the
+   mandatory last step once `day_complete=true`: it flags over-long days
+   (> preferred daily span + 1h) and mini-stint days (below the daily
+   minimum), and offers pre-validated single-handover batches — an edge
+   slot of an over-long day moves to a less-loaded colleague, a
+   mini-stint is handed entirely to an adjacent colleague so its holder
+   stays off. Every offer keeps donor and receiver days contiguous,
+   never creates a new over-long or mini-stint day, never touches
+   fixed/manual assignments, and passes the exact apply gate, so the
+   model applies them verbatim (one per round, re-query between rounds;
+   the transfer loop provably terminates in tests).
+
+Repair strategy untouched. Unit coverage: window-as-bound-not-target,
+longest-block-first below the minimum (with real YTD numbers that would
+have flipped the old order), mini-stint clearing round-trip, over-long
+shedding until `balanced=true`, fixed stints left alone.
