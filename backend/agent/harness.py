@@ -15,7 +15,7 @@ the seed), with an explanatory note.
 from __future__ import annotations
 
 import time
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..heuristic.solver_v2 import heuristic_solve_range_v2
 from ..models import Assignment, SolveRangeRequest, AppState
@@ -25,8 +25,10 @@ from .config import AgentConfig
 from .prompts import (
     DAY_SYSTEM_PROMPT,
     DEFAULT_AGENT_INSTRUCTIONS,
+    DUTY_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_day_digest,
+    build_duty_digest,
     build_problem_digest,
 )
 from .provider import ChatMessage, LLMProvider, ToolSpec, get_provider
@@ -458,6 +460,11 @@ def agent_solve_range(
     # AGENT_MODEL env default; per-user solverSettings.agentModel is ignored.
     if isinstance(payload.agent_model, str) and payload.agent_model.strip():
         config.model = payload.agent_model.strip()
+    # Admin rule: the iteration budget scales with the problem — 10 rounds
+    # per slot instance in the range, filled or not. A flat cap either
+    # starved big ranges (100 pre-v1.33) or was meaningless on small ones;
+    # AGENT_MAX_ITERATIONS is superseded by this formula.
+    config.max_iterations = max(10, len(ctx.instances) * 10)
     # Per-user spending cap, also decided server-side: once used up, the run
     # ends at the heuristic draft instead of starting the LLM.
     budget_note = (
@@ -540,6 +547,185 @@ def agent_solve_range(
         total_days = len(ctx.target_day_isos)
         previous_day_lines: List[str] = []
         aborted = False
+
+        # ---- Duty pre-pass ------------------------------------------------
+        # On-call/duty slots are staffed FIRST across the WHOLE range: they
+        # bind rest days and weekly-hours budgets, and building the days
+        # chronologically spent those budgets on ordinary day work first —
+        # observed in production as a weekend whose on-call stayed empty.
+        on_call_class = (
+            ctx.settings.onCallRestClassId
+            if getattr(ctx.settings, "onCallRestEnabled", False)
+            else None
+        )
+
+        def open_duty_state() -> Tuple[List[str], int]:
+            counts = executor._counts_by_instance(executor._working_list())
+            lines: List[str] = []
+            positions = 0
+            for inst in sorted(
+                (i for i in ctx.instances.values() if i.section_id == on_call_class),
+                key=lambda i: (i.date_iso, i.start),
+            ):
+                missing = max(0, inst.target - counts.get(inst.slot_key, 0))
+                if missing > 0:
+                    positions += missing
+                    lines.append(
+                        f"- {executor._alias_slot_key(inst.slot_key)}"
+                        f"|{executor.section_names.get(inst.section_id, inst.section_id)}"
+                        f"|{inst.date_iso}"
+                        f"|{inst.start // 60:02d}:{inst.start % 60:02d}-"
+                        f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
+                        f"|{missing}"
+                    )
+            return lines, positions
+
+        duty_lines, duty_positions = (
+            open_duty_state() if on_call_class else ([], 0)
+        )
+        if duty_lines:
+            remaining = deadline - time.time()
+            duty_deadline = time.time() + remaining / (total_days + 1)
+            duty_rounds = max(6, 3 * duty_positions)
+            rounds_end = min(iterations_done + duty_rounds, config.max_iterations)
+            digest = (
+                build_duty_digest(
+                    state,
+                    ctx,
+                    duty_lines,
+                    duty_rounds,
+                    executor.alias_by_id,
+                    ytd_worked_pct_by_id={
+                        c.id: executor.ytd_completion_pct(c.id, ctx.start_iso)
+                        for c in state.clinicians
+                    },
+                )
+                + admin_block
+            )
+            messages = [ChatMessage(role="user", content=digest)]
+            truncation_nudges = 0
+            on_progress(
+                "phase",
+                {
+                    "phase": "agent_loop",
+                    "label": (
+                        f"Agent (2/3): duty pre-pass, {duty_positions} "
+                        "on-call position(s)..."
+                    ),
+                },
+            )
+            while iterations_done < rounds_end:
+                if cancel_event.is_set():
+                    return finalize(
+                        "ABORTED",
+                        extra_notes
+                        + ["Agent run aborted by user; best plan so far returned."],
+                    )
+                global_left = deadline - time.time()
+                if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
+                    break
+                if duty_deadline - time.time() <= 0:
+                    break  # the pass's time share is spent — start the days
+                per_call_timeout = max(
+                    10.0,
+                    min(
+                        max(duty_deadline - time.time(), 30.0),
+                        global_left - DEADLINE_HEADROOM_SECONDS,
+                        MAX_PER_CALL_TIMEOUT_SECONDS,
+                    ),
+                )
+                _compact_tool_history(messages)
+                executor.current_iteration = iterations_done + 1
+                emit_agent("iteration", {"iteration": iterations_done + 1})
+                response = provider.complete(
+                    system=DUTY_SYSTEM_PROMPT,
+                    messages=messages,
+                    tools=DAY_TOOL_SPECS,
+                    timeout_seconds=per_call_timeout,
+                )
+                iterations_done += 1
+                absorb_response(response)
+                if response.stop_reason in ("error", "refusal"):
+                    kind = "error" if response.stop_reason == "error" else "refusal"
+                    detail = f" ({response.error})" if response.error else ""
+                    extra_notes.append(
+                        f"LLM {kind} in the duty pre-pass after iteration "
+                        f"{iterations_done}{detail}; best plan so far returned."
+                    )
+                    aborted = True
+                    break
+                if response.stop_reason == "tool_use" and response.tool_calls:
+                    assistant = ChatMessage(
+                        role="assistant",
+                        content=response.replay_text,
+                        tool_calls=response.tool_calls,
+                        raw_content=response.raw_content,
+                    )
+                    results = []
+                    for call in response.tool_calls:
+                        if cancel_event.is_set():
+                            return finalize(
+                                "ABORTED",
+                                extra_notes
+                                + [
+                                    "Agent run aborted by user; best plan so far returned."
+                                ],
+                            )
+                        results.append(
+                            executor.execute(call.name, call.arguments, call.id)
+                        )
+                    emit_agent(
+                        "tool_use", {"tools": [c.name for c in response.tool_calls]}
+                    )
+                    messages.append(assistant)
+                    messages.append(ChatMessage(role="tool", tool_results=results))
+                    if not open_duty_state()[0]:
+                        break  # every duty staffed — nothing left to discuss
+                    continue
+                if response.stop_reason == "max_tokens":
+                    if truncation_nudges < 2:
+                        truncation_nudges += 1
+                        messages.append(
+                            ChatMessage(
+                                role="assistant",
+                                content=response.replay_text or "(truncated)",
+                                tool_calls=response.tool_calls,
+                                raw_content=response.raw_content,
+                            )
+                        )
+                        if response.tool_calls:
+                            messages.append(
+                                ChatMessage(
+                                    role="tool",
+                                    tool_results=[
+                                        executor.execute(c.name, c.arguments, c.id)
+                                        for c in response.tool_calls
+                                    ],
+                                )
+                            )
+                        messages.append(
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    "Your reply was truncated. Respond with tool "
+                                    "calls only, or finish the duty pass with a "
+                                    "one-sentence summary."
+                                ),
+                            )
+                        )
+                        continue
+                    extra_notes.append(
+                        "LLM output repeatedly truncated in the duty pre-pass; "
+                        "moved on to day planning."
+                    )
+                    break
+                break  # end_turn: the model declared the duty pass done
+            still_open_positions = open_duty_state()[1]
+            previous_day_lines.append(
+                f"- duty pre-pass: {duty_positions - still_open_positions} of "
+                f"{duty_positions} on-call/duty positions staffed"
+            )
+
         for day_index, date_iso in enumerate(ctx.target_day_isos):
             if aborted:
                 break

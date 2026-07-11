@@ -66,3 +66,54 @@ def test_oncall_scenario_requires_duty_and_clears_in_range_cover():
     assert not any(CARNIVAL_START <= a.dateISO <= CARNIVAL_END for a in remaining)
     # Out-of-range on-call cover (context for rest-day checks) is untouched.
     assert len(remaining) == len(out_of_range_before)
+
+
+def test_pinned_scenario_books_anchors_deterministically():
+    state = load_state()
+    n_before = len(state.assignments)
+    desc = apply_scenario(state, "pinned", CARNIVAL_START, CARNIVAL_END)
+    pins = [a for a in state.assignments if a.id.startswith("arena-pin-")]
+    assert len(state.assignments) == n_before + len(pins)
+    assert pins, "carnival week must produce anchor bookings"
+    assert all(a.source == "manual" for a in pins)
+    assert all(CARNIVAL_START <= a.dateISO <= CARNIVAL_END for a in pins)
+    # Max two anchors per day, distinct clinicians within a day.
+    from collections import Counter
+    per_day = Counter(a.dateISO for a in pins)
+    assert all(count <= 2 for count in per_day.values())
+    for date_iso in per_day:
+        day_pins = [a for a in pins if a.dateISO == date_iso]
+        assert len({a.clinicianId for a in day_pins}) == len(day_pins)
+    assert str(len(pins)) in desc
+    # Deterministic: same transform twice -> same pins.
+    state2 = load_state()
+    apply_scenario(state2, "pinned", CARNIVAL_START, CARNIVAL_END)
+    pins2 = sorted(
+        (a.id, a.clinicianId) for a in state2.assignments if a.id.startswith("arena-pin-")
+    )
+    assert pins2 == sorted((a.id, a.clinicianId) for a in pins)
+
+
+def test_daynight_scenario_splits_weekend_oncall():
+    state = load_state()
+    desc = apply_scenario(state, "daynight", "2026-02-16", "2026-02-22")
+    on_call_class = state.solverSettings["onCallRestClassId"]
+    blocks = {b.id for b in state.weeklyTemplate.blocks if b.sectionId == on_call_class}
+    day_slots = []
+    night_slots = []
+    for loc in state.weeklyTemplate.locations:
+        for s in loc.slots:
+            if s.blockId in blocks:
+                if s.id.endswith("-night"):
+                    night_slots.append(s)
+                elif s.startTime == "08:00":
+                    day_slots.append(s)
+    assert night_slots, "weekend on-call must gain night duties"
+    assert len(day_slots) == len(night_slots)
+    for s in night_slots:
+        assert (s.startTime, s.endTime, s.endDayOffset) == ("20:00", "08:00", 1)
+        assert s.requiredSlots == 1
+    for s in day_slots:
+        assert (s.endTime, s.endDayOffset) == ("20:00", 0)
+        assert s.requiredSlots == 1
+    assert "night slots added" in desc

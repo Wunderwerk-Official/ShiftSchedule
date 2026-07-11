@@ -197,23 +197,36 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    starting at that slot (adjacent open slots chained up to their
    preferred daily hours) — their "Anschlussverwendung". Pass slot_key
    instead only when you deliberately deviate from the given order.
-3. Choosing the candidate: they are PRE-SORTED — everyone whose block meets
-   the daily minimum first, then lowest ytd_worked_pct (100 = on target,
-   lower = behind). Take the FIRST candidate unless you have a concrete
-   reason not to (admin instructions, section preference, saving a scarce
-   person for a slot only they can cover). Extra hours beyond the daily
-   minimum are a tie-breaker, not a goal: a fair shorter block that meets
-   the minimum beats a longer block for someone already ahead.
+3. Choosing the candidate: they are PRE-SORTED — overloaded=true last,
+   everyone whose block meets the daily minimum first, then lowest
+   ytd_worked_pct (100 = on target, lower = behind). Take the FIRST
+   candidate unless you have a concrete reason not to (admin instructions,
+   section preference, saving a scarce person for a slot only they can
+   cover). Extra hours beyond the daily minimum are a tie-breaker, not a
+   goal: a fair shorter block that meets the minimum beats a longer block
+   for someone already ahead. overloaded=true means the day would exceed
+   16 hours (e.g. a night duty stacked on a day duty) — a LAST resort:
+   two people on two duties always beat one person on 24 hours, even when
+   the fresh person's fairness numbers look worse.
 4. PIPELINE every following round in ONE message with two tool calls, in
    this order: FIRST apply_moves with the WHOLE chosen block (all assigns
    together — never just the single slot when a block was offered), SECOND
    suggest_day_blocks (dateISO, no slot_key). The suggestion is computed
    after your batch applied, so it is fresh — one round per placement.
 5. Repeat step 4 until suggest_day_blocks returns day_complete=true (every
-   remaining open slot has eligible_count 0). Then write your final day
-   summary.
+   remaining open slot has eligible_count 0). If unfillable_slots remain,
+   call suggest_rescue_moves(dateISO) ONCE: it searches whether moving one
+   of YOUR OWN earlier placements frees a qualified clinician for a stuck
+   slot, with a substitute covering the vacated one, and returns
+   pre-validated 3-move batches. Apply ONE rescue batch per round, exactly
+   as given, then re-check via suggest_day_blocks. When rescue offers
+   nothing (truly_unfillable), write your final day summary.
 
 Rules of engagement:
+- TRUST the tools' verdicts. eligible_count and the candidate lists are
+  computed with the EXACT acceptance gate, every hard rule included. Never
+  spend rounds re-deriving or doubting a 0 ("let me verify...") — the
+  productive reaction is suggest_rescue_moves, then moving on.
 - Slots and blocks are validated against the CURRENT plan and go stale after
   every apply_moves: never reuse a block from an earlier round — the
   pipeline in step 4 always hands you a fresh one.
@@ -237,6 +250,84 @@ Finish the day by replying WITHOUT tool calls ONLY when suggest_day_blocks
 reported day_complete=true (or every unfilled slot has eligible_count 0).
 Your final reply: one short paragraph — what you staffed, which slots stay
 open and why. Then the harness moves you to the next day."""
+
+
+DUTY_SYSTEM_PROMPT = """You are an expert clinician shift planner. Before the day-by-day planning of this range starts, you staff its DUTY slots (on-call services) FIRST, across ALL days — the way a human planner fixes the 24/7 duty roster before any day work. Duties bind rest days around them and eat weekly-hours budgets: placed last they starve (observed in production: a whole weekend's on-call left empty because the week's hours were spent on ordinary day work first).
+
+Hard constraints are enforced by the apply gate exactly as everywhere else
+(qualification, vacation, overlap, rest days, weekly hours, ...). Range-wide
+numbers in tool results count the still-empty ordinary slots too — judge
+this pass only by the duty list below.
+
+THE PROCEDURE:
+1. The digest lists every open duty slot of the range in date order. For
+   the FIRST one, call suggest_day_blocks with its slot_key AND
+   single=true (a duty is taken alone — no chained day work before or
+   after a 12h service).
+2. Choosing among the candidates: NEVER give one person two duties of the
+   same day (a day duty plus a night duty is a 24-hour shift —
+   overloaded=true marks it, a last resort only). Spread duties across
+   DIFFERENT clinicians — most YTD-behind first; week_hours above
+   contract_hours is legal up to week_hours_max. Mind that rest rules
+   block the days around a duty for that person.
+3. PIPELINE: in ONE message, apply_moves with the chosen assignment FIRST,
+   then suggest_day_blocks (slot_key of the NEXT duty slot, single=true)
+   SECOND. One round per duty.
+4. A duty slot whose suggestion returns no candidates is unfillable now —
+   skip it, continue with the next.
+5. When every listed duty slot is staffed or skipped, reply WITHOUT tool
+   calls: one short paragraph — who covers which duty, what was skipped
+   and why. The harness then starts the day-by-day pass.
+
+Identifiers: clinicians by their real names exactly as shown; slot keys
+copied exactly. Every reply must either CALL A TOOL or BE your final
+summary — announcing intentions without a tool call ends the pass."""
+
+
+def build_duty_digest(
+    state: AppState,
+    ctx: ScoringContext,
+    duty_slot_lines: List[str],
+    max_rounds: int,
+    clinician_aliases: Dict[str, str],
+    ytd_worked_pct_by_id: Dict[str, Optional[int]],
+) -> str:
+    """First user message of the duty pre-pass conversation: the roster and
+    every open duty slot of the range, in date order."""
+    sections = {r.id: r.name for r in state.rows if r.kind == "class"}
+
+    def _section_list(ids) -> str:
+        return ",".join(sections.get(i, i) for i in (ids or [])) or "-"
+
+    lines: List[str] = []
+    lines.append(
+        "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
+        "of target, 100=on target, lower=behind):"
+    )
+    for c in state.clinicians:
+        worked_pct = ytd_worked_pct_by_id.get(c.id)
+        lines.append(
+            f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
+            f"|{_section_list(c.preferredClassIds)}"
+            f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
+            f"|{worked_pct if worked_pct is not None else '-'}"
+        )
+    lines.append("")
+    lines.append(
+        f"Duty pre-pass for {ctx.start_iso} to {ctx.end_iso}: staff ALL "
+        "on-call/duty slots below BEFORE any day planning."
+    )
+    lines.append("")
+    lines.append("Open duty slots (slot_key|section|date|time|missing):")
+    lines.extend(duty_slot_lines)
+    lines.append("")
+    lines.append(
+        f"You have roughly {max_rounds} tool rounds. Procedure: "
+        "suggest_day_blocks(slot_key, single=true) for the first duty, then "
+        "each round apply_moves + suggest_day_blocks for the next duty in "
+        "ONE message. Finish with a one-paragraph summary."
+    )
+    return "\n".join(lines)
 
 
 def build_day_digest(

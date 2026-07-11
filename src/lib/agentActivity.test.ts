@@ -55,12 +55,12 @@ describe("deriveAgentStatus", () => {
     ]);
     const thoughts = status.feed.filter((entry) => entry.type === "thought");
     expect(thoughts).toHaveLength(2);
-    // newest first
-    expect(thoughts[0]).toMatchObject({ text: "Assigning A to CT.", reasoning: false });
-    expect(thoughts[1]).toMatchObject({ text: "Let me check the open slots.", reasoning: true });
+    // chronological: newest at the bottom (readers are never yanked around)
+    expect(thoughts[0]).toMatchObject({ text: "Let me check the open slots.", reasoning: true });
+    expect(thoughts[1]).toMatchObject({ text: "Assigning A to CT.", reasoning: false });
   });
 
-  it("builds a newest-first feed from moves, thoughts, and rejections", () => {
+  it("builds a chronological feed from moves, thoughts, and rejections", () => {
     const status = deriveAgentStatus([
       event({ kind: "thought", text: "Filling Monday gaps first." }),
       event({
@@ -73,22 +73,23 @@ describe("deriveAgentStatus", () => {
       event({ kind: "moves_rejected", count: 2, reason: "would violate OVERLAP" }),
     ]);
     expect(status.feed.map((entry) => entry.type)).toEqual([
-      "rejected",
-      "move",
-      "move",
       "thought",
+      "move",
+      "move",
+      "rejected",
     ]);
-    expect(status.feed[0]).toMatchObject({ count: 2, reason: "would violate OVERLAP" });
+    expect(status.feed[3]).toMatchObject({ count: 2, reason: "would violate OVERLAP" });
   });
 
-  it("caps the feed length", () => {
+  it("caps the feed length to the most recent entries", () => {
     const events = Array.from({ length: 60 }, (_, i) =>
       event({ kind: "thought", text: `t${i}`, time_ms: i }),
     );
     const status = deriveAgentStatus(events);
     expect(status.feed).toHaveLength(30);
-    // Newest first
-    expect(status.feed[0]).toMatchObject({ text: "t59" });
+    // Newest at the bottom, oldest surviving entry first
+    expect(status.feed[0]).toMatchObject({ text: "t30" });
+    expect(status.feed[29]).toMatchObject({ text: "t59" });
   });
 });
 

@@ -134,6 +134,105 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
             "template slots); in-range on-call assignments cleared"
         )
 
+    if scenario == "pinned":
+        # Immutable anchor bookings: on each day of the range the two
+        # most-flexible AVAILABLE clinicians are pre-booked (manual, fixed)
+        # on the day's two lowest-priority required slots — the "the boss
+        # has an evening meeting" situation. The agent must plan around the
+        # anchors and extend their days instead of colliding with them.
+        from ..models import Assignment
+        from ..scoring import build_scoring_context
+
+        ctx = build_scoring_context(state, start_iso, end_iso, only_fill_required=True)
+
+        def on_vacation_day(c, date_iso: str) -> bool:
+            return any(
+                v.startISO <= date_iso <= v.endISO for v in (c.vacations or [])
+            )
+
+        pins = []
+        for date_iso in ctx.target_day_isos:
+            day_insts = sorted(
+                (
+                    i
+                    for i in ctx.instances.values()
+                    if i.date_iso == date_iso and i.target > 0
+                ),
+                key=lambda i: (i.order_weight, i.start),
+            )
+            used: set = set()
+            pinned_here = 0
+            for inst in day_insts:
+                if pinned_here >= 2:
+                    break
+                candidates = sorted(
+                    (
+                        c
+                        for c in state.clinicians
+                        if c.id not in used
+                        and inst.section_id in (c.qualifiedClassIds or [])
+                        and not on_vacation_day(c, date_iso)
+                    ),
+                    key=lambda c: len(c.qualifiedClassIds or []),
+                    reverse=True,
+                )
+                if not candidates:
+                    continue
+                pins.append(
+                    Assignment(
+                        id=f"arena-pin-{inst.slot_id}-{date_iso}",
+                        rowId=inst.slot_id,
+                        dateISO=date_iso,
+                        clinicianId=candidates[0].id,
+                        source="manual",
+                    )
+                )
+                used.add(candidates[0].id)
+                pinned_here += 1
+        state.assignments = list(state.assignments) + pins
+        return (
+            f"{len(pins)} immutable anchor bookings: most-flexible available "
+            "clinicians pre-booked on each day's lowest-priority slots"
+        )
+
+    if scenario == "daynight":
+        # The production trap: the weekend on-call is ONE day duty
+        # 08:00-20:00 plus ONE night duty 20:00-08:00(+1) on the same day —
+        # and a naive solver put the SAME person on both (a 24h shift).
+        # Builds on the oncall scenario (all duties required, in-range
+        # cover cleared), then splits the weekend/holiday duty in two.
+        import copy
+
+        desc = apply_scenario(state, "oncall", start_iso, end_iso)
+        on_call_class = (state.solverSettings or {}).get("onCallRestClassId")
+        on_call_blocks = {
+            b.id for b in state.weeklyTemplate.blocks if b.sectionId == on_call_class
+        }
+        added = 0
+        for location in state.weeklyTemplate.locations:
+            night_slots = []
+            for slot in location.slots:
+                # Weekend/holiday duties carry no times in the template
+                # (all-day); give them the real day-duty times and clone a
+                # night duty next to each.
+                if slot.blockId in on_call_blocks and not slot.startTime:
+                    slot.startTime, slot.endTime, slot.endDayOffset = (
+                        "08:00",
+                        "20:00",
+                        0,
+                    )
+                    night = copy.deepcopy(slot)
+                    night.id = f"{slot.id}-night"
+                    night.startTime, night.endTime, night.endDayOffset = (
+                        "20:00",
+                        "08:00",
+                        1,
+                    )
+                    night_slots.append(night)
+                    added += 1
+            location.slots.extend(night_slots)
+        return desc + f"; weekend on-call split into day+night duty ({added} night slots added)"
+
     raise SystemExit(f"unknown scenario: {scenario!r}")
 
 
@@ -146,7 +245,10 @@ def main() -> None:
     parser.add_argument("--model", default=None, help="override the configured model")
     parser.add_argument(
         "--scenario", default="base",
-        choices=["base", "vacation-wave", "understaffed", "crunch", "oncall"],
+        choices=[
+            "base", "vacation-wave", "understaffed", "crunch", "oncall",
+            "pinned", "daynight",
+        ],
         help="transform the fixture into a harder case",
     )
     parser.add_argument(
