@@ -283,3 +283,44 @@ nights staffed again. The report's seed side now shows the exact 132, and
 the hours hesitation is gone from the reasoning — the model cites the
 take-the-first-candidate procedure instead of second-guessing legal
 above-contract hours.
+
+## Evaluation round 6 (v1.35 duty pre-pass + rescue + 24h guard, hard-test matrix)
+
+Round 6 was driven by two PRODUCTION findings: a 7-day live run left the
+whole weekend (including its on-call) empty because chronological day
+building spends the weekly-hours budget on Monday-Thursday first, and the
+solver once put ONE person on Saturday's day duty 08:00-20:00 AND night
+duty 20:00-08:00 — a 24-hour shift. v1.35 answers with the DUTY PRE-PASS
+(all on-call/duty slots of the range are staffed in one conversation
+BEFORE any day work), suggest_rescue_moves (depth-1 rearrangement of the
+agent's own placements, pre-validated net-gain batches), the
+overloaded=true guard (>16h days sort last; two people on two duties beat
+one person on 24 hours), and the slots-x-10 iteration budget.
+
+The matrix (all Qwen 35B, day_by_day, v1.35 on the real endpoint):
+
+| case | duration | iter | moves acc/rej | short days | open slots |
+|---|---|---|---|---|---|
+| daynight 2026-02-16 +7d | 534 s | 152 | 111/0 | → 5 | 137 → 34, **9/9 duties staffed, Sat day+night = two different people** |
+| pinned 2026-02-16 +5d | 481 s | 134 | 93/0 | → 8 | 118 → 27, zero new violations around 10 immutable anchors |
+| understaffed 2026-02-02 +3d | 325 s | 114 | 86/0 | → 8 | 87 → **1** (v1.32: 3; the last slot proven rescue-free) |
+| crunch 2026-02-16 +5d | 389 s | 122 | 82/0 | → 5 | 127 → 47 (v1.33: 37 — but no stacked monster days, best hours balance of the case) |
+| base 2026-02-16 +5d | 519 s | 152 | 117/0 | → 5 | 127 → **16** (repair, v1.33-35B and 122B all plateaued at 20 — rescue cracks it) |
+| daynight 2026-04-03 +4d (Easter) | 60 s | 31 | 9/0 | → 0 | 9 → **0**, every holiday/weekend duty staffed day+night |
+| vacation-wave 2026-02-02 +3d | 376 s | 103 | 81/0 | → 5 | 87 → **8** (heuristic seed: 12) |
+| base 2026-02-09 +14d (endurance) | 1171 s | 327 | 253/0 | → 9 | 274 → **23**, ~6M input tokens, no budget/cap issues across two weeks |
+
+Zero rejected batches across all eight runs. The rescue tool was used
+correctly everywhere: applied where it gains (base: freed Paul Dirac for
+S30; understaffed/vacation-wave: one net-gain batch each), and used as
+proof of unfillability otherwise. The crunch regression (47 vs 37 open) is
+the intended trade — v1.33 filled more by piling >16h days onto the few
+remaining people, which the 24h guard now discourages.
+
+Frictions found and fixed on top (this round's follow-up): the rescue
+search capped at 8 stuck slots and stayed silent about the rest (a real
+day had 14 — the model puzzled over the missing six; now cap 16 +
+not_searched list), and already-complete days still opened a conversation
+that burned 2-3 rounds confirming emptiness (now skipped with an "already
+fully staffed" digest line — the Easter run spent ~12 of its 31 iterations
+on exactly this).
