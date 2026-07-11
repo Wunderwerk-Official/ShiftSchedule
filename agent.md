@@ -842,15 +842,44 @@ other solve (`phase` events for loop progress, one `solution` event for the
 seed and one per accepted improvement, objective on the same minimized scale).
 
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
+Two strategies, selectable per solve via `SolveRangeRequest.agent_strategy`:
+
+**repair** (default): the classic improve-the-draft loop.
 1. **Seed**: `heuristic_solve_range_v2` produces the initial plan (its
    per-day `solution` events are muted; phases are forwarded).
-2. **Loop**: the LLM gets a compact problem digest and ten tools; it inspects
-   and applies moves on a working copy until it stops, the iteration budget
-   (`AGENT_MAX_ITERATIONS`, default 20) runs out, or the wall clock
-   (`timeout_seconds`, default 300s for agent mode) expires.
-3. **Finalize**: the best snapshot is returned — never worse than the
-   seed. Any LLM failure (missing key, API error, refusal) degrades to the
-   seed plan with a note; it never surfaces as a 500 once the seed exists.
+2. **Loop**: the LLM gets a compact problem digest and the inspection/move
+   tools; it improves a working copy until it stops, the iteration budget
+   runs out, or the wall clock (`timeout_seconds`, default 300s for agent
+   mode) expires.
+3. **Finalize**: the best snapshot is returned — never worse than the seed.
+
+**day_by_day**: the LLM builds the range from scratch the way a human
+planner works, with three extra tools (`get_day_priorities`,
+`suggest_day_blocks`, `suggest_rescue_moves`).
+1. **Duty pre-pass**: one conversation staffs every open on-call/duty slot
+   of the WHOLE range first — duties bind rest days and weekly-hours
+   budgets, so placed last they starve.
+2. **One fresh conversation per day**: slots are worked in PROCESSING
+   order (single-candidate slots, then on-call, then the template's slot
+   priority — never chronologically); `suggest_day_blocks` auto-selects
+   the most urgent slot and returns pre-validated contiguous work blocks
+   ("Anschlussverwendung") per candidate, with `overloaded=true` marking
+   >16h days (a night duty stacked on a day duty is a last resort).
+   Fully staffed days are skipped without a conversation.
+3. **Rescue**: when a day's leftovers have `eligible_count 0`,
+   `suggest_rescue_moves` searches depth-1 rearrangements of the agent's
+   OWN placements (blocker out, substitute in, freed clinician onto the
+   stuck slot) as pre-validated net-gain batches before anything is
+   declared unfillable.
+4. **Zero-progress guard**: an empty day-by-day result never reaches the
+   client — it falls back to a fresh heuristic draft
+   (`AGENT_FALLBACK_SEED`).
+
+The iteration budget follows the admin rule **total slot instances × 10**
+(floor 10), computed per solve; it supersedes `AGENT_MAX_ITERATIONS`, which
+remains only as config plumbing. Any LLM failure (missing key, API error,
+refusal) degrades to the seed/heuristic plan with a note; it never surfaces
+as a 500 once a plan exists.
 
 ### Quality gate (`PlanToolExecutor._quality`)
 The best-plan gate is a **lexicographic tuple**, not the hand-weighted scalar
@@ -919,7 +948,8 @@ the solve payload, its debug dumps, or any API response (the settings API
 returns set/unset booleans only). The per-user AI budget applies to the
 Anthropic provider only — self-hosted runs are free and never blocked by it.
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
-`AGENT_MAX_ITERATIONS`, `AGENT_MAX_TOKENS`) — the spawn subprocess inherits it.
+`AGENT_MAX_TOKENS`; `AGENT_MAX_ITERATIONS` is superseded by the
+slot-instances × 10 budget rule) — the spawn subprocess inherits it.
 The model is an ADMIN-ONLY global setting (default `claude-sonnet-5`) stored
 in the `agent_settings` table and managed via `GET/PUT /v1/agent/settings`
 (`backend/agent_budget.py`); the solve endpoint injects it into the payload
