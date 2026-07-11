@@ -217,21 +217,29 @@ TOOL_SPECS_RAW = [
         "name": "suggest_day_blocks",
         "description": (
             "Day-by-day planning: for ONE open slot, up to 6 clinicians who "
-            "could legally take it (fairest first) — each with a precomputed "
+            "could legally take it (best first) — each with a precomputed "
             "contiguous WORK BLOCK starting at that slot (the chain of "
             "adjacent, still-open slots they could also take, up to their "
             "preferred daily hours). This answers 'who can I put here who "
             "then keeps working, instead of coming in for a short stint'. "
-            "Pick a candidate weighing block length (longer = better), "
-            "fairness (lowest ytd_worked_pct first) and section preference, "
-            "then apply the WHOLE block in one apply_moves batch. Blocks are "
-            "validated against the current plan and go stale after "
-            "apply_moves — re-query rather than reusing old suggestions."
+            "OMIT slot_key and pass dateISO to AUTO-SELECT the scarcest "
+            "still-fillable open slot of that day (same ranking as "
+            "get_day_priorities, slots nobody can take are skipped); when "
+            "nothing fillable remains it returns day_complete=true instead. "
+            "Candidates are pre-sorted: daily minimum met first, then lowest "
+            "ytd_worked_pct. Apply the WHOLE chosen block in one apply_moves "
+            "batch. Blocks are validated against the current plan and go "
+            "stale after apply_moves — re-query rather than reusing old "
+            "suggestions (in auto mode: put apply_moves FIRST and this call "
+            "SECOND in the same message, so the new suggestion already "
+            "reflects the applied batch)."
         ),
         "input_schema": {
             "type": "object",
-            "properties": {"slot_key": {"type": "string"}},
-            "required": ["slot_key"],
+            "properties": {
+                "slot_key": {"type": "string"},
+                "dateISO": {"type": "string"},
+            },
             "additionalProperties": False,
         },
     },
@@ -1153,8 +1161,10 @@ class PlanToolExecutor:
     # day-by-day strategy helpers
     # ------------------------------------------------------------------
 
-    def _tool_day_priorities(self, args: dict) -> dict:
-        """Unfilled slot instances of one day, scarcest-first.
+    def _day_open_entries(self, date_iso: str) -> List[dict]:
+        """Unfilled slot instances of one day, scarcest-first. Shared by
+        get_day_priorities and suggest_day_blocks' auto-select so both rank
+        the day identically.
 
         Scarcity = number of clinicians who could legally take the slot
         against the CURRENT plan (same trial validation as
@@ -1162,12 +1172,6 @@ class PlanToolExecutor:
         decided before that person is consumed by a less critical slot —
         this is the 'which slots need filling first' step of the human
         procedure."""
-        date_iso = args.get("dateISO")
-        if date_iso not in self.ctx.target_date_set:
-            return {
-                "error": f"{date_iso} is outside the solve range "
-                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
-            }
         counts = self._counts_by_instance(self._working_list())
         entries = []
         for inst in self.ctx.instances.values():
@@ -1196,6 +1200,7 @@ class PlanToolExecutor:
                 eligible.append(self._alias(clinician.id))
             entries.append(
                 {
+                    "raw_slot_key": inst.slot_key,
                     "slot_key": self._alias_slot_key(inst.slot_key),
                     "section": self.section_names.get(inst.section_id, inst.section_id),
                     "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
@@ -1206,25 +1211,81 @@ class PlanToolExecutor:
                 }
             )
         entries.sort(key=lambda e: (e["eligible_count"], e["start"], e["section"]))
-        return {
+        return entries
+
+    def _tool_day_priorities(self, args: dict) -> dict:
+        date_iso = args.get("dateISO")
+        if date_iso not in self.ctx.target_date_set:
+            return {
+                "error": f"{date_iso} is outside the solve range "
+                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
+            }
+        entries = [dict(e) for e in self._day_open_entries(date_iso)]
+        for entry in entries:
+            entry.pop("raw_slot_key", None)
+        # Orientation, not a work list: the pipeline picks slots itself via
+        # suggest_day_blocks auto-select, so the tail of flexible slots only
+        # costs tokens the model re-reads every round.
+        shown = entries[:20]
+        out = {
             "dateISO": date_iso,
             "open_positions": sum(e["missing"] for e in entries),
             "note": "Scarcest slots first (fewest legal candidates NOW). "
             "eligible_count=0 means nobody can take it in the current state "
             "- staff the rest of the day first, then re-check; if it stays "
             "0, report it as unfillable. Counts change after apply_moves.",
-            "slots": entries,
+            "slots": shown,
         }
+        if len(entries) > len(shown):
+            out["more_open_slots"] = len(entries) - len(shown)
+        return out
 
     def _tool_suggest_day_blocks(self, args: dict) -> dict:
         """For one open slot: eligible clinicians with their best contiguous
         work block starting there — the 'Anschlussverwendung' step of the
         human procedure (never place someone for a lone short stint when
-        they could carry adjacent open slots too)."""
-        slot_key = self._resolve_slot_key(args.get("slot_key") or "")
-        inst = self.ctx.instances.get(slot_key)
-        if inst is None:
-            return {"error": f"Unknown or inactive slot instance: {args.get('slot_key')}"}
+        they could carry adjacent open slots too). Without slot_key the
+        scarcest still-fillable slot of dateISO is chosen automatically, so
+        the model can pipeline apply_moves + suggest_day_blocks in one turn
+        (one LLM round per placement instead of three)."""
+        auto_extras: dict = {}
+        raw_key = str(args.get("slot_key") or "").strip()
+        if raw_key:
+            slot_key = self._resolve_slot_key(raw_key)
+            inst = self.ctx.instances.get(slot_key)
+            if inst is None:
+                return {"error": f"Unknown or inactive slot instance: {args.get('slot_key')}"}
+        else:
+            date_iso = args.get("dateISO")
+            if date_iso not in self.ctx.target_date_set:
+                return {
+                    "error": "Pass slot_key, or dateISO within the solve "
+                    f"range ({self.ctx.start_iso} to {self.ctx.end_iso}) to "
+                    "auto-select the scarcest open slot of that day."
+                }
+            entries = self._day_open_entries(date_iso)
+            fillable = [e for e in entries if e["eligible_count"] > 0]
+            unfillable = [e["slot_key"] for e in entries if e["eligible_count"] == 0]
+            if not fillable:
+                return {
+                    "dateISO": date_iso,
+                    "day_complete": True,
+                    "open_positions": sum(e["missing"] for e in entries),
+                    "unfillable_slots": unfillable,
+                    "note": "No open slot of this day has a legal candidate "
+                    "left. Finish the day now: reply WITHOUT tool calls, "
+                    "naming the unfillable slots (do not force a move).",
+                }
+            chosen = fillable[0]
+            slot_key = chosen["raw_slot_key"]
+            inst = self.ctx.instances[slot_key]
+            auto_extras = {
+                "auto_selected": True,
+                "day_open_positions": sum(e["missing"] for e in entries),
+                "other_open_slots": len(entries) - 1,
+            }
+            if unfillable:
+                auto_extras["unfillable_slots"] = unfillable
         counts = self._counts_by_instance(self._working_list())
         if inst.capacity - counts.get(slot_key, 0) <= 0:
             return {"error": f"{self._alias_slot_key(slot_key)} is already fully staffed."}
@@ -1273,12 +1334,15 @@ class PlanToolExecutor:
         return {
             "slot_key": self._alias_slot_key(slot_key),
             "section": self.section_names.get(inst.section_id, inst.section_id),
+            **auto_extras,
             "note": "Each candidate comes with the contiguous block they "
             "could work starting at this slot (adjacent open slots chained "
             "up to their preferred daily hours, all legality-checked). "
-            "Apply the chosen block as ONE apply_moves batch (all assigns "
-            "together). meets_daily_minimum=false = would stay a short day "
-            "- prefer candidates above it.",
+            "Candidates are pre-sorted: daily minimum met first, then "
+            "lowest ytd_worked_pct — take the FIRST unless you have a "
+            "concrete reason. Apply the chosen block as ONE apply_moves "
+            "batch (all assigns together). meets_daily_minimum=false = "
+            "would stay a short day - prefer candidates above it.",
             "candidates": out,
         }
 
