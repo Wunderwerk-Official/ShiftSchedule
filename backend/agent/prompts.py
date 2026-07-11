@@ -161,8 +161,11 @@ objectives."""
 
 DAY_SYSTEM_PROMPT = """You are an expert clinician shift planner building a schedule DAY BY DAY, the way an experienced human planner does.
 
-You are given ONE day at a time. Earlier days of the range are already built
-and immutable context; later days do not exist yet. Your job: staff THIS day
+You are given ONE day at a time. Earlier days of the range are already built;
+later days are still empty and will be planned after you. Range-wide numbers
+in tool results (open slot counts, quality tiers, apply_moves verification)
+span the WHOLE range including those still-empty later days — judge THIS day
+only by get_day_priorities and get_day_schedule. Your job: staff THIS day
 completely, with long contiguous blocks per person, never short stints.
 
 Hard constraints (violations of these block acceptance of a move batch):
@@ -174,7 +177,8 @@ Hard constraints (violations of these block acceptance of a move batch):
 - Mandatory working-time windows must contain the whole shift.
 - Weekly hours must stay within contract + tolerance per ISO week.
 - No split shifts: one contiguous block per clinician per day (when enforced).
-- Capacity: a slot instance never takes more people than required.
+- Capacity: a slot instance never takes more people than required (+headroom
+  in distribute-all mode).
 - Fixed assignments (made by humans or previous runs) are immutable anchors:
   those people are already coming in — extend THEIR days before bringing in
   someone new.
@@ -182,10 +186,10 @@ Hard constraints (violations of these block acceptance of a move batch):
 THE PROCEDURE (follow it exactly — it is how a human fills a day):
 1. get_day_priorities: the day's unfilled slots, scarcest first. Slots only
    one or two people can take MUST be decided first; flexible slots wait.
-2. For the top slot: suggest_day_blocks. Every legal candidate comes with a
-   precomputed contiguous work block starting at that slot (adjacent open
-   slots chained up to their preferred daily hours) — their
-   "Anschlussverwendung". Pick the candidate weighing:
+2. For the top slot: suggest_day_blocks. Up to 6 legal candidates (fairest
+   first), each with a precomputed contiguous work block starting at that
+   slot (adjacent open slots chained up to their preferred daily hours) —
+   their "Anschlussverwendung". Pick the candidate weighing:
    - block length first: meets_daily_minimum=true beats any shorter option
      (nobody comes in for a 1-2h stint),
    - fairness among those: lowest ytd_worked_pct first (100 = on target,
@@ -230,12 +234,13 @@ def build_day_digest(
     previous_day_lines: List[str],
     max_rounds: int,
     clinician_aliases: Dict[str, str],
+    ytd_worked_pct_by_id: Optional[Dict[str, Optional[int]]] = None,
+    distribute_all: bool = False,
 ) -> str:
-    """First user message of one day's conversation.
-
-    The roster block renders FIRST and byte-identical across days, so with
-    the static system prompt the per-day conversations share a long cached
-    prefix on vLLM/Anthropic alike."""
+    """First user message of one day's conversation. The roster's YTD
+    percentages are AS OF this day, including everything placed on earlier
+    days of this run — frozen range-start numbers would misdirect the
+    fairness choices of later days."""
     sections = {r.id: r.name for r in state.rows if r.kind == "class"}
 
     def _section_list(ids) -> str:
@@ -244,16 +249,19 @@ def build_day_digest(
     lines: List[str] = []
     lines.append(
         "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
-        "of target, 100=on target, lower=behind):"
+        f"of target as of {date_iso}, 100=on target, lower=behind):"
     )
     for c in state.clinicians:
-        deficit = ctx.ytd_deficit_pct.get(c.id)
-        worked_pct = (100 - deficit) if deficit is not None else "-"
+        if ytd_worked_pct_by_id is not None:
+            worked_pct = ytd_worked_pct_by_id.get(c.id)
+        else:
+            deficit = ctx.ytd_deficit_pct.get(c.id)
+            worked_pct = (100 - deficit) if deficit is not None else None
         lines.append(
             f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
             f"|{_section_list(c.preferredClassIds)}"
             f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
-            f"|{worked_pct}"
+            f"|{worked_pct if worked_pct is not None else '-'}"
         )
     lines.append("")
     lines.append(
@@ -275,11 +283,19 @@ def build_day_digest(
         lines.append("")
         lines.append("Days already built in this run:")
         lines.extend(previous_day_lines)
+    if distribute_all:
+        lines.append("")
+        lines.append(
+            "Distribute-all mode: cover the required positions first; beyond "
+            "them, slots accept extra people up to their capacity headroom "
+            "(suggest_day_blocks already uses that headroom when chaining)."
+        )
     lines.append("")
     lines.append(
-        f"You have up to {max_rounds} tool rounds for this day. Follow the "
-        "procedure: get_day_priorities, suggest_day_blocks for the top slot, "
-        "apply the whole block, repeat. Finish with a one-paragraph summary."
+        f"You have roughly {max_rounds} tool rounds for this day (the day's "
+        "time share may end it earlier). Follow the procedure: "
+        "get_day_priorities, suggest_day_blocks for the top slot, apply the "
+        "whole block, repeat. Finish with a one-paragraph summary."
     )
     return "\n".join(lines)
 

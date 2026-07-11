@@ -216,15 +216,15 @@ TOOL_SPECS_RAW = [
     {
         "name": "suggest_day_blocks",
         "description": (
-            "Day-by-day planning: for ONE open slot, every clinician who "
-            "could legally take it — each with a precomputed contiguous "
-            "WORK BLOCK starting at that slot (the chain of adjacent, "
-            "still-open slots they could also take, up to their preferred "
-            "daily hours). This answers 'who can I put here who then keeps "
-            "working, instead of coming in for a short stint'. Pick a "
-            "candidate weighing block length (longer = better), fairness "
-            "(lowest ytd_worked_pct first) and section preference, then "
-            "apply the WHOLE block in one apply_moves batch. Blocks are "
+            "Day-by-day planning: for ONE open slot, up to 6 clinicians who "
+            "could legally take it (fairest first) — each with a precomputed "
+            "contiguous WORK BLOCK starting at that slot (the chain of "
+            "adjacent, still-open slots they could also take, up to their "
+            "preferred daily hours). This answers 'who can I put here who "
+            "then keeps working, instead of coming in for a short stint'. "
+            "Pick a candidate weighing block length (longer = better), "
+            "fairness (lowest ytd_worked_pct first) and section preference, "
+            "then apply the WHOLE block in one apply_moves batch. Blocks are "
             "validated against the current plan and go stale after "
             "apply_moves — re-query rather than reusing old suggestions."
         ),
@@ -1176,10 +1176,24 @@ class PlanToolExecutor:
             missing = max(0, inst.target - counts.get(inst.slot_key, 0))
             if missing <= 0:
                 continue
-            result = self._candidates_for_slot(inst.slot_key)
-            eligible = [
-                c["clinicianId"] for c in result.get("candidates", []) if c["eligible"]
-            ]
+            # STRICT eligibility (the exact apply_moves gate, including the
+            # worsened-weekly-hours case): the day loop's "eligible_count 0 =
+            # unfillable, stop chasing" exit criterion only works when 0
+            # really means apply would reject everyone. Unqualified
+            # clinicians are skipped before the (expensive) full-plan
+            # validation — they could only ever be blocked.
+            eligible = []
+            for clinician in self.state.clinicians:
+                if inst.section_id not in (clinician.qualifiedClassIds or []):
+                    continue
+                identity = (inst.slot_id, date_iso, clinician.id)
+                if identity in self.current or identity in self.fixed_identity:
+                    continue
+                if self._fix_option_blocked_by(
+                    clinician.id, inst.slot_id, date_iso, None
+                ):
+                    continue
+                eligible.append(self._alias(clinician.id))
             entries.append(
                 {
                     "slot_key": self._alias_slot_key(inst.slot_key),
@@ -1223,6 +1237,11 @@ class PlanToolExecutor:
         for cand in eligible:
             cid = self._resolve_clinician(cand["clinicianId"])
             block_keys, block_minutes = self._greedy_day_block(cid, inst, counts)
+            if not block_keys:
+                # The strict gate (worsened weekly hours etc.) rejects even
+                # the start slot — apply_moves would too, so do not offer a
+                # candidate whose every move is doomed.
+                continue
             day_before = sum(
                 e - s for s, e in self._day_intervals(cid, inst.date_iso)
             )

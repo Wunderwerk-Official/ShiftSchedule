@@ -175,15 +175,20 @@ def agent_solve_range(
         if event_type == "phase":
             on_progress(event_type, data)
 
-    def heuristic_fallback(extra_note: str) -> dict:
-        """Day-by-day has no draft to fall back on — when the LLM cannot run
-        at all, return a fresh heuristic plan instead of an empty range."""
+    def heuristic_fallback(extra_notes: List[str]) -> dict:
+        """Day-by-day has no draft to fall back on — whenever the run would
+        otherwise return an EMPTY range (LLM unavailable, first-call error,
+        no time for a single call), return a fresh heuristic plan instead:
+        applying an empty result would wipe the range's previous plan. The
+        status is AGENT_FALLBACK_SEED so the frontend surfaces it exactly
+        like the repair strategy's fallback."""
         result = heuristic_solve_range_v2(
             payload, state, cancel_event, muted_progress, start_time
         )
-        notes = list(result.get("notes") or [])
-        notes.append(extra_note)
-        result["notes"] = notes
+        result["notes"] = list(result.get("notes") or []) + list(extra_notes)
+        debug = result.get("debugInfo")
+        if isinstance(debug, dict):
+            debug["solver_status"] = "AGENT_FALLBACK_SEED"
         return result
 
     if strategy == "repair":
@@ -359,6 +364,23 @@ def agent_solve_range(
         }
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
+        if (
+            strategy == "day_by_day"
+            and executor.moves_accepted == 0
+            and not cancel_event.is_set()
+        ):
+            # Nothing was placed (no time for a single call, first-call LLM
+            # error, refusal, ...): an empty result must never reach the
+            # client — applying it would wipe the range's previous solver
+            # plan. Return a heuristic draft instead, like the repair
+            # strategy's seed would be.
+            return heuristic_fallback(
+                list(extra_notes)
+                + [
+                    "The day-by-day agent could not apply any changes; "
+                    "the heuristic draft plan was returned instead."
+                ]
+            )
         emit_agent("stage", {"stage": "finalize"})
         best = executor.best_assignments
         notes = [
@@ -443,7 +465,7 @@ def agent_solve_range(
     )
     if payload.agent_budget_exhausted:
         if strategy == "day_by_day":
-            return heuristic_fallback(budget_note)
+            return heuristic_fallback([budget_note])
         return finalize("AGENT_FALLBACK_SEED", [budget_note])
     if provider is None:
         try:
@@ -457,7 +479,7 @@ def agent_solve_range(
                 "The heuristic draft plan was returned instead."
             )
             if strategy == "day_by_day":
-                return heuristic_fallback(unavailable_note)
+                return heuristic_fallback([unavailable_note])
             return finalize("AGENT_FALLBACK_SEED", [unavailable_note])
 
     # Free-text guidance from the admin (Settings -> "AI agent instructions").
@@ -516,8 +538,14 @@ def agent_solve_range(
         previous_day_lines: List[str] = []
         aborted = False
         for day_index, date_iso in enumerate(ctx.target_day_isos):
-            if aborted or cancel_event.is_set():
+            if aborted:
                 break
+            if cancel_event.is_set():
+                return finalize(
+                    "ABORTED",
+                    extra_notes
+                    + ["Agent run aborted by user; best plan so far returned."],
+                )
             remaining = deadline - time.time()
             days_left = total_days - day_index
             if remaining <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
@@ -573,6 +601,13 @@ def agent_solve_range(
                 previous_day_lines,
                 day_rounds,
                 executor.alias_by_id,
+                # As-of-this-day fairness numbers including the working copy:
+                # what got placed on earlier days must steer later days.
+                ytd_worked_pct_by_id={
+                    c.id: executor.ytd_completion_pct(c.id, date_iso)
+                    for c in state.clinicians
+                },
+                distribute_all=not ctx.only_fill_required,
             ) + admin_block
             messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
             truncation_nudges = 0
@@ -591,7 +626,9 @@ def agent_solve_range(
             while iterations_done < rounds_end:
                 if cancel_event.is_set():
                     return finalize(
-                        "ABORTED", ["Agent run aborted by user; best plan so far returned."]
+                        "ABORTED",
+                        extra_notes
+                        + ["Agent run aborted by user; best plan so far returned."],
                     )
                 global_left = deadline - time.time()
                 if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
@@ -644,7 +681,8 @@ def agent_solve_range(
                         if cancel_event.is_set():
                             return finalize(
                                 "ABORTED",
-                                ["Agent run aborted by user; best plan so far returned."],
+                                extra_notes
+                                + ["Agent run aborted by user; best plan so far returned."],
                             )
                         results.append(executor.execute(call.name, call.arguments, call.id))
                     emit_agent("tool_use", {"tools": [c.name for c in response.tool_calls]})
@@ -717,7 +755,11 @@ def agent_solve_range(
                 f"- {date_iso}: {max(0, open_positions - still_open)} filled, "
                 f"{still_open} left open"
             )
-        if iterations_done >= config.max_iterations and not aborted:
+        if (
+            iterations_done >= config.max_iterations
+            and not aborted
+            and not any("iteration budget" in n for n in extra_notes)
+        ):
             extra_notes.append(
                 "Agent iteration budget exhausted; best plan so far returned."
             )

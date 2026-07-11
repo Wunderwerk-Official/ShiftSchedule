@@ -653,3 +653,41 @@ def test_day_by_day_budget_exhausted_falls_back_to_heuristic():
     assert any("AI budget" in n for n in result["notes"])
     # The heuristic filled both required slots.
     assert len(result["assignments"]) == 2
+
+
+def test_day_by_day_zero_moves_never_returns_an_empty_plan():
+    """An empty day-by-day result would WIPE the range's previous solver
+    plan when applied — every zero-progress exit (no time for a single
+    call, first-call LLM error) must return the heuristic draft instead."""
+
+    # (a) Time budget too short for any call.
+    state = _two_day_state()
+    payload = _payload(endISO=TUE, timeout_seconds=1.0)
+    payload.agent_strategy = "day_by_day"
+    result = agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(),
+        time.time() - 100.0,  # deadline already passed
+        provider=MockProvider(), config=_config(),
+    )
+    assert len(result["assignments"]) == 2  # heuristic filled both days
+    assert result["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
+    assert any("could not apply any changes" in n for n in result["notes"])
+
+    # (b) Provider error on the very first call.
+    state2 = _two_day_state()
+    payload2 = _payload(endISO=TUE)
+    payload2.agent_strategy = "day_by_day"
+
+    class FirstCallError(LLMProvider):
+        def complete(self, **kwargs) -> ProviderResponse:
+            return ProviderResponse(
+                text=None, tool_calls=[], stop_reason="error", error="boom"
+            )
+
+    result2 = agent_solve_range(
+        payload2, state2, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=FirstCallError(), config=_config(),
+    )
+    assert len(result2["assignments"]) == 2
+    assert result2["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
+    assert any("LLM error" in n for n in result2["notes"])
