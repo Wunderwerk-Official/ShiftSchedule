@@ -22,9 +22,15 @@ from ..models import Assignment, SolveRangeRequest, AppState
 from ..scoring import build_scoring_context, open_slots, plan_stats
 from ..validation import validate_solver_rules
 from .config import AgentConfig
-from .prompts import DEFAULT_AGENT_INSTRUCTIONS, SYSTEM_PROMPT, build_problem_digest
+from .prompts import (
+    DAY_SYSTEM_PROMPT,
+    DEFAULT_AGENT_INSTRUCTIONS,
+    SYSTEM_PROMPT,
+    build_day_digest,
+    build_problem_digest,
+)
 from .provider import ChatMessage, LLMProvider, ToolSpec, get_provider
-from .tools import TOOL_SPECS_RAW, PlanToolExecutor
+from .tools import DAY_ONLY_TOOL_NAMES, TOOL_SPECS_RAW, PlanToolExecutor
 
 # LLM loops need more wall clock than the CP-SAT default of 60s.
 DEFAULT_AGENT_TIMEOUT_SECONDS = 300.0
@@ -75,7 +81,15 @@ def _feed_text(text: str) -> str:
         return text
     return text[:MAX_FEED_TEXT_CHARS] + "\n… [truncated]"
 
+# Repair strategy: the pre-strategy tool set, byte-identical (comparability
+# and prompt-cache stability). Day-by-day additionally gets the two
+# day-construction helpers.
 TOOL_SPECS = [
+    ToolSpec(t["name"], t["description"], t["input_schema"])
+    for t in TOOL_SPECS_RAW
+    if t["name"] not in DAY_ONLY_TOOL_NAMES
+]
+DAY_TOOL_SPECS = [
     ToolSpec(t["name"], t["description"], t["input_schema"]) for t in TOOL_SPECS_RAW
 ]
 
@@ -143,11 +157,15 @@ def agent_solve_range(
         state.assignments = [a for a in state.assignments if a not in replaced]
 
     # ------------------------------------------------------------------
-    # Phase 1: seed plan from the heuristic
+    # Phase 1: seed plan
     # ------------------------------------------------------------------
-    on_progress(
-        "phase",
-        {"phase": "agent_seed", "label": "Agent (1/3): Building seed plan with heuristic..."},
+    # Strategy: "repair" (default) seeds from the heuristic and lets the LLM
+    # improve the draft; "day_by_day" builds the range from scratch, one day
+    # per conversation, the way a human planner works.
+    strategy = (
+        "day_by_day"
+        if getattr(payload, "agent_strategy", None) == "day_by_day"
+        else "repair"
     )
 
     def muted_progress(event_type: str, data: dict) -> None:
@@ -157,20 +175,43 @@ def agent_solve_range(
         if event_type == "phase":
             on_progress(event_type, data)
 
-    seed_result = heuristic_solve_range_v2(
-        payload, state, cancel_event, muted_progress, start_time
-    )
-    seed_notes = list(seed_result.get("notes") or [])
-    if cancel_event.is_set():
-        return seed_result
-    try:
-        seed_assignments = [
-            Assignment.model_validate(a) for a in seed_result.get("assignments") or []
-        ]
-    except Exception:
-        # A malformed seed means the heuristic already returned an error
-        # response — pass it through unchanged.
-        return seed_result
+    def heuristic_fallback(extra_note: str) -> dict:
+        """Day-by-day has no draft to fall back on — when the LLM cannot run
+        at all, return a fresh heuristic plan instead of an empty range."""
+        result = heuristic_solve_range_v2(
+            payload, state, cancel_event, muted_progress, start_time
+        )
+        notes = list(result.get("notes") or [])
+        notes.append(extra_note)
+        result["notes"] = notes
+        return result
+
+    if strategy == "repair":
+        on_progress(
+            "phase",
+            {"phase": "agent_seed", "label": "Agent (1/3): Building seed plan with heuristic..."},
+        )
+        seed_result = heuristic_solve_range_v2(
+            payload, state, cancel_event, muted_progress, start_time
+        )
+        seed_notes = list(seed_result.get("notes") or [])
+        if cancel_event.is_set():
+            return seed_result
+        try:
+            seed_assignments = [
+                Assignment.model_validate(a) for a in seed_result.get("assignments") or []
+            ]
+        except Exception:
+            # A malformed seed means the heuristic already returned an error
+            # response — pass it through unchanged.
+            return seed_result
+    else:
+        on_progress(
+            "phase",
+            {"phase": "agent_seed", "label": "Agent (1/3): Preparing day-by-day planning..."},
+        )
+        seed_notes = []
+        seed_assignments = []
 
     ctx = build_scoring_context(
         state,
@@ -321,7 +362,12 @@ def agent_solve_range(
         emit_agent("stage", {"stage": "finalize"})
         best = executor.best_assignments
         notes = [
-            f"Agent solver: seed by heuristic v2, {iterations_done} LLM iteration(s), "
+            (
+                f"Agent solver (day-by-day): built from scratch, "
+                if strategy == "day_by_day"
+                else "Agent solver: seed by heuristic v2, "
+            )
+            + f"{iterations_done} LLM iteration(s), "
             f"{executor.moves_accepted} move(s) accepted, {executor.moves_rejected} rejected.",
         ]
         if executor.best_quality < executor.seed_quality:
@@ -334,6 +380,11 @@ def agent_solve_range(
             notes.append(
                 "Quality metrics unchanged; kept the agent's adjustments "
                 "(preference/fairness swaps at equal quality)."
+            )
+        elif strategy == "day_by_day":
+            notes.append(
+                "No assignments could be placed; returning an empty plan "
+                "for the range."
             )
         else:
             notes.append("No improvement over the heuristic seed; returning the seed plan.")
@@ -352,6 +403,7 @@ def agent_solve_range(
                 "num_assignments": len(best),
                 "agent": {
                     "model": config.model if config is not None else None,
+                    "strategy": strategy,
                     "iterations": iterations_done,
                     "moves_accepted": executor.moves_accepted,
                     "moves_rejected": executor.moves_rejected,
@@ -383,16 +435,16 @@ def agent_solve_range(
         config.model = payload.agent_model.strip()
     # Per-user spending cap, also decided server-side: once used up, the run
     # ends at the heuristic draft instead of starting the LLM.
+    budget_note = (
+        "Agent LLM unavailable — the AI agent could not start: this "
+        "account's AI budget is used up. The heuristic draft plan was "
+        "returned instead. An administrator can raise the budget in "
+        "Settings → Solver."
+    )
     if payload.agent_budget_exhausted:
-        return finalize(
-            "AGENT_FALLBACK_SEED",
-            [
-                "Agent LLM unavailable — the AI agent could not start: this "
-                "account's AI budget is used up. The heuristic draft plan was "
-                "returned instead. An administrator can raise the budget in "
-                "Settings → Solver."
-            ],
-        )
+        if strategy == "day_by_day":
+            return heuristic_fallback(budget_note)
+        return finalize("AGENT_FALLBACK_SEED", [budget_note])
     if provider is None:
         try:
             provider = get_provider(config)
@@ -400,13 +452,283 @@ def agent_solve_range(
             # Phrasing matters: the frontend surfaces notes containing
             # "could not" as a warning toast, and matches "Agent LLM
             # unavailable" to show a persistent error in the planning panel.
-            return finalize(
-                "AGENT_FALLBACK_SEED",
-                [
-                    f"Agent LLM unavailable — the AI agent could not start: {exc} "
-                    "The heuristic draft plan was returned instead."
-                ],
+            unavailable_note = (
+                f"Agent LLM unavailable — the AI agent could not start: {exc} "
+                "The heuristic draft plan was returned instead."
             )
+            if strategy == "day_by_day":
+                return heuristic_fallback(unavailable_note)
+            return finalize("AGENT_FALLBACK_SEED", [unavailable_note])
+
+    # Free-text guidance from the admin (Settings -> "AI agent instructions").
+    # None/absent falls back to the default; an explicitly emptied field
+    # means "no instructions". Shared by both strategies.
+    admin_instructions = (state.solverSettings or {}).get("agentInstructions")
+    if not isinstance(admin_instructions, str):
+        admin_instructions = DEFAULT_AGENT_INSTRUCTIONS
+    admin_instructions = admin_instructions.strip()[:2000]
+    admin_block = (
+        "\n\nADMIN INSTRUCTIONS (soft goals from the planning admin; never "
+        "override hard constraints or fixed assignments):\n"
+        + executor.scrub_text(admin_instructions)
+        if admin_instructions
+        else ""
+    )
+
+    def absorb_response(response) -> None:
+        """Token accounting + thought/summary feed emission — identical for
+        the repair loop and the day-by-day loop."""
+        nonlocal total_input_tokens, total_output_tokens
+        nonlocal total_cache_read_tokens, total_cache_creation_tokens, final_summary
+        total_input_tokens += response.usage.get("input_tokens", 0)
+        total_output_tokens += response.usage.get("output_tokens", 0)
+        total_cache_read_tokens += response.usage.get("cache_read_input_tokens", 0)
+        total_cache_creation_tokens += response.usage.get("cache_creation_input_tokens", 0)
+        if response.reasoning:
+            # Chain of thought of reasoning models — shown expandable in the
+            # live feed and kept in the run log. Aliases restored like text.
+            reasoning_full = executor.unscrub_text(response.reasoning.strip())
+            if reasoning_full:
+                thought_log.append(
+                    f"[iteration {iterations_done}] (reasoning) {reasoning_full}"
+                )
+                emit_agent(
+                    "thought",
+                    {"text": _feed_text(reasoning_full), "reasoning": True},
+                )
+        if response.text:
+            # The model writes aliases; restore real names for the
+            # user-facing feed and remember the latest text as the run summary.
+            final_summary = executor.unscrub_text(response.text.strip())
+            thought_log.append(f"[iteration {iterations_done}] {final_summary}")
+            emit_agent("thought", {"text": _feed_text(final_summary)})
+
+    def day_by_day_loop() -> dict:
+        """One fresh LLM conversation per day, mirroring the human procedure:
+        scarcest slots first, each clinician placed with a contiguous block
+        (suggest_day_blocks), iterate until the day is full. The executor
+        (working copy, guardrails, best snapshot) is shared across days, so
+        cross-day rules — weekly hours, rest days — stay enforced."""
+        nonlocal iterations_done
+        extra_notes: List[str] = []
+        emit_agent("stage", {"stage": "improve"})
+        total_days = len(ctx.target_day_isos)
+        previous_day_lines: List[str] = []
+        aborted = False
+        for day_index, date_iso in enumerate(ctx.target_day_isos):
+            if aborted or cancel_event.is_set():
+                break
+            remaining = deadline - time.time()
+            days_left = total_days - day_index
+            if remaining <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
+                extra_notes.append(
+                    f"Agent time budget exhausted before {date_iso}; "
+                    "remaining day(s) were left unplanned."
+                )
+                break
+            if iterations_done >= config.max_iterations:
+                extra_notes.append(
+                    f"Agent iteration budget exhausted before {date_iso}; "
+                    "remaining day(s) were left unplanned."
+                )
+                break
+            # Fair share of what is left; a day that finishes early donates
+            # its surplus to the later days.
+            day_deadline = time.time() + remaining / days_left
+            day_rounds = max(6, (config.max_iterations - iterations_done) // days_left)
+            rounds_end = min(iterations_done + day_rounds, config.max_iterations)
+
+            counts = executor._counts_by_instance(executor._working_list())
+            day_slot_lines: List[str] = []
+            open_positions = 0
+            for inst in sorted(
+                (i for i in ctx.instances.values() if i.date_iso == date_iso),
+                key=lambda i: (i.start, i.slot_key),
+            ):
+                missing = max(0, inst.target - counts.get(inst.slot_key, 0))
+                open_positions += missing
+                day_slot_lines.append(
+                    f"- {executor._alias_slot_key(inst.slot_key)}"
+                    f"|{executor.section_names.get(inst.section_id, inst.section_id)}"
+                    f"|{inst.start // 60:02d}:{inst.start % 60:02d}-"
+                    f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
+                    f"|{missing}"
+                )
+            fixed_anchor_lines = sorted(
+                {
+                    f"- {executor._alias(a.clinicianId)}"
+                    for a in executor.fixed_assignments
+                    if a.dateISO == date_iso and not a.rowId.startswith("pool-")
+                }
+            )
+            digest = build_day_digest(
+                state,
+                ctx,
+                date_iso,
+                day_index,
+                total_days,
+                open_positions,
+                day_slot_lines,
+                fixed_anchor_lines,
+                previous_day_lines,
+                day_rounds,
+                executor.alias_by_id,
+            ) + admin_block
+            messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
+            truncation_nudges = 0
+            on_progress(
+                "phase",
+                {
+                    "phase": "agent_loop",
+                    "label": (
+                        f"Agent (2/3): day {day_index + 1}/{total_days} "
+                        f"({date_iso}), {open_positions} open positions..."
+                    ),
+                },
+            )
+
+            out_of_time = False
+            while iterations_done < rounds_end:
+                if cancel_event.is_set():
+                    return finalize(
+                        "ABORTED", ["Agent run aborted by user; best plan so far returned."]
+                    )
+                global_left = deadline - time.time()
+                if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
+                    out_of_time = True  # whole run out of wall clock
+                    break
+                day_left = day_deadline - time.time()
+                if day_left <= 0:
+                    break  # this day's share is spent — move to the next day
+                # The 30s usefulness floor applies to the GLOBAL deadline
+                # only: a day's share may be smaller (short timeouts, many
+                # days), so the last call of a day may overrun its share
+                # rather than shrink into a guaranteed timeout.
+                per_call_timeout = max(
+                    10.0,
+                    min(
+                        max(day_left, 30.0),
+                        global_left - DEADLINE_HEADROOM_SECONDS,
+                        MAX_PER_CALL_TIMEOUT_SECONDS,
+                    ),
+                )
+                _compact_tool_history(messages)
+                executor.current_iteration = iterations_done + 1
+                emit_agent("iteration", {"iteration": iterations_done + 1})
+                response = provider.complete(
+                    system=DAY_SYSTEM_PROMPT,
+                    messages=messages,
+                    tools=DAY_TOOL_SPECS,
+                    timeout_seconds=per_call_timeout,
+                )
+                iterations_done += 1
+                absorb_response(response)
+                if response.stop_reason in ("error", "refusal"):
+                    kind = "error" if response.stop_reason == "error" else "refusal"
+                    detail = f" ({response.error})" if response.error else ""
+                    extra_notes.append(
+                        f"LLM {kind} on {date_iso} after iteration "
+                        f"{iterations_done}{detail}; best plan so far returned."
+                    )
+                    aborted = True
+                    break
+                if response.stop_reason == "tool_use" and response.tool_calls:
+                    assistant = ChatMessage(
+                        role="assistant",
+                        content=response.replay_text,
+                        tool_calls=response.tool_calls,
+                        raw_content=response.raw_content,
+                    )
+                    results = []
+                    for call in response.tool_calls:
+                        if cancel_event.is_set():
+                            return finalize(
+                                "ABORTED",
+                                ["Agent run aborted by user; best plan so far returned."],
+                            )
+                        results.append(executor.execute(call.name, call.arguments, call.id))
+                    emit_agent("tool_use", {"tools": [c.name for c in response.tool_calls]})
+                    messages.append(assistant)
+                    messages.append(ChatMessage(role="tool", tool_results=results))
+                    on_progress(
+                        "phase",
+                        {
+                            "phase": "agent_loop",
+                            "label": (
+                                f"Agent (2/3): day {day_index + 1}/{total_days} "
+                                f"({date_iso}), iteration {iterations_done}, "
+                                f"{executor.moves_accepted} move(s) accepted..."
+                            ),
+                        },
+                    )
+                    continue
+                if response.stop_reason == "max_tokens":
+                    if truncation_nudges < 2:
+                        truncation_nudges += 1
+                        messages.append(
+                            ChatMessage(
+                                role="assistant",
+                                content=response.replay_text or "(truncated)",
+                                tool_calls=response.tool_calls,
+                                raw_content=response.raw_content,
+                            )
+                        )
+                        if response.tool_calls:
+                            messages.append(
+                                ChatMessage(
+                                    role="tool",
+                                    tool_results=[
+                                        executor.execute(c.name, c.arguments, c.id)
+                                        for c in response.tool_calls
+                                    ],
+                                )
+                            )
+                        messages.append(
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    "Your reply was truncated. Respond with tool "
+                                    "calls only, or finish the day with a "
+                                    "one-sentence summary."
+                                ),
+                            )
+                        )
+                        continue
+                    extra_notes.append(
+                        f"LLM output repeatedly truncated on {date_iso}; "
+                        "moved on to the next day."
+                    )
+                    break
+                break  # end_turn: the model declared the day done
+
+            if out_of_time:
+                extra_notes.append(
+                    "Agent time budget exhausted; best plan so far returned."
+                )
+                break
+
+            counts_after = executor._counts_by_instance(executor._working_list())
+            still_open = sum(
+                max(0, i.target - counts_after.get(i.slot_key, 0))
+                for i in ctx.instances.values()
+                if i.date_iso == date_iso
+            )
+            previous_day_lines.append(
+                f"- {date_iso}: {max(0, open_positions - still_open)} filled, "
+                f"{still_open} left open"
+            )
+        if iterations_done >= config.max_iterations and not aborted:
+            extra_notes.append(
+                "Agent iteration budget exhausted; best plan so far returned."
+            )
+        on_progress(
+            "phase",
+            {"phase": "agent_finalize", "label": "Agent (3/3): Finalizing best plan..."},
+        )
+        return finalize("AGENT_COMPLETE", extra_notes)
+
+    if strategy == "day_by_day":
+        return day_by_day_loop()
 
     on_progress(
         "phase",
@@ -429,20 +751,7 @@ def agent_solve_range(
         seed_hard_violation_count=executor.seed_quality[0],
         seed_hard_violation_lines=executor.seed_repairable_violation_lines,
     )
-    # Free-text guidance from the admin (Settings -> "AI agent instructions").
-    # The admin writes real clinician names; scrub_text swaps them for the
-    # aliases before anything leaves the backend. None/absent falls back to
-    # the default; an explicitly emptied field means "no instructions".
-    admin_instructions = (state.solverSettings or {}).get("agentInstructions")
-    if not isinstance(admin_instructions, str):
-        admin_instructions = DEFAULT_AGENT_INSTRUCTIONS
-    admin_instructions = admin_instructions.strip()[:2000]
-    if admin_instructions:
-        digest += (
-            "\n\nADMIN INSTRUCTIONS (soft goals from the planning admin; never "
-            "override hard constraints or fixed assignments):\n"
-            + executor.scrub_text(admin_instructions)
-        )
+    digest += admin_block
     messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
     extra_notes: List[str] = []
     truncation_nudges = 0
@@ -472,28 +781,7 @@ def agent_solve_range(
             timeout_seconds=per_call_timeout,
         )
         iterations_done += 1
-        total_input_tokens += response.usage.get("input_tokens", 0)
-        total_output_tokens += response.usage.get("output_tokens", 0)
-        total_cache_read_tokens += response.usage.get("cache_read_input_tokens", 0)
-        total_cache_creation_tokens += response.usage.get("cache_creation_input_tokens", 0)
-        if response.reasoning:
-            # Chain of thought of reasoning models — shown expandable in the
-            # live feed and kept in the run log. Aliases restored like text.
-            reasoning_full = executor.unscrub_text(response.reasoning.strip())
-            if reasoning_full:
-                thought_log.append(
-                    f"[iteration {iterations_done}] (reasoning) {reasoning_full}"
-                )
-                emit_agent(
-                    "thought",
-                    {"text": _feed_text(reasoning_full), "reasoning": True},
-                )
-        if response.text:
-            # The model writes aliases (D1, ...); restore real names for the
-            # user-facing feed and remember the latest text as the run summary.
-            final_summary = executor.unscrub_text(response.text.strip())
-            thought_log.append(f"[iteration {iterations_done}] {final_summary}")
-            emit_agent("thought", {"text": _feed_text(final_summary)})
+        absorb_response(response)
 
         if response.stop_reason == "error":
             extra_notes.append(

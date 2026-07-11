@@ -215,6 +215,12 @@ class SolverRule(BaseModel):
 
 SolverMode = Literal["cpsat", "heuristic", "agent"]
 
+# How the agent solver approaches the problem:
+# - "repair" (default): heuristic drafts the whole range, the LLM improves it.
+# - "day_by_day": no draft; the LLM builds each day like a human planner —
+#   scarcest slots first, each clinician placed with a contiguous block.
+AgentStrategy = Literal["repair", "day_by_day"]
+
 
 class SolveRangeRequest(BaseModel):
     """Request to solve a date range (can be a single day, week, or any range)."""
@@ -224,6 +230,7 @@ class SolveRangeRequest(BaseModel):
     timeout_seconds: Optional[float] = None  # None means use default (60s)
     use_heuristic: bool = False  # Legacy switch, superseded by solver_mode
     solver_mode: Optional[SolverMode] = None  # Wins over use_heuristic when set
+    agent_strategy: Optional[AgentStrategy] = None  # None = "repair"
     # Client-generated id echoed on every SSE progress event of this run, so
     # the frontend can ignore stragglers from a previous or foreign run.
     run_token: Optional[str] = None

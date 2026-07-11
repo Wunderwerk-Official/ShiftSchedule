@@ -552,3 +552,104 @@ def test_in_range_solver_assignments_are_replaced_not_fixed():
     assert all(a["id"] != "old-solver" for a in result["assignments"])
     returned = {(a["rowId"], a["clinicianId"]) for a in result["assignments"]}
     assert ("slot-a__mon", "clin-2") not in returned
+
+
+# ---------------------------------------------------------------------------
+# Day-by-day strategy
+# ---------------------------------------------------------------------------
+
+TUE = "2026-01-06"
+
+
+def _two_day_state():
+    from .conftest import make_template_slot
+
+    return make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice"),
+            make_clinician("clin-2", "Bob"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-b__tue", col_band_id="col-tue-1"),
+        ],
+    )
+
+
+def test_day_by_day_runs_one_conversation_per_day():
+    """Each day gets a FRESH conversation (day digest as the only user
+    message) and the working copy carries across days."""
+    state = _two_day_state()
+    script = [
+        # Day 1: inspect priorities, place Alice, declare the day done.
+        {"tool_calls": [{"name": "get_day_priorities", "arguments": {"dateISO": MON}}]},
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"}]}}]},
+        {"text": "Day 1 staffed."},
+        # Day 2: place Bob, done.
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-b__tue__{TUE}", "clinicianId": "Bob"}]}}]},
+        {"text": "Day 2 staffed."},
+    ]
+    provider = CapturingProvider(script)
+    payload = _payload(endISO=TUE)
+    payload.agent_strategy = "day_by_day"
+    result = agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    agent = result["debugInfo"]["agent"]
+    assert agent["strategy"] == "day_by_day"
+    assert agent["moves_accepted"] == 2
+    assert {(a["rowId"], a["clinicianId"]) for a in result["assignments"]} == {
+        ("slot-a__mon", "clin-1"),
+        ("slot-b__tue", "clin-2"),
+    }
+    assert any("day-by-day" in n for n in result["notes"])
+    # No heuristic seed: the empty start counts every position as open, so
+    # filling both is a measured improvement.
+    assert any("improved over the seed" in n for n in result["notes"])
+    # Fresh conversation per day: the first message of the first call is the
+    # day-1 digest; the day-2 conversation starts over with a new digest.
+    first_day1 = provider.seen_messages[0][0].content
+    first_day2 = provider.seen_messages[3][0].content
+    assert "Build day 1 of 2" in first_day1 and MON in first_day1
+    assert "Build day 2 of 2" in first_day2 and TUE in first_day2
+    assert len(provider.seen_messages[3]) == 1  # history did not carry over
+    # The day-2 digest reports what day 1 achieved.
+    assert "Days already built in this run" in first_day2
+
+
+def test_day_by_day_strategy_reported_and_repair_unchanged():
+    """The default stays 'repair' and keeps its tool list; day mode exposes
+    the two extra tools."""
+    from backend.agent.harness import DAY_TOOL_SPECS, TOOL_SPECS
+
+    repair_names = {t.name for t in TOOL_SPECS}
+    day_names = {t.name for t in DAY_TOOL_SPECS}
+    assert "get_day_priorities" not in repair_names
+    assert "suggest_day_blocks" not in repair_names
+    assert {"get_day_priorities", "suggest_day_blocks"} <= day_names
+
+    result = agent_solve_range(
+        _payload(), _two_clinician_state(), MockCancelEvent(),
+        ProgressRecorder(), time.time(),
+        provider=MockProvider(), config=_config(),
+    )
+    assert result["debugInfo"]["agent"]["strategy"] == "repair"
+
+
+def test_day_by_day_budget_exhausted_falls_back_to_heuristic():
+    """Day mode has no draft to return when the LLM cannot start — it must
+    fall back to a fresh heuristic plan instead of an empty range."""
+    state = _two_day_state()
+    payload = _payload(endISO=TUE)
+    payload.agent_strategy = "day_by_day"
+    payload.agent_budget_exhausted = True
+    result = agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=MockProvider(), config=_config(),
+    )
+    assert any("AI budget" in n for n in result["notes"])
+    # The heuristic filled both required slots.
+    assert len(result["assignments"]) == 2

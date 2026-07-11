@@ -90,6 +90,11 @@ def main() -> None:
         choices=["base", "vacation-wave", "understaffed"],
         help="transform the fixture into a harder case",
     )
+    parser.add_argument(
+        "--strategy", default="repair",
+        choices=["repair", "day_by_day"],
+        help="agent approach: repair the heuristic draft, or build day by day",
+    )
     args = parser.parse_args()
 
     end = date.fromisoformat(args.start) + timedelta(days=args.days - 1)
@@ -101,6 +106,7 @@ def main() -> None:
         only_fill_required=True,
         timeout_seconds=args.timeout,
         solver_mode="agent",
+        agent_strategy=args.strategy,
     )
     config = resolve_agent_runtime_config(AgentConfig.from_env())
     if args.model:
@@ -137,6 +143,7 @@ def main() -> None:
         "case": f"complex-practice {args.start} +{args.days}d",
         "scenario": args.scenario,
         "scenario_desc": scenario_desc,
+        "strategy": args.strategy,
         "model": agent.get("model"),
         "duration_seconds": round(duration, 1),
         "iterations": agent.get("iterations"),

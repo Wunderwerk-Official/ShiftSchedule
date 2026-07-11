@@ -5,14 +5,16 @@ from __future__ import annotations
 import json
 
 from backend.agent.tools import PlanToolExecutor, _split_slot_key
-from backend.models import Assignment
+from backend.models import Assignment, TemplateBlock
 from backend.scoring import build_scoring_context
 
 from .conftest import (
     make_app_state,
     make_assignment,
     make_clinician,
+    make_pool_row,
     make_template_slot,
+    make_workplace_row,
 )
 
 MON = "2026-01-05"
@@ -895,3 +897,124 @@ def test_all_options_blocked_counts_as_unfixable():
     assert alice["fix_options"], "the blocked option should still be listed"
     assert all(o.get("blocked_by") for o in alice["fix_options"])
     assert payload["fixable"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Day-by-day strategy helpers
+# ---------------------------------------------------------------------------
+
+
+def test_day_priorities_sorts_scarcest_slot_first():
+    """A slot only one clinician can take must rank above a slot everyone
+    can take — that is the 'which slots need filling first' step."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           qualified_class_ids=["section-a", "section-b"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob",
+                           qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "Section B"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            # Flexible: both are qualified. Starts EARLIER than the scarce
+            # slot, so ordering by scarcity is distinguishable from ordering
+            # by time.
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="12:00"),
+            # Scarce: section-b, only Alice is qualified.
+            make_template_slot(slot_id="slot-x__mon", col_band_id="col-mon-1",
+                               block_id="block-b",
+                               start_time="09:00", end_time="13:00"),
+        ],
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+    executor = _make_executor(state)
+    payload, is_error = _run(executor, "get_day_priorities", {"dateISO": MON})
+    assert not is_error
+    assert payload["open_positions"] == 2
+    assert [s["eligible_count"] for s in payload["slots"]] == [1, 2]
+    scarce = payload["slots"][0]
+    assert scarce["section"] == "Section B"
+    assert scarce["eligible_preview"] == ["Alice"]
+    # Outside the range -> explicit error, not an empty list.
+    outside, _ = _run(executor, "get_day_priorities", {"dateISO": "2027-01-01"})
+    assert "error" in outside
+
+
+def test_suggest_day_blocks_chains_adjacent_open_slots():
+    """The block for a candidate must chain adjacent open slots up to the
+    preferred daily hours — the 'Anschlussverwendung' the human procedure
+    demands, ready to apply as one batch."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40)],
+        slots=[
+            make_template_slot(slot_id="slot-1__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="10:00"),
+            make_template_slot(slot_id="slot-2__mon", col_band_id="col-mon-1",
+                               start_time="10:00", end_time="13:00"),
+            make_template_slot(slot_id="slot-3__mon", col_band_id="col-mon-1",
+                               start_time="13:00", end_time="16:00"),
+        ],
+    )
+    executor = _make_executor(state)
+    payload, is_error = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-1__mon__{MON}"}
+    )
+    assert not is_error
+    alice = next(c for c in payload["candidates"] if c["clinicianId"] == "Alice")
+    expected = [
+        executor._alias_slot_key(f"slot-{i}__mon__{MON}") for i in (1, 2, 3)
+    ]
+    assert alice["block"] == expected  # 8h chain == contract/5 target
+    assert alice["block_hours"] == 8.0
+    assert alice["meets_daily_minimum"] is True
+
+    # Applying the suggested block verbatim must succeed.
+    moves = [
+        {"action": "assign", "slot_key": key, "clinicianId": "Alice"}
+        for key in alice["block"]
+    ]
+    applied, _ = _run(executor, "apply_moves", {"moves": moves})
+    assert applied["applied"] is True
+
+
+def test_suggest_day_blocks_stops_at_occupied_slot():
+    """An occupied middle slot breaks the chain: the block must not jump the
+    gap (that would be a split shift), and a fully staffed start slot is an
+    explicit error."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", working_hours_per_week=40),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-1__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="10:00"),
+            make_template_slot(slot_id="slot-2__mon", col_band_id="col-mon-1",
+                               start_time="10:00", end_time="13:00"),
+            make_template_slot(slot_id="slot-3__mon", col_band_id="col-mon-1",
+                               start_time="13:00", end_time="16:00"),
+        ],
+    )
+    executor = _make_executor(state, seed=[_seed("slot-2__mon", MON, "clin-2")])
+    payload, _ = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-1__mon__{MON}"}
+    )
+    alice = next(c for c in payload["candidates"] if c["clinicianId"] == "Alice")
+    assert alice["block"] == [executor._alias_slot_key(f"slot-1__mon__{MON}")]
+    assert alice["block_hours"] == 2.0
+    assert alice["meets_daily_minimum"] is False
+
+    occupied, _ = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-2__mon__{MON}"}
+    )
+    assert "error" in occupied

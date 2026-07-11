@@ -159,6 +159,131 @@ prefer high-impact fixes (open slots) first, then short days, then soft
 objectives."""
 
 
+DAY_SYSTEM_PROMPT = """You are an expert clinician shift planner building a schedule DAY BY DAY, the way an experienced human planner does.
+
+You are given ONE day at a time. Earlier days of the range are already built
+and immutable context; later days do not exist yet. Your job: staff THIS day
+completely, with long contiguous blocks per person, never short stints.
+
+Hard constraints (violations of these block acceptance of a move batch):
+- Qualification: clinicians only work sections they are qualified for.
+- Vacation: no assignments while a clinician is on vacation.
+- No overlapping shifts, including overnight shifts crossing midnight.
+- Same location per day (when enforced by settings).
+- Rest days before/after on-call shifts (when enforced by settings).
+- Mandatory working-time windows must contain the whole shift.
+- Weekly hours must stay within contract + tolerance per ISO week.
+- No split shifts: one contiguous block per clinician per day (when enforced).
+- Capacity: a slot instance never takes more people than required.
+- Fixed assignments (made by humans or previous runs) are immutable anchors:
+  those people are already coming in — extend THEIR days before bringing in
+  someone new.
+
+THE PROCEDURE (follow it exactly — it is how a human fills a day):
+1. get_day_priorities: the day's unfilled slots, scarcest first. Slots only
+   one or two people can take MUST be decided first; flexible slots wait.
+2. For the top slot: suggest_day_blocks. Every legal candidate comes with a
+   precomputed contiguous work block starting at that slot (adjacent open
+   slots chained up to their preferred daily hours) — their
+   "Anschlussverwendung". Pick the candidate weighing:
+   - block length first: meets_daily_minimum=true beats any shorter option
+     (nobody comes in for a 1-2h stint),
+   - fairness among those: lowest ytd_worked_pct first (100 = on target,
+     lower = behind),
+   - then section preference and weekly-hours headroom.
+3. Apply the WHOLE chosen block as ONE apply_moves batch (all assigns
+   together). Never assign just the single slot when a block was offered.
+4. Repeat from step 1 (the counts change after every batch) until the day
+   has no unfilled slots — or the only remaining ones have eligible_count 0,
+   which you report as unfillable instead of forcing an illegal move.
+
+Rules of engagement:
+- Slots and blocks are validated against the CURRENT plan and go stale after
+  every apply_moves: always re-query, never reuse an earlier suggestion.
+- A rejected batch returns the violations it would have created — adjust,
+  do not retry the identical batch.
+- ytd_worked_pct and week_hours in tool results already include everything
+  you applied so far; trust them, do not recompute.
+- Identifiers: clinicians by their real names exactly as shown; slot
+  instances by short keys like "S3__2026-07-07" — copy them exactly.
+- The day digest may end with ADMIN INSTRUCTIONS: important soft goals,
+  never overriding hard constraints or fixed assignments.
+- Every reply must either CALL A TOOL or BE your final day summary.
+  Announcing what you will do next without a tool call ends the day's work
+  on the spot.
+
+Finish the day by replying WITHOUT tool calls ONLY when every unfilled slot
+either got staffed or has eligible_count 0 after your last batch. Your final
+reply: one short paragraph — what you staffed, which slots stay open and
+why. Then the harness moves you to the next day."""
+
+
+def build_day_digest(
+    state: AppState,
+    ctx: ScoringContext,
+    date_iso: str,
+    day_index: int,
+    total_days: int,
+    open_positions: int,
+    day_slot_lines: List[str],
+    fixed_anchor_lines: List[str],
+    previous_day_lines: List[str],
+    max_rounds: int,
+    clinician_aliases: Dict[str, str],
+) -> str:
+    """First user message of one day's conversation.
+
+    The roster block renders FIRST and byte-identical across days, so with
+    the static system prompt the per-day conversations share a long cached
+    prefix on vLLM/Anthropic alike."""
+    sections = {r.id: r.name for r in state.rows if r.kind == "class"}
+
+    def _section_list(ids) -> str:
+        return ",".join(sections.get(i, i) for i in (ids or [])) or "-"
+
+    lines: List[str] = []
+    lines.append(
+        "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
+        "of target, 100=on target, lower=behind):"
+    )
+    for c in state.clinicians:
+        deficit = ctx.ytd_deficit_pct.get(c.id)
+        worked_pct = (100 - deficit) if deficit is not None else "-"
+        lines.append(
+            f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
+            f"|{_section_list(c.preferredClassIds)}"
+            f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
+            f"|{worked_pct}"
+        )
+    lines.append("")
+    lines.append(
+        f"Build day {day_index + 1} of {total_days}: {date_iso} "
+        f"(solve range {ctx.start_iso} to {ctx.end_iso})."
+    )
+    lines.append(f"Open positions on this day: {open_positions}")
+    lines.append("")
+    lines.append("Slots of this day (slot_key|section|time|still missing):")
+    lines.extend(day_slot_lines)
+    if fixed_anchor_lines:
+        lines.append("")
+        lines.append(
+            "Already coming in (fixed/manual, immutable — extend their days "
+            "before bringing in someone new):"
+        )
+        lines.extend(fixed_anchor_lines)
+    if previous_day_lines:
+        lines.append("")
+        lines.append("Days already built in this run:")
+        lines.extend(previous_day_lines)
+    lines.append("")
+    lines.append(
+        f"You have up to {max_rounds} tool rounds for this day. Follow the "
+        "procedure: get_day_priorities, suggest_day_blocks for the top slot, "
+        "apply the whole block, repeat. Finish with a one-paragraph summary."
+    )
+    return "\n".join(lines)
+
+
 def build_problem_digest(
     state: AppState,
     ctx: ScoringContext,

@@ -22,6 +22,9 @@ on:
       scenario:
         description: "base | vacation-wave | understaffed"
         default: "base"
+      strategy:
+        description: "repair | day_by_day"
+        default: "repair"
 
 jobs:
   arena:
@@ -62,13 +65,15 @@ jobs:
           TIMEOUT: ${{ inputs.timeout }}
           MODEL: ${{ inputs.model }}
           SCENARIO: ${{ inputs.scenario }}
+          STRATEGY: ${{ inputs.strategy }}
         run: |
-          ssh truhn-target START="$START" DAYS="$DAYS" TIMEOUT="$TIMEOUT" MODEL="$MODEL" SCENARIO="$SCENARIO" bash -s <<'EOF'
+          ssh truhn-target START="$START" DAYS="$DAYS" TIMEOUT="$TIMEOUT" MODEL="$MODEL" SCENARIO="$SCENARIO" STRATEGY="$STRATEGY" bash -s <<'EOF'
           set -euo pipefail
           cd /opt/app
           EXTRA=()
           [ -n "$MODEL" ] && EXTRA=(--model "$MODEL")
           [ -n "$SCENARIO" ] && EXTRA+=(--scenario "$SCENARIO")
+          [ -n "$STRATEGY" ] && EXTRA+=(--strategy "$STRATEGY")
           docker compose -f docker-compose.proxied.yml exec -T backend \
             python -m backend.arena.run \
               --start "$START" --days "$DAYS" --timeout "$TIMEOUT" "${EXTRA[@]}"

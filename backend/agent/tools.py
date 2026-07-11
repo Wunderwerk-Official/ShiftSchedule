@@ -35,6 +35,11 @@ from ..validation import (
 
 AGENT_ASSIGNMENT_SOURCE = "solver"
 
+# Tools that only exist for the day-by-day strategy. The repair strategy's
+# tool list stays byte-identical to before the strategy split, so the two
+# modes remain comparable (and repair keeps its prompt-cache prefix).
+DAY_ONLY_TOOL_NAMES = {"get_day_priorities", "suggest_day_blocks"}
+
 TOOL_SPECS_RAW = [
     {
         "name": "get_plan_overview",
@@ -187,6 +192,46 @@ TOOL_SPECS_RAW = [
             "type": "object",
             "properties": {"dateISO": {"type": "string"}},
             "required": ["dateISO"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_day_priorities",
+        "description": (
+            "Day-by-day planning: the still-unfilled slot instances of ONE "
+            "day, sorted by how urgently they need a decision — scarcest "
+            "first (fewest clinicians who could legally take them right "
+            "now), then by start time. Staff the top entries first: slots "
+            "with many eligible candidates can wait, slots with one or two "
+            "cannot. eligible_count/eligible_preview are computed against "
+            "the current plan and change after every apply_moves."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"dateISO": {"type": "string"}},
+            "required": ["dateISO"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "suggest_day_blocks",
+        "description": (
+            "Day-by-day planning: for ONE open slot, every clinician who "
+            "could legally take it — each with a precomputed contiguous "
+            "WORK BLOCK starting at that slot (the chain of adjacent, "
+            "still-open slots they could also take, up to their preferred "
+            "daily hours). This answers 'who can I put here who then keeps "
+            "working, instead of coming in for a short stint'. Pick a "
+            "candidate weighing block length (longer = better), fairness "
+            "(lowest ytd_worked_pct first) and section preference, then "
+            "apply the WHOLE block in one apply_moves batch. Blocks are "
+            "validated against the current plan and go stale after "
+            "apply_moves — re-query rather than reusing old suggestions."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"slot_key": {"type": "string"}},
+            "required": ["slot_key"],
             "additionalProperties": False,
         },
     },
@@ -551,6 +596,8 @@ class PlanToolExecutor:
             "list_short_days": self._tool_short_days,
             "get_hours_overview": self._tool_hours_overview,
             "get_day_schedule": self._tool_day_schedule,
+            "get_day_priorities": self._tool_day_priorities,
+            "suggest_day_blocks": self._tool_suggest_day_blocks,
             "apply_moves": self._tool_apply_moves,
         }
         handler = handlers.get(name)
@@ -1101,6 +1148,208 @@ class PlanToolExecutor:
             )
         slots.sort(key=lambda s: (s["start"], s["section"]))
         return {"dateISO": date_iso, "slots": slots}
+
+    # ------------------------------------------------------------------
+    # day-by-day strategy helpers
+    # ------------------------------------------------------------------
+
+    def _tool_day_priorities(self, args: dict) -> dict:
+        """Unfilled slot instances of one day, scarcest-first.
+
+        Scarcity = number of clinicians who could legally take the slot
+        against the CURRENT plan (same trial validation as
+        list_candidates_for_slot). A slot only one person can cover must be
+        decided before that person is consumed by a less critical slot —
+        this is the 'which slots need filling first' step of the human
+        procedure."""
+        date_iso = args.get("dateISO")
+        if date_iso not in self.ctx.target_date_set:
+            return {
+                "error": f"{date_iso} is outside the solve range "
+                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
+            }
+        counts = self._counts_by_instance(self._working_list())
+        entries = []
+        for inst in self.ctx.instances.values():
+            if inst.date_iso != date_iso:
+                continue
+            missing = max(0, inst.target - counts.get(inst.slot_key, 0))
+            if missing <= 0:
+                continue
+            result = self._candidates_for_slot(inst.slot_key)
+            eligible = [
+                c["clinicianId"] for c in result.get("candidates", []) if c["eligible"]
+            ]
+            entries.append(
+                {
+                    "slot_key": self._alias_slot_key(inst.slot_key),
+                    "section": self.section_names.get(inst.section_id, inst.section_id),
+                    "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
+                    "end": f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
+                    "missing": missing,
+                    "eligible_count": len(eligible),
+                    "eligible_preview": eligible[:3],
+                }
+            )
+        entries.sort(key=lambda e: (e["eligible_count"], e["start"], e["section"]))
+        return {
+            "dateISO": date_iso,
+            "open_positions": sum(e["missing"] for e in entries),
+            "note": "Scarcest slots first (fewest legal candidates NOW). "
+            "eligible_count=0 means nobody can take it in the current state "
+            "- staff the rest of the day first, then re-check; if it stays "
+            "0, report it as unfillable. Counts change after apply_moves.",
+            "slots": entries,
+        }
+
+    def _tool_suggest_day_blocks(self, args: dict) -> dict:
+        """For one open slot: eligible clinicians with their best contiguous
+        work block starting there — the 'Anschlussverwendung' step of the
+        human procedure (never place someone for a lone short stint when
+        they could carry adjacent open slots too)."""
+        slot_key = self._resolve_slot_key(args.get("slot_key") or "")
+        inst = self.ctx.instances.get(slot_key)
+        if inst is None:
+            return {"error": f"Unknown or inactive slot instance: {args.get('slot_key')}"}
+        counts = self._counts_by_instance(self._working_list())
+        if inst.capacity - counts.get(slot_key, 0) <= 0:
+            return {"error": f"{self._alias_slot_key(slot_key)} is already fully staffed."}
+
+        start_candidates = self._candidates_for_slot(slot_key)
+        eligible = [
+            c for c in start_candidates.get("candidates", []) if c["eligible"]
+        ][:6]
+        out = []
+        for cand in eligible:
+            cid = self._resolve_clinician(cand["clinicianId"])
+            block_keys, block_minutes = self._greedy_day_block(cid, inst, counts)
+            day_before = sum(
+                e - s for s, e in self._day_intervals(cid, inst.date_iso)
+            )
+            daily_min = self._daily_min_minutes(cid, inst.date_iso)
+            out.append(
+                {
+                    "clinicianId": cand["clinicianId"],
+                    "block": [self._alias_slot_key(k) for k in block_keys],
+                    "block_hours": round(block_minutes / 60.0, 1),
+                    "day_hours_after": round((day_before + block_minutes) / 60.0, 1),
+                    "meets_daily_minimum": (
+                        daily_min is None or day_before + block_minutes >= daily_min
+                    ),
+                    "week_hours": cand.get("week_hours"),
+                    "contract_hours": cand.get("contract_hours"),
+                    "ytd_worked_pct": cand.get("ytd_worked_pct"),
+                    "prefers_section": cand.get("prefers_section", False),
+                }
+            )
+        # Long-enough blocks first (the whole point of the strategy), most
+        # YTD-behind first within that — the model still makes the final call.
+        out.sort(
+            key=lambda c: (
+                not c["meets_daily_minimum"],
+                c["ytd_worked_pct"] if c["ytd_worked_pct"] is not None else 999,
+                -c["block_hours"],
+            )
+        )
+        return {
+            "slot_key": self._alias_slot_key(slot_key),
+            "section": self.section_names.get(inst.section_id, inst.section_id),
+            "note": "Each candidate comes with the contiguous block they "
+            "could work starting at this slot (adjacent open slots chained "
+            "up to their preferred daily hours, all legality-checked). "
+            "Apply the chosen block as ONE apply_moves batch (all assigns "
+            "together). meets_daily_minimum=false = would stay a short day "
+            "- prefer candidates above it.",
+            "candidates": out,
+        }
+
+    def _greedy_day_block(
+        self, cid: str, start_inst, counts: Dict[str, int]
+    ) -> Tuple[List[str], int]:
+        """Chain of adjacent, still-open, legal slots for ``cid`` starting at
+        ``start_inst`` — forward in time first, then backward if the day is
+        still below the clinician's daily target. Every extension is
+        validated like a real move batch, so the returned block can be
+        applied verbatim. Returns (raw slot keys, total minutes)."""
+        clinician = self.clinicians_by_id.get(cid)
+        if clinician is None:
+            return [], 0
+        qualified = set(clinician.qualifiedClassIds or [])
+        date_iso = start_inst.date_iso
+
+        # Preferred daily span: the working-time window when one exists,
+        # else contract/5 (an average workday), else 8h.
+        window = self.ctx.window_by_clinician_date.get((cid, date_iso))
+        contract = clinician.workingHoursPerWeek
+        if window is not None:
+            target = max(60, window[2] - window[1])
+        elif isinstance(contract, (int, float)) and contract > 0:
+            target = max(60, int(round(contract * 60 / 5)))
+        else:
+            target = 480
+        existing = sum(e - s for s, e in self._day_intervals(cid, date_iso))
+
+        trial: Dict[Tuple[str, str, str], Assignment] = dict(self.current)
+        taken: Dict[str, int] = {}
+
+        def legal(inst) -> bool:
+            key = (inst.slot_id, date_iso, cid)
+            if key in trial or key in self.fixed_identity:
+                return False
+            room = inst.capacity - counts.get(inst.slot_key, 0) - taken.get(inst.slot_key, 0)
+            if room <= 0:
+                return False
+            trial[key] = self._make_assignment(inst.slot_id, date_iso, cid)
+            hard = self._hard_violations(self._full_plan(list(trial.values())))
+            if any(self._is_new_hard(v) for v in hard):
+                del trial[key]
+                return False
+            return True
+
+        if not legal(start_inst):
+            return [], 0
+        taken[start_inst.slot_key] = 1
+        chain = [start_inst.slot_key]
+        block_start, block_end = start_inst.start, start_inst.end
+
+        def extensions(forward: bool):
+            edge = block_end if forward else block_start
+            options = [
+                i
+                for i in self.ctx.instances.values()
+                if i.date_iso == date_iso
+                and i.section_id in qualified
+                and (i.start == edge if forward else i.end == edge)
+                and i.capacity - counts.get(i.slot_key, 0) - taken.get(i.slot_key, 0) > 0
+            ]
+            # Deterministic: shortest step first (finer-grained blocks give
+            # the target check more chances to stop on time).
+            options.sort(key=lambda i: (i.end - i.start, i.slot_key))
+            return options
+
+        for forward in (True, False):
+            while existing + (block_end - block_start) < target:
+                extended = False
+                for inst in extensions(forward):
+                    # A candidate slot may not push the day more than 1h past
+                    # the preferred span — a 6h stint on top of a 7.5h block
+                    # is not "Anschlussverwendung", it is a double shift.
+                    span_after = (block_end - block_start) + (inst.end - inst.start)
+                    if existing + span_after > target + 60:
+                        continue
+                    if legal(inst):
+                        taken[inst.slot_key] = taken.get(inst.slot_key, 0) + 1
+                        chain.append(inst.slot_key)
+                        if forward:
+                            block_end = inst.end
+                        else:
+                            block_start = inst.start
+                        extended = True
+                        break
+                if not extended:
+                    break
+
+        return chain, block_end - block_start
 
     def _tool_apply_moves(self, args: dict) -> dict:
         moves = args.get("moves") or []

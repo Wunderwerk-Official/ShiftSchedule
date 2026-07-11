@@ -678,6 +678,10 @@ export type SolveRangeResult = {
 
 export type SolverMode = "cpsat" | "heuristic" | "agent";
 
+/** Agent approach: "repair" improves a heuristic draft (default);
+ * "day_by_day" builds each day from scratch like a human planner. */
+export type AgentStrategy = "repair" | "day_by_day";
+
 export async function solveRange(
   startISO: string,
   options?: {
@@ -685,6 +689,7 @@ export async function solveRange(
     onlyFillRequired?: boolean;
     timeoutSeconds?: number;
     solverMode?: SolverMode;
+    agentStrategy?: AgentStrategy;
     runToken?: string;
     signal?: AbortSignal;
   },
@@ -698,6 +703,7 @@ export async function solveRange(
       only_fill_required: options?.onlyFillRequired ?? false,
       timeout_seconds: options?.timeoutSeconds,
       solver_mode: options?.solverMode,
+      agent_strategy: options?.agentStrategy,
       run_token: options?.runToken,
     }),
     signal: options?.signal,
