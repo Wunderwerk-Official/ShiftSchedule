@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from backend.agent.config import AgentConfig
@@ -691,3 +692,42 @@ def test_day_by_day_zero_moves_never_returns_an_empty_plan():
     assert len(result2["assignments"]) == 2
     assert result2["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
     assert any("LLM error" in n for n in result2["notes"])
+
+
+def test_day_by_day_pipelined_turn_gets_post_apply_suggestion():
+    """The prompt's step-4 pipeline: apply_moves and suggest_day_blocks in
+    ONE response, in that order. The suggestion must be computed AFTER the
+    batch applied — here the batch staffs the day's only slot, so the same
+    turn's suggestion already reports day_complete."""
+    state = _two_day_state()
+    script = [
+        {"tool_calls": [
+            {"name": "apply_moves", "arguments": {"moves": [
+                {"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+                 "clinicianId": "Alice"}]}},
+            {"name": "suggest_day_blocks", "arguments": {"dateISO": MON}},
+        ]},
+        {"text": "Day 1 complete."},
+        {"tool_calls": [
+            {"name": "apply_moves", "arguments": {"moves": [
+                {"action": "assign", "slot_key": f"slot-b__tue__{TUE}",
+                 "clinicianId": "Bob"}]}},
+            {"name": "suggest_day_blocks", "arguments": {"dateISO": TUE}},
+        ]},
+        {"text": "Day 2 complete."},
+    ]
+    provider = CapturingProvider(script)
+    payload = _payload(endISO=TUE)
+    payload.agent_strategy = "day_by_day"
+    result = agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    assert result["debugInfo"]["agent"]["moves_accepted"] == 2
+    assert len(result["assignments"]) == 2
+    # The 2nd call of day 1 sees [digest, assistant, tool results]; the
+    # suggest result (2nd tool call of the turn) reflects the applied batch.
+    day1_tool_msg = provider.seen_messages[1][-1]
+    suggestion = json.loads(day1_tool_msg.tool_results[1].content)
+    assert suggestion["day_complete"] is True
+    assert suggestion["unfillable_slots"] == []

@@ -184,28 +184,38 @@ Hard constraints (violations of these block acceptance of a move batch):
   someone new.
 
 THE PROCEDURE (follow it exactly — it is how a human fills a day):
-1. get_day_priorities: the day's unfilled slots, scarcest first. Slots only
-   one or two people can take MUST be decided first; flexible slots wait.
-2. For the top slot: suggest_day_blocks. Up to 6 legal candidates (fairest
-   first), each with a precomputed contiguous work block starting at that
-   slot (adjacent open slots chained up to their preferred daily hours) —
-   their "Anschlussverwendung". Pick the candidate weighing:
-   - block length first: meets_daily_minimum=true beats any shorter option
-     (nobody comes in for a 1-2h stint),
-   - fairness among those: lowest ytd_worked_pct first (100 = on target,
-     lower = behind),
-   - then section preference and weekly-hours headroom.
-3. Apply the WHOLE chosen block as ONE apply_moves batch (all assigns
-   together). Never assign just the single slot when a block was offered.
-4. Repeat from step 1 (the counts change after every batch) until the day
-   has no unfilled slots — or the only remaining ones have eligible_count 0,
-   which you report as unfillable instead of forcing an illegal move.
+1. get_day_priorities ONCE, for orientation: the day's unfilled slots,
+   scarcest first. Slots only one or two people can take MUST be decided
+   first; flexible slots wait.
+2. suggest_day_blocks with dateISO only (no slot_key): it auto-selects the
+   scarcest still-fillable slot and returns up to 6 legal candidates, each
+   with a precomputed contiguous work block starting at that slot (adjacent
+   open slots chained up to their preferred daily hours) — their
+   "Anschlussverwendung". Pass slot_key instead only when you deliberately
+   deviate from the scarcity order.
+3. Choosing the candidate: they are PRE-SORTED — everyone whose block meets
+   the daily minimum first, then lowest ytd_worked_pct (100 = on target,
+   lower = behind). Take the FIRST candidate unless you have a concrete
+   reason not to (admin instructions, section preference, saving a scarce
+   person for a slot only they can cover). Extra hours beyond the daily
+   minimum are a tie-breaker, not a goal: a fair shorter block that meets
+   the minimum beats a longer block for someone already ahead.
+4. PIPELINE every following round in ONE message with two tool calls, in
+   this order: FIRST apply_moves with the WHOLE chosen block (all assigns
+   together — never just the single slot when a block was offered), SECOND
+   suggest_day_blocks (dateISO, no slot_key). The suggestion is computed
+   after your batch applied, so it is fresh — one round per placement.
+5. Repeat step 4 until suggest_day_blocks returns day_complete=true (every
+   remaining open slot has eligible_count 0). Then write your final day
+   summary.
 
 Rules of engagement:
 - Slots and blocks are validated against the CURRENT plan and go stale after
-  every apply_moves: always re-query, never reuse an earlier suggestion.
+  every apply_moves: never reuse a block from an earlier round — the
+  pipeline in step 4 always hands you a fresh one.
 - A rejected batch returns the violations it would have created — adjust,
-  do not retry the identical batch.
+  do not retry the identical batch. The same message's suggest_day_blocks
+  result is still fresh (the plan did not change).
 - ytd_worked_pct and week_hours in tool results already include everything
   you applied so far; trust them, do not recompute.
 - Identifiers: clinicians by their real names exactly as shown; slot
@@ -214,12 +224,12 @@ Rules of engagement:
   never overriding hard constraints or fixed assignments.
 - Every reply must either CALL A TOOL or BE your final day summary.
   Announcing what you will do next without a tool call ends the day's work
-  on the spot.
+  on the spot. Do not restate candidate lists in text — pick and act.
 
-Finish the day by replying WITHOUT tool calls ONLY when every unfilled slot
-either got staffed or has eligible_count 0 after your last batch. Your final
-reply: one short paragraph — what you staffed, which slots stay open and
-why. Then the harness moves you to the next day."""
+Finish the day by replying WITHOUT tool calls ONLY when suggest_day_blocks
+reported day_complete=true (or every unfilled slot has eligible_count 0).
+Your final reply: one short paragraph — what you staffed, which slots stay
+open and why. Then the harness moves you to the next day."""
 
 
 def build_day_digest(
@@ -294,8 +304,10 @@ def build_day_digest(
     lines.append(
         f"You have roughly {max_rounds} tool rounds for this day (the day's "
         "time share may end it earlier). Follow the procedure: "
-        "get_day_priorities, suggest_day_blocks for the top slot, apply the "
-        "whole block, repeat. Finish with a one-paragraph summary."
+        "get_day_priorities once, suggest_day_blocks (dateISO only) to get "
+        "the scarcest slot's candidates, then pipeline apply_moves(whole "
+        "block) + suggest_day_blocks together in ONE message each round "
+        "until day_complete=true. Finish with a one-paragraph summary."
     )
     return "\n".join(lines)
 

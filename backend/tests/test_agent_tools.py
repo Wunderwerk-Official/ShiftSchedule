@@ -1018,3 +1018,108 @@ def test_suggest_day_blocks_stops_at_occupied_slot():
         executor, "suggest_day_blocks", {"slot_key": f"slot-2__mon__{MON}"}
     )
     assert "error" in occupied
+
+
+def _scarce_flexible_state():
+    """Two open Monday slots: a flexible section-a slot (Alice + Bob) and a
+    scarce section-b slot (only Alice qualified)."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           qualified_class_ids=["section-a", "section-b"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob",
+                           qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "Section B"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="12:00"),
+            make_template_slot(slot_id="slot-x__mon", col_band_id="col-mon-1",
+                               block_id="block-b",
+                               start_time="09:00", end_time="13:00"),
+        ],
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+    return state
+
+
+def test_suggest_day_blocks_auto_selects_scarcest_slot():
+    """Without slot_key the tool must pick the scarcest still-fillable slot
+    of dateISO itself (same ranking as get_day_priorities), so the model can
+    pipeline apply_moves + suggest_day_blocks in one round."""
+    executor = _make_executor(_scarce_flexible_state())
+    payload, is_error = _run(executor, "suggest_day_blocks", {"dateISO": MON})
+    assert not is_error
+    assert payload["auto_selected"] is True
+    # The scarce Section B slot (only Alice) outranks the flexible one.
+    assert payload["section"] == "Section B"
+    assert payload["day_open_positions"] == 2
+    assert payload["other_open_slots"] == 1
+    assert [c["clinicianId"] for c in payload["candidates"]] == ["Alice"]
+
+    # Neither slot_key nor a usable dateISO -> explicit error, not a guess.
+    bad, _ = _run(executor, "suggest_day_blocks", {})
+    assert "error" in bad
+    outside, _ = _run(executor, "suggest_day_blocks", {"dateISO": "2027-01-01"})
+    assert "error" in outside
+
+
+def test_suggest_day_blocks_auto_skips_unfillable_and_reports_day_complete():
+    """Auto-select must skip eligible_count=0 slots (nobody can take them)
+    and, once nothing fillable remains, return day_complete=true with the
+    unfillable slots named — the model's signal to write the day summary."""
+    state = _scarce_flexible_state()
+    # Nobody is qualified for section-b anymore: its slot is unfillable.
+    for c in state.clinicians:
+        c.qualifiedClassIds = ["section-a"]
+    executor = _make_executor(state)
+
+    payload, _ = _run(executor, "suggest_day_blocks", {"dateISO": MON})
+    assert payload["auto_selected"] is True
+    assert payload["section"] == "Section A"  # skipped the unfillable slot
+    assert payload["unfillable_slots"] == [
+        executor._alias_slot_key(f"slot-x__mon__{MON}")
+    ]
+
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"},
+    ]})
+    assert applied["applied"] is True
+    done, is_error = _run(executor, "suggest_day_blocks", {"dateISO": MON})
+    assert not is_error
+    assert done["day_complete"] is True
+    assert done["open_positions"] == 1
+    assert done["unfillable_slots"] == [
+        executor._alias_slot_key(f"slot-x__mon__{MON}")
+    ]
+
+
+def test_day_priorities_caps_slot_list_but_counts_everything():
+    """The priorities list is orientation: at most 20 entries are shown, the
+    rest is summarized in more_open_slots while open_positions stays exact."""
+    slots = [
+        make_template_slot(slot_id=f"slot-{i}__mon", col_band_id="col-mon-1",
+                           start_time=f"{6 + (i % 12):02d}:00",
+                           end_time=f"{7 + (i % 12):02d}:00")
+        for i in range(23)
+    ]
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40)],
+        slots=slots,
+    )
+    executor = _make_executor(state)
+    payload, is_error = _run(executor, "get_day_priorities", {"dateISO": MON})
+    assert not is_error
+    assert payload["open_positions"] == 23
+    assert len(payload["slots"]) == 20
+    assert payload["more_open_slots"] == 3
+    assert all("raw_slot_key" not in s for s in payload["slots"])
