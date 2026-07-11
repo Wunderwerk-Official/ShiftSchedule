@@ -831,3 +831,67 @@ def test_short_days_precompute_fix_options():
     alice = next(c for c in payload["short_days"] if c["clinicianId"] == "Alice")
     opts = alice["fix_options"]
     assert any(o["take_from"] == "Bob" for o in opts)
+    # The direct swap (unassign Bob, assign Alice) is legal here, so the
+    # option must NOT carry a blocked_by marker and the case counts fixable.
+    assert all("blocked_by" not in o for o in opts if o["take_from"] == "Bob")
+    assert payload["fixable"] >= 1
+
+
+def _blocked_option_state(with_legal_option: bool):
+    """Alice: 08:00-10:00 (seed) + FIXED 11:00-12:00 -> 3h < 4h minimum.
+    slot-b (10:00-14:00, held by Bob) touches her day but overlaps her fixed
+    11:00-12:00 stint -> the direct swap is illegal (OVERLAP). slot-c
+    (10:00-11:00, open) bridges the gap into one contiguous 08:00-12:00
+    block and is the optional legal fix."""
+    slots = [
+        make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                           start_time="08:00", end_time="10:00"),
+        make_template_slot(slot_id="slot-x__mon", col_band_id="col-mon-1",
+                           start_time="11:00", end_time="12:00"),
+        make_template_slot(slot_id="slot-b__mon", col_band_id="col-mon-1",
+                           start_time="10:00", end_time="14:00"),
+    ]
+    if with_legal_option:
+        slots.append(
+            make_template_slot(slot_id="slot-c__mon", col_band_id="col-mon-1",
+                               start_time="10:00", end_time="11:00")
+        )
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", working_hours_per_week=40),
+        ],
+        slots=slots,
+        assignments=[make_assignment("m1", "slot-x__mon", MON, "clin-1")],
+    )
+    seed = [
+        _seed("slot-a__mon", MON, "clin-1"),
+        _seed("slot-b__mon", MON, "clin-2"),
+    ]
+    return _make_executor(state, seed=seed)
+
+
+def test_fix_options_flag_illegal_swaps_with_blocked_by():
+    """An adjacent option whose direct swap would create a hard violation
+    must carry the violation codes in blocked_by and sort after legal
+    options — the model must not have to falsify it via dry runs."""
+    executor = _blocked_option_state(with_legal_option=True)
+    payload, _ = _run(executor, "list_short_days", {})
+    alice = next(c for c in payload["short_days"] if c["clinicianId"] == "Alice")
+    opts = alice["fix_options"]
+    blocked = next(o for o in opts if o["slot_key"].endswith(MON) and o.get("blocked_by"))
+    legal = next(o for o in opts if not o.get("blocked_by"))
+    assert "OVERLAP" in blocked["blocked_by"]
+    assert opts.index(legal) < opts.index(blocked)  # legal options first
+    assert payload["fixable"] == 1  # the legal option keeps the case fixable
+
+
+def test_all_options_blocked_counts_as_unfixable():
+    """A case whose every option is illegal must not count as fixable —
+    arena runs showed models chasing such cases for dozens of iterations."""
+    executor = _blocked_option_state(with_legal_option=False)
+    payload, _ = _run(executor, "list_short_days", {})
+    alice = next(c for c in payload["short_days"] if c["clinicianId"] == "Alice")
+    assert alice["fix_options"], "the blocked option should still be listed"
+    assert all(o.get("blocked_by") for o in alice["fix_options"])
+    assert payload["fixable"] == 0

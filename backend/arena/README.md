@@ -86,3 +86,37 @@ Head-to-head on the practice Wednesday (single day, clean seed, 5 short days):
 
 Recommendation: 35B as the everyday model (a solid result in minutes), 122B
 as a "quality mode" for important weeks with a 20–30 min budget.
+
+## Evaluation round 3 (v1.29 fix_options, multi-day, on the real endpoint)
+
+Qwen 35B-A3B, start 2026-02-02:
+
+| scenario | days | duration | iter | moves acc/rej | short days | open slots |
+|---|---|---|---|---|---|---|
+| base | 3 | 402 s | 51 | 20/0 | 15 → 5 | 0 → 0 |
+| understaffed | 3 | 696 s | 97 | 24/37 | 10 → 5 | 0 → 0 |
+| base | 7 | 317 s | 55 | 30/84 | 22 → 19 | 2 → 0 |
+
+What worked: the structurally-unfixable flag is respected (empty
+`fix_options` cases are skipped and named as such in the summaries), and on
+the clean base case the model applied the precomputed options directly —
+zero rejected batches.
+
+What didn't: `fix_options` were only adjacency-checked, not legality-checked.
+On real data 37–46% of the presented options would create WEEKLY_HOURS /
+SAME_LOCATION_PER_DAY / SPLIT_SHIFT / OVERLAP violations; the model had to
+falsify them one dry-run (or rejected batch) at a time. That produced the
+37/84 rejections above, a ~50-iteration unproductive stretch in the
+understaffed run, and an early surrender on the 7-day run (316 s of 1800 s
+used, 19 of 22 short days left). The understaffed run also ignored the
+repairable seed WEEKLY_HOURS violation (tier 1) until iteration 96, and one
+run ended accidentally by narrating an intention instead of calling a tool.
+
+Changes derived from this round (v1.30): every fix option is legality-checked
+upfront (`blocked_by` lists the violation codes the direct swap would create,
+legal options sort first, `fixable` counts only genuinely fixable cases —
+reclassifying e.g. the two all-blocked Grace-Hopper cases on base-7d), the
+problem digest names the concrete repairable seed violations instead of a
+bare count, the overview no longer shows out-of-range violation noise, and
+the prompt now spells out batch-apply of pre-validated options, an explicit
+not-done-while checklist, and the no-narration rule.

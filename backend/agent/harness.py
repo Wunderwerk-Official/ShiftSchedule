@@ -427,6 +427,7 @@ def agent_solve_range(
         clinician_aliases=executor.alias_by_id,
         alias_slot_key=executor._alias_slot_key,
         seed_hard_violation_count=executor.seed_quality[0],
+        seed_hard_violation_lines=executor.seed_repairable_violation_lines,
     )
     # Free-text guidance from the admin (Settings -> "AI agent instructions").
     # The admin writes real clinician names; scrub_text swaps them for the

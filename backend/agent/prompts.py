@@ -7,7 +7,7 @@ problem digest goes into the first user message.
 
 from __future__ import annotations
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 from ..models import AppState
 from ..scoring import PlanStats, OpenSlot, ScoringContext
@@ -95,11 +95,16 @@ Tool usage policy:
   below the daily minimum is unavoidable, give that person more contiguous
   work the same day or swap assignments so someone else covers the whole
   block and they stay off. The overview reports short_days and
-  list_short_days pinpoints every case AND precomputes fix_options for each
-  (the adjacent slots that would extend the day, who holds each now, and
-  whether taking it would just shorten that holder instead). Use those
-  options directly — do not re-derive adjacency yourself. An empty
-  fix_options list means the case is structurally unfixable: skip it.
+  list_short_days pinpoints every case AND precomputes legality-checked
+  fix_options for each (the adjacent slots that would extend the day, who
+  holds each now, and whether taking it would just shorten that holder
+  instead). Options WITHOUT blocked_by are pre-validated: apply them
+  directly, several in one batch, no dry run needed. Options WITH blocked_by
+  would create exactly those hard violations — do not try them one by one;
+  attempt one only when you can name the compensating move (e.g. first
+  unassign something else to free weekly hours) and dry-run the combination.
+  An empty fix_options list (or all options blocked) means the case is not
+  worth chasing: skip it and say so in your summary.
 - FIXED assignments are anchors: that person is already coming in that day.
   When staffing a slot next to someone's fixed assignment, extending THEIR
   day (adjacent_to_existing=true, day_hours already > 0) usually beats
@@ -123,18 +128,30 @@ Efficient procedure (follow it):
    whole day in context when you plan contiguous blocks.
 2. Round 2: apply ALL clear assignments in ONE apply_moves batch (its
    verification response replaces a separate overview call).
-3. Then fix what remains: leftover open slots, short_days, soft rules —
-   batching related moves and batching candidate lookups.
+3. Then fix what remains in priority order: repairable hard violations and
+   leftover open slots first, then short_days (apply several unblocked
+   fix_options in ONE batch — they are pre-validated), then soft rules.
 4. Old tool results may be replaced by a "trimmed" stub as the conversation
    grows; re-query if you genuinely need the data again.
 
-Finish by replying WITHOUT tool calls ONLY when you are truly done: every
-concrete improvement idea you named has been tried with dry_run or
-apply_moves and either applied or shown illegal. Having ideas left and
-stopping anyway wastes the run — iterations cost nothing compared to an
-unsolved short day or open slot. When done, reply with a short summary of
-what you changed and why; do not narrate every step. Work within your iteration budget: prefer high-impact fixes
-(open slots) first, then short days, then soft objectives."""
+Every reply must either CALL A TOOL or BE the final summary. Announcing what
+you will check next ("let me look at X") without a tool call ends the run on
+the spot and wastes the remaining budget — if you want to look at X, call the
+tool in the same turn.
+
+Finish by replying WITHOUT tool calls ONLY when you are truly done. You are
+NOT done while any of these hold:
+- a repairable in-range hard violation remains unaddressed,
+- an open required slot remains that any clinician can legally take,
+- list_short_days reports fixable > 0 and unblocked fix_options you have not
+  applied yet. A batch that got rejected or made things worse closes only
+  THAT path — revert it and continue with the other cases, do not quit.
+Having ideas left and stopping anyway wastes the run — iterations cost
+nothing compared to an unsolved short day or open slot. When done, reply
+with a short summary of what you changed, and name the cases you decided to
+skip and why; do not narrate every step. Work within your iteration budget:
+prefer high-impact fixes (open slots) first, then short days, then soft
+objectives."""
 
 
 def build_problem_digest(
@@ -148,6 +165,7 @@ def build_problem_digest(
     clinician_aliases: Dict[str, str],
     seed_hard_violation_count: int = 0,
     alias_slot_key=None,
+    seed_hard_violation_lines: Optional[List[str]] = None,
 ) -> str:
     """Compact first user message. Deep data is fetched via tools.
 
@@ -196,9 +214,16 @@ def build_problem_digest(
         lines.append(
             f"WARNING: the draft plan breaks {seed_hard_violation_count} hard "
             "rule(s) in the solve range (get_violations shows them, new=false). "
-            "Repairing them is quality tier 1 — swap the offending draft "
-            "assignment, or unassign it if nobody can legally take it."
+            "Repairing them is quality tier 1 — fix these FIRST (before short "
+            "days): swap the offending draft assignment, or unassign it if "
+            "nobody can legally take it."
         )
+        for line in (seed_hard_violation_lines or [])[:5]:
+            lines.append(line)
+        if seed_hard_violation_lines and len(seed_hard_violation_lines) > 5:
+            lines.append(
+                f"... and {len(seed_hard_violation_lines) - 5} more (get_violations)."
+            )
     if seed_stats.short_days:
         lines.append(
             f"Short work days (below the daily minimum): {seed_stats.short_days} "

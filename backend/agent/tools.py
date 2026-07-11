@@ -135,9 +135,14 @@ TOOL_SPECS_RAW = [
             "Find mini work days: clinician-days in the solve range whose "
             "total assigned time stays below the person's daily minimum "
             "(e.g. a single 1-2h morning stint). Returns assigned vs minimum "
-            "hours and the slot_keys involved, flagged fixed (immutable) vs "
-            "movable. Fix by extending the day with adjacent slots, or by "
-            "moving the stint to a candidate with adjacent_to_existing=true."
+            "hours, the slot_keys involved (flagged fixed vs movable), and "
+            "per case the precomputed, LEGALITY-CHECKED fix_options: adjacent "
+            "qualified slots that extend the day. Options without blocked_by "
+            "are safe to apply directly (unassign take_from if set, then "
+            "assign); options with blocked_by list the hard-violation codes "
+            "the direct swap would create — skip them unless you first make "
+            "a compensating move (e.g. free weekly hours elsewhere). Empty "
+            "fix_options or all options blocked = do not chase this case."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -350,6 +355,18 @@ class PlanToolExecutor:
             if v.code == VIOLATION_WEEKLY_HOURS
         }
 
+        # Formatted for the problem digest: the concrete repairable hard
+        # violations the draft starts with. Arena runs showed models leaving
+        # tier 1 for last (or unaddressed) when the digest only carried a
+        # count — naming the cases up front lets round 1 target them.
+        self.seed_repairable_violation_lines: List[str] = [
+            f"- {v.code}|{self._alias(v.clinician_id) or '-'}|{v.date_iso or '-'}"
+            f"|{self._scrub(v.message)[:120]}"
+            for v in baseline
+            if (v.date_iso is None or v.date_iso in ctx.target_date_set)
+            and _violation_key(v) not in self.unrepairable_hard_keys
+        ]
+
         self.seed_quality = self._quality(self._working_list(), hard_violations=baseline)
         self.best_quality = self.seed_quality
         self.best_assignments: List[Assignment] = self._working_list()
@@ -480,8 +497,17 @@ class PlanToolExecutor:
         soft = validate_solver_rules(self.state, full)
         quality = self._quality(working, hard_violations=hard)
         stats = plan_stats(self.ctx, working)
+        # Only violations INSIDE the solve range: the fixture-scale history of
+        # pre-existing out-of-range violations (dozens of codes) misled models
+        # into reasoning about problems that are constant, unfixable, and
+        # excluded from every quality tier anyway.
+        in_range = [
+            v
+            for v in hard
+            if v.date_iso is None or v.date_iso in self.ctx.target_date_set
+        ]
         hard_counts: Dict[str, int] = {}
-        for v in hard:
+        for v in in_range:
             hard_counts[v.code] = hard_counts.get(v.code, 0) + 1
         new_hard = [v for v in hard if self._is_new_hard(v)]
         return {
@@ -491,7 +517,10 @@ class PlanToolExecutor:
             },
             "quality_of_best_snapshot": self.quality_dict(self.best_quality),
             "stats": stats.model_dump(),
-            "hard_violations_by_code": hard_counts,
+            "hard_violations_in_range_by_code": hard_counts,
+            "hard_violations_outside_range": len(hard) - len(in_range),
+            "note": "out-of-range violations are pre-existing history: "
+            "constant, not yours, ignore them",
             "new_hard_violations": len(new_hard),
             "soft_rule_violations": len(soft),
             "open_slot_count": stats.open_slots,
@@ -790,22 +819,35 @@ class PlanToolExecutor:
                     "assigned_hours": round(total / 60.0, 1),
                     "min_hours": round(min_minutes / 60.0, 1),
                     "slots": slots,
-                    # Concrete ways to fix this short day, precomputed so the
-                    # model does not have to reason out adjacency slot by slot
-                    # (that dominated token cost on real cases). Empty list =
-                    # structurally unfixable (no adjacent qualified slot), do
-                    # not chase it.
+                    # Concrete ways to fix this short day, precomputed AND
+                    # legality-checked so the model does not have to reason
+                    # out adjacency slot by slot or falsify illegal swaps via
+                    # dry runs (both dominated iteration cost on real cases).
+                    # Empty list = structurally unfixable (no adjacent
+                    # qualified slot), do not chase it.
                     "fix_options": self._short_day_fix_options(cid, date_iso),
                 }
             )
-        fixable = sum(1 for c in cases if c["fix_options"])
+        # Honest fixable count: only cases with at least one option whose
+        # direct swap is legal. Arena runs showed 37-46% of unchecked options
+        # were illegal (mostly WEEKLY_HOURS/SAME_LOCATION), and models burned
+        # dozens of iterations discovering that one dry run at a time.
+        fixable = sum(
+            1
+            for c in cases
+            if any(not o.get("blocked_by") for o in c["fix_options"])
+        )
         return {
             "total": len(cases),
             "fixable": fixable,
+            "shown": min(len(cases), 20),
             "note": "Days below the daily minimum. fix_options lists the "
             "adjacent slots that would extend the day (take_from = who holds "
             "it now; would_shorten_holder = true means the swap just moves the "
-            "problem). Empty fix_options = structurally unfixable, skip it.",
+            "problem). Options are legality-checked: no blocked_by = the "
+            "direct swap is legal right now; blocked_by lists the violation "
+            "codes it would create (needs a compensating move first, usually "
+            "not worth it). Empty fix_options or all blocked = skip the case.",
             "short_days": cases[:20],
         }
 
@@ -817,7 +859,15 @@ class PlanToolExecutor:
         qualified for its section, and either it is open OR held by a movable
         (non-fixed) clinician. For held slots we flag whether taking it would
         push the current holder below THEIR own daily minimum — the common
-        "swap just moves the short day" trap."""
+        "swap just moves the short day" trap.
+
+        Every option is additionally legality-checked: the exact move batch it
+        implies (unassign the holder if any, assign ``cid``) is validated
+        against the full plan, and options that would create NEW hard
+        violations carry their codes in ``blocked_by``. Without this, 37-46%
+        of the presented options were illegal on real practice data (mostly
+        WEEKLY_HOURS and SAME_LOCATION_PER_DAY) and the model spent long
+        rejected-move stretches discovering that the hard way."""
         clinician = self.clinicians_by_id.get(cid)
         if clinician is None:
             return []
@@ -865,26 +915,63 @@ class PlanToolExecutor:
                 )
                 break
             if open_room > 0:
-                options.append(
-                    {
-                        "slot_key": self._alias_slot_key(slot_key),
-                        "section": self.section_names.get(inst.section_id, inst.section_id),
-                        "take_from": None,
-                        "would_shorten_holder": False,
-                    }
-                )
+                option = {
+                    "slot_key": self._alias_slot_key(slot_key),
+                    "section": self.section_names.get(inst.section_id, inst.section_id),
+                    "take_from": None,
+                    "would_shorten_holder": False,
+                }
+                taken_from = None
             elif movable_holder is not None:
-                options.append(
-                    {
-                        "slot_key": self._alias_slot_key(slot_key),
-                        "section": self.section_names.get(inst.section_id, inst.section_id),
-                        "take_from": self._alias(movable_holder),
-                        "would_shorten_holder": would_shorten,
-                    }
-                )
-        # Options that don't create a new short day first.
-        options.sort(key=lambda o: (o["would_shorten_holder"], o["take_from"] is not None))
+                option = {
+                    "slot_key": self._alias_slot_key(slot_key),
+                    "section": self.section_names.get(inst.section_id, inst.section_id),
+                    "take_from": self._alias(movable_holder),
+                    "would_shorten_holder": would_shorten,
+                }
+                taken_from = movable_holder
+            else:
+                continue
+            blocked = self._fix_option_blocked_by(
+                cid, inst.slot_id, date_iso, taken_from
+            )
+            if blocked:
+                option["blocked_by"] = blocked
+            options.append(option)
+        # Directly legal options first, then those that merely move the short
+        # day, then blocked ones (kept so the model knows WHY a path is shut).
+        options.sort(
+            key=lambda o: (
+                bool(o.get("blocked_by")),
+                o["would_shorten_holder"],
+                o["take_from"] is not None,
+            )
+        )
         return options[:6]
+
+    def _fix_option_blocked_by(
+        self,
+        cid: str,
+        slot_id: str,
+        date_iso: str,
+        taken_from: Optional[str],
+    ) -> List[str]:
+        """Violation codes the direct fix-option swap would create, [] if the
+        move batch (unassign ``taken_from`` if set, assign ``cid``) is legal.
+
+        Deliberately the exact same gate as apply_moves (``_is_new_hard``
+        against the seed baseline, no extra allowances): "no blocked_by" must
+        mean "this batch will be accepted". That includes the
+        worsened-weekly-hours case — piling more hours onto an already-over
+        week keeps the violation key but is still rejected on apply."""
+        trial = dict(self.current)
+        if taken_from is not None:
+            trial.pop((slot_id, date_iso, taken_from), None)
+        trial[(slot_id, date_iso, cid)] = self._make_assignment(slot_id, date_iso, cid)
+        trial_hard = self._hard_violations(self._full_plan(list(trial.values())))
+        return sorted(
+            {v.code for v in trial_hard if self._is_new_hard(v)}
+        )
 
     def _daily_min_minutes(self, cid: str, date_iso: str) -> Optional[int]:
         clinician = self.clinicians_by_id.get(cid)
