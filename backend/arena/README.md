@@ -138,9 +138,14 @@ repaired hard violation outranks one extra short day) at a third of the
 wall clock and an eighth of the tokens; the model demonstrably reads
 `blocked_by` ("fix_options all blocked — skip") and names skipped cases in
 its summary. The 7-day run more than tripled the short-day yield and no
-longer surrenders, but exposed a move-ordering trap: eager short-day swaps
-consumed the slack one open slot needed (tier-2 regression 0 → 1). Two
-follow-up tweaks address it: the prompt now requires finishing ALL open-slot
-work before any short-day fix, and list_short_days warns that options go
-stale after apply_moves (stale options were behind most of the remaining
-rejected batches).
+longer surrenders, but suggested a move-ordering trap (short-day swaps
+before open-slot work). Two follow-up tweaks: the prompt now requires
+finishing ALL open-slot work before any short-day fix, and list_short_days
+warns that its options go stale after apply_moves.
+
+Re-run of base 7d with those tweaks: **27 iterations / 247 s, 22 → 7 short
+days**, the fillable open slot filled FIRST (iteration 6, with its only
+legal candidate) and the other correctly diagnosed as unfillable — verified
+against the seed: S10 2026-02-05 has zero eligible candidates, so 1 open
+slot is the tier-2 optimum for this seed. (The v1.29 run's "2 → 0 open"
+came from a different heuristic seed; CP-SAT seeds vary slightly per run.)
