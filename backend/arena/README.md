@@ -331,3 +331,13 @@ deviation 7911) — and the frictions are gone: the model now reads
 not_searched cleanly ("the COR tout slot was not searched and remains
 open") instead of puzzling over silently missing slots, and rescue is
 invoked exactly once per stuck day before the summary.
+
+How hard is the carnival week REALLY? A 240 s CP-SAT reference solve on the
+identical replanned state fills 139/146 (7 open, 2 short days) — so of
+day-by-day's 16 remaining open slots on `base` 02-16, roughly half are true
+capacity shortage (nine clinicians on vacation; NO solver can fill them)
+and half are the greedy-construction gap to a global packer. Every agent
+"open" is at least machine-proven locally unfillable (exact gate + rescue
+search); closing the remaining gap to CP-SAT (deeper rearrangement, or a
+coverage-first CP-SAT seed for crisis weeks) is the known next frontier.
+On ordinary weeks the gap is zero — base 2026-02-02 fills 87/87.

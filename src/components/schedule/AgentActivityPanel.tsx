@@ -307,25 +307,17 @@ export default function AgentActivityPanel({ events }: { events: AgentActivityDa
     }, 1000);
     return () => window.clearInterval(id);
   }, []);
-  const iterationProgress =
-    status.maxIterations && status.maxIterations > 0
-      ? Math.min(1, status.iteration / status.maxIterations)
-      : 0;
-
   return (
     <div className="w-full max-w-xl rounded-xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-3 dark:border-indigo-900/50 dark:from-indigo-950/40 dark:to-slate-900">
       <StageStepper stage={status.stage} />
 
-      {status.stage !== "seed" && status.maxIterations !== null && (
-        <div className="mt-3 flex items-center gap-3">
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
-            <div
-              className="solver-bar-fill h-full rounded-full bg-gradient-to-r from-indigo-400 via-violet-400 to-fuchsia-400"
-              style={{ width: `${Math.round(iterationProgress * 100)}%` }}
-            />
-          </div>
+      {/* No progress BAR: the iteration budget scales with the problem
+          (slots x 10) and is a runaway backstop, not a plan — a bar against
+          it always looked nearly empty and read as "barely working". */}
+      {status.stage !== "seed" && status.iteration > 0 && (
+        <div className="mt-3 flex items-center justify-end">
           <span className="shrink-0 text-[11px] font-medium tabular-nums text-slate-500 dark:text-slate-400">
-            Iteration {status.iteration}/{status.maxIterations} · {status.movesAccepted}{" "}
+            Iteration {status.iteration} · {status.movesAccepted}{" "}
             change{status.movesAccepted === 1 ? "" : "s"}
           </span>
         </div>
