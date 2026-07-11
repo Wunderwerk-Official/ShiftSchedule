@@ -1123,3 +1123,74 @@ def test_day_priorities_caps_slot_list_but_counts_everything():
     assert len(payload["slots"]) == 20
     assert payload["more_open_slots"] == 3
     assert all("raw_slot_key" not in s for s in payload["slots"])
+
+
+def test_day_priorities_processing_order_oncall_and_priority_first():
+    """The day is worked in processing order, not chronologically: on-call
+    duties first (rest days ripple into neighbouring days), then the
+    practice's slot priority (template order), scarcest within a tier. A
+    slot with only ONE legal candidate jumps the whole queue."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           qualified_class_ids=["section-a", "section-b", "section-c"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob",
+                           qualified_class_ids=["section-a", "section-b"],
+                           working_hours_per_week=40),
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "On Call"),
+            make_workplace_row("section-c", "Scarce"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            # Template order = priority order: earliest slot in the template
+            # has the highest order weight.
+            make_template_slot(slot_id="slot-hi__mon", col_band_id="col-mon-1",
+                               start_time="13:00", end_time="17:00"),
+            make_template_slot(slot_id="slot-lo__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="12:00"),
+            make_template_slot(slot_id="slot-oc__mon", col_band_id="col-mon-1",
+                               block_id="block-oc",
+                               start_time="19:00", end_time="23:00"),
+            make_template_slot(slot_id="slot-scarce__mon", col_band_id="col-mon-1",
+                               block_id="block-scarce",
+                               start_time="09:00", end_time="13:00"),
+        ],
+        solver_settings={
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "section-b",
+            "onCallRestDaysBefore": 0,
+            "onCallRestDaysAfter": 0,
+        },
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-oc", sectionId="section-b", requiredSlots=0)
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-scarce", sectionId="section-c", requiredSlots=0)
+    )
+    executor = _make_executor(state)
+    payload, is_error = _run(executor, "get_day_priorities", {"dateISO": MON})
+    assert not is_error
+    order = [s["slot_key"] for s in payload["slots"]]
+    key = lambda sid: executor._alias_slot_key(f"{sid}__{MON}")  # noqa: E731
+    # Scarce (only Alice) jumps the queue, then the on-call duty, then the
+    # two flexible section-a slots by template priority — the later-starting
+    # high-priority slot BEFORE the earlier-starting low-priority one.
+    assert order == [
+        key("slot-scarce__mon"), key("slot-oc__mon"),
+        key("slot-hi__mon"), key("slot-lo__mon"),
+    ]
+    oc_entry = payload["slots"][1]
+    assert oc_entry["on_call"] is True
+    priorities = [s["priority"] for s in payload["slots"][2:]]
+    assert priorities == sorted(priorities, reverse=True)
+
+    # Auto-select follows the same order: the scarce slot comes out first.
+    auto, _ = _run(executor, "suggest_day_blocks", {"dateISO": MON})
+    assert auto["auto_selected"] is True
+    assert auto["slot_key"] == key("slot-scarce__mon")

@@ -18,11 +18,21 @@ printed for qualitative review.
 
 ## Scenarios (`--scenario`)
 
-- `base` — the practice data unchanged.
+- `base` — the practice data unchanged. NOTE: the fixture contains the
+  practice's REAL vacations — start `2026-02-16` hits the school-holiday
+  week with nine clinicians away at once, the hardest realistic case in the
+  data (heuristic seed: 27 of 146 required positions stay open).
 - `vacation-wave` — 5 clinicians on vacation for the whole range (scarcity,
   produces genuine open slots the agent must fill).
 - `understaffed` — the 4 most-flexible clinicians removed (sick calls); rare
   qualifications lose their usual cover.
+- `crunch` — the 2 most-flexible clinicians NOT on vacation call in sick for
+  the whole range. Pointed at 2026-02-16 this stacks sick calls on top of
+  the real nine-person vacation wave.
+- `oncall` — the overnight on-call duty (kept at requiredSlots=0 and staffed
+  by hand in the real practice) becomes required: 1 person per on-call slot,
+  in-range on-call assignments cleared. Hard because of the rest-day rule —
+  each on-call consumes the clinician's neighbouring days too.
 
 ## Two ways to run it
 

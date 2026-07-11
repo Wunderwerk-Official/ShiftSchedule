@@ -75,6 +75,65 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
         state.assignments = [a for a in state.assignments if a.clinicianId not in drop]
         return f"removed 4 most-flexible clinicians: {', '.join(names)}"
 
+    if scenario == "crunch":
+        # Sick calls on TOP of whatever vacations the range already has: the
+        # two most-flexible clinicians who are NOT on vacation drop out for
+        # the whole range. Pointed at the fixture's real school-holiday week
+        # (start 2026-02-16: nine clinicians on vacation) this is the
+        # nightmare case every practice knows — holidays plus sick calls.
+        def on_vacation(c) -> bool:
+            return any(
+                v.startISO <= end_iso and v.endISO >= start_iso
+                for v in (c.vacations or [])
+            )
+
+        available = sorted(
+            (
+                c
+                for c in state.clinicians
+                if (c.qualifiedClassIds or []) and not on_vacation(c)
+            ),
+            key=lambda c: len(c.qualifiedClassIds or []),
+            reverse=True,
+        )
+        drop = {c.id for c in available[:2]}
+        names = [c.name for c in available[:2]]
+        state.clinicians = [c for c in state.clinicians if c.id not in drop]
+        state.assignments = [a for a in state.assignments if a.clinicianId not in drop]
+        return (
+            "2 most-flexible clinicians NOT on vacation are sick for the "
+            f"whole range: {', '.join(names)}"
+        )
+
+    if scenario == "oncall":
+        # The real practice keeps the overnight on-call at requiredSlots=0
+        # and staffs it by hand. This scenario makes it the agent's job:
+        # every on-call template slot requires 1 person, and the range's
+        # existing on-call assignments are cleared so nothing is pre-covered.
+        # Hard because of the rest-day rule: each on-call consumes the
+        # clinician's neighbouring days too.
+        on_call_class = (state.solverSettings or {}).get("onCallRestClassId")
+        if not on_call_class:
+            raise SystemExit("fixture has no onCallRestClassId configured")
+        on_call_blocks = {
+            b.id for b in state.weeklyTemplate.blocks if b.sectionId == on_call_class
+        }
+        on_call_slot_ids = set()
+        for location in state.weeklyTemplate.locations:
+            for slot in location.slots:
+                if slot.blockId in on_call_blocks:
+                    slot.requiredSlots = 1
+                    on_call_slot_ids.add(slot.id)
+        state.assignments = [
+            a
+            for a in state.assignments
+            if not (a.rowId in on_call_slot_ids and start_iso <= a.dateISO <= end_iso)
+        ]
+        return (
+            f"on-call duty is required (1 person, {len(on_call_slot_ids)} "
+            "template slots); in-range on-call assignments cleared"
+        )
+
     raise SystemExit(f"unknown scenario: {scenario!r}")
 
 
@@ -87,7 +146,7 @@ def main() -> None:
     parser.add_argument("--model", default=None, help="override the configured model")
     parser.add_argument(
         "--scenario", default="base",
-        choices=["base", "vacation-wave", "understaffed"],
+        choices=["base", "vacation-wave", "understaffed", "crunch", "oncall"],
         help="transform the fixture into a harder case",
     )
     parser.add_argument(
