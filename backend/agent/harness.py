@@ -567,11 +567,24 @@ def agent_solve_range(
             rounds_end = min(iterations_done + day_rounds, config.max_iterations)
 
             counts = executor._counts_by_instance(executor._working_list())
+            on_call_class = (
+                ctx.settings.onCallRestClassId
+                if getattr(ctx.settings, "onCallRestEnabled", False)
+                else None
+            )
             day_slot_lines: List[str] = []
             open_positions = 0
+            # Same processing order the tools use (minus eligibility, which
+            # is not known yet): on-call duties first, then slot priority,
+            # then start time — NOT chronological.
             for inst in sorted(
                 (i for i in ctx.instances.values() if i.date_iso == date_iso),
-                key=lambda i: (i.start, i.slot_key),
+                key=lambda i: (
+                    i.section_id != on_call_class,
+                    -i.order_weight,
+                    i.start,
+                    i.slot_key,
+                ),
             ):
                 missing = max(0, inst.target - counts.get(inst.slot_key, 0))
                 open_positions += missing
@@ -581,6 +594,8 @@ def agent_solve_range(
                     f"|{inst.start // 60:02d}:{inst.start % 60:02d}-"
                     f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
                     f"|{missing}"
+                    f"|prio {inst.order_weight}"
+                    + ("|ON-CALL" if inst.section_id == on_call_class else "")
                 )
             fixed_anchor_lines = sorted(
                 {

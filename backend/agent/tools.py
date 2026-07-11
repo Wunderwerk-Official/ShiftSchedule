@@ -199,12 +199,14 @@ TOOL_SPECS_RAW = [
         "name": "get_day_priorities",
         "description": (
             "Day-by-day planning: the still-unfilled slot instances of ONE "
-            "day, sorted by how urgently they need a decision — scarcest "
-            "first (fewest clinicians who could legally take them right "
-            "now), then by start time. Staff the top entries first: slots "
-            "with many eligible candidates can wait, slots with one or two "
-            "cannot. eligible_count/eligible_preview are computed against "
-            "the current plan and change after every apply_moves."
+            "day, sorted in PROCESSING ORDER — slots with at most one legal "
+            "candidate first (about to be lost), then on-call/duty slots "
+            "(rest-day rules ripple into neighbouring days), then the "
+            "practice's slot priority (template order), scarcest first "
+            "within a tier. Staff the top entries first; flexible "
+            "low-priority slots can wait. eligible_count/eligible_preview "
+            "are computed against the current plan and change after every "
+            "apply_moves."
         ),
         "input_schema": {
             "type": "object",
@@ -222,9 +224,10 @@ TOOL_SPECS_RAW = [
             "adjacent, still-open slots they could also take, up to their "
             "preferred daily hours). This answers 'who can I put here who "
             "then keeps working, instead of coming in for a short stint'. "
-            "OMIT slot_key and pass dateISO to AUTO-SELECT the scarcest "
-            "still-fillable open slot of that day (same ranking as "
-            "get_day_priorities, slots nobody can take are skipped); when "
+            "OMIT slot_key and pass dateISO to AUTO-SELECT the day's most "
+            "urgent still-fillable slot (same processing order as "
+            "get_day_priorities: single-candidate slots, then on-call, then "
+            "slot priority; slots nobody can take are skipped); when "
             "nothing fillable remains it returns day_complete=true instead. "
             "Candidates are pre-sorted: daily minimum met first, then lowest "
             "ytd_worked_pct. Apply the WHOLE chosen block in one apply_moves "
@@ -1162,17 +1165,24 @@ class PlanToolExecutor:
     # ------------------------------------------------------------------
 
     def _day_open_entries(self, date_iso: str) -> List[dict]:
-        """Unfilled slot instances of one day, scarcest-first. Shared by
+        """Unfilled slot instances of one day in PROCESSING ORDER. Shared by
         get_day_priorities and suggest_day_blocks' auto-select so both rank
         the day identically.
 
-        Scarcity = number of clinicians who could legally take the slot
-        against the CURRENT plan (same trial validation as
-        list_candidates_for_slot). A slot only one person can cover must be
-        decided before that person is consumed by a less critical slot —
-        this is the 'which slots need filling first' step of the human
-        procedure."""
+        Order (how a human planner works the day): a slot with at most one
+        legal candidate first (decide it before that person is consumed),
+        then on-call/duty slots (their rest-day rules constrain the
+        NEIGHBOURING days, so they must be fixed before the day fills up),
+        then the practice's slot priority (template order — the admin's own
+        ranking of what matters), scarcest first within equal priority.
+        Eligibility = number of clinicians who could legally take the slot
+        against the CURRENT plan (the exact apply_moves gate)."""
         counts = self._counts_by_instance(self._working_list())
+        on_call_class = (
+            self.ctx.settings.onCallRestClassId
+            if getattr(self.ctx.settings, "onCallRestEnabled", False)
+            else None
+        )
         entries = []
         for inst in self.ctx.instances.values():
             if inst.date_iso != date_iso:
@@ -1206,11 +1216,21 @@ class PlanToolExecutor:
                     "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
                     "end": f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
                     "missing": missing,
+                    "priority": inst.order_weight,
+                    "on_call": inst.section_id == on_call_class,
                     "eligible_count": len(eligible),
                     "eligible_preview": eligible[:3],
                 }
             )
-        entries.sort(key=lambda e: (e["eligible_count"], e["start"], e["section"]))
+        entries.sort(
+            key=lambda e: (
+                e["eligible_count"] > 1,
+                not e["on_call"],
+                -e["priority"],
+                e["eligible_count"],
+                e["start"],
+            )
+        )
         return entries
 
     def _tool_day_priorities(self, args: dict) -> dict:
@@ -1230,10 +1250,13 @@ class PlanToolExecutor:
         out = {
             "dateISO": date_iso,
             "open_positions": sum(e["missing"] for e in entries),
-            "note": "Scarcest slots first (fewest legal candidates NOW). "
-            "eligible_count=0 means nobody can take it in the current state "
-            "- staff the rest of the day first, then re-check; if it stays "
-            "0, report it as unfillable. Counts change after apply_moves.",
+            "note": "PROCESSING ORDER: slots with at most one legal candidate "
+            "first, then on-call duties (their rest days constrain the "
+            "neighbouring days), then the practice's slot priority (higher = "
+            "more important), scarcest first within a tier. eligible_count=0 "
+            "means nobody can take it in the current state - staff the rest "
+            "of the day first, then re-check; if it stays 0, report it as "
+            "unfillable. Counts change after apply_moves.",
             "slots": shown,
         }
         if len(entries) > len(shown):
@@ -1244,10 +1267,10 @@ class PlanToolExecutor:
         """For one open slot: eligible clinicians with their best contiguous
         work block starting there — the 'Anschlussverwendung' step of the
         human procedure (never place someone for a lone short stint when
-        they could carry adjacent open slots too). Without slot_key the
-        scarcest still-fillable slot of dateISO is chosen automatically, so
-        the model can pipeline apply_moves + suggest_day_blocks in one turn
-        (one LLM round per placement instead of three)."""
+        they could carry adjacent open slots too). Without slot_key the most
+        urgent still-fillable slot of dateISO is chosen automatically (the
+        _day_open_entries processing order), so the model can pipeline
+        apply_moves + suggest_day_blocks in one turn."""
         auto_extras: dict = {}
         raw_key = str(args.get("slot_key") or "").strip()
         if raw_key:
@@ -1261,7 +1284,7 @@ class PlanToolExecutor:
                 return {
                     "error": "Pass slot_key, or dateISO within the solve "
                     f"range ({self.ctx.start_iso} to {self.ctx.end_iso}) to "
-                    "auto-select the scarcest open slot of that day."
+                    "auto-select the most urgent open slot of that day."
                 }
             entries = self._day_open_entries(date_iso)
             fillable = [e for e in entries if e["eligible_count"] > 0]

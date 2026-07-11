@@ -184,15 +184,19 @@ Hard constraints (violations of these block acceptance of a move batch):
   someone new.
 
 THE PROCEDURE (follow it exactly — it is how a human fills a day):
-1. get_day_priorities ONCE, for orientation: the day's unfilled slots,
-   scarcest first. Slots only one or two people can take MUST be decided
-   first; flexible slots wait.
+1. get_day_priorities ONCE, for orientation: the day's unfilled slots in
+   PROCESSING ORDER — a slot only one person can take comes first (decide
+   it before that person is consumed), then on-call/duty slots (their
+   rest-day rules constrain the days around them, so they are fixed before
+   the day fills up), then the practice's slot priority (template order);
+   flexible low-priority slots (e.g. staff meetings) come last. Do NOT
+   simply work through the day chronologically.
 2. suggest_day_blocks with dateISO only (no slot_key): it auto-selects the
-   scarcest still-fillable slot and returns up to 6 legal candidates, each
-   with a precomputed contiguous work block starting at that slot (adjacent
-   open slots chained up to their preferred daily hours) — their
-   "Anschlussverwendung". Pass slot_key instead only when you deliberately
-   deviate from the scarcity order.
+   most urgent still-fillable slot in exactly that order and returns up to
+   6 legal candidates, each with a precomputed contiguous work block
+   starting at that slot (adjacent open slots chained up to their
+   preferred daily hours) — their "Anschlussverwendung". Pass slot_key
+   instead only when you deliberately deviate from the given order.
 3. Choosing the candidate: they are PRE-SORTED — everyone whose block meets
    the daily minimum first, then lowest ytd_worked_pct (100 = on target,
    lower = behind). Take the FIRST candidate unless you have a concrete
@@ -280,7 +284,11 @@ def build_day_digest(
     )
     lines.append(f"Open positions on this day: {open_positions}")
     lines.append("")
-    lines.append("Slots of this day (slot_key|section|time|still missing):")
+    lines.append(
+        "Slots of this day (slot_key|section|time|still missing|priority; "
+        "listed in processing order — on-call first, then priority, NOT "
+        "chronological):"
+    )
     lines.extend(day_slot_lines)
     if fixed_anchor_lines:
         lines.append("")
