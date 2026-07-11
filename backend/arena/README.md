@@ -269,3 +269,10 @@ Findings:
   (contract + personal tolerance) per candidate, marks on-call slots
   (on_call=true), and the run-log open-slot lists cap at 200 (80 truncated
   the from-scratch seed side of the report).
+
+v1.34 verification (35B, oncall, same week): 566 s, 134 iter, 108/0 moves,
+132 → 24 open (within run variance of v1.33's 22), 5 short days, all Garde
+nights staffed again. The report's seed side now shows the exact 132, and
+the hours hesitation is gone from the reasoning — the model cites the
+take-the-first-candidate procedure instead of second-guessing legal
+above-contract hours.
