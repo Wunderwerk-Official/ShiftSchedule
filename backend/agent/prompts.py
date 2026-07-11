@@ -199,12 +199,15 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    instead only when you deliberately deviate from the given order.
 3. Choosing the candidate: they are PRE-SORTED — overloaded=true last,
    everyone whose block meets the daily minimum first, then lowest
-   ytd_worked_pct (100 = on target, lower = behind). Take the FIRST
-   candidate unless you have a concrete reason not to (admin instructions,
-   section preference, saving a scarce person for a slot only they can
-   cover). Extra hours beyond the daily minimum are a tie-breaker, not a
-   goal: a fair shorter block that meets the minimum beats a longer block
-   for someone already ahead. overloaded=true means the day would exceed
+   ytd_worked_pct (100 = on target, lower = behind). When NO candidate
+   reaches the daily minimum, the LONGEST block is first instead: one
+   person covering the whole remaining stretch beats several people on
+   mini-stints (the others stay off entirely). Take the FIRST candidate
+   unless you have a concrete reason not to (admin instructions, section
+   preference, saving a scarce person for a slot only they can cover).
+   Extra hours beyond the daily minimum are a tie-breaker, not a goal: a
+   fair shorter block that meets the minimum beats a longer block for
+   someone already ahead. overloaded=true means the day would exceed
    16 hours (e.g. a night duty stacked on a day duty) — a LAST resort:
    two people on two duties always beat one person on 24 hours, even when
    the fresh person's fairness numbers look worse.
@@ -220,7 +223,17 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    slot, with a substitute covering the vacated one, and returns
    pre-validated 3-move batches. Apply ONE rescue batch per round, exactly
    as given, then re-check via suggest_day_blocks. When rescue offers
-   nothing (truly_unfillable), write your final day summary.
+   nothing (truly_unfillable), move to the final review (step 6).
+6. FINAL REVIEW — when the day is complete (and any rescue is done), call
+   suggest_balance_moves(dateISO): it checks the finished day the way a
+   human re-reads a plan — is anyone on an over-long day while colleagues
+   barely work, did anyone get called in for a mini-stint below their
+   daily minimum? It returns pre-validated handover batches (donor gives
+   edge slots to a less-loaded colleague; a mini-stint holder hands their
+   whole stint to a neighbour and stays off entirely). Apply ONE batch
+   per round exactly as given, pipelined with the next
+   suggest_balance_moves call; when it offers nothing more, write your
+   final day summary (mentioning problems it listed but could not fix).
 
 Rules of engagement:
 - TRUST the tools' verdicts. eligible_count and the candidate lists are
@@ -247,9 +260,11 @@ Rules of engagement:
   on the spot. Do not restate candidate lists in text — pick and act.
 
 Finish the day by replying WITHOUT tool calls ONLY when suggest_day_blocks
-reported day_complete=true (or every unfilled slot has eligible_count 0).
-Your final reply: one short paragraph — what you staffed, which slots stay
-open and why. Then the harness moves you to the next day."""
+reported day_complete=true (or every unfilled slot has eligible_count 0)
+AND the final review (suggest_balance_moves) has no offers left. Your final
+reply: one short paragraph — what you staffed, which slots stay open and
+why, and any imbalance the review could not fix. Then the harness moves you
+to the next day."""
 
 
 DUTY_SYSTEM_PROMPT = """You are an expert clinician shift planner. Before the day-by-day planning of this range starts, you staff its DUTY slots (on-call services) FIRST, across ALL days — the way a human planner fixes the 24/7 duty roster before any day work. Duties bind rest days around them and eat weekly-hours budgets: placed last they starve (observed in production: a whole weekend's on-call left empty because the week's hours were spent on ordinary day work first).
@@ -409,7 +424,9 @@ def build_day_digest(
         "get_day_priorities once, suggest_day_blocks (dateISO only) to get "
         "the scarcest slot's candidates, then pipeline apply_moves(whole "
         "block) + suggest_day_blocks together in ONE message each round "
-        "until day_complete=true. Finish with a one-paragraph summary."
+        "until day_complete=true, then the final review "
+        "(suggest_balance_moves) until it has no offers. Finish with a "
+        "one-paragraph summary."
     )
     return "\n".join(lines)
 

@@ -42,6 +42,7 @@ DAY_ONLY_TOOL_NAMES = {
     "get_day_priorities",
     "suggest_day_blocks",
     "suggest_rescue_moves",
+    "suggest_balance_moves",
 }
 
 TOOL_SPECS_RAW = [
@@ -234,7 +235,8 @@ TOOL_SPECS_RAW = [
             "slot priority; slots nobody can take are skipped); when "
             "nothing fillable remains it returns day_complete=true instead. "
             "Candidates are pre-sorted: daily minimum met first, then lowest "
-            "ytd_worked_pct. Apply the WHOLE chosen block in one apply_moves "
+            "ytd_worked_pct; when no block reaches the minimum, longest "
+            "block first. Apply the WHOLE chosen block in one apply_moves "
             "batch. Blocks are validated against the current plan and go "
             "stale after apply_moves — re-query rather than reusing old "
             "suggestions (in auto mode: put apply_moves FIRST and this call "
@@ -270,6 +272,30 @@ TOOL_SPECS_RAW = [
             "given, then re-check with suggest_day_blocks. Fixed/manual "
             "assignments are never touched. Use it when suggest_day_blocks "
             "reports day_complete=true but unfillable_slots remain."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"dateISO": {"type": "string"}},
+            "required": ["dateISO"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "suggest_balance_moves",
+        "description": (
+            "Day-by-day planning, the FINAL REVIEW after the day is staffed "
+            "('is everything in order?'): checks the finished day for "
+            "fairness problems a human planner fixes on the last "
+            "read-through — one person on an over-long chained day while "
+            "colleagues barely work, or someone called in for a mini-stint "
+            "below their daily minimum. Returns pre-validated transfer "
+            "batches (unassign the donor, assign the receiver to the same "
+            "slot) that keep BOTH days contiguous, never create a new "
+            "over-long or new mini-stint day, and pass the exact apply "
+            "gate. Apply ONE batch per round exactly as given, then call "
+            "this again (other offers go stale); when it returns no offers "
+            "the day is balanced — write your final summary. Fixed/manual "
+            "assignments are never touched."
         ),
         "input_schema": {
             "type": "object",
@@ -642,6 +668,7 @@ class PlanToolExecutor:
             "get_day_priorities": self._tool_day_priorities,
             "suggest_day_blocks": self._tool_suggest_day_blocks,
             "suggest_rescue_moves": self._tool_suggest_rescue_moves,
+            "suggest_balance_moves": self._tool_suggest_balance_moves,
             "apply_moves": self._tool_apply_moves,
         }
         handler = handlers.get(name)
@@ -1086,6 +1113,29 @@ class PlanToolExecutor:
             return max(1, int(round(contract * 60 / 5)) // 2)
         return None
 
+    # Chains never build days longer than this (+1h step tolerance). Longer
+    # days exist — 12h/24h duty slots — but as SINGLE slots someone chose,
+    # never as an auto-glued sequence of ordinary day work.
+    MAX_CHAIN_TARGET_MINUTES = 10 * 60
+
+    def _daily_target_minutes(self, cid: str, date_iso: str) -> int:
+        """Preferred daily workload: contract/5 (an average workday), else
+        8h. A mandatory working-time window bounds WHEN someone may work,
+        not HOW MUCH — it can only shorten the target, never stretch it
+        (observed in production: a 06:30-20:00 presence window was treated
+        as the daily target and one person got a 13.5h auto-built chain
+        while colleagues had 1h days)."""
+        clinician = self.clinicians_by_id.get(cid)
+        contract = clinician.workingHoursPerWeek if clinician else None
+        if isinstance(contract, (int, float)) and contract > 0:
+            target = max(60, int(round(contract * 60 / 5)))
+        else:
+            target = 480
+        window = self.ctx.window_by_clinician_date.get((cid, date_iso))
+        if window is not None:
+            target = min(target, max(60, window[2] - window[1]))
+        return min(target, self.MAX_CHAIN_TARGET_MINUTES)
+
     def _tool_ytd_progress(self, args: dict) -> dict:
         as_of = args.get("dateISO") or self.ctx.start_iso
         entries = []
@@ -1333,12 +1383,16 @@ class PlanToolExecutor:
                         "left. Call suggest_rescue_moves ONCE before "
                         "finishing — moving one of your own placements may "
                         "still free a qualified person. If it offers "
-                        "nothing, reply WITHOUT tool calls, naming the "
-                        "unfillable slots (do not force a move)."
+                        "nothing, run the final review "
+                        "(suggest_balance_moves), then reply WITHOUT tool "
+                        "calls, naming the unfillable slots (do not force "
+                        "a move)."
                         if unfillable
-                        else "The day is fully staffed. Finish now: reply "
-                        "WITHOUT tool calls with your one-paragraph day "
-                        "summary."
+                        else "The day is fully staffed. Run the final "
+                        "review now: call suggest_balance_moves(dateISO) "
+                        "and apply what it offers (one batch per round); "
+                        "when it has no more offers, reply WITHOUT tool "
+                        "calls with your one-paragraph day summary."
                     ),
                 }
             chosen = fillable[0]
@@ -1410,15 +1464,19 @@ class PlanToolExecutor:
             )
         # Overloaded days are a last resort, then long-enough blocks first
         # (the whole point of the strategy), most YTD-behind first within
-        # that — the model still makes the final call.
-        out.sort(
-            key=lambda c: (
-                c["overloaded"],
-                not c["meets_daily_minimum"],
-                c["ytd_worked_pct"] if c["ytd_worked_pct"] is not None else 999,
-                -c["block_hours"],
-            )
-        )
+        # that. Below the daily minimum the ranking flips: the LONGEST block
+        # wins and fairness only breaks ties — one person on a 2h stint
+        # beats two people on 1h stints (the second stays off entirely).
+        # Observed in production: ytd-first put a 1h candidate above a 2h
+        # candidate whose block covered BOTH remaining slots, producing two
+        # mini-days instead of one.
+        def _rank(c: dict) -> tuple:
+            ytd = c["ytd_worked_pct"] if c["ytd_worked_pct"] is not None else 999
+            if c["meets_daily_minimum"]:
+                return (c["overloaded"], 0, ytd, -c["block_hours"])
+            return (c["overloaded"], 1, -c["block_hours"], ytd)
+
+        out.sort(key=_rank)
         on_call_class = (
             self.ctx.settings.onCallRestClassId
             if getattr(self.ctx.settings, "onCallRestEnabled", False)
@@ -1432,13 +1490,16 @@ class PlanToolExecutor:
             "note": "Each candidate comes with the contiguous block they "
             "could work starting at this slot (adjacent open slots chained "
             "up to their preferred daily hours, all legality-checked). "
-            "Candidates are pre-sorted: daily minimum met first, then "
-            "lowest ytd_worked_pct — take the FIRST unless you have a "
-            "concrete reason. week_hours above contract_hours is LEGAL up "
-            "to week_hours_max (personal tolerance) — do not avoid such "
-            "candidates. Apply the chosen block as ONE apply_moves batch "
-            "(all assigns together). meets_daily_minimum=false = would "
-            "stay a short day - prefer candidates above it.",
+            "Candidates are pre-sorted: daily minimum met first (lowest "
+            "ytd_worked_pct among those); when NO block reaches the "
+            "minimum, the LONGEST block first — one person on a longer "
+            "stint beats two people on mini-stints. Take the FIRST unless "
+            "you have a concrete reason. week_hours above contract_hours "
+            "is LEGAL up to week_hours_max (personal tolerance) — do not "
+            "avoid such candidates. Apply the chosen block as ONE "
+            "apply_moves batch (all assigns together). "
+            "meets_daily_minimum=false = would stay a short day - prefer "
+            "candidates above it.",
             "candidates": out,
         }
 
@@ -1592,6 +1653,245 @@ class PlanToolExecutor:
             )
         return out
 
+    def _tool_suggest_balance_moves(self, args: dict) -> dict:
+        """End-of-day review ('is everything in order?'): after the day is
+        staffed, find what a human planner fixes on the final read-through —
+        an over-long chained day next to colleagues who barely work, or a
+        mini-stint day below the daily minimum. Offers single-handover
+        batches (unassign donor, assign receiver to the same slots) that
+        keep both days contiguous, never create a new over-long day or a
+        new mini-stint, and pass the exact apply gate."""
+        date_iso = args.get("dateISO")
+        if date_iso not in self.ctx.target_date_set:
+            return {
+                "error": f"{date_iso} is outside the solve range "
+                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
+            }
+
+        def _contiguous(intervals: List[Tuple[int, int]]) -> bool:
+            ivs = sorted(intervals)
+            if not ivs:
+                return True
+            reach = ivs[0][1]
+            for s, e in ivs[1:]:
+                if s > reach:
+                    return False
+                reach = max(reach, e)
+            return True
+
+        def _new_hard(trial: Dict[Tuple[str, str, str], Assignment]) -> bool:
+            hard = self._hard_violations(self._full_plan(list(trial.values())))
+            return any(self._is_new_hard(v) for v in hard)
+
+        # OUR movable assignments of the day per clinician (fixed/manual
+        # ones are immutable anchors and never offered for transfer).
+        own_by_cid: Dict[str, List[Tuple[Tuple[str, str, str], Any]]] = {}
+        for key in self.current:
+            if key[1] != date_iso:
+                continue
+            inst = self.ctx.instances.get(f"{key[0]}__{date_iso}")
+            if inst is None:
+                continue
+            own_by_cid.setdefault(key[2], []).append((key, inst))
+
+        fixed_today = {
+            a.clinicianId
+            for a in self.fixed_assignments
+            if a.dateISO == date_iso and not a.rowId.startswith("pool-")
+        }
+
+        intervals: Dict[str, List[Tuple[int, int]]] = {}
+        minutes: Dict[str, int] = {}
+
+        def _stats(cid: str) -> Tuple[List[Tuple[int, int]], int]:
+            if cid not in intervals:
+                ivs = self._day_intervals(cid, date_iso)
+                intervals[cid] = ivs
+                minutes[cid] = sum(e - s for s, e in ivs)
+            return intervals[cid], minutes[cid]
+
+        # Problems: over-long days (auto-chains are capped, but duty
+        # stacking, fixed anchors plus chains etc. still produce them) and
+        # mini-stint days we could clear entirely because every piece is
+        # our own placement.
+        overlong: List[Tuple[int, str]] = []
+        stubs: List[Tuple[int, str]] = []
+        for cid in set(own_by_cid) | fixed_today:
+            ivs, mins = _stats(cid)
+            if mins <= 0:
+                continue
+            target = self._daily_target_minutes(cid, date_iso)
+            if mins > target + 60:
+                overlong.append((mins - (target + 60), cid))
+            daily_min = self._daily_min_minutes(cid, date_iso)
+            if (
+                daily_min is not None
+                and mins < daily_min
+                and cid in own_by_cid
+                and cid not in fixed_today
+            ):
+                stubs.append((mins, cid))
+        overlong.sort(key=lambda t: (-t[0], t[1]))
+        stubs.sort()
+
+        def _receivers_for(insts: List[Any], donor: str) -> List[str]:
+            ranked = []
+            for clinician in self.state.clinicians:
+                cid = clinician.id
+                if cid == donor:
+                    continue
+                quals = set(clinician.qualifiedClassIds or [])
+                if any(i.section_id not in quals for i in insts):
+                    continue
+                if any(
+                    (i.slot_id, date_iso, cid) in self.current
+                    or (i.slot_id, date_iso, cid) in self.fixed_identity
+                    for i in insts
+                ):
+                    continue
+                _, mins = _stats(cid)
+                ytd = self.ytd_completion_pct(cid, date_iso)
+                ranked.append((mins, ytd if ytd is not None else 999, cid))
+            # Least-loaded first (a short-day colleague absorbing the slot
+            # fixes two problems at once), most YTD-behind as tie-break.
+            ranked.sort()
+            return [r[-1] for r in ranked]
+
+        def _try_transfer(
+            donor: str, items: List[Tuple[Tuple[str, str, str], Any]], reason: str
+        ) -> Optional[dict]:
+            insts = [inst for _, inst in items]
+            donor_ivs, donor_mins = _stats(donor)
+            remaining = list(donor_ivs)
+            for inst in insts:
+                try:
+                    remaining.remove((inst.start, inst.end))
+                except ValueError:
+                    return None
+            if not _contiguous(remaining):
+                return None  # would split the donor's day
+            moved = sum(i.end - i.start for i in insts)
+            donor_after = donor_mins - moved
+            donor_min = self._daily_min_minutes(donor, date_iso)
+            if (
+                reason == "shorten_long_day"
+                and donor_min is not None
+                and 0 < donor_after < donor_min
+            ):
+                return None  # would trade an over-long day for a mini-stint
+            for rid in _receivers_for(insts, donor):
+                r_ivs, r_mins = _stats(rid)
+                if not _contiguous(list(r_ivs) + [(i.start, i.end) for i in insts]):
+                    continue  # receiver's day would have a gap
+                r_after = r_mins + moved
+                if r_after > self._daily_target_minutes(rid, date_iso) + 60:
+                    continue  # would just create the next over-long day
+                r_min = self._daily_min_minutes(rid, date_iso)
+                if r_mins == 0 and r_min is not None and r_after < r_min:
+                    continue  # calling someone in for a mini-stint solves nothing
+                trial = dict(self.current)
+                for identity, inst in items:
+                    del trial[identity]
+                    trial[(inst.slot_id, date_iso, rid)] = self._make_assignment(
+                        inst.slot_id, date_iso, rid
+                    )
+                if _new_hard(trial):
+                    continue
+                batch = [
+                    {
+                        "action": "unassign",
+                        "slot_key": self._alias_slot_key(inst.slot_key),
+                        "clinicianId": self._alias(donor),
+                    }
+                    for _, inst in items
+                ] + [
+                    {
+                        "action": "assign",
+                        "slot_key": self._alias_slot_key(inst.slot_key),
+                        "clinicianId": self._alias(rid),
+                    }
+                    for _, inst in items
+                ]
+                return {
+                    "reason": reason,
+                    "from": self._alias(donor),
+                    "to": self._alias(rid),
+                    "slots": [self._alias_slot_key(i.slot_key) for i in insts],
+                    "donor_day_hours_before_after": [
+                        round(donor_mins / 60.0, 1),
+                        round(donor_after / 60.0, 1),
+                    ],
+                    "receiver_day_hours_before_after": [
+                        round(r_mins / 60.0, 1),
+                        round(r_after / 60.0, 1),
+                    ],
+                    "batch": batch,
+                }
+            return None
+
+        offers: List[dict] = []
+        # Mini-stints first: clearing one removes a short day outright (a
+        # direct quality-tier win); the holder stays off entirely — better
+        # one colleague works a little longer than someone comes in for 1h.
+        for _, cid in stubs[:4]:
+            offer = _try_transfer(cid, own_by_cid[cid], "clear_mini_stint")
+            if offer:
+                offers.append(offer)
+        for _, cid in overlong[:3]:
+            if len(offers) >= 6:
+                break
+            # Hand off an edge of the day, evening end first (contiguity
+            # check rejects mid-day removals). One offer per donor per
+            # call — the model re-calls after applying.
+            for identity, inst in sorted(
+                own_by_cid.get(cid, []), key=lambda t: (-t[1].end, t[1].slot_key)
+            ):
+                offer = _try_transfer(cid, [(identity, inst)], "shorten_long_day")
+                if offer:
+                    offers.append(offer)
+                    break
+
+        out: dict = {"dateISO": date_iso, "offers": offers}
+        if overlong:
+            out["overlong_days"] = [
+                {
+                    "clinicianId": self._alias(cid),
+                    "day_hours": round(minutes[cid] / 60.0, 1),
+                    "preferred_max_hours": round(
+                        (self._daily_target_minutes(cid, date_iso) + 60) / 60.0, 1
+                    ),
+                }
+                for _, cid in overlong
+            ]
+        if stubs:
+            out["mini_stint_days"] = [
+                {
+                    "clinicianId": self._alias(cid),
+                    "day_hours": round(minutes[cid] / 60.0, 1),
+                }
+                for _, cid in stubs
+            ]
+        if not overlong and not stubs:
+            out["balanced"] = True
+            out["note"] = (
+                "No over-long day and no mini-stint day found — the day "
+                "looks balanced. Finish with your day summary."
+            )
+        elif offers:
+            out["note"] = (
+                "Apply ONE offered batch EXACTLY as given (one apply_moves "
+                "call), then call suggest_balance_moves again — the other "
+                "offers go stale. Problems without an offer have no legal "
+                "transfer; mention them in your summary."
+            )
+        else:
+            out["note"] = (
+                "Problems found but no legal transfer exists (contiguity, "
+                "hours caps or hard rules block every handover). Mention "
+                "them in your final day summary and finish."
+            )
+        return out
+
     def _greedy_day_block(
         self, cid: str, start_inst, counts: Dict[str, int]
     ) -> Tuple[List[str], int]:
@@ -1606,16 +1906,7 @@ class PlanToolExecutor:
         qualified = set(clinician.qualifiedClassIds or [])
         date_iso = start_inst.date_iso
 
-        # Preferred daily span: the working-time window when one exists,
-        # else contract/5 (an average workday), else 8h.
-        window = self.ctx.window_by_clinician_date.get((cid, date_iso))
-        contract = clinician.workingHoursPerWeek
-        if window is not None:
-            target = max(60, window[2] - window[1])
-        elif isinstance(contract, (int, float)) and contract > 0:
-            target = max(60, int(round(contract * 60 / 5)))
-        else:
-            target = 480
+        target = self._daily_target_minutes(cid, date_iso)
         existing = sum(e - s for s, e in self._day_intervals(cid, date_iso))
 
         trial: Dict[Tuple[str, str, str], Assignment] = dict(self.current)

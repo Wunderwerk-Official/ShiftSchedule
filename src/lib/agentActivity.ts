@@ -25,6 +25,7 @@ const TOOL_LABELS: Record<string, string> = {
   get_day_priorities: "ranked the day's open slots",
   suggest_day_blocks: "compared work blocks for the next slot",
   suggest_rescue_moves: "searched for rescue swaps",
+  suggest_balance_moves: "reviewed the day's balance",
 };
 
 /** "checked rule violations · compared candidates for a slot" — apply_moves is

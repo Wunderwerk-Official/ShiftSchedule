@@ -856,8 +856,8 @@ it remains for the arena benchmarks and explicit API calls):
 3. **Finalize**: the best snapshot is returned — never worse than the seed.
 
 **day_by_day**: the LLM builds the range from scratch the way a human
-planner works, with three extra tools (`get_day_priorities`,
-`suggest_day_blocks`, `suggest_rescue_moves`).
+planner works, with four extra tools (`get_day_priorities`,
+`suggest_day_blocks`, `suggest_rescue_moves`, `suggest_balance_moves`).
 1. **Duty pre-pass**: one conversation staffs every open on-call/duty slot
    of the WHOLE range first — duties bind rest days and weekly-hours
    budgets, so placed last they starve.
@@ -867,13 +867,27 @@ planner works, with three extra tools (`get_day_priorities`,
    the most urgent slot and returns pre-validated contiguous work blocks
    ("Anschlussverwendung") per candidate, with `overloaded=true` marking
    >16h days (a night duty stacked on a day duty is a last resort).
-   Fully staffed days are skipped without a conversation.
+   Chains target the contract workday (contract/5, capped at 10h); a
+   mandatory working-time window only bounds WHEN someone may work — its
+   span is never treated as the daily workload target (v1.40, after a
+   06:30–20:00 presence window produced a 13.5h auto-chain in
+   production). When no candidate reaches the daily minimum, the longest
+   block sorts first — one person on a 2h stint beats two people on 1h
+   stints. Fully staffed days are skipped without a conversation.
 3. **Rescue**: when a day's leftovers have `eligible_count 0`,
    `suggest_rescue_moves` searches depth-1 rearrangements of the agent's
    OWN placements (blocker out, substitute in, freed clinician onto the
    stuck slot) as pre-validated net-gain batches before anything is
    declared unfillable.
-4. **Zero-progress guard**: an empty day-by-day result never reaches the
+4. **Final review** (v1.40): once the day is complete,
+   `suggest_balance_moves` re-reads it like a human planner — over-long
+   days shed edge slots to less-loaded colleagues, mini-stint days
+   (below the daily minimum) are handed entirely to an adjacent
+   colleague so their holder stays off. Offers are pre-validated
+   single-handover batches that keep both days contiguous and never
+   create a new over-long or mini-stint day; fixed/manual assignments
+   are never touched.
+5. **Zero-progress guard**: an empty day-by-day result never reaches the
    client — it falls back to a fresh heuristic draft
    (`AGENT_FALLBACK_SEED`).
 

@@ -1326,3 +1326,220 @@ def test_suggest_day_blocks_single_mode_skips_chaining():
     alice = payload["candidates"][0]
     assert alice["block"] == [executor._alias_slot_key(f"slot-1__mon__{MON}")]
     assert alice["block_hours"] == 2.0
+
+
+def test_greedy_day_block_treats_wide_window_as_bound_not_target():
+    """A mandatory working-time window says WHEN someone may work, not how
+    much: a 06:00-20:00 presence window must not turn into a 14h auto-built
+    chain (observed in production — one clinician got 13.5h while colleagues
+    had 1h days). The chain target stays the contract workday."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40)],
+        slots=[
+            make_template_slot(slot_id=f"slot-{i}__mon", col_band_id="col-mon-1",
+                               start_time=start, end_time=end)
+            for i, (start, end) in enumerate(
+                [("06:00", "09:00"), ("09:00", "12:00"), ("12:00", "15:00"),
+                 ("15:00", "18:00"), ("18:00", "20:00")]
+            )
+        ],
+    )
+    executor = _make_executor(state)
+    executor.ctx.window_by_clinician_date[("clin-1", MON)] = ("mandatory", 360, 1200)
+
+    payload, is_error = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-0__mon__{MON}"}
+    )
+    assert not is_error
+    alice = next(c for c in payload["candidates"] if c["clinicianId"] == "Alice")
+    # Contract workday 8h (+1h step tolerance) caps the chain — never the
+    # 14h window span.
+    assert alice["block_hours"] <= 9.0
+    assert alice["meets_daily_minimum"] is True
+
+
+def test_suggest_day_blocks_prefers_longest_block_when_all_below_minimum():
+    """When no candidate reaches the daily minimum, the LONGEST block must
+    sort first even if someone else is further behind on YTD: one person on
+    a 2h stint beats two people on 1h stints (the second stays off)."""
+    # A March Monday: far enough into the year for YTD percentages to exist
+    # (in the first ISO week they are None and could not steer the sort).
+    day = "2026-03-02"
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           qualified_class_ids=["section-a", "section-b"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob",
+                           qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "Section B"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-uro__mon", col_band_id="col-mon-1",
+                               start_time="17:00", end_time="18:00"),
+            make_template_slot(slot_id="slot-gyn__mon", col_band_id="col-mon-1",
+                               block_id="block-b",
+                               start_time="18:00", end_time="19:00"),
+            # History-only slot: carries Alice's past workload, and on the
+            # solve day itself it neither touches 17:00 nor 19:00, so it
+            # cannot extend either candidate's chain.
+            make_template_slot(slot_id="slot-hist", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="16:00"),
+        ],
+        assignments=[
+            # Alice already worked full days this year -> her YTD is AHEAD
+            # of Bob's, so a ytd-first order would wrongly put Bob (1h
+            # block) on top of Alice (2h block).
+            make_assignment(f"m-prev-{d}", "slot-hist", f"2026-02-{d:02d}", "clin-1")
+            for d in range(2, 21)
+        ],
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+    executor = _make_executor(state, start=day, end=day)
+    payload, is_error = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-uro__mon__{day}"}
+    )
+    assert not is_error
+    by_name = {c["clinicianId"]: c for c in payload["candidates"]}
+    assert by_name["Alice"]["block_hours"] == 2.0   # covers both staff slots
+    assert by_name["Bob"]["block_hours"] == 1.0
+    # The YTD numbers exist and would have flipped the old (ytd-first)
+    # order; below the daily minimum the longer block must win regardless.
+    assert by_name["Alice"]["ytd_worked_pct"] > by_name["Bob"]["ytd_worked_pct"]
+    assert all(not c["meets_daily_minimum"] for c in payload["candidates"])
+    assert payload["candidates"][0]["clinicianId"] == "Alice"
+
+
+def _balance_state(*, third_clinician=False):
+    clinicians = [
+        make_clinician("clin-1", "Alice", working_hours_per_week=40),
+        make_clinician("clin-2", "Bob", working_hours_per_week=40),
+    ]
+    if third_clinician:
+        clinicians.append(make_clinician("clin-3", "Cara", working_hours_per_week=40))
+    return make_app_state(
+        clinicians=clinicians,
+        slots=[
+            make_template_slot(slot_id="slot-am__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="12:00"),
+            make_template_slot(slot_id="slot-pm__mon", col_band_id="col-mon-1",
+                               start_time="12:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-eve__mon", col_band_id="col-mon-1",
+                               start_time="16:00", end_time="17:00"),
+        ],
+    )
+
+
+def test_suggest_balance_moves_clears_mini_stint_day():
+    """The final review must offer to hand a mini-stint (1h day, below the
+    daily minimum) to an adjacent colleague so its holder stays off entirely
+    — the admin's 'better one person covers a longer block' rule."""
+    executor = _make_executor(_balance_state())
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-am__mon__{MON}", "clinicianId": "Alice"},
+        {"action": "assign", "slot_key": f"slot-pm__mon__{MON}", "clinicianId": "Alice"},
+        {"action": "assign", "slot_key": f"slot-eve__mon__{MON}", "clinicianId": "Bob"},
+    ]})
+    assert applied["applied"] is True
+
+    payload, is_error = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+    assert not is_error
+    assert [m["clinicianId"] for m in payload["mini_stint_days"]] == ["Bob"]
+    offer = payload["offers"][0]
+    assert offer["reason"] == "clear_mini_stint"
+    assert offer["from"] == "Bob" and offer["to"] == "Alice"
+    assert offer["donor_day_hours_before_after"] == [1.0, 0.0]
+    assert offer["receiver_day_hours_before_after"] == [8.0, 9.0]
+
+    applied, _ = _run(executor, "apply_moves", {"moves": offer["batch"]})
+    assert applied["applied"] is True
+    done, _ = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+    assert done.get("balanced") is True
+    assert done["offers"] == []
+
+
+def test_suggest_balance_moves_shortens_overlong_day_until_balanced():
+    """An over-long chained day must shed edge slots to less-loaded
+    colleagues, keeping BOTH days contiguous, and the review must reach a
+    balanced state (no infinite offer loop)."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", working_hours_per_week=40),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-1__mon", col_band_id="col-mon-1",
+                               start_time="06:00", end_time="10:00"),
+            make_template_slot(slot_id="slot-2__mon", col_band_id="col-mon-1",
+                               start_time="10:00", end_time="14:00"),
+            make_template_slot(slot_id="slot-3__mon", col_band_id="col-mon-1",
+                               start_time="14:00", end_time="17:00"),
+            make_template_slot(slot_id="slot-4__mon", col_band_id="col-mon-1",
+                               start_time="17:00", end_time="20:00"),
+        ],
+    )
+    executor = _make_executor(state)
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-{i}__mon__{MON}", "clinicianId": "Alice"}
+        for i in (1, 2, 3, 4)
+    ]})
+    assert applied["applied"] is True  # 14h day (the gate has no daily cap)
+
+    payload, _ = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+    assert payload["overlong_days"][0]["clinicianId"] == "Alice"
+    offer = payload["offers"][0]
+    assert offer["reason"] == "shorten_long_day"
+    assert offer["from"] == "Alice" and offer["to"] == "Bob"
+    # 17-20 to a zero-hours Bob would be a new 3h mini-stint (min 4h) and
+    # 10-14/14-17 would split Alice's day -> the legal handover is 06-10.
+    assert offer["slots"] == [executor._alias_slot_key(f"slot-1__mon__{MON}")]
+
+    # Apply offers until the review reports balance; must terminate.
+    for _ in range(5):
+        payload, _ = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+        if payload.get("balanced"):
+            break
+        if not payload["offers"]:
+            break
+        applied, _ = _run(
+            executor, "apply_moves", {"moves": payload["offers"][0]["batch"]}
+        )
+        assert applied["applied"] is True
+    assert payload.get("balanced") is True
+
+    # End state: nobody over-long, nobody split, everything still covered.
+    alice_day = sorted(executor._day_intervals("clin-1", MON))
+    bob_day = sorted(executor._day_intervals("clin-2", MON))
+    assert sum(e - s for s, e in alice_day) <= 9 * 60
+    assert sum(e - s for s, e in bob_day) <= 9 * 60
+    open_now, _ = _run(executor, "list_open_slots", {"dateISO": MON})
+    assert open_now["open_slots"] == []
+
+
+def test_suggest_balance_moves_leaves_fixed_stints_alone():
+    """A mini-stint that exists because the ADMIN pinned it is not ours to
+    clear: no offer, no nagging — the review reports the day as balanced."""
+    state = _balance_state()
+    state.assignments = [make_assignment("m1", "slot-eve__mon", MON, "clin-2")]
+    executor = _make_executor(state)
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-am__mon__{MON}", "clinicianId": "Alice"},
+        {"action": "assign", "slot_key": f"slot-pm__mon__{MON}", "clinicianId": "Alice"},
+    ]})
+    assert applied["applied"] is True
+
+    payload, is_error = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+    assert not is_error
+    assert payload.get("balanced") is True
+    assert payload["offers"] == []
+
+    outside, _ = _run(executor, "suggest_balance_moves", {"dateISO": "2027-01-01"})
+    assert "error" in outside
