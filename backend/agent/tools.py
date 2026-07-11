@@ -1330,6 +1330,16 @@ class PlanToolExecutor:
                 e - s for s, e in self._day_intervals(cid, inst.date_iso)
             )
             daily_min = self._daily_min_minutes(cid, inst.date_iso)
+            # The effective weekly cap (contract + PERSONAL tolerance, which
+            # differs per clinician — up to 10h in the real data). Without it
+            # models see week_hours > contract_hours and wrongly agonize over
+            # (or avoid) perfectly legal candidates.
+            clinician = self.clinicians_by_id.get(cid)
+            contract = clinician.workingHoursPerWeek if clinician else None
+            week_max = None
+            if isinstance(contract, (int, float)) and contract > 0:
+                _tol = clinician.workingHoursToleranceHours
+                week_max = contract + max(0, _tol if _tol is not None else 5)
             out.append(
                 {
                     "clinicianId": cand["clinicianId"],
@@ -1341,6 +1351,7 @@ class PlanToolExecutor:
                     ),
                     "week_hours": cand.get("week_hours"),
                     "contract_hours": cand.get("contract_hours"),
+                    "week_hours_max": week_max,
                     "ytd_worked_pct": cand.get("ytd_worked_pct"),
                     "prefers_section": cand.get("prefers_section", False),
                 }
@@ -1354,18 +1365,26 @@ class PlanToolExecutor:
                 -c["block_hours"],
             )
         )
+        on_call_class = (
+            self.ctx.settings.onCallRestClassId
+            if getattr(self.ctx.settings, "onCallRestEnabled", False)
+            else None
+        )
         return {
             "slot_key": self._alias_slot_key(slot_key),
             "section": self.section_names.get(inst.section_id, inst.section_id),
+            **({"on_call": True} if inst.section_id == on_call_class else {}),
             **auto_extras,
             "note": "Each candidate comes with the contiguous block they "
             "could work starting at this slot (adjacent open slots chained "
             "up to their preferred daily hours, all legality-checked). "
             "Candidates are pre-sorted: daily minimum met first, then "
             "lowest ytd_worked_pct — take the FIRST unless you have a "
-            "concrete reason. Apply the chosen block as ONE apply_moves "
-            "batch (all assigns together). meets_daily_minimum=false = "
-            "would stay a short day - prefer candidates above it.",
+            "concrete reason. week_hours above contract_hours is LEGAL up "
+            "to week_hours_max (personal tolerance) — do not avoid such "
+            "candidates. Apply the chosen block as ONE apply_moves batch "
+            "(all assigns together). meets_daily_minimum=false = would "
+            "stay a short day - prefer candidates above it.",
             "candidates": out,
         }
 

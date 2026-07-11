@@ -1194,3 +1194,19 @@ def test_day_priorities_processing_order_oncall_and_priority_first():
     auto, _ = _run(executor, "suggest_day_blocks", {"dateISO": MON})
     assert auto["auto_selected"] is True
     assert auto["slot_key"] == key("slot-scarce__mon")
+
+
+def test_suggest_day_blocks_exposes_personal_weekly_limit():
+    """Candidates must carry week_hours_max (contract + PERSONAL tolerance):
+    in the real data tolerances differ per clinician (up to 10h), and
+    without the limit models wrongly avoid legal above-contract candidates."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=36)],
+        slots=[make_template_slot(slot_id="slot-1__mon", col_band_id="col-mon-1")],
+    )
+    state.clinicians[0].workingHoursToleranceHours = 10
+    executor = _make_executor(state)
+    payload, _ = _run(executor, "suggest_day_blocks", {"dateISO": MON})
+    alice = payload["candidates"][0]
+    assert alice["contract_hours"] == 36
+    assert alice["week_hours_max"] == 46

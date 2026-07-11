@@ -353,8 +353,11 @@ def agent_solve_range(
             + [_fmt_plan_line(a, "seed") for a in seed_assignments]
         )
         return {
-            "open_slots_seed": [fmt_open(g) for g in seed_open[:80]],
-            "open_slots_final": [fmt_open(g) for g in remaining_open[:80]],
+            # 200, not 80: a from-scratch day-by-day run starts with EVERY
+            # required position "open" (127+ on the real 5-day cases), and a
+            # truncated list made the arena report undercount the seed side.
+            "open_slots_seed": [fmt_open(g) for g in seed_open[:200]],
+            "open_slots_final": [fmt_open(g) for g in remaining_open[:200]],
             "seed_plan": seed_plan_lines[:300],
             "final_plan": plan_lines[:300],
             "violations_final": violation_lines[:90],

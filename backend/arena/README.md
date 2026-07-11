@@ -46,7 +46,7 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | days | `3` or `7` |
 | timeout | `900` (35B) / `1800` (122B, it is ~40× slower) |
 | model | `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` or `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` |
-| scenario | `base` / `vacation-wave` / `understaffed` |
+| scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` |
 | strategy | `repair` (heuristic seed + LLM repair) / `day_by_day` (LLM builds each day from scratch) |
 
 Run **one at a time** (the endpoint shares a GPU). Open the finished run →
@@ -224,3 +224,48 @@ suggest as single-call rounds — 2 rounds per placement (down from 3). With
 the cap at 1000 that is comfortable: 120/112 iterations, ~2M input tokens,
 no cap exhaustion, and both runs now END via day_complete + summary
 instead of being cut off mid-construction.
+
+## Evaluation round 5 (v1.33 priority order, the REAL hard week, 35B vs 122B)
+
+The fixture is the anonymized real February export — including the actual
+school-holiday week (start 2026-02-16, 5 days) with NINE clinicians on
+vacation at once. Round 5 points the arena at that week instead of the calm
+2026-02-02, adds the `crunch` and `oncall` scenarios distilled from it, and
+tests the priority-ordered day processing (v1.33: single-candidate slots →
+on-call → template priority instead of chronological) on both Qwen models.
+
+All runs start 2026-02-16, 5 days, on the real endpoint:
+
+| scenario | model / strategy | duration | iter | moves acc/rej | short days | open slots |
+|---|---|---|---|---|---|---|
+| base | 35B repair (reference) | 656 s | 114 | 11/59 | 10 → 8 | 27 → 20 |
+| base | 35B day_by_day | 461 s | 139 | 107/0 | → 3 | 127 → 20 |
+| base | 122B day_by_day | 1004 s | 139 | 107/0 | → 3 | 127 → 20 |
+| crunch | 35B day_by_day | 402 s | 131 | 90/0 | → 4 | 127 → 37 (heuristic seed: ~54 open) |
+| oncall | 35B day_by_day | 468 s | 135 | 110/0 | → 5 | 132 → 22, **all 5 on-call nights staffed** |
+
+Findings:
+
+- **Day-by-day beats repair on the real hard week in every tier.** Both end
+  at the structural limit of 20 open slots, but day-by-day gets there with
+  3 short days instead of 8, zero rejections instead of 59, 30% less wall
+  clock and 35% fewer input tokens. The repair run burned its budget
+  falsifying stale fix_options ("no blocked_by but at capacity").
+- **35B == 122B under day-by-day.** Identical quality (20 open, 3 short,
+  same hours deviation, same bonus) at 2.2× the wall clock for the 122B:
+  the pre-validated tools carry the intelligence, so the model mostly
+  ratifies the top candidate. With this strategy the 35B is the everyday
+  AND the quality choice; reserve the 122B for repair-style work.
+- **Priority processing works**: the oncall run staffs every Garde night
+  (rest-day rule respected) — previously on-call was reached last, after
+  the people who could take it were consumed. Both models end each day via
+  day_complete and name the unfillable slots in their summaries.
+- Neither Qwen emits two tool calls in one message, so the intended
+  1-round pipeline runs as alternating apply/suggest rounds (2 per
+  placement, down from 3 pre-v1.32) — comfortable within budget.
+- One model hesitation found and fixed (v1.34): a candidate at 42h against
+  a 36h contract looked illegal to the model, but that clinician's PERSONAL
+  tolerance is 10h. suggest_day_blocks now exposes week_hours_max
+  (contract + personal tolerance) per candidate, marks on-call slots
+  (on_call=true), and the run-log open-slot lists cap at 200 (80 truncated
+  the from-scratch seed side of the report).

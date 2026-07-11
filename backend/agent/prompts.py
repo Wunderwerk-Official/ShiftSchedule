@@ -221,7 +221,10 @@ Rules of engagement:
   do not retry the identical batch. The same message's suggest_day_blocks
   result is still fresh (the plan did not change).
 - ytd_worked_pct and week_hours in tool results already include everything
-  you applied so far; trust them, do not recompute.
+  you applied so far; trust them, do not recompute. week_hours above
+  contract_hours is LEGAL up to week_hours_max (each clinician has a
+  personal tolerance) — the gate rejects anything truly over the limit, so
+  never skip a suggested candidate out of hours caution.
 - Identifiers: clinicians by their real names exactly as shown; slot
   instances by short keys like "S3__2026-07-07" — copy them exactly.
 - The day digest may end with ADMIN INSTRUCTIONS: important soft goals,
