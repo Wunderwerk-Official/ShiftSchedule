@@ -851,10 +851,13 @@ class PlanToolExecutor:
             "note": "Days below the daily minimum. fix_options lists the "
             "adjacent slots that would extend the day (take_from = who holds "
             "it now; would_shorten_holder = true means the swap just moves the "
-            "problem). Options are legality-checked: no blocked_by = the "
-            "direct swap is legal right now; blocked_by lists the violation "
-            "codes it would create (needs a compensating move first, usually "
-            "not worth it). Empty fix_options or all blocked = skip the case.",
+            "problem). Options are legality-checked against the CURRENT plan: "
+            "no blocked_by = the direct swap is legal right now; blocked_by "
+            "lists the violation codes it would create (needs a compensating "
+            "move first, usually not worth it). Empty fix_options or all "
+            "blocked = skip the case. Options go stale after apply_moves - "
+            "re-query instead of applying options fetched before your last "
+            "batch.",
             "short_days": cases[:20],
         }
 

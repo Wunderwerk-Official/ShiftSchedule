@@ -125,3 +125,22 @@ problem digest names the concrete repairable seed violations instead of a
 bare count, the overview no longer shows out-of-range violation noise, and
 the prompt now spells out batch-apply of pre-validated options, an explicit
 not-done-while checklist, and the no-narration rule.
+
+## v1.30 verification (Qwen 35B, same cases re-run on the real endpoint)
+
+| scenario | days | v1.29 | v1.30 |
+|---|---|---|---|
+| understaffed | 3 | 696 s, 97 iter, 10 → 5 short, tier-1 violation never fixed | 234 s, 16 iter, 10 → 6 short, **tier-1 violation fixed (1 → 0)**, hours deviation improved |
+| base | 7 | 317 s, 55 iter, 22 → 19 short, 2 → 0 open, early surrender | 442 s, 49 iter, **22 → 10 short**, 2 → 1 open |
+
+The understaffed result is strictly better on the quality ladder (the
+repaired hard violation outranks one extra short day) at a third of the
+wall clock and an eighth of the tokens; the model demonstrably reads
+`blocked_by` ("fix_options all blocked — skip") and names skipped cases in
+its summary. The 7-day run more than tripled the short-day yield and no
+longer surrenders, but exposed a move-ordering trap: eager short-day swaps
+consumed the slack one open slot needed (tier-2 regression 0 → 1). Two
+follow-up tweaks address it: the prompt now requires finishing ALL open-slot
+work before any short-day fix, and list_short_days warns that options go
+stale after apply_moves (stale options were behind most of the remaining
+rejected batches).

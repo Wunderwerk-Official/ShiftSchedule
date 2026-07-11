@@ -89,6 +89,11 @@ Tool usage policy:
 - Unsure whether a batch is legal or actually helps? Call apply_moves with
   dry_run=true first — it validates and reports the resulting quality without
   committing anything.
+- Open slots outrank short days AND compete with them for the same scarce
+  hours and adjacency: fill EVERY open slot (or prove each unfillable via
+  list_candidates_for_slot) BEFORE applying any short-day fix — a short-day
+  swap can consume exactly the capacity the open slot needed, and that
+  regression is worth more than every short day you fix.
 - Avoid mini work days: nobody should come in for a single 1-2 hour stint.
   For short edge slots (early morning, late evening) prefer a candidate with
   adjacent_to_existing=true — their day stays one contiguous block. If a day
