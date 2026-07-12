@@ -397,3 +397,18 @@ two extra open slots vs the v1.35 line (18 vs 16) are the expected trade
 of the humane chain cap on a crisis week (same pattern as crunch in
 round 6); on ordinary weeks fill is unaffected (the live week that
 triggered this round filled 147/147).
+
+Production incident after v1.40 (fixed in v1.41): the first live run of the
+week 07-06 → 07-12 on v1.40 failed at exactly 10m01s with "Solver service
+is not responding" and no debugInfo. Diagnosis: the balance pass made the
+run longer than v1.39 (8m33s on the same week) and the new tool's gate
+validations run BETWEEN the harness's wall-clock checks — the run overshot
+its budget inside a tool call until a layer in the HTTP chain cut the
+connection at ~600s; the response (and with it the plan) evaporated while
+the backend kept solving. Four fixes: expensive tool loops (rescue,
+balance) now check the run's wall deadline themselves and cut short;
+balance receiver scans are capped at 6 gate checks per transfer; the
+endpoint watchdog cancels a run at budget+60s and hard-terminates at
++120s salvaging the last streamed solution; and finished results are
+parked per run token — the client recovers the plan via
+GET /v1/solve/result/{run_token} when its connection died mid-run.

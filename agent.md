@@ -913,20 +913,72 @@ and run history (`seed_score`/`best_score` in `debugInfo.agent`); it gates
 nothing. `score_plan` in `scoring.py` still exists for the CP-SAT path and
 its tests, but the agent no longer sees or optimizes a score.
 
-### Tools (`backend/agent/tools.py`)
-`get_plan_overview`, `get_violations`, `list_open_slots`,
-`list_candidates_for_slot`, `get_clinician_summary`, `list_short_days`,
-`get_ytd_progress`, `get_hours_overview` (whole-roster weekly hours vs
-contract±tolerance, most-underworked first), `get_day_schedule` (one day's
-slots with assignees/missing), `apply_moves` (supports `dry_run: true` to
-validate a batch and preview the resulting quality tiers without committing —
-previews don't count as rejections or emit activity events). Guardrails
-are structural, not prompt-based: fixed assignments (anything already in app
-state) are immutable, capacity is enforced on assign, and a move batch that
-would create NEW hard violations (relative to the seed baseline — see the
-baseline-diff pattern in §6.5) rolls back atomically. Slot instances are
-addressed as `"<slotId>__<dateISO>"`; slot ids may contain `__`, so parsing
-splits on the LAST separator.
+### Tools (`backend/agent/tools.py`) — full reference
+
+Guardrails are structural, not prompt-based: fixed assignments (anything
+already in app state) are immutable, capacity is enforced on assign, and a
+move batch that would create NEW hard violations (relative to the seed
+baseline — see the baseline-diff pattern in §6.5) rolls back atomically.
+Slot instances are addressed as `"<slotId>__<dateISO>"`; slot ids may
+contain `__`, so parsing splits on the LAST separator.
+
+**Graded verdicts (v1.41):** legality stays a hard gate, but wherever a
+verdict has a size, the tools report it so the model can weigh near-misses
+against hopeless cases: `week_over_cap_hours` (how far over the weekly cap
+a blocked move would land), `over_by_hours` on WEEKLY_HOURS violations and
+batch rejections, `daily_min_hours` next to `meets_daily_minimum`, and
+`receiver_overshoot_hours` on balance offers.
+
+Inspection tools (both strategies):
+
+| Tool | What it measures | Key output fields |
+|---|---|---|
+| `get_plan_overview` | Whole-plan status: the lexicographic quality tiers, coverage, best snapshot so far | tiers (hard/open/short/soft/hours/bonus), open counts, violation counts by code |
+| `get_violations` | Current violations of fixed context + working copy, filterable by severity/code | code, message, clinicianId, dateISO, `new` (blocks acceptance), `repairable`, `over_by_hours` (weekly) |
+| `list_open_slots` | Slot instances below required staffing | slot_key, section, date, time, missing (paginated) |
+| `list_candidates_for_slot` | Per-clinician legality for 1–8 slots against the CURRENT plan (exact apply gate) | eligible, reasons (violation codes), `week_over_cap_hours`, day_hours, adjacent_to_existing, week_hours, contract_hours, ytd_worked_pct, prefers_section, window_fit |
+| `get_clinician_summary` | One clinician's whole situation | contract+tolerance, week_hours per ISO week, ytd_worked_pct, sections, preferred times, in-range assignments (fixed vs own) |
+| `list_short_days` | Days below the daily minimum, with pre-validated fix options (repair strategy's short-day pass) | clinician, date, hours, fixable, fix_options with blocked_by |
+| `get_ytd_progress` | Year-to-date fairness across the roster | ytd_worked_pct per clinician (100 = on target), sorted most-behind first |
+| `get_hours_overview` | Weekly hours vs contract for everyone | per clinician per ISO week: hours, contract, delta |
+| `get_day_schedule` | One day as it currently stands | per slot: assignees, missing, times |
+
+Move tool (both strategies):
+
+| Tool | What it does | Key output fields |
+|---|---|---|
+| `apply_moves` | Atomic batch of assign/unassign against the working copy; the ONLY way to change the plan. `dry_run: true` previews quality without committing | applied, rejected (index+reason), new_hard_violations (code, message, `over_by_hours`), quality tiers after |
+
+Day-by-day-only tools (the day pipeline):
+
+| Tool | What it measures | Key output fields |
+|---|---|---|
+| `get_day_priorities` | One day's unfilled slots in PROCESSING order (single-candidate first, then on-call, then template priority, scarcest first) | slot_key, section, time, missing, priority, on_call, eligible_count, eligible_preview (≤20 shown + more_open_slots) |
+| `suggest_day_blocks` | For one open slot (auto-selected when only dateISO is passed): up to 6 legal candidates, each with their best contiguous work block starting there (chain capped at the contract workday, ≤10h; a mandatory window only bounds it). `single: true` = duty mode, no chaining | block (slot keys), block_hours, day_hours_after, meets_daily_minimum + `daily_min_hours`, overloaded (>16h), week_hours(_max), ytd_worked_pct; `day_complete` + unfillable_slots when nothing fillable remains |
+| `suggest_rescue_moves` | Depth-1 rearrangement search for eligible_count-0 slots: free a qualified person by moving ONE own placement, substitute covers the vacated slot | ready-to-apply 3-move batches, truly_unfillable, not_searched (cap/time cut) |
+| `suggest_balance_moves` | End-of-day review: over-long days (> preferred span +1h) and mini-stint days (below daily minimum), with pre-validated handovers that keep both days contiguous | offers (batch, donor/receiver hours before→after, `receiver_overshoot_hours` ≤1h tagged trade-offs), overlong_days, mini_stint_days, balanced flag |
+
+Long tool searches (rescue, balance) check the run's wall-clock deadline
+(`executor.wall_deadline`, stamped by the harness) and cut short with a
+"time budget" note — a single tool call can never push the run past its
+budget (v1.41, after a production run overshot until the HTTP connection
+was cut).
+
+### Prompts (`backend/agent/prompts.py`) — full reference
+
+| Prompt | Role | Content in one line |
+|---|---|---|
+| `SYSTEM_PROMPT` | System prompt of the repair strategy | Improve the heuristic draft: fix new hard violations, fill open slots, fix short days, then soft goals; finish criteria and rules of engagement |
+| `DAY_SYSTEM_PROMPT` | System prompt of every day-by-day day conversation | Hard-constraint list + the 6-step procedure: (1) get_day_priorities once, (2) suggest_day_blocks auto-select, (3) candidate choice rules (pre-sorted; below-minimum → longest block first; overloaded last), (4) pipeline apply+suggest in one message, (5) repeat until day_complete, rescue once, (6) FINAL REVIEW via suggest_balance_moves with judgment guidance (soft targets, overshoot trade-offs); magnitude-reading rules; finish criteria |
+| `DUTY_SYSTEM_PROMPT` | System prompt of the duty pre-pass conversation | Staff ALL on-call/duty slots of the range first, single=true (no chaining), never two duties same day/person, spread across people |
+| `build_day_digest` | First user message of each day conversation | Roster with as-of-day YTD, the day's slots in processing order, fixed anchors, previous-day summaries, round budget, distribute-all note; may end with ADMIN INSTRUCTIONS |
+| `build_duty_digest` | First user message of the duty pre-pass | Roster, all open duty slots of the range in date order, procedure + round budget |
+| `build_problem_digest` | First user message of the repair loop | Seed quality tiers, open slots, repairable hard violations by name, iteration budget |
+
+The harness adds smaller steering messages at runtime: a truncation nudge
+when a reply is cut off mid-tool-call, and tool results themselves carry
+`note` fields that steer the next step (processing order, day_complete
+next actions, rescue/balance application rules, time-budget cuts).
 
 ### Scoring (`backend/scoring.py`)
 Pure-Python replica of the CP-SAT objective (same `SolverSettings` weights,

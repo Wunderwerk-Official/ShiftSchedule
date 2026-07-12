@@ -153,3 +153,34 @@ def test_use_heuristic_flag_still_routes_to_heuristic(solve_client):
     body = response.json()
     assert body["debugInfo"]["solver_status"] == "HEURISTIC_COMPLETE_V2"
     assert len(body["assignments"]) == 1
+
+
+def test_finished_result_is_recoverable_by_run_token(solve_client):
+    """The solve POST can outlive the browser connection (proxy cut mid-run,
+    observed in production at ~600s). The finished result must stay
+    fetchable by run token so the client can recover the plan."""
+    _seeded_state()
+    token = "recovery-test-token-1"
+    response = solve_client.post(
+        "/v1/solve/range",
+        json={
+            "startISO": MON,
+            "endISO": MON,
+            "only_fill_required": True,
+            "solver_mode": "agent",
+            "agent_strategy": "repair",
+            "timeout_seconds": 60,
+            "run_token": token,
+        },
+    )
+    assert response.status_code == 200, response.text
+    direct = response.json()
+
+    recovered = solve_client.get(f"/v1/solve/result/{token}")
+    assert recovered.status_code == 200, recovered.text
+    body = recovered.json()
+    assert body["assignments"] == direct["assignments"]
+    assert body["notes"] == direct["notes"]
+
+    missing = solve_client.get("/v1/solve/result/no-such-token")
+    assert missing.status_code == 404

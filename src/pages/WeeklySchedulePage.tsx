@@ -23,6 +23,7 @@ import {
   publishIcal,
   publishWeb,
   abortSolver,
+  recoverSolveResult,
   rotateIcalToken,
   saveState,
   solveRange,
@@ -39,6 +40,7 @@ import {
   type SolverAgentDebug,
   type SolverDebugInfo,
   type SolverMode,
+  type SolveRangeResult,
   type SolverSettings,
   type WeeklyCalendarTemplate,
   type WebPublishStatus,
@@ -1284,16 +1286,47 @@ export default function WeeklySchedulePage({
         });
         await saveState(normalized);
       }
-      const result = await solveRange(args.startISO, {
-        endISO: args.endISO,
-        onlyFillRequired: args.onlyFillRequired,
-        timeoutSeconds: args.timeoutSeconds,
-        solverMode: args.solverMode,
-        runToken,
-        signal: abortController.signal,
-      });
+      let result: SolveRangeResult;
+      let recoveredAfterConnectionLoss = false;
+      try {
+        result = await solveRange(args.startISO, {
+          endISO: args.endISO,
+          onlyFillRequired: args.onlyFillRequired,
+          timeoutSeconds: args.timeoutSeconds,
+          solverMode: args.solverMode,
+          runToken,
+          signal: abortController.signal,
+        });
+      } catch (err) {
+        // User aborts and busy-refusals keep their dedicated handling below.
+        if (
+          err instanceof Error &&
+          (err.name === "AbortError" || err.name === "SolverBusyError")
+        ) {
+          throw err;
+        }
+        // The connection died but the run is likely still alive server-side
+        // (a proxy between browser and backend cuts long solve POSTs —
+        // observed at ~600s). The backend parks the finished result by run
+        // token; poll for it instead of declaring the run lost. Budget +
+        // watchdog grace + margin bounds the wait.
+        const recovered = await recoverSolveResult(
+          runToken,
+          startedAt + args.timeoutSeconds * 1000 + 180_000,
+          abortController.signal,
+        );
+        if (!recovered) throw err;
+        result = recovered;
+        recoveredAfterConnectionLoss = true;
+      }
 
-      historyNotes = result.notes;
+      historyNotes = recoveredAfterConnectionLoss
+        ? [
+            ...result.notes,
+            "Connection to the solver was lost mid-run; the finished plan " +
+              "was recovered afterwards.",
+          ]
+        : result.notes;
       historyDebugInfo = result.debugInfo;
 
       // Check if solver was aborted (based on notes or status)

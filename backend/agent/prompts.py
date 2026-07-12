@@ -230,10 +230,15 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    barely work, did anyone get called in for a mini-stint below their
    daily minimum? It returns pre-validated handover batches (donor gives
    edge slots to a less-loaded colleague; a mini-stint holder hands their
-   whole stint to a neighbour and stays off entirely). Apply ONE batch
-   per round exactly as given, pipelined with the next
-   suggest_balance_moves call; when it offers nothing more, write your
-   final day summary (mentioning problems it listed but could not fix).
+   whole stint to a neighbour and stays off entirely). These targets are
+   SOFT: use judgment, not box-ticking. An offer tagged with
+   receiver_overshoot_hours trades a slightly-too-long day for a solved
+   problem — take it when the problem is bigger than the trade (clearing
+   a whole mini-stint is usually worth up to ~1h of overshoot; cosmetic
+   rebalancing is not). Apply ONE batch per round exactly as given,
+   pipelined with the next suggest_balance_moves call; when it offers
+   nothing more, write your final day summary (mentioning problems it
+   listed but could not fix).
 
 Rules of engagement:
 - TRUST the tools' verdicts. eligible_count and the candidate lists are
@@ -251,6 +256,14 @@ Rules of engagement:
   contract_hours is LEGAL up to week_hours_max (each clinician has a
   personal tolerance) — the gate rejects anything truly over the limit, so
   never skip a suggested candidate out of hours caution.
+- Verdicts come with MAGNITUDES — read them, they change the right call.
+  week_over_cap_hours on a blocked candidate says how far over the weekly
+  cap the move would land (0.5 = a near miss worth mentioning in your
+  summary; 20 = hopeless, move on). daily_min_hours next to
+  meets_daily_minimum grades a short block (3.5 of 4h = near fit, fine
+  when nothing better exists; 1 of 4h = a real stub). Hard rules are still
+  hard — the gate decides legality, the numbers tell you how to choose
+  among what is legal and what to report about what is not.
 - Identifiers: clinicians by their real names exactly as shown; slot
   instances by short keys like "S3__2026-07-07" — copy them exactly.
 - The day digest may end with ADMIN INSTRUCTIONS: important soft goals,
