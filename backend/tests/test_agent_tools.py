@@ -1543,3 +1543,127 @@ def test_suggest_balance_moves_leaves_fixed_stints_alone():
 
     outside, _ = _run(executor, "suggest_balance_moves", {"dateISO": "2027-01-01"})
     assert "error" in outside
+
+
+def test_blocked_candidate_reports_week_overage_magnitude():
+    """A candidate blocked by WEEKLY_HOURS must say HOW FAR over the cap the
+    move would land — 0.5h over reads very differently from 20h over (the
+    admin's ask: verdicts should be graded, not 0/1)."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=8)],
+        slots=[
+            make_template_slot(slot_id="slot-mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-tue", col_band_id="col-tue-1",
+                               start_time="08:00", end_time="16:00"),
+        ],
+    )
+    executor = _make_executor(state, start=MON, end=TUE)
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-mon__{MON}", "clinicianId": "Alice"},
+    ]})
+    assert applied["applied"] is True  # 8h of a 13h cap (8 contract + 5 tol)
+
+    result, _ = _run(
+        executor, "list_candidates_for_slot", {"slot_key": f"slot-tue__{TUE}"}
+    )
+    alice = next(c for c in result["candidates"] if c["clinicianId"] == "Alice")
+    assert alice["eligible"] is False
+    assert "WEEKLY_HOURS" in alice["reasons"]
+    assert alice["week_over_cap_hours"] == 3.0  # 16h assigned vs 13h cap
+
+    # The same magnitude on a rejected batch.
+    rejected, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-tue__{TUE}", "clinicianId": "Alice"},
+    ]})
+    assert rejected["applied"] is False
+    weekly = next(
+        v for v in rejected["new_hard_violations"] if v["code"] == "WEEKLY_HOURS"
+    )
+    assert weekly["over_by_hours"] == 3.0
+
+
+def test_suggest_day_blocks_reports_daily_min_threshold():
+    """meets_daily_minimum=false alone is binary; daily_min_hours grades it
+    (1h of a 4h minimum is a real stub, 3.5h is a near fit)."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40)],
+        slots=[make_template_slot(slot_id="slot-1__mon", col_band_id="col-mon-1",
+                                  start_time="17:00", end_time="18:00")],
+    )
+    executor = _make_executor(state)
+    payload, _ = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-1__mon__{MON}"}
+    )
+    alice = payload["candidates"][0]
+    assert alice["meets_daily_minimum"] is False
+    assert alice["daily_min_hours"] == 4.0  # (40h/5)/2
+
+
+def test_suggest_balance_moves_offers_tagged_overshoot():
+    """Soft targets are graded, not walls: a handover that pushes the
+    receiver up to 1h past their comfortable span is still offered, tagged
+    with receiver_overshoot_hours so the model can weigh the trade."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", working_hours_per_week=40),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-am__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="13:00"),
+            make_template_slot(slot_id="slot-pm__mon", col_band_id="col-mon-1",
+                               start_time="13:00", end_time="17:00"),
+            make_template_slot(slot_id="slot-eve__mon", col_band_id="col-mon-1",
+                               start_time="17:00", end_time="18:00"),
+        ],
+    )
+    executor = _make_executor(state)
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-am__mon__{MON}", "clinicianId": "Alice"},
+        {"action": "assign", "slot_key": f"slot-pm__mon__{MON}", "clinicianId": "Alice"},
+        {"action": "assign", "slot_key": f"slot-eve__mon__{MON}", "clinicianId": "Bob"},
+    ]})
+    assert applied["applied"] is True  # Alice 9h, Bob 1h stub
+
+    payload, _ = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+    offer = payload["offers"][0]
+    assert offer["reason"] == "clear_mini_stint"
+    assert offer["to"] == "Alice"
+    # Alice lands on 10h — 1h past her 9h comfort line — and the offer says so.
+    assert offer["receiver_day_hours_before_after"] == [9.0, 10.0]
+    assert offer["receiver_overshoot_hours"] == 1.0
+
+    applied, _ = _run(executor, "apply_moves", {"moves": offer["batch"]})
+    assert applied["applied"] is True
+
+
+def test_expensive_tools_respect_wall_deadline():
+    """A run stuck inside one long tool call blew past its budget in
+    production (connection cut at ~600s, plan lost). With the wall deadline
+    stamped, balance and rescue cut their searches short instead."""
+    import time as _time
+
+    executor = _make_executor(_balance_state())
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-am__mon__{MON}", "clinicianId": "Alice"},
+        {"action": "assign", "slot_key": f"slot-pm__mon__{MON}", "clinicianId": "Alice"},
+        {"action": "assign", "slot_key": f"slot-eve__mon__{MON}", "clinicianId": "Bob"},
+    ]})
+    assert applied["applied"] is True
+    executor.wall_deadline = _time.time() - 1  # budget already spent
+
+    payload, _ = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+    assert payload["offers"] == []
+    assert "time budget" in payload["note"]
+
+    # Rescue: same guard — stuck slots are reported as not searched.
+    state = _scarce_flexible_state()
+    for c in state.clinicians:
+        c.qualifiedClassIds = ["section-a"]
+    rescue_executor = _make_executor(state)
+    rescue_executor.wall_deadline = _time.time() - 1
+    rescue, _ = _run(rescue_executor, "suggest_rescue_moves", {"dateISO": MON})
+    assert rescue["rescues"] == []
+    assert "time budget" in rescue["note"]
+    assert rescue["not_searched"]

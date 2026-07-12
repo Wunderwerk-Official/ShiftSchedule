@@ -727,6 +727,35 @@ export async function solveRange(
   return res.json();
 }
 
+/** Recovery fetch for a finished solve whose HTTP response was lost (a
+ * proxy between browser and backend may cut the long-lived solve POST —
+ * observed at ~600s in production). The backend parks the finished result
+ * by run token; poll until it appears or the deadline passes. Returns null
+ * when nothing could be recovered. */
+export async function recoverSolveResult(
+  runToken: string,
+  deadlineMs: number,
+  signal?: AbortSignal,
+): Promise<SolveRangeResult | null> {
+  while (Date.now() < deadlineMs && !signal?.aborted) {
+    try {
+      const res = await fetch(`${API_BASE}/v1/solve/result/${encodeURIComponent(runToken)}`, {
+        headers: buildHeaders(),
+        signal,
+      });
+      if (res.status === 401) handleUnauthorized();
+      if (res.ok) return (await res.json()) as SolveRangeResult;
+      // 404 = not finished yet (or unknown token) — keep polling while the
+      // run may still be alive server-side.
+    } catch {
+      if (signal?.aborted) return null;
+      // Transient network trouble — the next poll may get through.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  return null;
+}
+
 export async function abortSolver(force = false): Promise<{ status: string; message: string }> {
   const url = force
     ? `${API_BASE}/v1/solve/abort?force=true`

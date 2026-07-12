@@ -58,6 +58,7 @@ KEY DATA STRUCTURES
 
 import asyncio
 import atexit
+from collections import OrderedDict
 from datetime import date, datetime, timedelta
 import json
 import multiprocessing
@@ -93,6 +94,24 @@ _subscribers_lock = threading.Lock()
 # started its next run filters them out by token mismatch.
 _active_run_owner: Optional[str] = None
 _active_run_token: Optional[str] = None
+
+# Finished solve results per run_token (owner, result dict), newest last.
+# The solve POST stays open for the whole run; if any layer between browser
+# and backend cuts that connection (observed in production at ~600s), the
+# run finishes server-side but its response evaporates — and the UI has
+# already stripped the range's previous solver assignments. The client can
+# recover the plan from here via GET /v1/solve/result/{run_token}.
+_finished_results: "OrderedDict[str, Tuple[str, dict]]" = OrderedDict()
+_finished_results_lock = threading.Lock()
+_FINISHED_RESULTS_KEPT = 4
+
+# Watchdog for the monitor loop: a run that overshoots its own time budget
+# is first asked to stop (cancel event — the harness returns its best plan),
+# then hard-terminated with the last streamed solution salvaged. Without
+# this, a run stuck inside one long tool call holds the solve slot and the
+# HTTP request open indefinitely.
+RUN_OVERSHOOT_SOFT_SECONDS = 60.0
+RUN_OVERSHOOT_HARD_SECONDS = 120.0
 
 # Multiprocessing context for spawning solver processes
 _mp_context = multiprocessing.get_context("spawn")
@@ -1658,6 +1677,18 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
     error = None
     last_solution_assignments = None  # Track last known good solution
     heartbeat_counter = 0
+    # Watchdog: the run must end within its own budget (+grace). A run stuck
+    # inside one long tool call cannot see cancel events between LLM rounds,
+    # so after the soft grace we ask nicely and after the hard grace we
+    # terminate and salvage the last streamed solution.
+    budget = payload.timeout_seconds or 0
+    soft_stop_at = (
+        request_start_time + budget + RUN_OVERSHOOT_SOFT_SECONDS if budget else None
+    )
+    hard_stop_at = (
+        request_start_time + budget + RUN_OVERSHOOT_HARD_SECONDS if budget else None
+    )
+    overshoot_killed = False
 
     try:
         # Monitor the subprocess and relay progress to SSE
@@ -1669,6 +1700,14 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
             # Check if abort was requested
             if _solver_cancel_event.is_set():
                 cancel_event.set()
+            if soft_stop_at is not None and time.time() > soft_stop_at:
+                cancel_event.set()
+            if hard_stop_at is not None and time.time() > hard_stop_at:
+                overshoot_killed = True
+                try:
+                    owned_process.terminate()
+                except Exception:
+                    pass
 
             # Check if process is still alive
             if not owned_process.is_alive():
@@ -1716,14 +1755,35 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                 "startISO": payload.startISO,
                 "endISO": payload.endISO,
                 "assignments": last_solution_assignments,
-                "notes": ["Solver was aborted - using last available solution"],
+                "notes": [
+                    "Run exceeded its time budget and was stopped by the "
+                    "watchdog - the last streamed solution was salvaged."
+                    if overshoot_killed
+                    else "Solver was aborted - using last available solution"
+                ],
             }
 
         if result is None:
-            raise Exception("Solver process terminated without result")
+            raise Exception(
+                "Solver run exceeded its time budget and was terminated "
+                "before it produced any solution"
+                if overshoot_killed
+                else "Solver process terminated without result"
+            )
 
         # Convert dict result back to response
         response = SolveRangeResponse(**result)
+
+        # Keep the finished result recoverable: if the HTTP connection died
+        # mid-run (proxy timeout), the client re-fetches it by run token.
+        if payload.run_token:
+            with _finished_results_lock:
+                _finished_results[payload.run_token] = (
+                    current_user.username,
+                    result,
+                )
+                while len(_finished_results) > _FINISHED_RESULTS_KEPT:
+                    _finished_results.popitem(last=False)
 
         # Charge this run's LLM cost against the user's AI budget. Token
         # counts come from the harness; a failed/aborted run bills whatever
@@ -1776,6 +1836,25 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                 _solver_process = None
                 _solver_is_running = False
                 _solver_cancel_event.clear()
+
+
+@router.get("/v1/solve/result/{run_token}", response_model=SolveRangeResponse)
+def get_solve_result(
+    run_token: str, current_user: UserPublic = Depends(_get_current_user)
+):
+    """Recovery fetch for a finished solve whose HTTP response was lost.
+
+    The solve POST stays open for the whole run; a proxy anywhere between
+    browser and backend may cut it (observed at ~600s in production). The
+    subprocess still finishes and its result is parked in
+    ``_finished_results`` — the client polls this endpoint with its own run
+    token until the result appears. 404 covers both "unknown token" and
+    "not finished yet"; the client keeps polling while the run is alive."""
+    with _finished_results_lock:
+        entry = _finished_results.get(run_token)
+    if entry is None or entry[0] != current_user.username:
+        raise HTTPException(status_code=404, detail="No stored result for this run token.")
+    return SolveRangeResponse(**entry[1])
 
 
 def _solve_range_impl_subprocess(

@@ -272,6 +272,12 @@ def agent_solve_range(
         on_improvement=emit_solution,
         on_activity=emit_agent,
     )
+    # The harness checks the wall clock only BETWEEN LLM rounds; expensive
+    # tool loops (rescue/balance gate validations) check this themselves so
+    # a single tool call can never push the run past its budget (observed
+    # in production: a run overshot its 600s budget inside a tool until the
+    # HTTP connection was cut and the result was lost).
+    executor.wall_deadline = deadline
     emit_solution(executor.seed_score, seed_assignments)
     # Computed before finalize() can run: the provider-init failure path
     # finalizes before the LLM phase would otherwise compute these.

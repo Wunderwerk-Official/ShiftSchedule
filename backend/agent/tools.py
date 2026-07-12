@@ -22,6 +22,7 @@ of demanding an empty report.
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..models import AppState, Assignment, Clinician
@@ -106,7 +107,10 @@ TOOL_SPECS_RAW = [
             "and preference/time-window fit. day_hours = hours they already "
             "work that day; adjacent_to_existing = the slot directly touches "
             "one of their shifts (prefer these for short edge slots, so "
-            "nobody comes in for a 1-2h stint). Eligible candidates are "
+            "nobody comes in for a 1-2h stint). Blocked candidates carry "
+            "MAGNITUDES where they exist: week_over_cap_hours = how far "
+            "over the weekly cap the move would land (0.5 = near miss, 20 "
+            "= hopeless). Eligible candidates are "
             "sorted most-behind first: prefer the top of the list. "
             "PREFER slot_keys (up to 8 slots in ONE call, compact response) "
             "over repeated single-slot calls — it saves iterations."
@@ -291,10 +295,13 @@ TOOL_SPECS_RAW = [
             "below their daily minimum. Returns pre-validated transfer "
             "batches (unassign the donor, assign the receiver to the same "
             "slot) that keep BOTH days contiguous, never create a new "
-            "over-long or new mini-stint day, and pass the exact apply "
-            "gate. Apply ONE batch per round exactly as given, then call "
-            "this again (other offers go stale); when it returns no offers "
-            "the day is balanced — write your final summary. Fixed/manual "
+            "mini-stint day, and pass the exact apply gate. Targets are "
+            "SOFT and offers are graded: receiver_overshoot_hours marks a "
+            "handover that leaves the receiver slightly past their "
+            "comfortable span — weigh it against the problem it solves. "
+            "Apply ONE batch per round exactly as given, then call this "
+            "again (other offers go stale); when it returns no offers the "
+            "day is balanced — write your final summary. Fixed/manual "
             "assignments are never touched."
         ),
         "input_schema": {
@@ -448,6 +455,14 @@ class PlanToolExecutor:
         # Stamped by the harness before each LLM turn so accepted moves can
         # be grouped by iteration in the run-history change list.
         self.current_iteration = 0
+        # Wall-clock deadline of the WHOLE run (epoch seconds), stamped by
+        # the harness. The harness checks the clock only BETWEEN LLM rounds;
+        # a tool doing many full-plan gate validations (rescue, balance) can
+        # otherwise overshoot the budget by minutes — observed in production
+        # as a run that blew past its 600s budget until the HTTP connection
+        # was cut. Expensive tool loops call _tool_seconds_left() and stop
+        # early with a partial result.
+        self.wall_deadline: Optional[float] = None
 
         # Baseline = violations of the seed plan. Only NEW hard violations
         # beyond this set block acceptance. For magnitude-typed violations
@@ -696,20 +711,27 @@ class PlanToolExecutor:
         items: List[dict] = []
         if severity in (None, "hard"):
             for v in self._hard_violations(full):
-                items.append(
-                    {
-                        "severity": "hard",
-                        "code": v.code,
-                        "message": self._scrub(v.message),
-                        "clinicianId": self._alias(v.clinician_id),
-                        "dateISO": v.date_iso,
-                        "slot_id": v.slot_id,
-                        "new": self._is_new_hard(v),
-                        # False = exists among fixed assignments alone: you
-                        # cannot repair it, do not try.
-                        "repairable": _violation_key(v) not in self.unrepairable_hard_keys,
-                    }
-                )
+                item = {
+                    "severity": "hard",
+                    "code": v.code,
+                    "message": self._scrub(v.message),
+                    "clinicianId": self._alias(v.clinician_id),
+                    "dateISO": v.date_iso,
+                    "slot_id": v.slot_id,
+                    "new": self._is_new_hard(v),
+                    # False = exists among fixed assignments alone: you
+                    # cannot repair it, do not try.
+                    "repairable": _violation_key(v) not in self.unrepairable_hard_keys,
+                }
+                # Graded magnitude for weekly hours: 0.5h over reads very
+                # differently from 20h over, and the message-only number was
+                # easy for models to skim past.
+                if v.code == VIOLATION_WEEKLY_HOURS and v.context:
+                    assigned = v.context.get("assigned_minutes")
+                    cap = v.context.get("max_minutes")
+                    if isinstance(assigned, (int, float)) and isinstance(cap, (int, float)):
+                        item["over_by_hours"] = round((assigned - cap) / 60.0, 1)
+                items.append(item)
         if severity in (None, "soft"):
             for v in validate_solver_rules(self.state, full):
                 items.append(
@@ -818,6 +840,31 @@ class PlanToolExecutor:
                 "clinicianId": self._alias(clinician.id),
                 "eligible": not new_codes and capacity_left > 0,
                 "reasons": new_codes if new_codes else ([] if capacity_left > 0 else ["CAPACITY_EXCEEDED"]),
+                # Magnitude, not just the code: HOW FAR over the weekly cap
+                # this assignment would push them. 0.5 = half an hour over
+                # (a near miss the admin might fix by raising that person's
+                # tolerance); 20 = hopeless. Only present when WEEKLY_HOURS
+                # is among the reasons.
+                **(
+                    {
+                        "week_over_cap_hours": round(
+                            self._week_hours(clinician.id, inst.date_iso)
+                            + (inst.end - inst.start) / 60.0
+                            - (
+                                (clinician.workingHoursPerWeek or 0)
+                                + max(
+                                    0,
+                                    clinician.workingHoursToleranceHours
+                                    if clinician.workingHoursToleranceHours is not None
+                                    else 5,
+                                )
+                            ),
+                            1,
+                        )
+                    }
+                    if VIOLATION_WEEKLY_HOURS in new_codes
+                    else {}
+                ),
                 # Hours this clinician already works on the slot's day, and
                 # whether the slot directly touches one of those shifts —
                 # the key signals for avoiding 1-2h mini-days on edge slots.
@@ -1100,6 +1147,14 @@ class PlanToolExecutor:
         return sorted(
             {v.code for v in trial_hard if self._is_new_hard(v)}
         )
+
+    def _tool_seconds_left(self) -> float:
+        """Seconds until the run's wall-clock deadline (inf when the harness
+        set none). Long-running tool loops stop when this runs low so the
+        run always ends within its budget."""
+        if self.wall_deadline is None:
+            return float("inf")
+        return self.wall_deadline - time.time()
 
     def _daily_min_minutes(self, cid: str, date_iso: str) -> Optional[int]:
         clinician = self.clinicians_by_id.get(cid)
@@ -1450,6 +1505,14 @@ class PlanToolExecutor:
                     "meets_daily_minimum": (
                         daily_min is None or day_before + block_minutes >= daily_min
                     ),
+                    # The threshold itself, so a miss is graded, not binary:
+                    # 3.5h of a 4h minimum is a near-fit worth taking when
+                    # nothing better exists; 1h of 4h is a real stub.
+                    **(
+                        {"daily_min_hours": round(daily_min / 60.0, 1)}
+                        if daily_min is not None
+                        else {}
+                    ),
                     # No human works a 24h day because two 12h duties happen
                     # to be adjacent (observed in production: day on-call +
                     # night on-call on the same person). Not a hard rule, so
@@ -1545,7 +1608,15 @@ class PlanToolExecutor:
 
         rescues: List[dict] = []
         no_rescue: List[str] = []
-        for entry in stuck:
+        rescue_time_out = False
+        for entry_index, entry in enumerate(stuck):
+            # Every candidate below costs full-plan gate validations; on a
+            # bad day the search would otherwise overshoot the run's wall
+            # clock (the harness only checks it between LLM rounds).
+            if self._tool_seconds_left() < 25:
+                rescue_time_out = True
+                not_searched.extend(e["slot_key"] for e in stuck[entry_index:])
+                break
             inst = self.ctx.instances[entry["raw_slot_key"]]
             found: List[dict] = []
             for clinician in self.state.clinicians:
@@ -1651,6 +1722,11 @@ class PlanToolExecutor:
                 "cap — call suggest_rescue_moves again after applying the "
                 "offered rescues to cover them."
             )
+        if rescue_time_out:
+            out["note"] += (
+                " NOTE: the run's time budget is nearly spent — the search "
+                "was cut short; finish the day now."
+            )
         return out
 
     def _tool_suggest_balance_moves(self, args: dict) -> dict:
@@ -1754,8 +1830,11 @@ class PlanToolExecutor:
                 ranked.append((mins, ytd if ytd is not None else 999, cid))
             # Least-loaded first (a short-day colleague absorbing the slot
             # fixes two problems at once), most YTD-behind as tie-break.
+            # Cap: each receiver costs a full-plan gate validation; on real
+            # data an uncapped scan made single tool calls take minutes and
+            # overshoot the run budget.
             ranked.sort()
-            return [r[-1] for r in ranked]
+            return [r[-1] for r in ranked[:6]]
 
         def _try_transfer(
             donor: str, items: List[Tuple[Tuple[str, str, str], Any]], reason: str
@@ -1780,12 +1859,20 @@ class PlanToolExecutor:
             ):
                 return None  # would trade an over-long day for a mini-stint
             for rid in _receivers_for(insts, donor):
+                if self._tool_seconds_left() < 20:
+                    return None  # run budget nearly spent — stop searching
                 r_ivs, r_mins = _stats(rid)
                 if not _contiguous(list(r_ivs) + [(i.start, i.end) for i in insts]):
                     continue  # receiver's day would have a gap
                 r_after = r_mins + moved
-                if r_after > self._daily_target_minutes(rid, date_iso) + 60:
-                    continue  # would just create the next over-long day
+                # Soft comfort line, not a wall: up to 1h past the preferred
+                # span is a clean offer; up to 2h past is offered but TAGGED
+                # with the overshoot so the model can weigh it (a slightly
+                # long day that clears a mini-stint is often the better
+                # trade). Beyond that it would just be the next problem day.
+                r_comfort = self._daily_target_minutes(rid, date_iso) + 60
+                if r_after > r_comfort + 60:
+                    continue
                 r_min = self._daily_min_minutes(rid, date_iso)
                 if r_mins == 0 and r_min is not None and r_after < r_min:
                     continue  # calling someone in for a mini-stint solves nothing
@@ -1797,6 +1884,7 @@ class PlanToolExecutor:
                     )
                 if _new_hard(trial):
                     continue
+                overshoot_min = max(0, r_after - r_comfort)
                 batch = [
                     {
                         "action": "unassign",
@@ -1812,7 +1900,7 @@ class PlanToolExecutor:
                     }
                     for _, inst in items
                 ]
-                return {
+                offer = {
                     "reason": reason,
                     "from": self._alias(donor),
                     "to": self._alias(rid),
@@ -1827,18 +1915,31 @@ class PlanToolExecutor:
                     ],
                     "batch": batch,
                 }
+                if overshoot_min > 0:
+                    # Graded, not binary: the receiver ends up a bit past
+                    # their comfortable day — the model weighs this against
+                    # the problem the transfer solves.
+                    offer["receiver_overshoot_hours"] = round(overshoot_min / 60.0, 1)
+                return offer
             return None
 
         offers: List[dict] = []
+        ran_out_of_time = False
         # Mini-stints first: clearing one removes a short day outright (a
         # direct quality-tier win); the holder stays off entirely — better
         # one colleague works a little longer than someone comes in for 1h.
         for _, cid in stubs[:4]:
+            if self._tool_seconds_left() < 25:
+                ran_out_of_time = True
+                break
             offer = _try_transfer(cid, own_by_cid[cid], "clear_mini_stint")
             if offer:
                 offers.append(offer)
         for _, cid in overlong[:3]:
             if len(offers) >= 6:
+                break
+            if self._tool_seconds_left() < 25:
+                ran_out_of_time = True
                 break
             # Hand off an edge of the day, evening end first (contiguity
             # check rejects mid-day removals). One offer per donor per
@@ -1851,6 +1952,9 @@ class PlanToolExecutor:
                     offers.append(offer)
                     break
 
+        # Clean handovers first; tagged-overshoot offers are still worth
+        # considering but the model should see the clean ones on top.
+        offers.sort(key=lambda o: o.get("receiver_overshoot_hours", 0))
         out: dict = {"dateISO": date_iso, "offers": offers}
         if overlong:
             out["overlong_days"] = [
@@ -1868,6 +1972,9 @@ class PlanToolExecutor:
                 {
                     "clinicianId": self._alias(cid),
                     "day_hours": round(minutes[cid] / 60.0, 1),
+                    "daily_min_hours": round(
+                        (self._daily_min_minutes(cid, date_iso) or 0) / 60.0, 1
+                    ),
                 }
                 for _, cid in stubs
             ]
@@ -1881,14 +1988,23 @@ class PlanToolExecutor:
             out["note"] = (
                 "Apply ONE offered batch EXACTLY as given (one apply_moves "
                 "call), then call suggest_balance_moves again — the other "
-                "offers go stale. Problems without an offer have no legal "
-                "transfer; mention them in your summary."
+                "offers go stale. Offers are pre-validated against every "
+                "hard rule; receiver_overshoot_hours marks the soft "
+                "trade-off (the receiver's day ends up that far past their "
+                "comfortable span) — clearing a mini-stint is usually worth "
+                "an overshoot up to ~1h, your call. Problems without an "
+                "offer have no legal transfer; mention them in your summary."
             )
         else:
             out["note"] = (
                 "Problems found but no legal transfer exists (contiguity, "
                 "hours caps or hard rules block every handover). Mention "
                 "them in your final day summary and finish."
+            )
+        if ran_out_of_time:
+            out["note"] += (
+                " NOTE: the run's time budget is nearly spent — the search "
+                "was cut short; finish the day now."
             )
         return out
 
@@ -2043,11 +2159,17 @@ class PlanToolExecutor:
 
         trial_list = list(trial.values())
         trial_hard = self._hard_violations(self._full_plan(trial_list))
-        new_hard = [
-            {"code": v.code, "message": self._scrub(v.message)}
-            for v in trial_hard
-            if self._is_new_hard(v)
-        ]
+        new_hard = []
+        for v in trial_hard:
+            if not self._is_new_hard(v):
+                continue
+            rejected_item = {"code": v.code, "message": self._scrub(v.message)}
+            if v.code == VIOLATION_WEEKLY_HOURS and v.context:
+                assigned = v.context.get("assigned_minutes")
+                cap = v.context.get("max_minutes")
+                if isinstance(assigned, (int, float)) and isinstance(cap, (int, float)):
+                    rejected_item["over_by_hours"] = round((assigned - cap) / 60.0, 1)
+            new_hard.append(rejected_item)
         if args.get("dry_run"):
             if new_hard:
                 return {"dry_run": True, "valid": False, "new_hard_violations": new_hard}
