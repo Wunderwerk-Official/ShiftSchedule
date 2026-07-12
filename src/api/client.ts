@@ -678,19 +678,27 @@ export type SolveRangeResult = {
 
 export type SolverMode = "cpsat" | "heuristic" | "agent";
 
-/** Agent approach: "repair" improves a heuristic draft (default);
- * "day_by_day" builds each day from scratch like a human planner. */
+/** Starting a solve returns immediately: the run continues as a BACKGROUND
+ * JOB on the server (survives browser closes, proxy timeouts and deploys).
+ * Progress streams over SSE; the result is fetched/applied via the
+ * /v1/solve/runs endpoints below. */
+export type SolveRangeStart = {
+  run_id: string;
+  status: string;
+  startISO: string;
+  endISO?: string | null;
+};
+
 export async function solveRange(
   startISO: string,
   options?: {
     endISO?: string;
     onlyFillRequired?: boolean;
-    timeoutSeconds?: number;
     solverMode?: SolverMode;
     runToken?: string;
     signal?: AbortSignal;
   },
-): Promise<SolveRangeResult> {
+): Promise<SolveRangeStart> {
   const res = await fetch(`${API_BASE}/v1/solve/range`, {
     method: "POST",
     headers: buildHeaders(),
@@ -698,7 +706,6 @@ export async function solveRange(
       startISO,
       endISO: options?.endISO,
       only_fill_required: options?.onlyFillRequired ?? false,
-      timeout_seconds: options?.timeoutSeconds,
       solver_mode: options?.solverMode,
       run_token: options?.runToken,
     }),
@@ -722,38 +729,89 @@ export async function solveRange(
     throw err;
   }
   if (!res.ok) {
-    throw new Error(`Failed to solve range: ${res.status}`);
+    throw new Error(`Failed to start solve: ${res.status}`);
   }
   return res.json();
 }
 
-/** Recovery fetch for a finished solve whose HTTP response was lost (a
- * proxy between browser and backend may cut the long-lived solve POST —
- * observed at ~600s in production). The backend parks the finished result
- * by run token; poll until it appears or the deadline passes. Returns null
- * when nothing could be recovered. */
-export async function recoverSolveResult(
-  runToken: string,
-  deadlineMs: number,
-  signal?: AbortSignal,
-): Promise<SolveRangeResult | null> {
-  while (Date.now() < deadlineMs && !signal?.aborted) {
+/** One row of the server-side run inbox (results are fetched per run). */
+export type SolverRunSummary = {
+  id: string;
+  status: string;
+  start_iso: string;
+  end_iso: string;
+  attempt: number;
+  created_at: string;
+  finished_at?: string | null;
+  applied_at?: string | null;
+  error?: string | null;
+  notes?: string | null;
+  has_result: boolean;
+};
+
+export type SolverRunDetail = SolverRunSummary & {
+  result?: SolveRangeResult;
+};
+
+export async function listSolverRuns(): Promise<SolverRunSummary[]> {
+  const res = await fetch(`${API_BASE}/v1/solve/runs`, { headers: buildHeaders() });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Failed to list solver runs: ${res.status}`);
+  const body = (await res.json()) as { runs: SolverRunSummary[] };
+  return body.runs;
+}
+
+export async function getSolverRun(runId: string): Promise<SolverRunDetail> {
+  const res = await fetch(
+    `${API_BASE}/v1/solve/runs/${encodeURIComponent(runId)}`,
+    { headers: buildHeaders() },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Failed to fetch solver run: ${res.status}`);
+  return res.json();
+}
+
+/** Server-side atomic apply: replaces the range's solver assignments with
+ * the run's result (manual entries always survive). Reload state after.
+ * When the calendar changed inside the run's range since the run started,
+ * the backend refuses with a 'calendar_changed' conflict - surfaced here
+ * as CalendarChangedError so the UI can ask before forcing. */
+export async function applySolverRun(runId: string, force = false): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/v1/solve/runs/${encodeURIComponent(runId)}/apply${force ? "?force=true" : ""}`,
+    { method: "POST", headers: buildHeaders() },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (res.status === 409) {
+    let code = "";
+    let message = "Applying the run was refused.";
     try {
-      const res = await fetch(`${API_BASE}/v1/solve/result/${encodeURIComponent(runToken)}`, {
-        headers: buildHeaders(),
-        signal,
-      });
-      if (res.status === 401) handleUnauthorized();
-      if (res.ok) return (await res.json()) as SolveRangeResult;
-      // 404 = not finished yet (or unknown token) — keep polling while the
-      // run may still be alive server-side.
+      const body = (await res.json()) as {
+        detail?: { code?: string; message?: string } | string;
+      };
+      if (typeof body.detail === "object" && body.detail) {
+        code = body.detail.code ?? "";
+        message = body.detail.message ?? message;
+      } else if (typeof body.detail === "string") {
+        message = body.detail;
+      }
     } catch {
-      if (signal?.aborted) return null;
-      // Transient network trouble — the next poll may get through.
+      // keep defaults
     }
-    await new Promise((resolve) => setTimeout(resolve, 5000));
+    const err = new Error(message);
+    err.name = code === "calendar_changed" ? "CalendarChangedError" : "ApplyRefusedError";
+    throw err;
   }
-  return null;
+  if (!res.ok) throw new Error(`Failed to apply solver run: ${res.status}`);
+}
+
+export async function discardSolverRun(runId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/v1/solve/runs/${encodeURIComponent(runId)}/discard`,
+    { method: "POST", headers: buildHeaders() },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Failed to discard solver run: ${res.status}`);
 }
 
 export async function abortSolver(force = false): Promise<{ status: string; message: string }> {

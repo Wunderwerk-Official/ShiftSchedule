@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import type { SolverDebugInfo, SolverSettings } from "../../api/client";
+import type { SolverDebugInfo, SolverRunSummary, SolverSettings } from "../../api/client";
 import { APP_BUILD, APP_VERSION } from "../../version";
 import { cx } from "../../lib/classNames";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
@@ -92,10 +92,22 @@ type SolverInfoModalProps = {
   isOpen: boolean;
   onClose: () => void;
   history: SolverHistoryEntry[];
-  timeoutSeconds: number;
-  onTimeoutChange: (seconds: number) => void;
+  serverRuns: SolverRunSummary[];
+  onApplyRun: (runId: string) => Promise<void>;
+  onDiscardRun: (runId: string) => Promise<void>;
+  onRefreshRuns: () => Promise<void>;
   solverSettings?: SolverSettings;
   onSolverSettingsChange?: (settings: Partial<SolverSettings>) => void;
+};
+
+const RUN_STATUS_LABEL: Record<string, string> = {
+  running: "Running",
+  finished: "Ready to apply",
+  aborted: "Aborted",
+  failed: "Failed",
+  crashed: "Interrupted",
+  applied: "Applied",
+  discarded: "Discarded",
 };
 
 
@@ -408,11 +420,14 @@ export default function SolverInfoModal({
   isOpen,
   onClose,
   history,
-  timeoutSeconds,
-  onTimeoutChange,
+  serverRuns,
+  onApplyRun,
+  onDiscardRun,
+  onRefreshRuns,
   solverSettings,
   onSolverSettingsChange,
 }: SolverInfoModalProps) {
+  const [busyRunId, setBusyRunId] = useState<string | null>(null);
   const [view, setView] = useState<View>("info");
   const [selectedEntry, setSelectedEntry] = useState<SolverHistoryEntry | null>(null);
   const [weightsExpanded, setWeightsExpanded] = useState(false);
@@ -448,13 +463,15 @@ export default function SolverInfoModal({
     URL.revokeObjectURL(url);
   };
 
-  // Reset view to info when modal opens
+  // Reset view to info when modal opens; refresh the server run inbox
   useEffect(() => {
     if (isOpen) {
       setView("info");
       setSelectedEntry(null);
       setDebugExpanded(false);
+      void onRefreshRuns();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
   if (!isOpen) return null;
@@ -566,41 +583,88 @@ export default function SolverInfoModal({
                   </p>
                 </div>
 
-                {/* Max Runtime setting */}
-                <div className="flex flex-col gap-2">
-                  <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                    Max Runtime
+                {/* Run inbox: server-side background runs. Results wait
+                    here until they are applied to the schedule. */}
+                {serverRuns.length > 0 && (
+                  <div className="flex flex-col gap-2">
+                    <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                      Run Inbox
+                    </div>
+                    {serverRuns.map((run) => (
+                      <div
+                        key={run.id}
+                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800"
+                      >
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
+                              {formatEuropeanDate(run.start_iso)} – {formatEuropeanDate(run.end_iso)}
+                            </span>
+                            <span
+                              className={cx(
+                                "rounded-full px-2 py-0.5 text-xs font-medium",
+                                run.status === "finished" &&
+                                  "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300",
+                                run.status === "applied" &&
+                                  "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
+                                run.status === "running" &&
+                                  "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
+                                (run.status === "aborted" || run.status === "crashed") &&
+                                  "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                                (run.status === "failed" || run.status === "discarded") &&
+                                  "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400",
+                              )}
+                            >
+                              {RUN_STATUS_LABEL[run.status] ?? run.status}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-500 dark:text-slate-400">
+                            {run.created_at.replace("T", " ").slice(0, 16)}
+                            {run.attempt > 1 ? " · restarted after interruption" : ""}
+                            {run.error ? ` · ${run.error.slice(0, 80)}` : ""}
+                          </div>
+                        </div>
+                        {(run.status === "finished" || run.status === "aborted") &&
+                          run.has_result && (
+                            <div className="flex shrink-0 items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={busyRunId === run.id}
+                                onClick={async () => {
+                                  setBusyRunId(run.id);
+                                  try {
+                                    await onApplyRun(run.id);
+                                  } finally {
+                                    setBusyRunId(null);
+                                  }
+                                }}
+                                title="Write this plan into the calendar (manual entries always stay)."
+                                className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-600 transition-colors hover:border-indigo-300 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300"
+                              >
+                                {busyRunId === run.id ? "Applying..." : "Apply"}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={busyRunId === run.id}
+                                onClick={async () => {
+                                  setBusyRunId(run.id);
+                                  try {
+                                    await onDiscardRun(run.id);
+                                  } finally {
+                                    setBusyRunId(null);
+                                  }
+                                }}
+                                title="Reject this result - the calendar stays as it is."
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                              >
+                                Discard
+                              </button>
+                            </div>
+                          )}
+                      </div>
+                    ))}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      value={timeoutSeconds}
-                      onChange={(e) => {
-                        // Allow any numeric input while typing
-                        const raw = e.target.value.replace(/[^0-9]/g, "");
-                        if (raw === "") return;
-                        const val = parseInt(raw, 10);
-                        if (!isNaN(val)) {
-                          // Clamp to valid range
-                          onTimeoutChange(Math.max(1, Math.min(3600, val)));
-                        }
-                      }}
-                      onBlur={(e) => {
-                        // Ensure valid value on blur
-                        const val = parseInt(e.target.value, 10);
-                        if (isNaN(val) || val < 1) {
-                          onTimeoutChange(1);
-                        } else if (val > 3600) {
-                          onTimeoutChange(3600);
-                        }
-                      }}
-                      className="w-20 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
-                    />
-                    <span className="text-sm text-slate-500 dark:text-slate-400">seconds</span>
-                  </div>
-                </div>
+                )}
 
                 {/* Optimization Weights */}
                 <div className="flex flex-col gap-2">

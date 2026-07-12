@@ -841,6 +841,26 @@ progress pipeline unchanged — `SolverOverlay` renders agent runs like any
 other solve (`phase` events for loop progress, one `solution` event for the
 seed and one per accepted improvement, objective on the same minimized scale).
 
+### Background runs (`backend/solver.py` + `backend/solver_runs.py`, v1.43)
+A solve is a SERVER-SIDE JOB, not an HTTP request: `POST /v1/solve/range`
+creates a row in the `solver_runs` table, spawns the solver subprocess plus
+a monitor thread, and returns the run id immediately. The monitor relays
+progress to SSE, persists the outcome (`finished`/`aborted`/`failed`) with
+the full result JSON, and frees the solve slot. Nothing is applied to the
+schedule automatically: the result waits in the RUN INBOX until the admin
+applies it (`POST /v1/solve/runs/{id}/apply` — atomic server-side apply
+with the same semantics the frontend used: in-range solver assignments are
+replaced, manual entries and vacationing clinicians' rows survive) or
+discards it. `GET /v1/solve/runs` lists the inbox; a run interrupted by a
+backend restart/deploy is restarted once on startup
+(`recover_interrupted_runs`, note in the run) and marked `crashed`
+otherwise. There is NO wall-clock limit by default (admin decision):
+runs end on the iteration budget (slots x 10) or via
+`POST /v1/solve/abort`; a `timeout_seconds` in the request still works and
+re-arms the overshoot watchdog. The frontend shows the familiar live
+overlay, which can be sent to the background (floating badge, calendar
+stays usable); a reload re-attaches to the running job.
+
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
 Two strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
 (**day_by_day is the default since v1.38**; the UI no longer offers repair —

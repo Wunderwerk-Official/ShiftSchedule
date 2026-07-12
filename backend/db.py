@@ -92,6 +92,26 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS solver_runs (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            status TEXT NOT NULL,
+            start_iso TEXT NOT NULL,
+            end_iso TEXT NOT NULL,
+            params TEXT NOT NULL,
+            attempt INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            finished_at TEXT,
+            applied_at TEXT,
+            result TEXT,
+            error TEXT,
+            notes TEXT,
+            input_fingerprint TEXT
+        )
+        """
+    )
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(app_state)").fetchall()]
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE app_state ADD COLUMN updated_at TEXT")

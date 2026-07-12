@@ -13,7 +13,6 @@ import { SolverInfoButton } from "./SolverInfoModal";
 import type { SolverMode } from "../../api/client";
 
 // LLM agent runs need more wall clock than the optimizer default of 60s.
-const AGENT_TIMEOUT_SECONDS = 300;
 
 type AutomatedPlanningPanelProps = {
   weekStartISO: string;
@@ -24,12 +23,10 @@ type AutomatedPlanningPanelProps = {
   lastRunTotalDays: number | null;
   lastRunDurationMs: number | null;
   error: string | null;
-  timeoutSeconds: number;
   onRun: (args: {
     startISO: string;
     endISO: string;
     onlyFillRequired: boolean;
-    timeoutSeconds: number;
     solverMode: SolverMode;
   }) => void;
   onResetSolver: (args: { startISO: string; endISO: string }) => void;
@@ -74,7 +71,6 @@ export default function AutomatedPlanningPanel({
   lastRunTotalDays,
   lastRunDurationMs,
   error,
-  timeoutSeconds,
   onRun,
   onResetSolver,
   onResetAll,
@@ -190,7 +186,6 @@ export default function AutomatedPlanningPanel({
       startISO: range.startISO,
       endISO: range.endISO,
       onlyFillRequired: true,
-      timeoutSeconds: Math.max(timeoutSeconds, AGENT_TIMEOUT_SECONDS),
       solverMode: "agent",
     });
   };

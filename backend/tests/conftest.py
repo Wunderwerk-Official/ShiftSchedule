@@ -142,6 +142,7 @@ def make_assignment(
     row_id: str = "slot-1",
     date_iso: str = "2026-01-05",
     clinician_id: str = "clin-1",
+    source: Optional[str] = None,
 ) -> Assignment:
     """Create a test assignment."""
     return Assignment(
@@ -149,6 +150,7 @@ def make_assignment(
         rowId=row_id,
         dateISO=date_iso,
         clinicianId=clinician_id,
+        source=source,
     )
 
 
@@ -328,3 +330,23 @@ def state_with_deprecated_pools() -> AppState:
 def test_client() -> TestClient:
     """FastAPI test client."""
     return TestClient(app)
+
+
+def solve_via_endpoint(client, payload: dict, timeout_s: float = 120.0) -> dict:
+    """POST /v1/solve/range (async since v1.43: returns a run id instantly)
+    and poll the run record until it leaves 'running'. Returns the full run
+    dict including the stored result."""
+    import time as _time
+
+    res = client.post("/v1/solve/range", json=payload)
+    assert res.status_code == 200, res.text
+    run_id = res.json()["run_id"]
+    deadline = _time.time() + timeout_s
+    while _time.time() < deadline:
+        run = client.get(f"/v1/solve/runs/{run_id}")
+        assert run.status_code == 200, run.text
+        body = run.json()
+        if body["status"] != "running":
+            return body
+        _time.sleep(0.2)
+    raise AssertionError(f"Run {run_id} still running after {timeout_s}s")
