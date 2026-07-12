@@ -198,11 +198,17 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    preferred daily hours) — their "Anschlussverwendung". Pass slot_key
    instead only when you deliberately deviate from the given order.
 3. Choosing the candidate: they are PRE-SORTED — overloaded=true last,
-   everyone whose block meets the daily minimum first, then lowest
-   ytd_worked_pct (100 = on target, lower = behind). When NO candidate
-   reaches the daily minimum, the LONGEST block is first instead: one
-   person covering the whole remaining stretch beats several people on
-   mini-stints (the others stay off entirely). Take the FIRST candidate
+   everyone whose block meets the daily minimum first, within that the
+   preferred-working-time fit (window_fit=true before false), then
+   lowest ytd_worked_pct (100 = on target, lower = behind). window_fit
+   refers to the clinician's PREFERRED working time (a wish, not a rule
+   — mandatory windows are enforced by the gate): prefer candidates
+   whose block lies inside their wish when minimum and fairness are
+   comparable, and mention wish violations you had to accept in your
+   day summary. When NO candidate reaches the daily minimum, the
+   LONGEST block is first instead: one person covering the whole
+   remaining stretch beats several people on mini-stints (the others
+   stay off entirely). Take the FIRST candidate
    unless you have a concrete reason not to (admin instructions, section
    preference, saving a scarce person for a slot only they can cover).
    Extra hours beyond the daily minimum are a tie-breaker, not a goal: a

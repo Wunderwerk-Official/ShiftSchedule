@@ -435,16 +435,49 @@ def agent_solve_range(
                     }
                 )
 
+        # Placements the run made OUTSIDE someone's preferred working time
+        # (the per-clinician wish; mandatory windows can never be violated).
+        outside_preferred: List[dict] = []
+        for a in best:
+            if a.dateISO not in ctx.target_date_set or a.rowId.startswith("pool-"):
+                continue
+            window = ctx.window_by_clinician_date.get((a.clinicianId, a.dateISO))
+            if window is None or window[0] != "preference":
+                continue
+            inst = ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+            if inst is None:
+                continue
+            if inst.start >= window[1] and inst.end <= window[2]:
+                continue
+            clinician = executor.clinicians_by_id.get(a.clinicianId)
+            outside_preferred.append(
+                {
+                    "clinician": clinician.name if clinician else a.clinicianId,
+                    "dateISO": a.dateISO,
+                    "time": f"{inst.start // 60:02d}:{inst.start % 60:02d}-"
+                    f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
+                    "preferred": f"{window[1] // 60:02d}:{window[1] % 60:02d}-"
+                    f"{(window[2] % 1440) // 60:02d}:{window[2] % 60:02d}",
+                }
+            )
+
         unsolved = {
             "open_slots": open_entries,
             "short_days": short_days,
             "overlong_days": overlong_days,
+            "outside_preferred_times": outside_preferred,
         }
-        if not open_entries and not short_days and not overlong_days:
+        if (
+            not open_entries
+            and not short_days
+            and not overlong_days
+            and not outside_preferred
+        ):
             return (
                 [
                     "No unresolved issues: every required slot is filled, "
-                    "no short and no over-long days."
+                    "no short days, no over-long days, all preferred "
+                    "working times respected."
                 ],
                 unsolved,
             )
@@ -452,7 +485,9 @@ def agent_solve_range(
         lines = [
             "Unresolved after this run: "
             f"{len(open_entries)} open slot(s), {len(short_days)} short "
-            f"day(s), {len(overlong_days)} over-long day(s)."
+            f"day(s), {len(overlong_days)} over-long day(s), "
+            f"{len(outside_preferred)} placement(s) outside preferred "
+            "working times."
         ]
         for entry in open_entries[:12]:
             lines.append(
@@ -476,6 +511,17 @@ def agent_solve_range(
         if len(overlong_days) > 12:
             lines.append(
                 f"- ... and {len(overlong_days) - 12} more over-long days"
+            )
+        for entry in outside_preferred[:12]:
+            lines.append(
+                f"- outside preferred time: {entry['clinician']} "
+                f"{entry['dateISO']} {entry['time']} "
+                f"(prefers {entry['preferred']})"
+            )
+        if len(outside_preferred) > 12:
+            lines.append(
+                f"- ... and {len(outside_preferred) - 12} more placements "
+                "outside preferred working times"
             )
         return lines, unsolved
 

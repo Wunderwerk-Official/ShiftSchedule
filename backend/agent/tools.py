@@ -238,7 +238,8 @@ TOOL_SPECS_RAW = [
             "get_day_priorities: single-candidate slots, then on-call, then "
             "slot priority; slots nobody can take are skipped); when "
             "nothing fillable remains it returns day_complete=true instead. "
-            "Candidates are pre-sorted: daily minimum met first, then lowest "
+            "Candidates are pre-sorted: daily minimum met first, "
+            "preferred-working-time fit (window_fit) next, then lowest "
             "ytd_worked_pct; when no block reaches the minimum, longest "
             "block first. Apply the WHOLE chosen block in one apply_moves "
             "batch. Blocks are validated against the current plan and go "
@@ -1168,6 +1169,23 @@ class PlanToolExecutor:
             return max(1, int(round(contract * 60 / 5)) // 2)
         return None
 
+    def _window_fit_fields(
+        self, cid: str, date_iso: str, start: int, end: int
+    ) -> dict:
+        """window_fit/preferred_window fields for a block, PREFERENCE
+        windows only (mandatory ones are enforced by the gate and need no
+        signal). Empty when the clinician has no wish that day."""
+        window = self.ctx.window_by_clinician_date.get((cid, date_iso))
+        if window is None or window[0] != "preference":
+            return {}
+        return {
+            "window_fit": start >= window[1] and end <= window[2],
+            "preferred_window": (
+                f"{window[1] // 60:02d}:{window[1] % 60:02d}-"
+                f"{(window[2] % 1440) // 60:02d}:{window[2] % 60:02d}"
+            ),
+        }
+
     # Chains never build days longer than this (+1h step tolerance). Longer
     # days exist — 12h/24h duty slots — but as SINGLE slots someone chose,
     # never as an auto-glued sequence of ordinary day work.
@@ -1472,7 +1490,9 @@ class PlanToolExecutor:
         out = []
         for cand in eligible:
             cid = self._resolve_clinician(cand["clinicianId"])
-            block_keys, block_minutes = self._greedy_day_block(cid, inst, counts)
+            block_keys, block_start, block_end = self._greedy_day_block(
+                cid, inst, counts
+            )
             if not block_keys:
                 # The strict gate (worsened weekly hours etc.) rejects even
                 # the start slot — apply_moves would too, so do not offer a
@@ -1481,7 +1501,8 @@ class PlanToolExecutor:
             if single:
                 # Duty mode: the slot is taken alone, no chained day work.
                 block_keys = block_keys[:1]
-                block_minutes = inst.end - inst.start
+                block_start, block_end = inst.start, inst.end
+            block_minutes = block_end - block_start
             day_before = sum(
                 e - s for s, e in self._day_intervals(cid, inst.date_iso)
             )
@@ -1523,6 +1544,12 @@ class PlanToolExecutor:
                     "week_hours_max": week_max,
                     "ytd_worked_pct": cand.get("ytd_worked_pct"),
                     "prefers_section": cand.get("prefers_section", False),
+                    # Preferred working time (the per-clinician wish, not the
+                    # mandatory kind — that one is enforced by the gate):
+                    # does the WHOLE offered block lie inside it? Position
+                    # matters, not just length — an 8h block at 12-20 misses
+                    # a 08-17 wish even though the length fits.
+                    **(self._window_fit_fields(cid, inst.date_iso, block_start, block_end)),
                 }
             )
         # Overloaded days are a last resort, then long-enough blocks first
@@ -1535,9 +1562,12 @@ class PlanToolExecutor:
         # mini-days instead of one.
         def _rank(c: dict) -> tuple:
             ytd = c["ytd_worked_pct"] if c["ytd_worked_pct"] is not None else 999
+            # window_fit is absent when no preference window exists — that
+            # counts as fitting (nobody's wish is violated).
+            fits_window = c.get("window_fit", True)
             if c["meets_daily_minimum"]:
-                return (c["overloaded"], 0, ytd, -c["block_hours"])
-            return (c["overloaded"], 1, -c["block_hours"], ytd)
+                return (c["overloaded"], 0, not fits_window, ytd, -c["block_hours"])
+            return (c["overloaded"], 1, -c["block_hours"], not fits_window, ytd)
 
         out.sort(key=_rank)
         on_call_class = (
@@ -1553,16 +1583,19 @@ class PlanToolExecutor:
             "note": "Each candidate comes with the contiguous block they "
             "could work starting at this slot (adjacent open slots chained "
             "up to their preferred daily hours, all legality-checked). "
-            "Candidates are pre-sorted: daily minimum met first (lowest "
-            "ytd_worked_pct among those); when NO block reaches the "
-            "minimum, the LONGEST block first — one person on a longer "
-            "stint beats two people on mini-stints. Take the FIRST unless "
-            "you have a concrete reason. week_hours above contract_hours "
-            "is LEGAL up to week_hours_max (personal tolerance) — do not "
-            "avoid such candidates. Apply the chosen block as ONE "
-            "apply_moves batch (all assigns together). "
-            "meets_daily_minimum=false = would stay a short day - prefer "
-            "candidates above it.",
+            "Candidates are pre-sorted: daily minimum met first, within "
+            "that preferred-working-time fit (window_fit), then lowest "
+            "ytd_worked_pct; when NO block reaches the minimum, the "
+            "LONGEST block first — one person on a longer stint beats two "
+            "people on mini-stints. Take the FIRST unless you have a "
+            "concrete reason. window_fit=false = the block lies (partly) "
+            "outside preferred_window — a wish, not a rule; prefer fitting "
+            "candidates when minimum and fairness are comparable. "
+            "week_hours above contract_hours is LEGAL up to week_hours_max "
+            "(personal tolerance) — do not avoid such candidates. Apply "
+            "the chosen block as ONE apply_moves batch (all assigns "
+            "together). meets_daily_minimum=false = would stay a short "
+            "day - prefer candidates above it.",
             "candidates": out,
         }
 
@@ -2010,20 +2043,30 @@ class PlanToolExecutor:
 
     def _greedy_day_block(
         self, cid: str, start_inst, counts: Dict[str, int]
-    ) -> Tuple[List[str], int]:
+    ) -> Tuple[List[str], int, int]:
         """Chain of adjacent, still-open, legal slots for ``cid`` starting at
         ``start_inst`` — forward in time first, then backward if the day is
         still below the clinician's daily target. Every extension is
         validated like a real move batch, so the returned block can be
-        applied verbatim. Returns (raw slot keys, total minutes)."""
+        applied verbatim. Returns (raw slot keys, block start, block end)
+        in minutes, so callers can also judge the block's POSITION against
+        the clinician's preferred working window."""
         clinician = self.clinicians_by_id.get(cid)
         if clinician is None:
-            return [], 0
+            return [], 0, 0
         qualified = set(clinician.qualifiedClassIds or [])
         date_iso = start_inst.date_iso
 
         target = self._daily_target_minutes(cid, date_iso)
         existing = sum(e - s for s, e in self._day_intervals(cid, date_iso))
+        # A PREFERENCE window steers the chain's position: once the daily
+        # minimum is reached, the chain stops growing past the window edge
+        # (the wish "I'd rather work 08-14" was invisible here before — the
+        # window only capped the LENGTH, so a late start produced a block
+        # lying entirely outside the preferred time).
+        window = self.ctx.window_by_clinician_date.get((cid, date_iso))
+        pref_window = window if window is not None and window[0] == "preference" else None
+        daily_min = self._daily_min_minutes(cid, date_iso) or 0
 
         trial: Dict[Tuple[str, str, str], Assignment] = dict(self.current)
         taken: Dict[str, int] = {}
@@ -2043,7 +2086,7 @@ class PlanToolExecutor:
             return True
 
         if not legal(start_inst):
-            return [], 0
+            return [], 0, 0
         taken[start_inst.slot_key] = 1
         chain = [start_inst.slot_key]
         block_start, block_end = start_inst.start, start_inst.end
@@ -2073,6 +2116,17 @@ class PlanToolExecutor:
                     span_after = (block_end - block_start) + (inst.end - inst.start)
                     if existing + span_after > target + 60:
                         continue
+                    # Preferred-time position: once the day meets its
+                    # minimum, stop growing past the preference window edge
+                    # (coverage/minimum still outranks the wish below it).
+                    if pref_window is not None:
+                        leaves = (
+                            inst.end > pref_window[2]
+                            if forward
+                            else inst.start < pref_window[1]
+                        )
+                        if leaves and existing + (block_end - block_start) >= daily_min:
+                            continue
                     if legal(inst):
                         taken[inst.slot_key] = taken.get(inst.slot_key, 0) + 1
                         chain.append(inst.slot_key)
@@ -2085,7 +2139,7 @@ class PlanToolExecutor:
                 if not extended:
                     break
 
-        return chain, block_end - block_start
+        return chain, block_start, block_end
 
     def _tool_apply_moves(self, args: dict) -> dict:
         moves = args.get("moves") or []
