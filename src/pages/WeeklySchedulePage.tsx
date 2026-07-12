@@ -3900,6 +3900,7 @@ export default function WeeklySchedulePage({
         onApplyRun={handleApplyRun}
         onDiscardRun={handleDiscardRun}
         onRefreshRuns={refreshServerRuns}
+        onFetchRunDetail={getSolverRun}
         solverSettings={solverSettings}
         onSolverSettingsChange={(partial) =>
           setSolverSettings((prev) => ({ ...prev, ...partial }))

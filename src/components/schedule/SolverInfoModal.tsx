@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import type { SolverDebugInfo, SolverRunSummary, SolverSettings } from "../../api/client";
+import type { SolverDebugInfo, SolverRunDetail, SolverRunSummary, SolverSettings } from "../../api/client";
 import { APP_BUILD, APP_VERSION } from "../../version";
 import { cx } from "../../lib/classNames";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
@@ -96,6 +96,7 @@ type SolverInfoModalProps = {
   onApplyRun: (runId: string) => Promise<void>;
   onDiscardRun: (runId: string) => Promise<void>;
   onRefreshRuns: () => Promise<void>;
+  onFetchRunDetail: (runId: string) => Promise<SolverRunDetail>;
   solverSettings?: SolverSettings;
   onSolverSettingsChange?: (settings: Partial<SolverSettings>) => void;
 };
@@ -424,6 +425,7 @@ export default function SolverInfoModal({
   onApplyRun,
   onDiscardRun,
   onRefreshRuns,
+  onFetchRunDetail,
   solverSettings,
   onSolverSettingsChange,
 }: SolverInfoModalProps) {
@@ -449,6 +451,43 @@ export default function SolverInfoModal({
     }
     logCopiedTimerRef.current = window.setTimeout(() => setLogCopied(false), 2000);
   };
+  // The server run row carries everything the local history entry does —
+  // so the run log stays downloadable after apply, reloads and on other
+  // devices (the local history is in-memory only).
+  const serverRunToHistoryEntry = (run: SolverRunDetail): SolverHistoryEntry => {
+    const startedAt = Date.parse(run.created_at) || Date.now();
+    const endedAt = run.finished_at ? Date.parse(run.finished_at) : startedAt;
+    const status =
+      run.status === "failed" || run.status === "crashed"
+        ? "error"
+        : run.status === "aborted"
+          ? "aborted"
+          : "success";
+    return {
+      id: run.id,
+      startISO: run.start_iso,
+      endISO: run.end_iso,
+      startedAt,
+      endedAt,
+      status,
+      notes: [
+        ...(run.result?.notes ?? []),
+        ...(run.notes ? run.notes.split("\n").filter(Boolean) : []),
+        ...(run.error ? [run.error] : []),
+      ],
+      debugInfo: run.result?.debugInfo,
+    };
+  };
+
+  const handleDownloadServerRunLog = async (runId: string) => {
+    try {
+      const detail = await onFetchRunDetail(runId);
+      handleDownloadRunLog(serverRunToHistoryEntry(detail));
+    } catch {
+      // Best-effort: the next click retries.
+    }
+  };
+
   const handleDownloadRunLog = (entry: SolverHistoryEntry) => {
     const blob = new Blob([buildRunLog(entry)], {
       type: "text/plain;charset=utf-8",
@@ -623,7 +662,28 @@ export default function SolverInfoModal({
                             {run.attempt > 1 ? " · restarted after interruption" : ""}
                             {run.error ? ` · ${run.error.slice(0, 80)}` : ""}
                           </div>
+                          {run.notes?.split("\n").find((n) => n.startsWith("Unresolved after this run:")) && (
+                            <div className="text-xs font-medium text-amber-600 dark:text-amber-400">
+                              {run.notes.split("\n").find((n) => n.startsWith("Unresolved after this run:"))}
+                            </div>
+                          )}
+                          {run.notes?.split("\n").find((n) => n.startsWith("No unresolved issues")) && (
+                            <div className="text-xs text-emerald-600 dark:text-emerald-400">
+                              No unresolved issues
+                            </div>
+                          )}
                         </div>
+                        <div className="flex shrink-0 items-center gap-2">
+                          {run.has_result && (
+                            <button
+                              type="button"
+                              onClick={() => void handleDownloadServerRunLog(run.id)}
+                              title="Download the full run log (notes, unresolved issues, every change, the agent's thoughts)."
+                              className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                            >
+                              Log
+                            </button>
+                          )}
                         {(run.status === "finished" || run.status === "aborted") &&
                           run.has_result && (
                             <div className="flex shrink-0 items-center gap-2">
@@ -661,6 +721,7 @@ export default function SolverInfoModal({
                               </button>
                             </div>
                           )}
+                        </div>
                       </div>
                     ))}
                   </div>

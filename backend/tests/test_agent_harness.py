@@ -869,3 +869,71 @@ def test_fully_staffed_day_is_skipped_without_a_conversation():
     first = provider.seen_messages[0][0].content
     assert "Build day 2 of 2" in first
     assert f"{MON}: already fully staffed, skipped" in first
+
+
+def test_finalize_reports_unsolved_overview():
+    """The closing report (admin request): a run that leaves a required slot
+    open must say so in the notes AND in debugInfo.agent.unsolved — that is
+    what the run log and the run inbox surface."""
+    from backend.models import TemplateBlock
+    from .conftest import make_pool_row, make_template_slot, make_workplace_row
+
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice",
+                                   qualified_class_ids=["section-a"],
+                                   working_hours_per_week=40)],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "Section B"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-b__mon", col_band_id="col-mon-1",
+                               block_id="block-b",
+                               start_time="09:00", end_time="13:00"),
+        ],
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+    progress = ProgressRecorder()
+    result = agent_solve_range(
+        _payload(),
+        state,
+        MockCancelEvent(),
+        progress,
+        time.time(),
+        provider=MockProvider([{"text": "Seed accepted."}]),
+        config=_config(),
+    )
+    # Nobody is qualified for Section B: its slot stays open.
+    summary = next(
+        n for n in result["notes"] if n.startswith("Unresolved after this run:")
+    )
+    assert "1 open slot(s)" in summary
+    unsolved = result["debugInfo"]["agent"]["unsolved"]
+    assert len(unsolved["open_slots"]) == 1
+    assert unsolved["open_slots"][0]["section"] == "Section B"
+    assert any("open: " in n and "Section B" in n for n in result["notes"])
+    # Alice works one full 8h day: no short or over-long days reported.
+    assert unsolved["short_days"] == []
+    assert unsolved["overlong_days"] == []
+
+
+def test_finalize_reports_all_clear_when_nothing_unsolved():
+    state = _two_clinician_state()
+    progress = ProgressRecorder()
+    result = agent_solve_range(
+        _payload(),
+        state,
+        MockCancelEvent(),
+        progress,
+        time.time(),
+        provider=MockProvider([{"text": "Seed accepted."}]),
+        config=_config(),
+    )
+    assert any(n.startswith("No unresolved issues") for n in result["notes"])
+    unsolved = result["debugInfo"]["agent"]["unsolved"]
+    assert unsolved == {"open_slots": [], "short_days": [], "overlong_days": []}

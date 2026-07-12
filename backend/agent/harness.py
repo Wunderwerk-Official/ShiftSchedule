@@ -377,6 +377,108 @@ def agent_solve_range(
             "thoughts": [_feed_text(t) for t in thought_log[:80]],
         }
 
+    def _unsolved_overview(best: List[Assignment]) -> Tuple[List[str], dict]:
+        """The admin's closing report: everything the run could NOT solve —
+        open required slots, short days, over-long days — as human-readable
+        note lines (they end up in the run log and the run inbox) plus a
+        structured block for debugInfo. Real names: browser-only data."""
+        remaining_open = open_slots(ctx, best)
+        open_entries = [
+            {
+                "dateISO": g.dateISO,
+                "section": executor.section_names.get(g.section_id, g.section_id),
+                "time": f"{g.start}-{g.end}",
+                "missing": g.missing,
+            }
+            for g in remaining_open
+        ]
+
+        minutes: Dict[Tuple[str, str], int] = {}
+        for a in executor.fixed_assignments + list(best):
+            if a.dateISO not in ctx.target_date_set or a.rowId.startswith("pool-"):
+                continue
+            inst = ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+            if inst is not None:
+                duration = inst.end - inst.start
+            else:
+                interval = ctx.all_slot_intervals.get(a.rowId)
+                if interval is None:
+                    continue
+                duration = interval[1] - interval[0]
+            key = (a.clinicianId, a.dateISO)
+            minutes[key] = minutes.get(key, 0) + max(0, duration)
+
+        short_days: List[dict] = []
+        overlong_days: List[dict] = []
+        for (cid, date_iso), mins in sorted(minutes.items(), key=lambda kv: kv[0][1]):
+            clinician = executor.clinicians_by_id.get(cid)
+            if clinician is None or mins <= 0:
+                continue
+            daily_min = executor._daily_min_minutes(cid, date_iso)
+            if daily_min is not None and mins < daily_min:
+                short_days.append(
+                    {
+                        "clinician": clinician.name,
+                        "dateISO": date_iso,
+                        "hours": round(mins / 60.0, 1),
+                        "min_hours": round(daily_min / 60.0, 1),
+                    }
+                )
+            comfort = executor._daily_target_minutes(cid, date_iso) + 60
+            if mins > comfort:
+                overlong_days.append(
+                    {
+                        "clinician": clinician.name,
+                        "dateISO": date_iso,
+                        "hours": round(mins / 60.0, 1),
+                        "comfort_hours": round(comfort / 60.0, 1),
+                    }
+                )
+
+        unsolved = {
+            "open_slots": open_entries,
+            "short_days": short_days,
+            "overlong_days": overlong_days,
+        }
+        if not open_entries and not short_days and not overlong_days:
+            return (
+                [
+                    "No unresolved issues: every required slot is filled, "
+                    "no short and no over-long days."
+                ],
+                unsolved,
+            )
+
+        lines = [
+            "Unresolved after this run: "
+            f"{len(open_entries)} open slot(s), {len(short_days)} short "
+            f"day(s), {len(overlong_days)} over-long day(s)."
+        ]
+        for entry in open_entries[:12]:
+            lines.append(
+                f"- open: {entry['dateISO']} {entry['section']} "
+                f"{entry['time']} ({entry['missing']} missing)"
+            )
+        if len(open_entries) > 12:
+            lines.append(f"- ... and {len(open_entries) - 12} more open slots")
+        for entry in short_days[:12]:
+            lines.append(
+                f"- short day: {entry['clinician']} {entry['dateISO']}: "
+                f"{entry['hours']}h (minimum {entry['min_hours']}h)"
+            )
+        if len(short_days) > 12:
+            lines.append(f"- ... and {len(short_days) - 12} more short days")
+        for entry in overlong_days[:12]:
+            lines.append(
+                f"- over-long day: {entry['clinician']} {entry['dateISO']}: "
+                f"{entry['hours']}h (comfortable up to {entry['comfort_hours']}h)"
+            )
+        if len(overlong_days) > 12:
+            lines.append(
+                f"- ... and {len(overlong_days) - 12} more over-long days"
+            )
+        return lines, unsolved
+
     def finalize(status: str, extra_notes: List[str]) -> dict:
         if (
             strategy == "day_by_day"
@@ -426,6 +528,11 @@ def agent_solve_range(
             notes.append("No improvement over the heuristic seed; returning the seed plan.")
         notes.extend(extra_notes)
         notes.extend(n for n in seed_notes if "WARNING" in n or "warning" in n)
+        # Closing report (admin request): what stays unsolved — open slots,
+        # short days, over-long days — right in the notes so the run log
+        # and the run inbox show it without digging through thoughts.
+        unsolved_notes, unsolved = _unsolved_overview(best)
+        notes.extend(unsolved_notes)
         return {
             "startISO": ctx.start_iso,
             "endISO": ctx.end_iso,
@@ -453,6 +560,8 @@ def agent_solve_range(
                     # names restored) and every accepted change.
                     "summary": final_summary[:2000] if final_summary else None,
                     "moves": executor.accepted_move_log[:200],
+                    # Structured closing report of what stays unsolved.
+                    "unsolved": unsolved,
                     # Diagnostics for the copyable run log (real names).
                     **_log_extras(best),
                 },
