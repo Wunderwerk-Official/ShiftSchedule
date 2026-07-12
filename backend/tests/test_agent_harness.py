@@ -977,3 +977,53 @@ def test_unsolved_overview_counts_placements_outside_preferred_times():
     else:
         # The seed picked Bob (no wish) - then the report must be all clear.
         assert any(n.startswith("No unresolved issues") for n in result["notes"])
+
+
+def test_day_by_day_runs_final_range_review():
+    """After the last day the harness opens ONE more conversation over the
+    whole range (admin request): it sees the remaining issues and may fix
+    them — here it places the slot the day conversation left open."""
+    from .conftest import make_template_slot
+
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice"),
+            make_clinician("clin-2", "Bob"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-b__mon", col_band_id="col-mon-1",
+                               start_time="16:00", end_time="18:00"),
+        ],
+    )
+    script = [
+        # Day conversation: places one slot, then (prematurely) closes the day.
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+             "clinicianId": "Alice"},
+        ]}}]},
+        {"text": "Day done."},
+        # Range review: sees the open slot in the digest and fixes it.
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-b__mon__{MON}",
+             "clinicianId": "Bob"},
+        ]}}]},
+        {"text": "Review done: filled the remaining open slot."},
+    ]
+    progress = ProgressRecorder()
+    result = agent_solve_range(
+        _payload(agent_strategy=None),
+        state,
+        MockCancelEvent(),
+        progress,
+        time.time(),
+        provider=MockProvider(script),
+        config=_config(max_iterations=40),
+    )
+    assert result["debugInfo"]["solver_status"] == "AGENT_COMPLETE"
+    assert len(result["assignments"]) == 2
+    assert any(
+        n.startswith("Final range review: 1 additional change") for n in result["notes"]
+    )
+    assert any(n.startswith("No unresolved issues") for n in result["notes"])

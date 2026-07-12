@@ -1627,8 +1627,11 @@ def test_suggest_balance_moves_offers_tagged_overshoot():
     assert applied["applied"] is True  # Alice 9h, Bob 1h stub
 
     payload, _ = _run(executor, "suggest_balance_moves", {"dateISO": MON})
-    offer = payload["offers"][0]
-    assert offer["reason"] == "clear_mini_stint"
+    # Clean offers sort first, so the tagged one is not necessarily on top
+    # (here an overshoot-free extend_short_day alternative precedes it).
+    offer = next(
+        o for o in payload["offers"] if o["reason"] == "clear_mini_stint"
+    )
     assert offer["to"] == "Alice"
     # Alice lands on 10h — 1h past her 9h comfort line — and the offer says so.
     assert offer["receiver_day_hours_before_after"] == [9.0, 10.0]
@@ -1737,3 +1740,48 @@ def test_greedy_chain_stops_at_preference_window_once_minimum_met():
     assert alice["block"] == [executor._alias_slot_key(f"slot-start__{MON}")]
     assert alice["block_hours"] == 4.0
     assert alice["window_fit"] is False  # start slot itself sticks out
+
+
+def test_suggest_balance_moves_extends_short_day_from_longer_neighbour():
+    """The production case of 2026-07-08: one clinician on 3.5h right next
+    to a colleague on 8.5h whose evening slot ADJOINS the short block.
+    Neither rule (mini-stint clear / over-long shorten) fired — the new
+    extend_short_day offer hands the shared edge slot to the shorter
+    colleague as long as the donor stays at least as long."""
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Tom", working_hours_per_week=40),
+            make_clinician("clin-2", "Laurent", working_hours_per_week=40),
+        ],
+        slots=[
+            make_template_slot(slot_id="s-noon", col_band_id="col-mon-1",
+                               start_time="11:30", end_time="15:30"),
+            make_template_slot(slot_id="s-pm", col_band_id="col-mon-1",
+                               start_time="15:30", end_time="19:00"),
+            make_template_slot(slot_id="s-pm2", col_band_id="col-mon-1",
+                               start_time="15:30", end_time="19:00"),
+            make_template_slot(slot_id="s-eve", col_band_id="col-mon-1",
+                               start_time="19:00", end_time="20:00"),
+        ],
+    )
+    executor = _make_executor(state)
+    applied, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"s-noon__{MON}", "clinicianId": "Tom"},
+        {"action": "assign", "slot_key": f"s-pm__{MON}", "clinicianId": "Tom"},
+        {"action": "assign", "slot_key": f"s-eve__{MON}", "clinicianId": "Tom"},
+        {"action": "assign", "slot_key": f"s-pm2__{MON}", "clinicianId": "Laurent"},
+    ]})
+    assert applied["applied"] is True  # Tom 8.5h, Laurent 3.5h
+
+    payload, is_error = _run(executor, "suggest_balance_moves", {"dateISO": MON})
+    assert not is_error
+    extend = next(
+        o for o in payload["offers"] if o["reason"] == "extend_short_day"
+    )
+    assert extend["from"] == "Tom" and extend["to"] == "Laurent"
+    assert extend["slots"] == [executor._alias_slot_key(f"s-eve__{MON}")]
+    assert extend["donor_day_hours_before_after"] == [8.5, 7.5]
+    assert extend["receiver_day_hours_before_after"] == [3.5, 4.5]
+
+    applied, _ = _run(executor, "apply_moves", {"moves": extend["batch"]})
+    assert applied["applied"] is True

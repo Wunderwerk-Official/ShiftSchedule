@@ -286,6 +286,38 @@ why, and any imbalance the review could not fix. Then the harness moves you
 to the next day."""
 
 
+REVIEW_SYSTEM_PROMPT = """You are an expert clinician shift planner doing the FINAL REVIEW of a fully built week.
+
+Every day has been planned one at a time — you now see the WHOLE range and
+fix what per-day planning could not: remaining open slots, clearly short
+days next to clearly long ones, over-long days, placements outside
+preferred working times. Rearranging ACROSS days is allowed and often the
+point (move yesterday's slot to free someone for today); the apply gate
+re-checks every hard rule (rest days, weekly hours, overlaps, windows) on
+every batch, so nothing you try can break the plan.
+
+THE PROCEDURE:
+1. The digest lists the remaining issues, worst first: open slots, then
+   short days, then over-long days, then preferred-time misses. Work in
+   that order; skip cosmetic cases.
+2. Per issue day: suggest_balance_moves(dateISO) returns pre-validated
+   transfers (clear mini-stints, even out uneven neighbours via
+   extend_short_day, shorten over-long days) — apply ONE batch per round
+   EXACTLY as given, then re-query. suggest_rescue_moves(dateISO) cracks
+   unfillable open slots; get_day_schedule shows any day in full;
+   list_short_days precomputes fix options range-wide.
+3. Cross-day fixes are plain apply_moves batches (e.g. unassign a slot on
+   one day, hand it to a colleague, place the freed person on the problem
+   day) — batch the WHOLE swap in ONE call. A rejected batch returns the
+   violations it would create: adjust, never retry identical moves.
+4. Every batch must address a NAMED issue from the digest. The harness
+   keeps the best plan; ties keep your latest state, so clean fairness
+   swaps survive.
+
+Every reply must either CALL A TOOL or BE your final summary: what you
+fixed, what stays unsolved and why."""
+
+
 DUTY_SYSTEM_PROMPT = """You are an expert clinician shift planner. Before the day-by-day planning of this range starts, you staff its DUTY slots (on-call services) FIRST, across ALL days — the way a human planner fixes the 24/7 duty roster before any day work. Duties bind rest days around them and eat weekly-hours budgets: placed last they starve (observed in production: a whole weekend's on-call left empty because the week's hours were spent on ordinary day work first).
 
 Hard constraints are enforced by the apply gate exactly as everywhere else
@@ -540,5 +572,34 @@ def build_problem_digest(
     lines.append(
         f"You have up to {max_iterations} tool-use rounds. Improve the plan, "
         "then finish with a brief summary of what you changed."
+    )
+    return "\n".join(lines)
+
+
+def build_review_digest(
+    ctx: ScoringContext,
+    unsolved_lines: List[str],
+    previous_day_lines: List[str],
+    max_rounds: int,
+) -> str:
+    """First user message of the final range review: the closing report's
+    issue list plus the per-day build summaries — everything the reviewer
+    needs to pick the worst problems without re-inspecting each day."""
+    lines: List[str] = [
+        f"FINAL RANGE REVIEW: {ctx.start_iso} to {ctx.end_iso}. All days "
+        "are built; fix the remaining issues below, worst first.",
+        "",
+        "Remaining issues:",
+    ]
+    lines.extend(unsolved_lines)
+    if previous_day_lines:
+        lines.append("")
+        lines.append("Days as built:")
+        lines.extend(previous_day_lines)
+    lines.append("")
+    lines.append(
+        f"You have roughly {max_rounds} tool rounds. Address the worst "
+        "issues; when nothing worth fixing remains, finish with a short "
+        "summary."
     )
     return "\n".join(lines)

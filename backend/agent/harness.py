@@ -26,10 +26,12 @@ from .prompts import (
     DAY_SYSTEM_PROMPT,
     DEFAULT_AGENT_INSTRUCTIONS,
     DUTY_SYSTEM_PROMPT,
+    REVIEW_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_day_digest,
     build_duty_digest,
     build_problem_digest,
+    build_review_digest,
 )
 from .provider import ChatMessage, LLMProvider, ToolSpec, get_provider
 from .tools import DAY_ONLY_TOOL_NAMES, TOOL_SPECS_RAW, PlanToolExecutor
@@ -1131,6 +1133,94 @@ def agent_solve_range(
                 f"- {date_iso}: {max(0, open_positions - still_open)} filled, "
                 f"{still_open} left open"
             )
+        # --------------------------------------------------------------
+        # FINAL RANGE REVIEW (admin request): one conversation that sees
+        # the WHOLE built week and may rearrange across days. The day loop
+        # only ever saw one day at a time, so imbalances needing another
+        # day's slots (or only visible in the week's total) survived every
+        # per-day pass.
+        # --------------------------------------------------------------
+        review_rounds = min(20, config.max_iterations - iterations_done)
+        review_time_left = deadline - time.time()
+        if (
+            not aborted
+            and not cancel_event.is_set()
+            and executor.moves_accepted > 0
+            and review_rounds >= 2
+            and review_time_left > max(DEADLINE_HEADROOM_SECONDS, 30.0)
+        ):
+            moves_before_review = executor.moves_accepted
+            unsolved_lines, _ = _unsolved_overview(executor.best_assignments)
+            review_digest = (
+                build_review_digest(
+                    ctx, unsolved_lines, previous_day_lines, review_rounds
+                )
+                + admin_block
+            )
+            messages = [ChatMessage(role="user", content=review_digest)]
+            on_progress(
+                "phase",
+                {
+                    "phase": "agent_loop",
+                    "label": "Agent (3/3): final review of the whole range...",
+                },
+            )
+            rounds_end = min(iterations_done + review_rounds, config.max_iterations)
+            while iterations_done < rounds_end:
+                if cancel_event.is_set():
+                    break
+                global_left = deadline - time.time()
+                if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
+                    break
+                per_call_timeout = max(
+                    10.0,
+                    min(
+                        global_left - DEADLINE_HEADROOM_SECONDS,
+                        MAX_PER_CALL_TIMEOUT_SECONDS,
+                    ),
+                )
+                _compact_tool_history(messages)
+                executor.current_iteration = iterations_done + 1
+                emit_agent("iteration", {"iteration": iterations_done + 1})
+                response = provider.complete(
+                    system=REVIEW_SYSTEM_PROMPT,
+                    messages=messages,
+                    tools=DAY_TOOL_SPECS,
+                    timeout_seconds=per_call_timeout,
+                )
+                iterations_done += 1
+                absorb_response(response)
+                if response.stop_reason in ("error", "refusal"):
+                    extra_notes.append(
+                        "LLM error during the final range review; best plan "
+                        "so far returned."
+                    )
+                    break
+                if response.stop_reason == "tool_use" and response.tool_calls:
+                    messages.append(
+                        ChatMessage(
+                            role="assistant",
+                            content=response.replay_text,
+                            tool_calls=response.tool_calls,
+                            raw_content=response.raw_content,
+                        )
+                    )
+                    messages.append(
+                        ChatMessage(
+                            role="tool",
+                            tool_results=[
+                                executor.execute(c.name, c.arguments, c.id)
+                                for c in response.tool_calls
+                            ],
+                        )
+                    )
+                    continue
+                break  # end_turn: review finished
+            review_changes = executor.moves_accepted - moves_before_review
+            extra_notes.append(
+                f"Final range review: {review_changes} additional change(s)."
+            )
+
         if (
             iterations_done >= config.max_iterations
             and not aborted
