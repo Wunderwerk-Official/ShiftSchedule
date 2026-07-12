@@ -4,6 +4,7 @@ import {
   deleteUser,
   exportUserState,
   listUsers,
+  saveState,
   updateUser,
   type AuthUser,
   type AppState,
@@ -36,6 +37,7 @@ export default function AdminUsersPanel({
   const [resetSaving, setResetSaving] = useState(false);
   const [deletingUser, setDeletingUser] = useState<string | null>(null);
   const [exportingUser, setExportingUser] = useState<string | null>(null);
+  const [loadingCopyUser, setLoadingCopyUser] = useState<string | null>(null);
 
   const sortedUsers = useMemo(
     () => [...users].sort((a, b) => a.username.localeCompare(b.username)),
@@ -130,6 +132,35 @@ export default function AdminUsersPanel({
       setError("Could not delete user.");
     } finally {
       setDeletingUser(null);
+    }
+  };
+
+  // Load a COPY of another user's schedule into the admin's own account —
+  // for reviewing their plan with the full calendar UI. The admin's own
+  // current state is replaced (after an explicit confirmation); the source
+  // user's state is never touched.
+  const handleLoadCopy = async (user: AuthUser) => {
+    const confirmLoad = await confirm({
+      title: "Load User Schedule",
+      message:
+        `Load a copy of "${user.username}"'s schedule into YOUR account? ` +
+        "Your own current schedule will be replaced. Export your state " +
+        "first if you want to keep it. The user's schedule is not changed.",
+      confirmLabel: "Load copy",
+      variant: "danger",
+    });
+    if (!confirmLoad) return;
+    setError(null);
+    setLoadingCopyUser(user.username);
+    try {
+      const payload = await exportUserState(user.username);
+      await saveState(payload.state);
+      // Full reload: every piece of page state (rows, clinicians,
+      // assignments, template) must re-hydrate from the copied state.
+      window.location.reload();
+    } catch {
+      setError("Could not load the user's schedule.");
+      setLoadingCopyUser(null);
     }
   };
 
@@ -352,6 +383,19 @@ export default function AdminUsersPanel({
                       )}
                     >
                       {exportingUser === user.username ? "Exporting..." : "Export"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleLoadCopy(user)}
+                      disabled={loadingCopyUser === user.username}
+                      title="Load a copy of this user's schedule into your own account to review it (your current schedule is replaced)."
+                      className={cx(
+                        "rounded-lg border border-indigo-200 px-2 py-1 text-xs font-semibold text-indigo-600",
+                        "hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60",
+                        "dark:border-indigo-500/40 dark:text-indigo-200 dark:hover:bg-indigo-900/30",
+                      )}
+                    >
+                      {loadingCopyUser === user.username ? "Loading..." : "Load copy"}
                     </button>
                     <button
                       type="button"
