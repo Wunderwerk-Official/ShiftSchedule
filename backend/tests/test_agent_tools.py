@@ -1667,3 +1667,73 @@ def test_expensive_tools_respect_wall_deadline():
     assert rescue["rescues"] == []
     assert "time budget" in rescue["note"]
     assert rescue["not_searched"]
+
+
+def test_suggest_day_blocks_reports_and_prefers_window_fit():
+    """Preferred (wish) working times: the candidate whose block lies inside
+    their preferred window sorts before an equally-adequate candidate whose
+    block falls outside — even when the latter is further behind on YTD.
+    The block's POSITION counts, not just its length."""
+    day = "2026-03-02"
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", working_hours_per_week=40),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-pm", col_band_id="col-mon-1",
+                               start_time="14:00", end_time="18:00"),
+            # History-only slot for Bob's YTD (does not touch 14:00/18:00).
+            make_template_slot(slot_id="slot-hist", col_band_id="col-mon-1",
+                               start_time="06:00", end_time="13:00"),
+        ],
+        assignments=[
+            # Bob worked this year -> his YTD is AHEAD; the pure ytd order
+            # would put Alice first despite her wish being violated.
+            make_assignment(f"m-b-{d}", "slot-hist", f"2026-02-{d:02d}", "clin-2")
+            for d in range(2, 21)
+        ],
+    )
+    executor = _make_executor(state, start=day, end=day)
+    # Alice prefers mornings; the 14-18 block lies fully outside her wish.
+    executor.ctx.window_by_clinician_date[("clin-1", day)] = ("preference", 480, 780)
+
+    payload, is_error = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-pm__{day}"}
+    )
+    assert not is_error
+    by_name = {c["clinicianId"]: c for c in payload["candidates"]}
+    assert by_name["Alice"]["window_fit"] is False
+    assert by_name["Alice"]["preferred_window"] == "08:00-13:00"
+    assert "window_fit" not in by_name["Bob"]  # no wish that day
+    assert all(c["meets_daily_minimum"] for c in payload["candidates"])
+    assert by_name["Alice"]["ytd_worked_pct"] < by_name["Bob"]["ytd_worked_pct"]
+    # Wish fit outranks the ytd tie-break among minimum-meeting candidates.
+    assert payload["candidates"][0]["clinicianId"] == "Bob"
+
+
+def test_greedy_chain_stops_at_preference_window_once_minimum_met():
+    """A preference window steers the chain's POSITION: once the daily
+    minimum is reached, the chain must not grow past the window edge (the
+    length cap alone allowed an entirely-outside block for late starts)."""
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40)],
+        slots=[
+            make_template_slot(slot_id="slot-start", col_band_id="col-mon-1",
+                               start_time="12:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-eve", col_band_id="col-mon-1",
+                               start_time="16:00", end_time="18:00"),
+        ],
+    )
+    executor = _make_executor(state)
+    # Wish: 08:00-14:00. The 12-16 start already meets the 3h daily minimum
+    # (window span / 2), so the 16-18 extension past the edge is skipped.
+    executor.ctx.window_by_clinician_date[("clin-1", MON)] = ("preference", 480, 840)
+
+    payload, _ = _run(
+        executor, "suggest_day_blocks", {"slot_key": f"slot-start__{MON}"}
+    )
+    alice = payload["candidates"][0]
+    assert alice["block"] == [executor._alias_slot_key(f"slot-start__{MON}")]
+    assert alice["block_hours"] == 4.0
+    assert alice["window_fit"] is False  # start slot itself sticks out

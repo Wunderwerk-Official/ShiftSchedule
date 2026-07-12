@@ -936,4 +936,44 @@ def test_finalize_reports_all_clear_when_nothing_unsolved():
     )
     assert any(n.startswith("No unresolved issues") for n in result["notes"])
     unsolved = result["debugInfo"]["agent"]["unsolved"]
-    assert unsolved == {"open_slots": [], "short_days": [], "overlong_days": []}
+    assert unsolved == {
+        "open_slots": [],
+        "short_days": [],
+        "overlong_days": [],
+        "outside_preferred_times": [],
+    }
+
+
+def test_unsolved_overview_counts_placements_outside_preferred_times():
+    """The closing report lists placements outside someone's PREFERRED
+    working time (the wish; mandatory windows can never be violated)."""
+    from backend.models import PreferredWorkingTime
+
+    state = _two_clinician_state()
+    # Alice prefers 08:00-12:00 on Mondays; the default slot runs 08-16.
+    state.clinicians[0].preferredWorkingTimes = {
+        "mon": PreferredWorkingTime(
+            startTime="08:00", endTime="12:00", requirement="preference"
+        )
+    }
+    progress = ProgressRecorder()
+    result = agent_solve_range(
+        _payload(),
+        state,
+        MockCancelEvent(),
+        progress,
+        time.time(),
+        provider=MockProvider([{"text": "Seed accepted."}]),
+        config=_config(),
+    )
+    unsolved = result["debugInfo"]["agent"]["unsolved"]
+    if unsolved["outside_preferred_times"]:
+        entry = unsolved["outside_preferred_times"][0]
+        assert entry["clinician"] == "Alice"
+        assert entry["preferred"] == "08:00-12:00"
+        assert any(
+            "outside preferred time" in n for n in result["notes"]
+        )
+    else:
+        # The seed picked Bob (no wish) - then the report must be all clear.
+        assert any(n.startswith("No unresolved issues") for n in result["notes"])

@@ -151,6 +151,31 @@ function scrollToDateColumn(dateISO: string, maxWaitMs: number = 1000): void {
   };
   requestAnimationFrame(tick);
 }
+/**
+ * Scroll a calendar CELL into view (identified by the data-row-id +
+ * data-date-iso attributes both grid variants already render) and pulse a
+ * highlight on it. Used by the open-slots / rule-violations badge cycling.
+ */
+function scrollToGridCell(rowId: string, dateISO: string, maxWaitMs: number = 1000): void {
+  const startedAt = performance.now();
+  const tick = () => {
+    const element = document.querySelector(
+      `[data-schedule-cell="true"][data-row-id="${CSS.escape(rowId)}"][data-date-iso="${dateISO}"]`,
+    ) as HTMLElement | null;
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+      element.classList.remove("cycle-jump-highlight");
+      // Restart the pulse animation even when re-jumping to the same cell.
+      void element.offsetWidth;
+      element.classList.add("cycle-jump-highlight");
+      window.setTimeout(() => element.classList.remove("cycle-jump-highlight"), 1700);
+      return;
+    }
+    if (performance.now() - startedAt > maxWaitMs) return;
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}
 import { buildICalendar, type ICalEvent } from "../lib/ical";
 import {
   buildRenderedAssignmentMap,
@@ -1762,6 +1787,81 @@ export default function WeeklySchedulePage({
     rowById,
   ]);
 
+  // Cell targets for the open-slots badge cycling: one entry per calendar
+  // cell that still misses people, day by day through the week.
+  const openSlotTargets = useMemo(() => {
+    const dateISOs = fullWeekDays.map(toISODate);
+    const targets: Array<{ rowId: string; dateISO: string }> = [];
+    for (const d of dateISOs) {
+      for (const rowId of classShiftRowIds) {
+        const row = rowById.get(rowId);
+        if (!row || row.kind !== "class") continue;
+        const dayType = getDayType(d, holidayDates);
+        const isActive = row.dayType ? row.dayType === dayType : true;
+        if (!isActive) continue;
+        const cell = fullWeekRenderAssignmentMap.get(`${rowId}__${d}`) ?? [];
+        const baseRequired =
+          typeof row.requiredSlots === "number"
+            ? row.requiredSlots
+            : isWeekendOrHoliday(d)
+              ? (minSlotsByRowId[rowId] ?? { weekday: 0, weekend: 0 }).weekend
+              : (minSlotsByRowId[rowId] ?? { weekday: 0, weekend: 0 }).weekday;
+        const override = slotOverridesByKey[`${rowId}__${d}`] ?? 0;
+        const required = Math.max(0, baseRequired + override);
+        if (required > cell.length) targets.push({ rowId, dateISO: d });
+      }
+    }
+    return targets;
+  }, [
+    fullWeekDays,
+    fullWeekRenderAssignmentMap,
+    classShiftRowIds,
+    rowById,
+    minSlotsByRowId,
+    slotOverridesByKey,
+    holidayDates,
+  ]);
+
+  // Badge-click cycling state: each click jumps to the NEXT open slot /
+  // violation. Reset when the week or the target list changes.
+  const openSlotCycleRef = useRef(0);
+  const violationCycleRef = useRef(0);
+  useEffect(() => {
+    openSlotCycleRef.current = 0;
+    violationCycleRef.current = 0;
+  }, [currentWeekStartISO]);
+
+  const handleCycleOpenSlots = () => {
+    if (openSlotTargets.length === 0) return;
+    const target = openSlotTargets[openSlotCycleRef.current % openSlotTargets.length];
+    openSlotCycleRef.current += 1;
+    scrollToGridCell(target.rowId, target.dateISO);
+  };
+
+  const handleCycleRuleViolations = () => {
+    if (ruleViolations.length === 0) return;
+    const violation = ruleViolations[violationCycleRef.current % ruleViolations.length];
+    violationCycleRef.current += 1;
+    setActiveRuleViolationId(violation.id);
+    const targetDateISO = violation.assignmentKeys
+      .map(extractDateFromAssignmentKey)
+      .find((d): d is string => d !== null);
+    const weekEndISO = toISODate(weekEndInclusive);
+    if (
+      targetDateISO &&
+      (targetDateISO < currentWeekStartISO || targetDateISO > weekEndISO)
+    ) {
+      const [y, m, d] = targetDateISO.split("-").map(Number);
+      setAnchorDate(new Date(y, m - 1, d));
+    }
+    scrollToAssignmentKeys(violation.assignmentKeys);
+    const firstKey = violation.assignmentKeys[0];
+    if (firstKey && targetDateISO) {
+      const rowId = firstKey.slice(0, firstKey.indexOf(`__${targetDateISO}__`));
+      if (rowId) scrollToGridCell(rowId, targetDateISO);
+    }
+  };
+
   // Calculate non-consecutive shifts (gaps) for clinicians in the current week
   // Uses renderAssignmentMap (not raw assignmentMap) to match what's displayed in the UI
   type NonConsecutiveShift = {
@@ -2951,16 +3051,20 @@ export default function WeeklySchedulePage({
     setHolidayYear(year);
   };
   const openSlotsBadge = (
-    <span
+    <button
+      type="button"
+      onClick={handleCycleOpenSlots}
       onMouseEnter={() => setIsOpenSlotsHovered(true)}
       onMouseLeave={() => setIsOpenSlotsHovered(false)}
+      title="Click to jump to the next open slot in this week."
       className={cx(
         "inline-flex items-center self-start rounded-full px-2.5 py-1 text-[11px] font-normal ring-1 ring-inset sm:self-auto sm:px-3",
         "bg-yellow-50 text-yellow-700 ring-yellow-200 dark:bg-yellow-900/40 dark:text-yellow-200 dark:ring-yellow-500/40",
+        openSlotsCount > 0 && "cursor-pointer hover:bg-yellow-100 dark:hover:bg-yellow-900/60",
       )}
     >
       {openSlotsCount} Open Slots
-    </span>
+    </button>
   );
   const ruleViolationsCount = ruleViolations.length;
   // Get popover position from button ref
@@ -2984,16 +3088,35 @@ export default function WeeklySchedulePage({
         <div ref={ruleViolationsRef} className="relative">
           <button
             type="button"
-            onClick={() => setRuleViolationsOpen((open) => !open)}
+            onClick={handleCycleRuleViolations}
             onMouseEnter={() => setIsRuleViolationsHovered(true)}
             onMouseLeave={() => setIsRuleViolationsHovered(false)}
+            title="Click to jump to the next rule violation; open the list via the arrow."
             className={cx(
               "inline-flex items-center self-start rounded-full px-2.5 py-1 text-[11px] font-normal ring-1 ring-inset sm:self-auto sm:px-3",
               "bg-red-50 text-red-700 ring-red-200 hover:bg-red-100 dark:bg-red-900/40 dark:text-red-200 dark:ring-red-500/40",
             )}
-            aria-expanded={ruleViolationsOpen}
           >
             {ruleViolationsCount} Rule Violations
+            <span
+              role="button"
+              tabIndex={0}
+              aria-expanded={ruleViolationsOpen}
+              title="Show the violation list"
+              onClick={(e) => {
+                e.stopPropagation();
+                setRuleViolationsOpen((open) => !open);
+              }}
+              onKeyDown={(e) => {
+                if (e.key !== "Enter" && e.key !== " ") return;
+                e.preventDefault();
+                e.stopPropagation();
+                setRuleViolationsOpen((open) => !open);
+              }}
+              className="-mr-1 ml-1 rounded-full px-1 hover:bg-red-200/70 dark:hover:bg-red-800/70"
+            >
+              ▾
+            </span>
           </button>
         </div>
         {ruleViolationsOpen
