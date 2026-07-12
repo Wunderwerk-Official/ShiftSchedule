@@ -1791,7 +1791,18 @@ def _monitor_solver_job(
             print(f"[solver] Failed to record agent spend: {spend_exc}", file=sys.stderr)
 
         status = "aborted" if (user_aborted or overshoot_killed) else "finished"
-        solver_runs.finish_run(run_id, status, result=result)
+        # Surface the closing report's summary line on the run row itself,
+        # so the inbox shows "Unresolved: ..." without loading the result.
+        summary_note = next(
+            (
+                n
+                for n in result.get("notes", [])
+                if n.startswith("Unresolved after this run:")
+                or n.startswith("No unresolved issues")
+            ),
+            None,
+        )
+        solver_runs.finish_run(run_id, status, result=result, note=summary_note)
         _broadcast_solver_progress("complete", {
             "startISO": payload.startISO,
             "endISO": payload.endISO,
