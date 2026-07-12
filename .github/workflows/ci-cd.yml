@@ -118,7 +118,7 @@ jobs:
           # deployed app version; a container that is down passes through.
           for i in \$(seq 1 540); do
             if docker compose -f "$COMPOSE_FILE" exec -T backend \
-                 python -c "import glob;print(sum('spawn_main' in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
+                 python -c "import glob;marker='spawn'+chr(95)+'main';print(sum(marker in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
                | grep -q '^[1-9]'; then
               echo "Solver run in flight - postponing deploy (\$i/540)..."
               sleep 10
@@ -264,7 +264,7 @@ jobs:
             # deployed app version; a container that is down passes through.
             for i in $(seq 1 540); do
               if docker compose -f docker-compose.proxied.yml exec -T backend \
-                   python -c "import glob;print(sum('spawn_main' in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
+                   python -c "import glob;marker='spawn'+chr(95)+'main';print(sum(marker in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
                  | grep -q '^[1-9]'; then
                 echo "Solver run in flight - postponing deploy ($i/540)..."
                 sleep 10
