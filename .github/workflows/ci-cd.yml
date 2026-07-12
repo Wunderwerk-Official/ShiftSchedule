@@ -2,9 +2,16 @@ name: CI / CD
 
 # CI runs on every push to main and on pull requests targeting main.
 # Deploy runs only on push to main, and only after both CI jobs pass.
+# Docs and diagnostic/benchmark workflow edits are excluded on push: a
+# README-only merge once redeployed the stack and SIGKILLed the backend
+# 3 minutes into a user's live solver run.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - "**.md"
+      - ".github/workflows/agent-arena.yml"
+      - ".github/workflows/backend-logs.yml"
   pull_request:
     branches: [main]
 
@@ -104,6 +111,20 @@ jobs:
           set -euo pipefail
           cd "$DEPLOY_PATH"
           git pull --ff-only
+          # Never replace the container mid-solve: hold the deploy (up to
+          # 20 min) while a solver subprocess (multiprocessing spawn_main)
+          # is alive in the backend container. Works regardless of the
+          # deployed app version; a container that is down passes through.
+          for i in \$(seq 1 120); do
+            if docker compose -f "$COMPOSE_FILE" exec -T backend \
+                 python -c "import glob;print(sum('spawn_main' in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
+               | grep -q '^[1-9]'; then
+              echo "Solver run in flight - postponing deploy (\$i/120)..."
+              sleep 10
+            else
+              break
+            fi
+          done
           docker compose -f "$COMPOSE_FILE" up -d --build
           # The Caddyfile is bind-mounted as a single file, and git pull
           # replaces it with a NEW inode — the running container (and even
@@ -234,6 +255,21 @@ jobs:
                 echo "WARNING: host nginx config test failed with the drop-in; removed it again."
               fi
             fi
+
+            # Never replace the container mid-solve: hold the deploy (up to
+            # 20 min) while a solver subprocess (multiprocessing spawn_main)
+            # is alive in the backend container. Works regardless of the
+            # deployed app version; a container that is down passes through.
+            for i in $(seq 1 120); do
+              if docker compose -f docker-compose.proxied.yml exec -T backend \
+                   python -c "import glob;print(sum('spawn_main' in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
+                 | grep -q '^[1-9]'; then
+                echo "Solver run in flight - postponing deploy ($i/120)..."
+                sleep 10
+              else
+                break
+              fi
+            done
 
             docker compose -f docker-compose.proxied.yml up -d --build
 
