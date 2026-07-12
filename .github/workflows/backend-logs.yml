@@ -1,0 +1,64 @@
+name: Backend logs (truhn.ai)
+
+# Diagnostic: fetch recent backend container logs from the production LXC.
+# Used to investigate solve failures that leave no trace in the client
+# (connection cuts, subprocess crashes).
+
+on:
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "docker logs --since (e.g. 2h, 30m, 2026-07-12T07:00:00)"
+        default: "2h"
+      tail:
+        description: "Max lines"
+        default: "800"
+      grep:
+        description: "Optional case-insensitive filter (empty = everything)"
+        default: ""
+
+jobs:
+  logs:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH (bastion jump)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.SSH_KEY_FUER_SHIFTSCHEDULE_SERVER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_truhn
+          chmod 600 ~/.ssh/id_truhn
+          cat > ~/.ssh/config <<'CFG'
+          Host truhn-bastion
+            HostName 49.13.89.75
+            Port 4444
+            User dtruhn
+            IdentityFile ~/.ssh/id_truhn
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+
+          Host truhn-target
+            HostName 10.10.10.6
+            User root
+            IdentityFile ~/.ssh/id_truhn
+            ProxyJump truhn-bastion
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Fetch backend logs
+        env:
+          SINCE: ${{ inputs.since }}
+          TAIL: ${{ inputs.tail }}
+          FILTER: ${{ inputs.grep }}
+        run: |
+          ssh truhn-target SINCE="$SINCE" TAIL="$TAIL" FILTER="$FILTER" bash -s <<'EOS'
+          set -euo pipefail
+          cd /opt/app
+          if [ -n "$FILTER" ]; then
+            docker compose -f docker-compose.proxied.yml logs backend --since "$SINCE" --tail "$TAIL" 2>&1 | grep -i -C 6 "$FILTER" || echo "NO MATCHES for $FILTER"
+          else
+            docker compose -f docker-compose.proxied.yml logs backend --since "$SINCE" --tail "$TAIL" 2>&1
+          fi
+          EOS
