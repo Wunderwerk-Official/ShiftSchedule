@@ -420,3 +420,15 @@ overshoot, no connection loss; the thoughts show the graded verdicts in
 use ("meets his daily minimum of 4.0 hours", "fully staffed with no
 balance issues"). The receiver cap also made the balance pass markedly
 cheaper — 7 days now fit where 5 days took 635 s on v1.40.
+
+Second production incident (2026-07-12, fixed in v1.42): a run of the same
+week died after exactly 3m01s — docker events showed both containers
+replaced with exit code 137 (SIGKILL) at 07:08:11 by the DEPLOY of a
+docs-only merge; the run had started 07:05:10. Root cause: ci-cd.yml
+deployed on every push to main and `docker compose up --build` replaces
+the backend regardless of an in-flight solve. Fixes: pushes touching only
+Markdown or the diagnostic/benchmark workflows no longer trigger the
+pipeline, and both deploy jobs now wait (up to 20 min) for the backend to
+have no live solver subprocess before replacing containers. A new
+`backend-logs.yml` workflow (logs + inspect modes) made this diagnosable
+from the outside; /health now also reports solver_running.

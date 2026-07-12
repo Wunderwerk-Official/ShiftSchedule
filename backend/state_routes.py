@@ -27,7 +27,12 @@ class DatabaseHealthCheckResult(BaseModel):
 
 @router.get("/health")
 def health():
-    return {"status": "ok"}
+    # solver_running lets the DEPLOY script hold off replacing the container
+    # while a solve is in flight (observed in production: a docs-only deploy
+    # SIGKILLed the backend 3 minutes into a user's run).
+    from . import solver as _solver
+
+    return {"status": "ok", "solver_running": bool(_solver._solver_is_running)}
 
 
 @router.get("/v1/state", response_model=AppState)

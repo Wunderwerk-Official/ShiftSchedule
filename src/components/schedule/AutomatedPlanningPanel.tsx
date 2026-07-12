@@ -83,7 +83,6 @@ export default function AutomatedPlanningPanel({
   const [startInput, setStartInput] = useState("");
   const [endInput, setEndInput] = useState("");
   const [hasTouched, setHasTouched] = useState(false);
-  const [strategy, setStrategy] = useState<"fill" | "distribute">("fill");
   const [localError, setLocalError] = useState<string | null>(null);
   const [resetPanelOpen, setResetPanelOpen] = useState(false);
   const [resetPanelAbove, setResetPanelAbove] = useState(false);
@@ -190,7 +189,7 @@ export default function AutomatedPlanningPanel({
     onRun({
       startISO: range.startISO,
       endISO: range.endISO,
-      onlyFillRequired: strategy === "fill",
+      onlyFillRequired: true,
       timeoutSeconds: Math.max(timeoutSeconds, AGENT_TIMEOUT_SECONDS),
       solverMode: "agent",
     });
@@ -299,31 +298,10 @@ export default function AutomatedPlanningPanel({
               />
             </div>
           </div>
-          <div className="flex flex-col gap-3">
-            <div className="text-xs font-normal uppercase tracking-wide text-slate-400 dark:text-slate-500">
-              Strategy
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setStrategy("fill")}
-                disabled={isRunning}
-                title="Only fill required slots that are still open — nothing more."
-                className={getPillToggleClasses(strategy === "fill")}
-              >
-                Fill open slots
-              </button>
-              <button
-                type="button"
-                onClick={() => setStrategy("distribute")}
-                disabled={isRunning}
-                title="Fill required slots first, then spread the remaining available people across the timeframe."
-                className={getPillToggleClasses(strategy === "distribute")}
-              >
-                Distribute all
-              </button>
-            </div>
-          </div>
+          {/* The fill/distribute strategy toggle left the UI on admin
+              request (2026-07): every run fills required slots only.
+              Distribute-all stays available in the backend
+              (only_fill_required=false) for when it returns. */}
           <div className="text-xs text-slate-400 dark:text-slate-500">
             The AI plans each day like a human: on-call and priority slots
             first, every clinician placed with a contiguous block of work.
