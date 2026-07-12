@@ -292,8 +292,10 @@ TOOL_SPECS_RAW = [
             "('is everything in order?'): checks the finished day for "
             "fairness problems a human planner fixes on the last "
             "read-through — one person on an over-long chained day while "
-            "colleagues barely work, or someone called in for a mini-stint "
-            "below their daily minimum. Returns pre-validated transfer "
+            "colleagues barely work, someone called in for a mini-stint "
+            "below their daily minimum, or a clearly shorter day right "
+            "next to a clearly longer one sharing an edge slot "
+            "(extend_short_day). Returns pre-validated transfer "
             "batches (unassign the donor, assign the receiver to the same "
             "slot) that keep BOTH days contiguous, never create a new "
             "mini-stint day, and pass the exact apply gate. Targets are "
@@ -1870,7 +1872,10 @@ class PlanToolExecutor:
             return [r[-1] for r in ranked[:6]]
 
         def _try_transfer(
-            donor: str, items: List[Tuple[Tuple[str, str, str], Any]], reason: str
+            donor: str,
+            items: List[Tuple[Tuple[str, str, str], Any]],
+            reason: str,
+            receivers: Optional[List[str]] = None,
         ) -> Optional[dict]:
             insts = [inst for _, inst in items]
             donor_ivs, donor_mins = _stats(donor)
@@ -1886,12 +1891,14 @@ class PlanToolExecutor:
             donor_after = donor_mins - moved
             donor_min = self._daily_min_minutes(donor, date_iso)
             if (
-                reason == "shorten_long_day"
+                reason in ("shorten_long_day", "extend_short_day")
                 and donor_min is not None
                 and 0 < donor_after < donor_min
             ):
-                return None  # would trade an over-long day for a mini-stint
-            for rid in _receivers_for(insts, donor):
+                return None  # would trade the problem for a new mini-stint
+            for rid in (
+                receivers if receivers is not None else _receivers_for(insts, donor)
+            ):
                 if self._tool_seconds_left() < 20:
                     return None  # run budget nearly spent — stop searching
                 r_ivs, r_mins = _stats(rid)
@@ -1968,6 +1975,60 @@ class PlanToolExecutor:
             offer = _try_transfer(cid, own_by_cid[cid], "clear_mini_stint")
             if offer:
                 offers.append(offer)
+        # Uneven neighbours: a clearly shorter day right next to a clearly
+        # longer one, joined by an adjacent edge slot the longer colleague
+        # holds (observed in production: 3.5h next to 8.5h with the evening
+        # slot on the long side — neither a mini-stint nor over-long, so
+        # the two rules above never fired). Hand the adjacent slot to the
+        # shorter colleague as long as the donor stays at least as long as
+        # the receiver becomes.
+        by_length = sorted(
+            (mins, cid) for cid, mins in minutes.items() if mins > 0
+        )
+        for r_mins, rid in by_length:
+            if len(offers) >= 6:
+                break
+            if self._tool_seconds_left() < 25:
+                ran_out_of_time = True
+                break
+            r_target = self._daily_target_minutes(rid, date_iso)
+            if r_mins >= r_target:
+                continue  # already a full day
+            r_ivs, _ = _stats(rid)
+            r_start = min(iv[0] for iv in r_ivs)
+            r_end = max(iv[1] for iv in r_ivs)
+            receiver = self.clinicians_by_id.get(rid)
+            quals = set(receiver.qualifiedClassIds or []) if receiver else set()
+            offer = None
+            for d_cid, d_items in own_by_cid.items():
+                if d_cid == rid:
+                    continue
+                _d_ivs, d_mins = _stats(d_cid)
+                if d_mins - r_mins < 120:
+                    continue  # not clearly longer - cosmetic shuffling
+                for identity, inst in sorted(
+                    d_items, key=lambda t: (t[1].end - t[1].start, t[1].slot_key)
+                ):
+                    if inst.section_id not in quals:
+                        continue
+                    if not (inst.start == r_end or inst.end == r_start):
+                        continue  # not adjacent to the receiver's block
+                    moved = inst.end - inst.start
+                    if d_mins - moved < r_mins + moved:
+                        continue  # would just flip the imbalance
+                    offer = _try_transfer(
+                        d_cid,
+                        [(identity, inst)],
+                        "extend_short_day",
+                        receivers=[rid],
+                    )
+                    if offer:
+                        break
+                if offer:
+                    break
+            if offer:
+                offers.append(offer)
+
         for _, cid in overlong[:3]:
             if len(offers) >= 6:
                 break
@@ -2022,8 +2083,10 @@ class PlanToolExecutor:
                 "Apply ONE offered batch EXACTLY as given (one apply_moves "
                 "call), then call suggest_balance_moves again — the other "
                 "offers go stale. Offers are pre-validated against every "
-                "hard rule; receiver_overshoot_hours marks the soft "
-                "trade-off (the receiver's day ends up that far past their "
+                "hard rule; extend_short_day evens out a clearly shorter "
+                "day next to a clearly longer one via their shared edge "
+                "slot; receiver_overshoot_hours marks the soft trade-off "
+                "(the receiver's day ends up that far past their "
                 "comfortable span) — clearing a mini-stint is usually worth "
                 "an overshoot up to ~1h, your call. Problems without an "
                 "offer have no legal transfer; mention them in your summary."
