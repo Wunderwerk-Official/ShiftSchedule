@@ -24,7 +24,8 @@ type SolverOverlayProps = {
   isVisible: boolean;
   progress: { current: number; total: number } | null;
   elapsedMs: number;
-  totalAllowedMs: number; // Total time allowed for solving
+  totalAllowedMs?: number; // Optional: runs have no wall-clock limit since v1.43
+  onMinimize?: () => void; // Send the run to the background (calendar stays usable)
   solveRange: { startISO: string; endISO: string } | null;
   displayedRange: { startISO: string; endISO: string };
   onAbort: () => void;
@@ -538,7 +539,7 @@ function SolverDashboard({
     maxPreferenceRankScore: number;
   } | null;
   elapsedMs: number;
-  totalAllowedMs: number;
+  totalAllowedMs?: number;
   solverMode?: SolverMode;
   onClose: () => void;
 }) {
@@ -558,7 +559,9 @@ function SolverDashboard({
           <div className="flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-700">
             <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
             <span className="text-xs font-medium tabular-nums text-slate-600 dark:text-slate-300">
-              {formatDuration(elapsedMs)} / {formatDuration(totalAllowedMs)}
+              {totalAllowedMs
+                ? `${formatDuration(elapsedMs)} / ${formatDuration(totalAllowedMs)}`
+                : formatDuration(elapsedMs)}
             </span>
           </div>
         </div>
@@ -684,6 +687,7 @@ export default function SolverOverlay({
   progress,
   elapsedMs,
   totalAllowedMs,
+  onMinimize,
   solveRange,
   displayedRange,
   onAbort,
@@ -830,7 +834,11 @@ export default function SolverOverlay({
         <div
           className="flex flex-col items-center gap-1"
           role="progressbar"
-          aria-valuenow={Math.round(Math.min(1, elapsedMs / totalAllowedMs) * 100)}
+          aria-valuenow={
+            totalAllowedMs
+              ? Math.round(Math.min(1, elapsedMs / totalAllowedMs) * 100)
+              : undefined
+          }
           aria-label="Solver progress"
         >
           <div className="flex items-baseline gap-3">
@@ -844,7 +852,9 @@ export default function SolverOverlay({
               )}
             </h3>
             <span className="text-sm font-medium tabular-nums text-slate-500 dark:text-slate-400">
-              {formatDuration(elapsedMs)} / {formatDuration(totalAllowedMs)}
+              {totalAllowedMs
+                ? `${formatDuration(elapsedMs)} / ${formatDuration(totalAllowedMs)}`
+                : formatDuration(elapsedMs)}
             </span>
           </div>
           {dateRangeLabel && (
@@ -853,8 +863,9 @@ export default function SolverOverlay({
             </p>
           )}
           <p className="text-center text-xs text-slate-500 dark:text-slate-400">
-            The calendar is locked while planning runs — it keeps improving the
-            longer you wait.
+            The run works on the server and keeps improving the longer you
+            wait — you can send it to the background and keep using the
+            calendar.
           </p>
         </div>
 
@@ -873,11 +884,22 @@ export default function SolverOverlay({
             </button>
           )}
 
+          {onMinimize && (
+            <button
+              type="button"
+              onClick={onMinimize}
+              title="Hide this panel - the run keeps working on the server and a badge stays in the corner."
+              className="rounded-lg border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-700"
+            >
+              Run in background
+            </button>
+          )}
+
           {/* Abort button - always shown */}
           <button
             type="button"
             onClick={onAbort}
-            title="Stop planning and discard everything — the calendar stays as it was before the run."
+            title="Stop the run — the calendar stays untouched; any partial result lands in the run inbox."
             className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-1.5 text-sm font-medium text-rose-600 transition-colors hover:border-rose-300 hover:bg-rose-100 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-300 dark:hover:border-rose-700 dark:hover:bg-rose-900"
           >
             Cancel &amp; discard
@@ -888,7 +910,7 @@ export default function SolverOverlay({
             <button
               type="button"
               onClick={onApplySolution}
-              title="Stop planning now and put the best plan found so far into the calendar."
+              title="Stop the run now and apply the best plan found so far to the calendar."
               className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-1.5 text-sm font-medium text-indigo-600 transition-colors hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900"
             >
               Apply best plan

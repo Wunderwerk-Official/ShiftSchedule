@@ -58,7 +58,6 @@ KEY DATA STRUCTURES
 
 import asyncio
 import atexit
-from collections import OrderedDict
 from datetime import date, datetime, timedelta
 import json
 import multiprocessing
@@ -72,7 +71,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from ortools.sat.python import cp_model
 
+from pydantic import BaseModel
+
 from .auth import _get_current_user, _verify_token_and_get_user
+from . import solver_runs
 
 # Global cancellation event for solver abort
 _solver_cancel_event = threading.Event()
@@ -95,21 +97,12 @@ _subscribers_lock = threading.Lock()
 _active_run_owner: Optional[str] = None
 _active_run_token: Optional[str] = None
 
-# Finished solve results per run_token (owner, result dict), newest last.
-# The solve POST stays open for the whole run; if any layer between browser
-# and backend cuts that connection (observed in production at ~600s), the
-# run finishes server-side but its response evaporates — and the UI has
-# already stripped the range's previous solver assignments. The client can
-# recover the plan from here via GET /v1/solve/result/{run_token}.
-_finished_results: "OrderedDict[str, Tuple[str, dict]]" = OrderedDict()
-_finished_results_lock = threading.Lock()
-_FINISHED_RESULTS_KEPT = 4
-
 # Watchdog for the monitor loop: a run that overshoots its own time budget
-# is first asked to stop (cancel event — the harness returns its best plan),
-# then hard-terminated with the last streamed solution salvaged. Without
-# this, a run stuck inside one long tool call holds the solve slot and the
-# HTTP request open indefinitely.
+# (when one was requested) is first asked to stop (cancel event — the
+# harness returns its best plan), then hard-terminated with the last
+# streamed solution salvaged. Runs without a budget are bounded by the
+# iteration budget (slots x 10) instead — no wall-clock limit at all
+# (admin decision 2026-07).
 RUN_OVERSHOOT_SOFT_SECONDS = 60.0
 RUN_OVERSHOOT_HARD_SECONDS = 120.0
 
@@ -1571,55 +1564,28 @@ def _add_continuity_constraints(
                 model.Add(sum(block_terms) <= max_blocks)
 
 
-@router.post("/v1/solve/range", response_model=SolveRangeResponse)
-def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_get_current_user)):
+class SolveRangeStartResponse(BaseModel):
+    """POST /v1/solve/range no longer blocks for the whole run: it starts a
+    BACKGROUND JOB and returns immediately. The run's progress streams over
+    SSE as before; its result is persisted in the solver_runs table and
+    fetched/applied via the /v1/solve/runs endpoints. This removes the
+    long-lived HTTP request that proxies, deploys and browser closes kept
+    killing (three production incidents in two days)."""
+
+    run_id: str
+    status: str
+    startISO: str
+    endISO: Optional[str] = None
+
+
+def _start_solver_job(
+    username: str, payload: SolveRangeRequest, run_id: str, attempt: int = 1
+) -> None:
+    """Reserve the (single) solve slot, persist the run row, spawn the
+    subprocess and the monitor thread. Raises 409 when a run is live."""
     global _solver_is_running, _solver_process, _active_run_owner, _active_run_token
 
-    # Capture start time BEFORE anything else - this is used for accurate timeout calculation
     request_start_time = time.time()
-
-    # Agent governance: the model is a global admin setting and every account
-    # has a spending cap. Both are SERVER-injected — whatever the client sent
-    # in these fields is overwritten here, then travels into the solver
-    # subprocess via the pickled payload.
-    from .agent_budget import (
-        add_spend_usd,
-        estimate_cost_usd,
-        get_agent_admin_settings,
-        get_spend_usd,
-    )
-
-    agent_admin = get_agent_admin_settings()
-    payload.agent_model = agent_admin["effective_model"]
-    # The budget only guards PAID usage: self-hosted (OpenAI-compatible)
-    # providers cost nothing, so an exhausted Anthropic budget must not
-    # block them.
-    payload.agent_budget_exhausted = (
-        agent_admin["provider"] == "anthropic"
-        and get_spend_usd(current_user.username) >= agent_admin["budget_usd"]
-    )
-
-    # Reconcile solver state before starting a new run.
-    # Scenarios we handle here:
-    #   (1) Clean slate — no previous run active. Just proceed.
-    #   (2) Zombie state — _solver_is_running is True but the subprocess is
-    #       dead (finally block didn't complete, subprocess crashed, or a
-    #       prior abort interrupted cleanup). Reset and carry on; the user
-    #       was trying to recover and shouldn't have to restart the backend.
-    #   (3) Genuine concurrent run — another solve is alive. Refuse this one
-    #       with 409 instead of silently overwriting _solver_process and
-    #       leaving the other handler orphaned (which was how this state
-    #       got wedged in the first place).
-    # Create the subprocess and publish the global `_solver_process` *while
-    # still holding the lock*, then start it, all before releasing. This closes
-    # a race the previous code left open: if the global were assigned only after
-    # the lock was released, there was a window where `_solver_is_running` was
-    # True but `_solver_process` was still None. A second near-simultaneous
-    # /v1/solve/range would acquire the lock, see that combination, mistake it
-    # for a dead run via the zombie-recovery path, reset, and spawn a *second*
-    # live subprocess — orphaning the first. `owned_process` is also kept as a
-    # LOCAL reference that this handler uses from here on; we never read the
-    # mutable global inside the while-loop.
     with _solver_running_lock:
         if _solver_is_running:
             process_alive = (
@@ -1642,20 +1608,17 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
             _solver_process = None
         _solver_is_running = True
         _solver_cancel_event.clear()
-        _active_run_owner = current_user.username
-        _active_run_token = payload.run_token
+        _active_run_owner = username
+        _active_run_token = run_id
 
-        # Create multiprocessing primitives (after the 409/zombie check so we
-        # don't leak a Queue/Event when refusing a concurrent run).
         progress_queue = _mp_context.Queue(maxsize=1000)
         cancel_event = _mp_context.Event()
-        heartbeat_value = _mp_context.Value('i', 0)  # Shared integer for heartbeat
+        heartbeat_value = _mp_context.Value('i', 0)
 
-        # Spawn subprocess - pass start_time for accurate timeout calculation.
         owned_process = _mp_context.Process(
             target=_solver_subprocess_worker,
             args=(
-                current_user.username,
+                username,
                 payload.model_dump(),
                 progress_queue,
                 cancel_event,
@@ -1666,21 +1629,71 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
         _solver_process = owned_process
         owned_process.start()
 
-    # Broadcast start event (after the subprocess is live and the lock released)
+    fingerprint = _range_fingerprint(
+        username, payload.startISO, payload.endISO or payload.startISO
+    )
+    if attempt == 1:
+        solver_runs.create_run(
+            run_id,
+            username,
+            payload.startISO,
+            payload.endISO or payload.startISO,
+            payload.model_dump(),
+            input_fingerprint=fingerprint,
+        )
+    else:
+        # A restarted run replans against the CURRENT calendar; the apply-
+        # time change check must compare against that snapshot.
+        solver_runs.set_fingerprint(run_id, fingerprint)
+
     _broadcast_solver_progress("start", {
         "startISO": payload.startISO,
         "endISO": payload.endISO,
         "timeout_seconds": payload.timeout_seconds,
     })
 
+    monitor = threading.Thread(
+        target=_monitor_solver_job,
+        args=(
+            run_id,
+            username,
+            payload,
+            owned_process,
+            progress_queue,
+            cancel_event,
+            heartbeat_value,
+            request_start_time,
+        ),
+        name=f"solver-monitor-{run_id[:8]}",
+        daemon=True,
+    )
+    monitor.start()
+
+
+def _monitor_solver_job(
+    run_id: str,
+    username: str,
+    payload: SolveRangeRequest,
+    owned_process,
+    progress_queue,
+    cancel_event,
+    heartbeat_value,
+    request_start_time: float,
+) -> None:
+    """Own the subprocess for its whole life: relay progress to SSE, enforce
+    the (optional) budget watchdog, persist the outcome to solver_runs, and
+    release the solve slot. Runs in a daemon thread — the HTTP request that
+    started the job is long gone."""
+    global _solver_is_running, _solver_process
+
+    from .agent_budget import add_spend_usd, estimate_cost_usd
+
     result = None
     error = None
-    last_solution_assignments = None  # Track last known good solution
+    last_solution_assignments = None
     heartbeat_counter = 0
-    # Watchdog: the run must end within its own budget (+grace). A run stuck
-    # inside one long tool call cannot see cancel events between LLM rounds,
-    # so after the soft grace we ask nicely and after the hard grace we
-    # terminate and salvage the last streamed solution.
+    # Watchdog only when the caller requested a wall-clock budget; without
+    # one the run is bounded by the iteration budget (slots x 10) alone.
     budget = payload.timeout_seconds or 0
     soft_stop_at = (
         request_start_time + budget + RUN_OVERSHOOT_SOFT_SECONDS if budget else None
@@ -1689,16 +1702,15 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
         request_start_time + budget + RUN_OVERSHOOT_HARD_SECONDS if budget else None
     )
     overshoot_killed = False
+    user_aborted = False
 
     try:
-        # Monitor the subprocess and relay progress to SSE
         while True:
-            # Send heartbeat to subprocess so it knows parent is alive
             heartbeat_counter += 1
             heartbeat_value.value = heartbeat_counter
 
-            # Check if abort was requested
             if _solver_cancel_event.is_set():
+                user_aborted = True
                 cancel_event.set()
             if soft_stop_at is not None and time.time() > soft_stop_at:
                 cancel_event.set()
@@ -1709,47 +1721,42 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                 except Exception:
                     pass
 
-            # Check if process is still alive
             if not owned_process.is_alive():
-                # Process ended, drain remaining messages
                 while not progress_queue.empty():
                     try:
                         msg = progress_queue.get_nowait()
                         if msg["type"] == "progress":
                             _broadcast_solver_progress(msg["event"], msg["data"])
-                            # Track solution assignments for force-abort recovery
                             if msg["event"] == "solution" and "assignments" in msg["data"]:
                                 last_solution_assignments = msg["data"]["assignments"]
                         elif msg["type"] == "result":
                             result = msg["data"]
                         elif msg["type"] == "error":
                             error = msg
-                    except:
+                    except Exception:
                         break
                 break
 
-            # Try to get a message with timeout
             try:
                 msg = progress_queue.get(timeout=0.1)
                 if msg["type"] == "progress":
                     _broadcast_solver_progress(msg["event"], msg["data"])
-                    # Track solution assignments for force-abort recovery
                     if msg["event"] == "solution" and "assignments" in msg["data"]:
                         last_solution_assignments = msg["data"]["assignments"]
                 elif msg["type"] == "result":
                     result = msg["data"]
                 elif msg["type"] == "error":
                     error = msg
-            except:
-                pass  # Timeout, continue loop
+            except Exception:
+                pass  # queue timeout — keep looping
 
-        # Wait for process to finish
         owned_process.join(timeout=2.0)
 
         if error:
             raise Exception(error.get("error", "Unknown solver error"))
 
-        # If result is None but we have a last solution (force-abort case), use it
+        # Salvage: aborted/killed without a proper result but with streamed
+        # solutions — keep the best one so the work is not lost.
         if result is None and last_solution_assignments is not None:
             result = {
                 "startISO": payload.startISO,
@@ -1759,7 +1766,8 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                     "Run exceeded its time budget and was stopped by the "
                     "watchdog - the last streamed solution was salvaged."
                     if overshoot_killed
-                    else "Solver was aborted - using last available solution"
+                    else "Solver was aborted - the last streamed solution "
+                    "was salvaged."
                 ],
             }
 
@@ -1768,55 +1776,39 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                 "Solver run exceeded its time budget and was terminated "
                 "before it produced any solution"
                 if overshoot_killed
+                else "Solver was aborted before it produced any solution"
+                if user_aborted
                 else "Solver process terminated without result"
             )
 
-        # Convert dict result back to response
-        response = SolveRangeResponse(**result)
-
-        # Keep the finished result recoverable: if the HTTP connection died
-        # mid-run (proxy timeout), the client re-fetches it by run token.
-        if payload.run_token:
-            with _finished_results_lock:
-                _finished_results[payload.run_token] = (
-                    current_user.username,
-                    result,
-                )
-                while len(_finished_results) > _FINISHED_RESULTS_KEPT:
-                    _finished_results.popitem(last=False)
-
-        # Charge this run's LLM cost against the user's AI budget. Token
-        # counts come from the harness; a failed/aborted run bills whatever
-        # it actually consumed.
+        # Charge this run's LLM cost against the user's AI budget.
         try:
             agent_debug = (result.get("debugInfo") or {}).get("agent")
             if isinstance(agent_debug, dict):
                 run_cost = estimate_cost_usd(agent_debug.get("model"), agent_debug)
-                add_spend_usd(current_user.username, run_cost)
+                add_spend_usd(username, run_cost)
         except Exception as spend_exc:
             print(f"[solver] Failed to record agent spend: {spend_exc}", file=sys.stderr)
 
-        # Broadcast complete event
+        status = "aborted" if (user_aborted or overshoot_killed) else "finished"
+        solver_runs.finish_run(run_id, status, result=result)
         _broadcast_solver_progress("complete", {
-            "startISO": response.startISO,
-            "endISO": response.endISO,
-            "status": "success",
+            "startISO": payload.startISO,
+            "endISO": payload.endISO,
+            "status": "success" if status == "finished" else "aborted",
+            "run_id": run_id,
         })
-        return response
 
     except Exception as e:
-        # Broadcast error event
+        solver_runs.finish_run(run_id, "failed", error=str(e))
         _broadcast_solver_progress("complete", {
             "startISO": payload.startISO,
             "endISO": payload.endISO,
             "status": "error",
             "error": str(e),
+            "run_id": run_id,
         })
-        raise
     finally:
-        # Terminate our owned subprocess aggressively. We operate on the local
-        # reference (owned_process) so we always clean up THIS handler's child,
-        # regardless of what the global _solver_process currently points at.
         try:
             if owned_process.is_alive():
                 owned_process.terminate()
@@ -1827,10 +1819,6 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
         except Exception:
             pass
 
-        # Only reset the globals if they still refer to OUR subprocess. If
-        # another request grabbed the slot in the meantime (unlikely with the
-        # guard at the top, but possible on a zombie-recovery path), we must
-        # not trample on it.
         with _solver_running_lock:
             if _solver_process is owned_process:
                 _solver_process = None
@@ -1838,23 +1826,198 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
                 _solver_cancel_event.clear()
 
 
-@router.get("/v1/solve/result/{run_token}", response_model=SolveRangeResponse)
-def get_solve_result(
-    run_token: str, current_user: UserPublic = Depends(_get_current_user)
-):
-    """Recovery fetch for a finished solve whose HTTP response was lost.
+@router.post("/v1/solve/range", response_model=SolveRangeStartResponse)
+def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_get_current_user)):
+    # Agent governance: the model is a global admin setting and every account
+    # has a spending cap. Both are SERVER-injected — whatever the client sent
+    # in these fields is overwritten here, then travels into the solver
+    # subprocess via the pickled payload.
+    from .agent_budget import get_agent_admin_settings, get_spend_usd
 
-    The solve POST stays open for the whole run; a proxy anywhere between
-    browser and backend may cut it (observed at ~600s in production). The
-    subprocess still finishes and its result is parked in
-    ``_finished_results`` — the client polls this endpoint with its own run
-    token until the result appears. 404 covers both "unknown token" and
-    "not finished yet"; the client keeps polling while the run is alive."""
-    with _finished_results_lock:
-        entry = _finished_results.get(run_token)
-    if entry is None or entry[0] != current_user.username:
-        raise HTTPException(status_code=404, detail="No stored result for this run token.")
-    return SolveRangeResponse(**entry[1])
+    agent_admin = get_agent_admin_settings()
+    payload.agent_model = agent_admin["effective_model"]
+    # The budget only guards PAID usage: self-hosted (OpenAI-compatible)
+    # providers cost nothing, so an exhausted Anthropic budget must not
+    # block them.
+    payload.agent_budget_exhausted = (
+        agent_admin["provider"] == "anthropic"
+        and get_spend_usd(current_user.username) >= agent_admin["budget_usd"]
+    )
+
+    run_id = payload.run_token or f"run-{int(time.time() * 1000)}"
+    payload.run_token = run_id
+    _start_solver_job(current_user.username, payload, run_id)
+    return SolveRangeStartResponse(
+        run_id=run_id,
+        status="running",
+        startISO=payload.startISO,
+        endISO=payload.endISO,
+    )
+
+
+@router.get("/v1/solve/runs")
+def list_solver_runs(current_user: UserPublic = Depends(_get_current_user)):
+    """The run inbox: newest first, without the (potentially large) results."""
+    return {"runs": solver_runs.list_runs(current_user.username)}
+
+
+@router.get("/v1/solve/runs/{run_id}")
+def get_solver_run(run_id: str, current_user: UserPublic = Depends(_get_current_user)):
+    run = solver_runs.get_run(run_id, current_user.username)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No such run.")
+    return run
+
+
+@router.post("/v1/solve/runs/{run_id}/apply")
+def apply_solver_run(
+    run_id: str,
+    force: bool = Query(False, description="Apply even though the calendar changed since the run started"),
+    current_user: UserPublic = Depends(_get_current_user),
+):
+    """Write a stored run result into the schedule, atomically and with the
+    SAME semantics the frontend used client-side: in-range solver
+    assignments are replaced (manual entries and vacationing clinicians'
+    rows are kept), the run's in-range assignments are merged in.
+
+    If the calendar changed inside the run's range since the run started
+    (compared to the stored input fingerprint), the apply is refused with
+    a 'calendar_changed' conflict unless force=true - the admin gets a
+    warning and decides."""
+    run = solver_runs.get_run(run_id, current_user.username)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No such run.")
+    if run["status"] not in solver_runs.APPLICABLE_STATUSES or not run.get("result"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Run is {run['status']} and has no applicable result.",
+        )
+    stored_fp = run.get("input_fingerprint")
+    if stored_fp and not force:
+        current_fp = _range_fingerprint(
+            current_user.username, run["start_iso"], run["end_iso"]
+        )
+        if current_fp != stored_fp:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "calendar_changed",
+                    "message": "The calendar was changed inside this run's "
+                    "range after the run started. Applying will overwrite "
+                    "those changes - confirm with force=true.",
+                },
+            )
+    added = _apply_run_result(current_user.username, run)
+    solver_runs.mark_run(run_id, "applied", note=f"Applied {added} assignments.")
+    return {"status": "applied", "assignments_applied": added}
+
+
+@router.post("/v1/solve/runs/{run_id}/discard")
+def discard_solver_run(run_id: str, current_user: UserPublic = Depends(_get_current_user)):
+    run = solver_runs.get_run(run_id, current_user.username)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No such run.")
+    if run["status"] == "running":
+        raise HTTPException(status_code=409, detail="Abort the run first.")
+    solver_runs.mark_run(run_id, "discarded")
+    return {"status": "discarded"}
+
+
+def _range_fingerprint(username: str, start_iso: str, end_iso: str) -> str:
+    """Stable hash of everything assigned in the run's range (incl. pool
+    rows - vacations influence planning). Compared at apply time so a
+    calendar edited AFTER the run started triggers a warning instead of
+    being silently overwritten."""
+    import hashlib
+
+    from .state import _load_state
+
+    state = _load_state(username)
+    items = sorted(
+        (a.rowId, a.dateISO, a.clinicianId, a.source or "")
+        for a in state.assignments
+        if start_iso <= a.dateISO <= end_iso
+    )
+    return hashlib.sha256(json.dumps(items).encode("utf-8")).hexdigest()
+
+
+def _apply_run_result(username: str, run: dict) -> int:
+    from .models import Assignment
+    from .state import _load_state, _save_state
+
+    state = _load_state(username)
+    start_iso, end_iso = run["start_iso"], run["end_iso"]
+    result = run["result"]
+
+    vacations = {
+        c.id: [(v.startISO, v.endISO) for v in (c.vacations or [])]
+        for c in state.clinicians
+    }
+
+    def _on_vacation(cid: str, date_iso: str) -> bool:
+        return any(s <= date_iso <= e for s, e in vacations.get(cid, []))
+
+    kept = [
+        a
+        for a in state.assignments
+        if a.rowId.startswith("pool-")
+        or a.dateISO < start_iso
+        or a.dateISO > end_iso
+        or a.source != "solver"
+        or _on_vacation(a.clinicianId, a.dateISO)
+    ]
+    seen = {(a.rowId, a.dateISO, a.clinicianId) for a in kept}
+    added = 0
+    for raw in result.get("assignments", []):
+        date_iso = raw.get("dateISO", "")
+        if not (start_iso <= date_iso <= end_iso):
+            continue
+        assignment = Assignment(**raw)
+        key = (assignment.rowId, assignment.dateISO, assignment.clinicianId)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append(assignment)
+        added += 1
+    state.assignments = kept
+    _save_state(state, username)
+    return added
+
+
+def recover_interrupted_runs() -> None:
+    """Called on backend startup: any run still marked 'running' was killed
+    by a restart/crash/deploy. The most recent first-attempt run is
+    restarted automatically (it replans against the current state — results
+    are never auto-applied, so this is safe); everything else is marked
+    crashed. Never raises: startup must not depend on it."""
+    try:
+        stranded = solver_runs.interrupted_runs()
+        stranded.sort(key=lambda r: r.get("created_at") or "", reverse=True)
+        restarted = False
+        for run in stranded:
+            if not restarted and run.get("attempt", 1) < 2:
+                try:
+                    payload = SolveRangeRequest(**run["params"])
+                    solver_runs.bump_attempt(
+                        run["id"],
+                        "Interrupted by a backend restart - restarted "
+                        "automatically.",
+                    )
+                    _start_solver_job(
+                        run["username"], payload, run["id"], attempt=2
+                    )
+                    restarted = True
+                    print(f"[solver] Restarted interrupted run {run['id']}")
+                    continue
+                except Exception as exc:
+                    print(f"[solver] Could not restart run {run['id']}: {exc}")
+            solver_runs.mark_run(
+                run["id"],
+                "crashed",
+                note="Interrupted by a backend restart.",
+            )
+    except Exception as exc:
+        print(f"[solver] Run recovery failed: {exc}", file=sys.stderr)
 
 
 def _solve_range_impl_subprocess(

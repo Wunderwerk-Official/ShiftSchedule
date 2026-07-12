@@ -432,3 +432,12 @@ pipeline, and both deploy jobs now wait (up to 20 min) for the backend to
 have no live solver subprocess before replacing containers. A new
 `backend-logs.yml` workflow (logs + inspect modes) made this diagnosable
 from the outside; /health now also reports solver_running.
+
+v1.43 turns solves into background jobs: POST /v1/solve/range returns a
+run id immediately, the run survives connection losses, reloads and
+deploys (interrupted runs restart once on backend startup), results wait
+in a run inbox until applied server-side, and there is no wall-clock
+limit anymore — runs end on the iteration budget or manual abort. The
+three production incidents of 2026-07-11/12 are structurally impossible
+in this model: no long-lived HTTP request exists to cut, and the previous
+plan is never stripped before a run.

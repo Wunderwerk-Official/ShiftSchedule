@@ -23,7 +23,10 @@ import {
   publishIcal,
   publishWeb,
   abortSolver,
-  recoverSolveResult,
+  applySolverRun,
+  discardSolverRun,
+  getSolverRun,
+  listSolverRuns,
   rotateIcalToken,
   saveState,
   solveRange,
@@ -40,7 +43,8 @@ import {
   type SolverAgentDebug,
   type SolverDebugInfo,
   type SolverMode,
-  type SolveRangeResult,
+  type SolverRunDetail,
+  type SolverRunSummary,
   type SolverSettings,
   type WeeklyCalendarTemplate,
   type WebPublishStatus,
@@ -380,8 +384,6 @@ export default function WeeklySchedulePage({
     startISO: string;
     endISO: string;
   } | null>(null);
-  const autoPlanAbortRef = useRef<AbortController | null>(null);
-  const skipApplyOnAbortRef = useRef(false); // When true, abort handler should NOT apply solution
   // Identifies OUR run in the SSE progress stream: events tagged with a
   // different token (a previous aborted run, or another user's run) are
   // ignored instead of polluting the live chart.
@@ -398,11 +400,17 @@ export default function WeeklySchedulePage({
   // overlay's time budget must reflect the run, not the settings value).
   const [autoPlanRunConfig, setAutoPlanRunConfig] = useState<{
     solverMode: SolverMode;
-    timeoutSeconds: number;
   } | null>(null);
+  // The overlay can be sent to the background: the run continues server-side
+  // and a floating badge keeps it reachable while the calendar stays usable.
+  const [autoPlanMinimized, setAutoPlanMinimized] = useState(false);
+  // Server-side run inbox (results wait here until applied or discarded).
+  const [serverRuns, setServerRuns] = useState<SolverRunSummary[]>([]);
+  // "Stop & apply best": apply the salvaged result as soon as the aborted
+  // run's row lands in the inbox.
+  const applyAfterAbortRef = useRef(false);
   const [solverHistory, setSolverHistory] = useState<SolverHistoryEntry[]>([]);
   const [solverInfoOpen, setSolverInfoOpen] = useState(false);
-  const [solverTimeoutSeconds, setSolverTimeoutSeconds] = useState(1800);
   const [holidays, setHolidays] = useState<Holiday[]>(defaultAppState.holidays ?? []);
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
@@ -1208,11 +1216,188 @@ export default function WeeklySchedulePage({
     });
   };
 
+  const refreshServerRuns = async () => {
+    try {
+      setServerRuns(await listSolverRuns());
+    } catch {
+      // Inbox refresh is best-effort; the next action retries.
+    }
+  };
+
+  const reloadAssignmentsFromServer = async () => {
+    const state = await getState();
+    const filteredAssignments = (state.assignments ?? []).filter(
+      (assignment) => assignment.rowId !== "pool-not-working",
+    );
+    setAssignmentMap(buildAssignmentMap(filteredAssignments));
+  };
+
+  const handleApplyRun = async (runId: string) => {
+    try {
+      try {
+        await applySolverRun(runId);
+      } catch (err) {
+        // The calendar was edited inside the run's range after the run
+        // started - warn and ask before overwriting those changes.
+        if (err instanceof Error && err.name === "CalendarChangedError") {
+          const proceed = window.confirm(
+            "The calendar was changed in this timeframe while the run was " +
+              "working. Applying the plan will overwrite those changes.\n\n" +
+              "Apply anyway?",
+          );
+          if (!proceed) return;
+          await applySolverRun(runId, true);
+        } else {
+          throw err;
+        }
+      }
+      await reloadAssignmentsFromServer();
+      await refreshServerRuns();
+      showSolverNoticeBriefly("Plan applied to the schedule.", 4000);
+    } catch {
+      showSolverNoticeBriefly("Applying the run failed - try again.", 5000);
+    }
+  };
+
+  const handleDiscardRun = async (runId: string) => {
+    try {
+      await discardSolverRun(runId);
+      await refreshServerRuns();
+    } catch {
+      showSolverNoticeBriefly("Discarding the run failed - try again.", 5000);
+    }
+  };
+
+  /** Follow a background run to its end: poll the run record (the run
+   * itself lives server-side and survives connection losses, reloads and
+   * deploys), then build the history entry and surface the result in the
+   * inbox. Nothing is applied to the schedule until the admin applies it. */
+  const watchRunToCompletion = async (
+    runId: string,
+    args: { startISO: string; endISO: string; solverMode?: SolverMode },
+    startedAt: number,
+    dateRangeLength: number,
+    capturedExistingAssignments: Assignment[],
+  ) => {
+    let historyStatus: "success" | "aborted" | "error" = "success";
+    let historyNotes: string[] = [];
+    let historyDebugInfo: SolverDebugInfo | undefined;
+    let run: SolverRunDetail | null = null;
+
+    try {
+      for (;;) {
+        await new Promise((resolve) => setTimeout(resolve, 4000));
+        try {
+          run = await getSolverRun(runId);
+        } catch {
+          continue; // transient network loss - the run continues server-side
+        }
+        if (run.status !== "running") break;
+      }
+
+      const result = run.result;
+      historyNotes = [...(result?.notes ?? [])];
+      historyDebugInfo = result?.debugInfo;
+      if (run.status === "aborted") {
+        historyStatus = "aborted";
+      } else if (run.status === "failed" || run.status === "crashed") {
+        historyStatus = "error";
+        if (run.error) historyNotes.push(run.error);
+        setAutoPlanError(
+          run.error ??
+            `Solver failed for the selected timeframe starting ${formatEuropeanDate(
+              args.startISO,
+            )}.`,
+        );
+      }
+
+      // Agent mode degrades to the heuristic draft when the LLM cannot
+      // start at all (missing API key, unknown provider) - surface it.
+      if (
+        args.solverMode === "agent" &&
+        result?.debugInfo?.solver_status === "AGENT_FALLBACK_SEED"
+      ) {
+        historyStatus = "error";
+        setAutoPlanError(
+          result.notes.find((n) => n.includes("Agent LLM unavailable")) ??
+            "The AI agent could not start; the heuristic draft is in the run inbox.",
+        );
+      }
+      const warningNotes = (result?.notes ?? []).filter(
+        (n) =>
+          n.toLowerCase().includes("warning") ||
+          n.toLowerCase().includes("error") ||
+          n.toLowerCase().includes("could not") ||
+          n.toLowerCase().includes("ignored"),
+      );
+      if (warningNotes.length > 0) {
+        showSolverNoticeBriefly(warningNotes.join("\n"), 5000);
+      }
+
+      await refreshServerRuns();
+      const applicable =
+        run.has_result && (run.status === "finished" || run.status === "aborted");
+      if (applicable && applyAfterAbortRef.current) {
+        applyAfterAbortRef.current = false;
+        await handleApplyRun(runId);
+      } else if (applicable) {
+        setSolverInfoOpen(true);
+        showSolverNoticeBriefly(
+          "Run finished - review the result in the run inbox and apply it.",
+          6000,
+        );
+      }
+      setAutoPlanProgress({ current: dateRangeLength, total: dateRangeLength });
+      setAutoPlanLastRunStats({
+        totalDays: dateRangeLength,
+        durationMs: Date.now() - startedAt,
+      });
+    } finally {
+      applyAfterAbortRef.current = false;
+      // Compute statsHistory from live solutions before clearing state
+      const historyStatsHistory: StatsHistoryEntry[] = [];
+      const solveRangeDates = { startISO: args.startISO, endISO: args.endISO };
+      for (const solution of liveSolutionsRef.current) {
+        const solverAssignments = solution.assignments ?? [];
+        const stats = calculateSolverLiveStats(
+          solverAssignments,
+          scheduleRows,
+          clinicians,
+          solveRangeDates,
+          holidayDates,
+          capturedExistingAssignments,
+        );
+        historyStatsHistory.push({
+          time_ms: solution.time_ms,
+          ...stats,
+        });
+      }
+
+      addSolverHistoryEntry({
+        id: `solver-${startedAt}`,
+        startISO: args.startISO,
+        endISO: args.endISO,
+        startedAt,
+        endedAt: Date.now(),
+        status: historyStatus,
+        notes: historyNotes,
+        debugInfo: historyDebugInfo,
+        statsHistory: historyStatsHistory,
+      });
+
+      setAutoPlanRunning(false);
+      setAutoPlanMinimized(false);
+      setAutoPlanProgress(null);
+      setAutoPlanStartedAt(null);
+      setAutoPlanElapsedMs(0);
+      setAutoPlanDateRange(null);
+    }
+  };
+
   const handleRunAutomatedPlanning = async (args: {
     startISO: string;
     endISO: string;
     onlyFillRequired: boolean;
-    timeoutSeconds: number;
     solverMode?: SolverMode;
   }) => {
     if (autoPlanRunning) return;
@@ -1222,27 +1407,20 @@ export default function WeeklySchedulePage({
       setAutoPlanError("Select a valid timeframe to run the solver.");
       return;
     }
-    setAutoPlanRunConfig({
-      solverMode: args.solverMode ?? "cpsat",
-      timeoutSeconds: args.timeoutSeconds,
-    });
+    setAutoPlanRunConfig({ solverMode: args.solverMode ?? "cpsat" });
     const runToken =
       typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `run-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     autoPlanRunTokenRef.current = runToken;
-    const abortController = new AbortController();
-    autoPlanAbortRef.current = abortController;
+    applyAfterAbortRef.current = false;
     setAutoPlanRunning(true);
+    setAutoPlanMinimized(false);
     setAutoPlanElapsedMs(0);
     setAutoPlanDateRange({ startISO: args.startISO, endISO: args.endISO });
     const startedAt = Date.now();
     setAutoPlanStartedAt(startedAt);
     setAutoPlanProgress({ current: 0, total: dateRange.length });
-
-    let historyStatus: "success" | "aborted" | "error" = "success";
-    let historyNotes: string[] = [];
-    let historyDebugInfo: SolverDebugInfo | undefined;
 
     // Capture existing manual assignments at the start for stats computation later
     const capturedExistingAssignments: Assignment[] = [];
@@ -1256,24 +1434,17 @@ export default function WeeklySchedulePage({
 
     try {
       if (hasLoaded && loadedUserId === currentUser.username) {
-        // Strip in-range solver assignments from the state the backend will
-        // solve against: it treats every existing assignment as FIXED (they
-        // count toward coverage and are never re-proposed), while this page
-        // deletes exactly these assignments before applying the response.
-        // Saving them would make a re-run silently erase the previous run's
-        // plan. Mirrors the post-solve filter below (manual + vacationing
-        // clinicians' assignments are kept).
-        const assignmentsForSolve = toAssignments().filter((a) => {
-          if (a.rowId.startsWith("pool-")) return true;
-          if (a.dateISO < args.startISO || a.dateISO > args.endISO) return true;
-          return a.source !== "solver" || isOnVacation(a.clinicianId, a.dateISO);
-        });
+        // Sync the CURRENT state to the server unchanged: the run plans
+        // against it server-side (the harness itself treats in-range solver
+        // assignments as replaceable), and nothing is stripped or applied
+        // until the admin applies the run from the inbox - a failed run can
+        // no longer lose the previous plan.
         const { state: normalized } = normalizeAppState({
           locations,
           locationsEnabled,
           rows,
           clinicians,
-          assignments: assignmentsForSolve,
+          assignments: toAssignments(),
           minSlotsByRowId,
           slotOverridesByKey,
           holidays,
@@ -1286,315 +1457,58 @@ export default function WeeklySchedulePage({
         });
         await saveState(normalized);
       }
-      let result: SolveRangeResult;
-      let recoveredAfterConnectionLoss = false;
-      try {
-        result = await solveRange(args.startISO, {
-          endISO: args.endISO,
-          onlyFillRequired: args.onlyFillRequired,
-          timeoutSeconds: args.timeoutSeconds,
-          solverMode: args.solverMode,
-          runToken,
-          signal: abortController.signal,
-        });
-      } catch (err) {
-        // User aborts and busy-refusals keep their dedicated handling below.
-        if (
-          err instanceof Error &&
-          (err.name === "AbortError" || err.name === "SolverBusyError")
-        ) {
-          throw err;
-        }
-        // The connection died but the run is likely still alive server-side
-        // (a proxy between browser and backend cuts long solve POSTs —
-        // observed at ~600s). The backend parks the finished result by run
-        // token; poll for it instead of declaring the run lost. Budget +
-        // watchdog grace + margin bounds the wait.
-        const recovered = await recoverSolveResult(
-          runToken,
-          startedAt + args.timeoutSeconds * 1000 + 180_000,
-          abortController.signal,
-        );
-        if (!recovered) throw err;
-        result = recovered;
-        recoveredAfterConnectionLoss = true;
-      }
-
-      historyNotes = recoveredAfterConnectionLoss
-        ? [
-            ...result.notes,
-            "Connection to the solver was lost mid-run; the finished plan " +
-              "was recovered afterwards.",
-          ]
-        : result.notes;
-      historyDebugInfo = result.debugInfo;
-
-      // Check if solver was aborted (based on notes or status)
-      if (result.notes.some((n) => n.includes("aborted"))) {
-        historyStatus = "aborted";
-      }
-
-      // Agent mode degrades to the heuristic draft when the LLM cannot start
-      // at all (missing API key, unknown provider). Without a persistent
-      // message that looks like a silent no-op — the overlay just flashes and
-      // closes — so surface it as a real error. The draft assignments below
-      // are still applied.
-      if (
-        args.solverMode === "agent" &&
-        result.debugInfo?.solver_status === "AGENT_FALLBACK_SEED"
-      ) {
-        historyStatus = "error";
-        setAutoPlanError(
-          result.notes.find((n) => n.includes("Agent LLM unavailable")) ??
-            "The AI agent could not start; the heuristic draft plan was applied instead.",
-        );
-      }
-
-      // Only show notice for warnings/errors, not for successful completion
-      // Detailed debug info is available in the solver history (gear icon)
-      const warningNotes = result.notes.filter(
-        (n) => n.toLowerCase().includes("warning") ||
-               n.toLowerCase().includes("error") ||
-               n.toLowerCase().includes("could not") ||
-               n.toLowerCase().includes("ignored")
-      );
-      if (warningNotes.length > 0) {
-        showSolverNoticeBriefly(warningNotes.join("\n"), 5000);
-      }
-      const filtered = result.assignments.filter(
-        (a) => a.dateISO >= args.startISO && a.dateISO <= args.endISO,
-      );
-      // Clear only solver-generated assignments before applying new solution, preserve manual ones
-      setAssignmentMap((prev) => {
-        const next = new Map(prev);
-        for (const [key, list] of next.entries()) {
-          const { rowId, dateISO: keyDate } = splitAssignmentKey(key);
-          if (!rowId || !keyDate) continue;
-          if (rowId.startsWith("pool-")) continue;
-          if (keyDate < args.startISO || keyDate > args.endISO) continue;
-          // Keep manual assignments (source !== "solver") and vacation assignments
-          const filteredList = list.filter(
-            (item) => item.source !== "solver" || isOnVacation(item.clinicianId, keyDate)
-          );
-          if (filteredList.length === 0) {
-            next.delete(key);
-          } else {
-            next.set(key, filteredList);
-          }
-        }
-        return next;
-      });
-      applySolverAssignments(filtered);
-      setAutoPlanProgress({ current: dateRange.length, total: dateRange.length });
-      setAutoPlanLastRunStats({
-        totalDays: dateRange.length,
-        durationMs: Date.now() - startedAt,
+      await solveRange(args.startISO, {
+        endISO: args.endISO,
+        onlyFillRequired: args.onlyFillRequired,
+        solverMode: args.solverMode,
+        runToken,
       });
     } catch (err) {
-      if (err instanceof Error && err.name === "AbortError") {
-        // User aborted - construct partial debug info from live solutions
-        historyStatus = "aborted";
-        const shouldSkipApply = skipApplyOnAbortRef.current;
-        skipApplyOnAbortRef.current = false; // Reset for next run
-
-        historyNotes = shouldSkipApply
-          ? ["Solver was aborted by user request."]
-          : ["Solver was aborted - applied last available solution."];
-
-        // Build partial debug info from SSE live solutions (always capture for history)
-        const capturedSolutions = liveSolutionsRef.current;
-        const elapsedMs = Date.now() - startedAt;
-        // Get estimated CPU info (browser can't access actual CPU count, so use reasonable defaults)
-        const estimatedCpuCores = navigator.hardwareConcurrency ?? 4;
-        const estimatedCpuWorkers = Math.max(1, estimatedCpuCores - 2);
-        // The backend's rich aborted response is lost with the fetch abort —
-        // reconstruct the agent section from the live SSE activity so the
-        // run log still shows what the agent thought and actually changed.
-        const capturedAgentEvents = agentEventsRef.current;
-        let agentDebug: SolverAgentDebug | undefined;
-        if (capturedAgentEvents.length > 0) {
-          const thoughts: string[] = [];
-          const moves: AgentMoveItem[] = [];
-          let iterations = 0;
-          let movesAccepted = 0;
-          let summary: string | null = null;
-          for (const agentEvent of capturedAgentEvents) {
-            iterations = Math.max(iterations, agentEvent.iteration ?? 0);
-            movesAccepted = Math.max(movesAccepted, agentEvent.moves_accepted ?? 0);
-            if (agentEvent.kind === "thought" && agentEvent.text) {
-              thoughts.push(
-                agentEvent.reasoning
-                  ? `[iteration ${agentEvent.iteration}] (reasoning) ${agentEvent.text}`
-                  : `[iteration ${agentEvent.iteration}] ${agentEvent.text}`,
-              );
-              if (!agentEvent.reasoning) summary = agentEvent.text;
-            } else if (agentEvent.kind === "moves_applied" && agentEvent.moves) {
-              moves.push(...agentEvent.moves);
-            }
-          }
-          agentDebug = {
-            iterations,
-            moves_accepted: movesAccepted,
-            summary,
-            moves,
-            thoughts,
-          };
-          historyNotes.push(
-            "Run was aborted mid-flight: agent details below were captured " +
-              "live and may miss the very last step.",
-          );
-        }
-        historyDebugInfo = {
-          timing: {
-            total_ms: elapsedMs,
-            checkpoints: [],
-          },
-          solution_times: capturedSolutions.map((s) => ({
-            solution: s.solution_num,
-            time_ms: s.time_ms,
-            objective: s.objective,
-          })),
-          num_variables: 0,
-          num_days: dateRange.length,
-          num_slots: 0,
-          solver_status: "ABORTED",
-          cpu_workers_used: estimatedCpuWorkers,
-          cpu_cores_available: estimatedCpuCores,
-          agent: agentDebug,
-        };
-
-        // Apply the last solution's assignments ONLY if not skipping (i.e., user clicked "Apply")
-        if (!shouldSkipApply && capturedSolutions.length > 0) {
-          const lastSolution = capturedSolutions[capturedSolutions.length - 1];
-          if (lastSolution?.assignments && lastSolution.assignments.length > 0) {
-            // Clear only solver-generated assignments for the solve range, preserve manual ones
-            setAssignmentMap((prev) => {
-              const next = new Map(prev);
-              for (const [key, list] of next.entries()) {
-                const { rowId, dateISO: keyDate } = splitAssignmentKey(key);
-                if (!rowId || !keyDate) continue;
-                if (rowId.startsWith("pool-")) continue;
-                if (keyDate < args.startISO || keyDate > args.endISO) continue;
-                // Keep manual assignments (source !== "solver") and vacation assignments
-                const filtered = list.filter(
-                  (item) => item.source !== "solver" || isOnVacation(item.clinicianId, keyDate)
-                );
-                if (filtered.length === 0) {
-                  next.delete(key);
-                } else {
-                  next.set(key, filtered);
-                }
-              }
-              return next;
-            });
-            applySolverAssignments(lastSolution.assignments);
-          }
-        }
-      } else if (err instanceof Error && err.name === "SolverBusyError") {
-        // Backend reports another solve is already running (or recovering from
-        // a zombie state that couldn't be reset automatically). Surface the
-        // server's message verbatim instead of the generic "not responding".
-        historyStatus = "error";
-        historyNotes = [err.message];
-        setAutoPlanError(err.message);
-        showSolverNoticeBriefly(err.message, 5000);
-      } else {
-        historyStatus = "error";
-        historyNotes = ["Solver service is not responding."];
-        setAutoPlanError(
-          `Solver failed for the selected timeframe starting ${formatEuropeanDate(
-            args.startISO,
-          )}.`,
-        );
-        showSolverNoticeBriefly("Solver service is not responding.", 4000);
-      }
-    } finally {
-      // Compute statsHistory from live solutions before clearing state
-      const historyStatsHistory: StatsHistoryEntry[] = [];
-      const solveRange = { startISO: args.startISO, endISO: args.endISO };
-      for (const solution of liveSolutionsRef.current) {
-        const solverAssignments = solution.assignments ?? [];
-        const stats = calculateSolverLiveStats(
-          solverAssignments,
-          scheduleRows,
-          clinicians,
-          solveRange,
-          holidayDates,
-          capturedExistingAssignments,
-        );
-        historyStatsHistory.push({
-          time_ms: solution.time_ms,
-          ...stats,
-        });
-      }
-
-      // Add to history
-      addSolverHistoryEntry({
-        id: `solver-${startedAt}`,
-        startISO: args.startISO,
-        endISO: args.endISO,
-        startedAt,
-        endedAt: Date.now(),
-        status: historyStatus,
-        notes: historyNotes,
-        debugInfo: historyDebugInfo,
-        statsHistory: historyStatsHistory,
-      });
-
-      autoPlanAbortRef.current = null;
+      const message =
+        err instanceof Error && err.name === "SolverBusyError"
+          ? err.message
+          : "The solver run could not be started.";
+      setAutoPlanError(message);
+      showSolverNoticeBriefly(message, 5000);
       setAutoPlanRunning(false);
       setAutoPlanProgress(null);
       setAutoPlanStartedAt(null);
-      setAutoPlanElapsedMs(0);
       setAutoPlanDateRange(null);
+      return;
     }
+
+    void watchRunToCompletion(
+      runToken,
+      args,
+      startedAt,
+      dateRange.length,
+      capturedExistingAssignments,
+    );
   };
 
-  // Abort without applying - discards any solutions found
+  // Abort without applying: stop the backend run; the poll loop sees the
+  // 'aborted' row, builds the history entry, and any salvaged result stays
+  // in the inbox (nothing is applied).
   const handleAbortWithoutApplying = () => {
-    // Set flag so AbortError handler knows NOT to apply the solution
-    // but it can still capture debug info for history
-    skipApplyOnAbortRef.current = true;
-
-    // Abort the fetch FIRST to prevent the response from being processed
-    // This must happen before calling abortSolver, otherwise the backend might
-    // return the last solution before we abort the fetch
-    if (autoPlanAbortRef.current) {
-      autoPlanAbortRef.current.abort();
-    }
-
-    // Then signal the backend to stop the solver (fire and forget)
-    // Use force=true to trigger immediate subprocess kill
+    applyAfterAbortRef.current = false;
     abortSolver(true).catch(() => {
       // Ignore errors - the abort request is best-effort
     });
-
-    // Reset state immediately since we're discarding
-    autoPlanAbortRef.current = null;
-    setAutoPlanRunning(false);
-    setAutoPlanProgress(null);
-    setAutoPlanStartedAt(null);
-    setAutoPlanElapsedMs(0);
-    setAutoPlanDateRange(null);
-    // Clear live solutions display (but ref is read by AbortError handler first)
     setLiveSolutions([]);
+    showSolverNoticeBriefly("Abort requested - the run is stopping.", 3000);
   };
 
-  // Apply solution - stops solver and applies the current best solution
+  // Stop & apply best: stop the run; when its (salvaged) result lands in
+  // the inbox, the poll loop applies it automatically.
   const handleApplySolution = () => {
-    // CRITICAL: Abort the fetch FIRST to trigger the AbortError handler
-    // which applies the last SSE solution. If we call abortSolver first,
-    // the backend might return before we abort, and we'd miss the catch block.
-    if (autoPlanAbortRef.current) {
-      autoPlanAbortRef.current.abort();
-    }
-
-    // Then signal the backend to stop (fire and forget)
-    // Use force=true when we have solutions to trigger immediate subprocess kill
-    const hasSolutions = liveSolutionsRef.current.length > 0;
-    abortSolver(hasSolutions).catch(() => {
+    applyAfterAbortRef.current = true;
+    abortSolver(true).catch(() => {
       // Ignore errors - the abort request is best-effort
     });
+    showSolverNoticeBriefly(
+      "Stopping the run - its best plan will be applied automatically.",
+      4000,
+    );
   };
 
   // Reset only solver-generated assignments (keep manual ones)
@@ -2332,6 +2246,55 @@ export default function WeeklySchedulePage({
       alive = false;
     };
   }, [currentUser.username]);
+
+  // Adopt a background run that is still alive after a reload: the run
+  // survives the browser (that is the point) - reattach the badge, the
+  // live feed filter and the completion watcher. Also load the run inbox.
+  useEffect(() => {
+    if (!hasLoaded || loadedUserId !== currentUser.username) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const runs = await listSolverRuns();
+        if (cancelled) return;
+        setServerRuns(runs);
+        const running = runs.find((r) => r.status === "running");
+        if (running && !autoPlanRunning) {
+          autoPlanRunTokenRef.current = running.id;
+          setAutoPlanRunConfig({ solverMode: "agent" });
+          setAutoPlanRunning(true);
+          setAutoPlanMinimized(true);
+          setAutoPlanDateRange({
+            startISO: running.start_iso,
+            endISO: running.end_iso,
+          });
+          const startedAt = Date.parse(running.created_at) || Date.now();
+          setAutoPlanStartedAt(startedAt);
+          const rangeLength = buildDateRange(
+            running.start_iso,
+            running.end_iso,
+          ).length;
+          void watchRunToCompletion(
+            running.id,
+            {
+              startISO: running.start_iso,
+              endISO: running.end_iso,
+              solverMode: "agent",
+            },
+            startedAt,
+            rangeLength,
+            [],
+          );
+        }
+      } catch {
+        // Best-effort; the inbox loads again on the next interaction.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasLoaded, loadedUserId, currentUser.username]);
 
   useEffect(() => {
     if (!hasLoaded || loadedUserId !== currentUser.username) return;
@@ -3499,7 +3462,6 @@ export default function WeeklySchedulePage({
                   lastRunTotalDays={autoPlanLastRunStats?.totalDays ?? null}
                   lastRunDurationMs={autoPlanLastRunStats?.durationMs ?? null}
                   error={autoPlanError}
-                  timeoutSeconds={solverTimeoutSeconds}
                   onRun={handleRunAutomatedPlanning}
                   onResetSolver={handleResetSolver}
                   onResetAll={handleResetAll}
@@ -3893,10 +3855,10 @@ export default function WeeklySchedulePage({
       />
 
       <SolverOverlay
-        isVisible={autoPlanRunning}
+        isVisible={autoPlanRunning && !autoPlanMinimized}
+        onMinimize={() => setAutoPlanMinimized(true)}
         progress={autoPlanProgress}
         elapsedMs={autoPlanElapsedMs}
-        totalAllowedMs={(autoPlanRunConfig?.timeoutSeconds ?? solverTimeoutSeconds) * 1000}
         solveRange={autoPlanDateRange}
         displayedRange={{
           startISO: toISODate(weekStart),
@@ -3915,12 +3877,29 @@ export default function WeeklySchedulePage({
         agentEvents={agentEvents}
       />
 
+      {autoPlanRunning && autoPlanMinimized ? (
+        <button
+          type="button"
+          onClick={() => setAutoPlanMinimized(false)}
+          title="A solver run is working in the background - click to watch it."
+          className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-sky-300 bg-white px-4 py-2 text-sm font-medium text-sky-700 shadow-lg hover:bg-sky-50 dark:border-sky-700 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-slate-800"
+        >
+          <span className="relative flex h-2.5 w-2.5">
+            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-75" />
+            <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-sky-500" />
+          </span>
+          Solver running...
+        </button>
+      ) : null}
+
       <SolverInfoModal
         isOpen={solverInfoOpen}
         onClose={() => setSolverInfoOpen(false)}
         history={solverHistory}
-        timeoutSeconds={solverTimeoutSeconds}
-        onTimeoutChange={setSolverTimeoutSeconds}
+        serverRuns={serverRuns}
+        onApplyRun={handleApplyRun}
+        onDiscardRun={handleDiscardRun}
+        onRefreshRuns={refreshServerRuns}
         solverSettings={solverSettings}
         onSolverSettingsChange={(partial) =>
           setSolverSettings((prev) => ({ ...prev, ...partial }))

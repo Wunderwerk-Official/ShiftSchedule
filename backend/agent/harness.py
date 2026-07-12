@@ -34,9 +34,6 @@ from .prompts import (
 from .provider import ChatMessage, LLMProvider, ToolSpec, get_provider
 from .tools import DAY_ONLY_TOOL_NAMES, TOOL_SPECS_RAW, PlanToolExecutor
 
-# LLM loops need more wall clock than the CP-SAT default of 60s.
-DEFAULT_AGENT_TIMEOUT_SECONDS = 300.0
-
 # History compaction: once the tool results in the conversation exceed this
 # budget, everything but the most recent exchanges is replaced by a stub in
 # ONE go. Chunked (not per-iteration) so the prompt-cache prefix stays
@@ -128,8 +125,13 @@ def agent_solve_range(
     provider: Optional[LLMProvider] = None,
     config: Optional[AgentConfig] = None,
 ) -> dict:
-    timeout = payload.timeout_seconds or DEFAULT_AGENT_TIMEOUT_SECONDS
-    deadline = start_time + timeout
+    # No wall-clock limit unless the caller requests one (admin decision
+    # 2026-07: runs end when the iteration budget — slots x 10 — is spent
+    # or the plan is done; abort stays available). All downstream deadline
+    # math (day shares, per-call timeouts, tool guards) is inf-safe; the
+    # per-LLM-call cap keeps single hung requests bounded either way.
+    timeout = payload.timeout_seconds
+    deadline = start_time + timeout if timeout else float("inf")
 
     # Replan semantics: assignments a previous SOLVER run left inside the
     # solve range are replaceable, not fixed — only manual ones are

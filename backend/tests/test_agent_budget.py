@@ -21,7 +21,7 @@ from backend.main import app
 from backend.models import UserPublic
 from backend.state import _save_state
 
-from .conftest import make_app_state, make_clinician
+from .conftest import make_app_state, make_clinician, solve_via_endpoint
 
 MON = "2026-01-05"
 
@@ -211,13 +211,11 @@ def test_exhausted_budget_falls_back_to_draft(temp_db, monkeypatch):
     add_spend_usd(username, 99.0)  # way past the default $5
 
     client = _client_as("user", username=username)
-    res = client.post(
-        "/v1/solve/range",
-        json={"startISO": MON, "endISO": MON, "solver_mode": "agent",
-              "only_fill_required": True, "timeout_seconds": 60},
-    )
-    assert res.status_code == 200
-    body = res.json()
+    run = solve_via_endpoint(client, {"startISO": MON, "endISO": MON,
+                                      "solver_mode": "agent",
+                                      "only_fill_required": True,
+                                      "timeout_seconds": 60})
+    body = run["result"]
     assert body["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
     assert any("AI budget" in n for n in body["notes"])
     # The seed plan is still returned
@@ -243,14 +241,12 @@ def test_budget_does_not_block_self_hosted_provider(temp_db, monkeypatch):
               "openai_model": "local-model"},
     )
     client = _client_as("user", username=username)
-    res = client.post(
-        "/v1/solve/range",
-        json={"startISO": MON, "endISO": MON, "solver_mode": "agent",
-              "agent_strategy": "repair",
-              "only_fill_required": True, "timeout_seconds": 60},
-    )
-    assert res.status_code == 200
-    body = res.json()
+    run = solve_via_endpoint(client, {"startISO": MON, "endISO": MON,
+                                      "solver_mode": "agent",
+                                      "agent_strategy": "repair",
+                                      "only_fill_required": True,
+                                      "timeout_seconds": 60})
+    body = run["result"]
     assert not any("AI budget" in n for n in body["notes"])
     # The self-hosted model name reached the run (server-injected)
     assert body["debugInfo"]["agent"]["model"] == "local-model"
@@ -266,16 +262,15 @@ def test_client_cannot_smuggle_model_or_budget_flags(temp_db, monkeypatch):
     _save_state(state, username)
 
     client = _client_as("user", username=username)
-    res = client.post(
-        "/v1/solve/range",
-        json={"startISO": MON, "endISO": MON, "solver_mode": "agent",
-              "agent_strategy": "repair",
-              "only_fill_required": True, "timeout_seconds": 60,
-              # Lies: pretend to pick an expensive model and an exhausted flag
-              "agent_model": "claude-opus-4-8", "agent_budget_exhausted": True},
-    )
-    assert res.status_code == 200
-    body = res.json()
+    run = solve_via_endpoint(client, {"startISO": MON, "endISO": MON,
+                                      "solver_mode": "agent",
+                                      "agent_strategy": "repair",
+                                      "only_fill_required": True,
+                                      "timeout_seconds": 60,
+                                      # Lies: expensive model + exhausted flag
+                                      "agent_model": "claude-opus-4-8",
+                                      "agent_budget_exhausted": True})
+    body = run["result"]
     # Budget is NOT exhausted for this fresh user -> the (mock) agent ran and
     # reports the admin-chosen default model, not the client's wish.
     assert body["debugInfo"]["solver_status"] != "AGENT_FALLBACK_SEED"
