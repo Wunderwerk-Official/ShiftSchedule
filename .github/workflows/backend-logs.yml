@@ -16,6 +16,9 @@ on:
       grep:
         description: "Optional case-insensitive filter (empty = everything)"
         default: ""
+      mode:
+        description: "logs | inspect (container state, OOM kills, memory)"
+        default: "logs"
 
 jobs:
   logs:
@@ -52,11 +55,26 @@ jobs:
           SINCE: ${{ inputs.since }}
           TAIL: ${{ inputs.tail }}
           FILTER: ${{ inputs.grep }}
+          MODE: ${{ inputs.mode }}
         run: |
-          ssh truhn-target SINCE="$SINCE" TAIL="$TAIL" FILTER="$FILTER" bash -s <<'EOS'
+          ssh truhn-target SINCE="$SINCE" TAIL="$TAIL" FILTER="$FILTER" MODE="$MODE" bash -s <<'EOS'
           set -euo pipefail
           cd /opt/app
-          if [ -n "$FILTER" ]; then
+          if [ "$MODE" = "inspect" ]; then
+            CID=$(docker compose -f docker-compose.proxied.yml ps -q backend)
+            echo "=== docker inspect (state / restarts / OOM) ==="
+            docker inspect --format 'Status={{.State.Status}} OOMKilled={{.State.OOMKilled}} ExitCode={{.State.ExitCode}} RestartCount={{.RestartCount}} StartedAt={{.State.StartedAt}} FinishedAt={{.State.FinishedAt}}' "$CID" || true
+            echo "=== memory limits ==="
+            docker inspect --format 'Memory={{.HostConfig.Memory}} MemorySwap={{.HostConfig.MemorySwap}}' "$CID" || true
+            echo "=== docker stats (snapshot) ==="
+            docker stats --no-stream || true
+            echo "=== host memory ==="
+            free -m || true
+            echo "=== kernel OOM traces (dmesg) ==="
+            dmesg -T 2>/dev/null | grep -i -E "oom|killed process" | tail -40 || echo "no dmesg access / no OOM lines"
+            echo "=== last container exits (docker events, past 3h) ==="
+            docker events --since 3h --until 1s --filter type=container --filter event=die --filter event=oom 2>/dev/null | tail -20 || true
+          elif [ -n "$FILTER" ]; then
             docker compose -f docker-compose.proxied.yml logs backend --since "$SINCE" --tail "$TAIL" 2>&1 | grep -i -C 6 "$FILTER" || echo "NO MATCHES for $FILTER"
           else
             docker compose -f docker-compose.proxied.yml logs backend --since "$SINCE" --tail "$TAIL" 2>&1
