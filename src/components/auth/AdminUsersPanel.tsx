@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState, type ChangeEvent, type FormEvent } from "react";
 import {
+  adminDeleteRunFeedback,
+  adminGetSolverRun,
+  adminListRunFeedback,
   createUser,
   deleteUser,
   exportUserState,
@@ -8,9 +11,11 @@ import {
   updateUser,
   type AuthUser,
   type AppState,
+  type RunFeedbackEntry,
   type UserStateExport,
 } from "../../api/client";
 import { cx } from "../../lib/classNames";
+import { buildRunLog, downloadTextFile, serverRunToHistoryEntry } from "../../lib/runLog";
 import { useConfirm } from "../ui/ConfirmDialog";
 
 type AdminUsersPanelProps = {
@@ -38,6 +43,8 @@ export default function AdminUsersPanel({
   const [deletingUser, setDeletingUser] = useState<string | null>(null);
   const [exportingUser, setExportingUser] = useState<string | null>(null);
   const [loadingCopyUser, setLoadingCopyUser] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<RunFeedbackEntry[]>([]);
+  const [feedbackBusyId, setFeedbackBusyId] = useState<string | null>(null);
 
   const sortedUsers = useMemo(
     () => [...users].sort((a, b) => a.username.localeCompare(b.username)),
@@ -51,9 +58,67 @@ export default function AdminUsersPanel({
       .then((data) => setUsers(data))
       .catch(() => setError("Could not load users."))
       .finally(() => setLoading(false));
+    adminListRunFeedback()
+      .then((data) => setFeedback(data))
+      .catch(() => {
+        // Non-fatal: the panel still works without the comment list.
+      });
   }, [isAdmin]);
 
   if (!isAdmin) return null;
+
+  // One text file per comment: the user's comment on top, the full run
+  // log below it - everything the admin needs to review the complaint.
+  const handleDownloadFeedback = async (entry: RunFeedbackEntry) => {
+    setError(null);
+    setFeedbackBusyId(entry.id);
+    try {
+      const header = [
+        `ShiftSchedule run comment`,
+        `From: ${entry.username} | sent: ${entry.created_at}`,
+        entry.start_iso && entry.end_iso
+          ? `Run: ${entry.start_iso} to ${entry.end_iso} (${entry.run_status ?? "unknown"})`
+          : `Run: ${entry.run_id} (no longer stored)`,
+        "",
+        "Comment:",
+        entry.comment,
+      ].join("\n");
+      let logText = "(The run's log is no longer available.)";
+      if (entry.run_has_result) {
+        const detail = await adminGetSolverRun(entry.run_id);
+        logText = buildRunLog(serverRunToHistoryEntry(detail));
+      }
+      const dateStamp = entry.created_at.slice(0, 10);
+      downloadTextFile(
+        `shiftschedule-comment-${entry.username}-${dateStamp}.txt`,
+        `${header}\n\n${"=".repeat(70)}\n\n${logText}`,
+      );
+    } catch {
+      setError("Could not download the comment's run log.");
+    } finally {
+      setFeedbackBusyId(null);
+    }
+  };
+
+  const handleDeleteFeedback = async (entry: RunFeedbackEntry) => {
+    const confirmDelete = await confirm({
+      title: "Delete Comment",
+      message: `Delete the comment from "${entry.username}"?`,
+      confirmLabel: "Delete",
+      variant: "danger",
+    });
+    if (!confirmDelete) return;
+    setError(null);
+    setFeedbackBusyId(entry.id);
+    try {
+      await adminDeleteRunFeedback(entry.id);
+      setFeedback((prev) => prev.filter((item) => item.id !== entry.id));
+    } catch {
+      setError("Could not delete the comment.");
+    } finally {
+      setFeedbackBusyId(null);
+    }
+  };
 
   const handleCreate = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -415,6 +480,73 @@ export default function AdminUsersPanel({
             )}
           </div>
         </div>
+
+        {/* Run comments: users attach a comment to a solver run; it lands
+            here with the run's log one click away. */}
+        {feedback.length > 0 && (
+          <div className="mt-8">
+            <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+              Run Comments
+            </h3>
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Comments users sent about solver runs. The download contains the
+              comment together with the full run log.
+            </p>
+            <div className="mt-3 flex flex-col gap-2">
+              {feedback.map((entry) => (
+                <div
+                  key={entry.id}
+                  className="rounded-2xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                        {entry.username}
+                        <span className="ml-2 text-xs font-normal text-slate-500 dark:text-slate-400">
+                          {entry.created_at.replace("T", " ").slice(0, 16)}
+                          {entry.start_iso && entry.end_iso
+                            ? ` · run ${entry.start_iso} – ${entry.end_iso}`
+                            : " · run no longer stored"}
+                          {entry.run_status ? ` · ${entry.run_status}` : ""}
+                        </span>
+                      </div>
+                      <div className="mt-1 whitespace-pre-wrap text-sm text-slate-600 dark:text-slate-300">
+                        {entry.comment}
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleDownloadFeedback(entry)}
+                        disabled={feedbackBusyId === entry.id}
+                        title="Download this comment together with the run's full log as one text file."
+                        className={cx(
+                          "rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-600",
+                          "hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60",
+                          "dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800",
+                        )}
+                      >
+                        {feedbackBusyId === entry.id ? "Working..." : "Comment + log"}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void handleDeleteFeedback(entry)}
+                        disabled={feedbackBusyId === entry.id}
+                        className={cx(
+                          "rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-600",
+                          "hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-60",
+                          "dark:border-rose-500/40 dark:text-rose-200 dark:hover:bg-rose-900/30",
+                        )}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
