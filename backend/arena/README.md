@@ -412,3 +412,11 @@ endpoint watchdog cancels a run at budget+60s and hard-terminates at
 +120s salvaging the last streamed solution; and finished results are
 parked per run token — the client recovers the plan via
 GET /v1/solve/result/{run_token} when its connection died mid-run.
+
+v1.41 verification (base 2026-02-16 +7d, 600 s budget — the incident's
+exact shape, on the deployed backend): finished cleanly in 446 s, 125
+iterations, 97/0 moves, 128 → 35 open, 0 new hard violations. No budget
+overshoot, no connection loss; the thoughts show the graded verdicts in
+use ("meets his daily minimum of 4.0 hours", "fully staffed with no
+balance issues"). The receiver cap also made the balance pass markedly
+cheaper — 7 days now fit where 5 days took 635 s on v1.40.
