@@ -73,7 +73,7 @@ from ortools.sat.python import cp_model
 
 from pydantic import BaseModel
 
-from .auth import _get_current_user, _verify_token_and_get_user
+from .auth import _get_current_user, _require_admin, _verify_token_and_get_user
 from . import solver_runs
 
 # Global cancellation event for solver abort
@@ -1932,6 +1932,53 @@ def discard_solver_run(run_id: str, current_user: UserPublic = Depends(_get_curr
         raise HTTPException(status_code=409, detail="Abort the run first.")
     solver_runs.mark_run(run_id, "discarded")
     return {"status": "discarded"}
+
+
+class RunFeedbackRequest(BaseModel):
+    comment: str
+
+
+@router.post("/v1/solve/runs/{run_id}/feedback")
+def send_run_feedback(
+    run_id: str,
+    payload: RunFeedbackRequest,
+    current_user: UserPublic = Depends(_get_current_user),
+):
+    """Attach a comment to one of your runs; it lands with the admin, who
+    sees it next to the run's log. The commented run is exempt from
+    inbox pruning so the log stays retrievable."""
+    run = solver_runs.get_run(run_id, current_user.username)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No such run.")
+    comment = payload.comment.strip()
+    if not comment:
+        raise HTTPException(status_code=400, detail="Comment is empty.")
+    if len(comment) > solver_runs.FEEDBACK_MAX_LENGTH:
+        comment = comment[: solver_runs.FEEDBACK_MAX_LENGTH]
+    feedback_id = f"fb-{int(time.time() * 1000)}-{run_id[-8:]}"
+    return solver_runs.add_feedback(feedback_id, run_id, current_user.username, comment)
+
+
+@router.get("/v1/admin/run-feedback")
+def admin_list_run_feedback(_: UserPublic = Depends(_require_admin)):
+    return {"feedback": solver_runs.list_feedback()}
+
+
+@router.delete("/v1/admin/run-feedback/{feedback_id}")
+def admin_delete_run_feedback(feedback_id: str, _: UserPublic = Depends(_require_admin)):
+    if not solver_runs.delete_feedback(feedback_id):
+        raise HTTPException(status_code=404, detail="No such feedback.")
+    return {"status": "deleted"}
+
+
+@router.get("/v1/admin/solver-runs/{run_id}")
+def admin_get_solver_run(run_id: str, _: UserPublic = Depends(_require_admin)):
+    """Full run record regardless of owner - lets the admin download the
+    log a feedback comment refers to."""
+    run = solver_runs.get_run_any_user(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="No such run.")
+    return run
 
 
 def _range_fingerprint(username: str, start_iso: str, end_iso: str) -> str:

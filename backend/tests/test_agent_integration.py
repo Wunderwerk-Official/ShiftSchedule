@@ -293,3 +293,70 @@ def test_apply_warns_when_calendar_changed_after_run_start(solve_client):
         solve_client.get("/v1/solve/runs/conflict-test-run").json()["status"]
         == "applied"
     )
+
+
+def test_run_feedback_flow(solve_client):
+    """A user comments on a run: the comment lands with the admin (joined
+    with the run's range), the commented run survives inbox pruning so its
+    log stays retrievable, the admin can fetch the run regardless of owner,
+    and the run summaries carry the agent's token usage."""
+    import backend.solver_runs as solver_runs
+
+    _seeded_state()
+    run = solve_via_endpoint(solve_client, {
+        "startISO": MON,
+        "endISO": MON,
+        "only_fill_required": True,
+        "solver_mode": "agent",
+        "agent_strategy": "repair",
+        "timeout_seconds": 60,
+        "run_token": "feedback-test-run",
+    })
+    assert run["status"] == "finished"
+
+    # List summaries include the agent's usage (for the cost display) but
+    # never the full result.
+    rows = solve_client.get("/v1/solve/runs").json()["runs"]
+    mine = next(r for r in rows if r["id"] == "feedback-test-run")
+    assert "result" not in mine
+    assert mine.get("agent_usage"), mine
+    assert "iterations" in mine["agent_usage"]
+
+    # Empty comments are refused; real ones are stored.
+    empty = solve_client.post(
+        "/v1/solve/runs/feedback-test-run/feedback", json={"comment": "   "}
+    )
+    assert empty.status_code == 400
+    sent = solve_client.post(
+        "/v1/solve/runs/feedback-test-run/feedback",
+        json={"comment": "Tuesday looks too thin, please check."},
+    )
+    assert sent.status_code == 200, sent.text
+    feedback_id = sent.json()["id"]
+
+    listed = solve_client.get("/v1/admin/run-feedback").json()["feedback"]
+    assert [f["run_id"] for f in listed] == ["feedback-test-run"]
+    assert listed[0]["comment"] == "Tuesday looks too thin, please check."
+    assert listed[0]["start_iso"] == MON
+    assert listed[0]["run_has_result"] is True
+
+    # Admin fetch works regardless of the run's owner and carries the
+    # full result (for the log download).
+    admin_run = solve_client.get("/v1/admin/solver-runs/feedback-test-run")
+    assert admin_run.status_code == 200
+    assert admin_run.json()["result"]["assignments"]
+
+    # Commented runs are exempt from pruning: flood the inbox past the
+    # kept window ('feedback-test-run' sorts oldest) and check it stays.
+    for i in range(solver_runs.KEPT_RUNS_PER_USER + 2):
+        solver_runs.create_run(f"filler-{i:02d}", USER, MON, MON, {"startISO": MON})
+        solver_runs.finish_run(f"filler-{i:02d}", "finished", result={"assignments": []})
+    solver_runs.create_run("prune-trigger", USER, MON, MON, {"startISO": MON})
+    assert solve_client.get("/v1/solve/runs/feedback-test-run").status_code == 200
+
+    # The admin can clean the list up.
+    deleted = solve_client.delete(f"/v1/admin/run-feedback/{feedback_id}")
+    assert deleted.status_code == 200
+    assert solve_client.get("/v1/admin/run-feedback").json()["feedback"] == []
+    missing = solve_client.delete(f"/v1/admin/run-feedback/{feedback_id}")
+    assert missing.status_code == 404

@@ -734,6 +734,18 @@ export async function solveRange(
   return res.json();
 }
 
+/** Token usage of the AI agent, shipped with run summaries so the inbox
+ * can show per-run cost without downloading full results. */
+export type SolverRunAgentUsage = {
+  model?: string;
+  iterations?: number;
+  moves_accepted?: number;
+  input_tokens?: number;
+  output_tokens?: number;
+  cache_read_input_tokens?: number;
+  cache_creation_input_tokens?: number;
+};
+
 /** One row of the server-side run inbox (results are fetched per run). */
 export type SolverRunSummary = {
   id: string;
@@ -747,6 +759,7 @@ export type SolverRunSummary = {
   error?: string | null;
   notes?: string | null;
   has_result: boolean;
+  agent_usage?: SolverRunAgentUsage | null;
 };
 
 export type SolverRunDetail = SolverRunSummary & {
@@ -812,6 +825,63 @@ export async function discardSolverRun(runId: string): Promise<void> {
   );
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) throw new Error(`Failed to discard solver run: ${res.status}`);
+}
+
+/** Attach a comment to one of your runs; it lands with the admin. */
+export async function sendRunFeedback(runId: string, comment: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/v1/solve/runs/${encodeURIComponent(runId)}/feedback`,
+    {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify({ comment }),
+    },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Failed to send run feedback: ${res.status}`);
+}
+
+/** One user comment about a run, as the admin sees it. */
+export type RunFeedbackEntry = {
+  id: string;
+  run_id: string;
+  username: string;
+  comment: string;
+  created_at: string;
+  start_iso?: string | null;
+  end_iso?: string | null;
+  run_status?: string | null;
+  run_has_result: boolean;
+};
+
+export async function adminListRunFeedback(): Promise<RunFeedbackEntry[]> {
+  const res = await fetch(`${API_BASE}/v1/admin/run-feedback`, {
+    headers: buildHeaders(),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Failed to list run feedback: ${res.status}`);
+  const body = (await res.json()) as { feedback: RunFeedbackEntry[] };
+  return body.feedback;
+}
+
+export async function adminDeleteRunFeedback(feedbackId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/v1/admin/run-feedback/${encodeURIComponent(feedbackId)}`,
+    { method: "DELETE", headers: buildHeaders() },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Failed to delete run feedback: ${res.status}`);
+}
+
+/** Admin: full run record regardless of owner (for feedback review). */
+export async function adminGetSolverRun(runId: string): Promise<SolverRunDetail> {
+  const res = await fetch(
+    `${API_BASE}/v1/admin/solver-runs/${encodeURIComponent(runId)}`,
+    { headers: buildHeaders() },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw new Error(`Failed to fetch solver run: ${res.status}`);
+  return res.json();
 }
 
 export async function abortSolver(force = false): Promise<{ status: string; message: string }> {

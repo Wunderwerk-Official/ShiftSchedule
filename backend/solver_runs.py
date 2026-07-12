@@ -140,6 +140,16 @@ def get_run(run_id: str, username: str) -> Optional[Dict[str, Any]]:
     return _row_to_dict(row) if row else None
 
 
+def get_run_any_user(run_id: str) -> Optional[Dict[str, Any]]:
+    """Admin access: fetch a run regardless of owner (for reviewing runs
+    that users sent feedback about)."""
+    with _get_connection() as conn:
+        row = conn.execute(
+            "SELECT * FROM solver_runs WHERE id = ?", (run_id,)
+        ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
 def list_runs(username: str, limit: int = KEPT_RUNS_PER_USER) -> List[Dict[str, Any]]:
     with _get_connection() as conn:
         rows = conn.execute(
@@ -165,10 +175,14 @@ def interrupted_runs() -> List[Dict[str, Any]]:
 
 
 def _prune(conn, username: str) -> None:
+    # Runs a user commented on stay around so the admin can still open
+    # the log the comment refers to.
     conn.execute(
         """
         DELETE FROM solver_runs
-        WHERE username = ? AND status != 'running' AND id NOT IN (
+        WHERE username = ? AND status != 'running'
+          AND id NOT IN (SELECT run_id FROM run_feedback)
+          AND id NOT IN (
             SELECT id FROM solver_runs
             WHERE username = ?
             ORDER BY created_at DESC, id DESC
@@ -179,11 +193,94 @@ def _prune(conn, username: str) -> None:
     )
 
 
+# Small slice of debugInfo.agent shipped with LIST responses so the inbox
+# can show per-run token usage / cost without downloading full results.
+_AGENT_USAGE_KEYS = (
+    "model",
+    "iterations",
+    "moves_accepted",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_input_tokens",
+    "cache_creation_input_tokens",
+)
+
+
 def _row_to_dict(row, include_result: bool = True) -> Dict[str, Any]:
     d = dict(row)
     d["params"] = json.loads(d["params"]) if d.get("params") else {}
     raw_result = d.pop("result", None)
     d["has_result"] = bool(raw_result)
-    if include_result and raw_result:
-        d["result"] = json.loads(raw_result)
+    if raw_result:
+        parsed = None
+        try:
+            parsed = json.loads(raw_result)
+        except (ValueError, TypeError):
+            d["has_result"] = False
+        if parsed is not None:
+            if include_result:
+                d["result"] = parsed
+            agent = (parsed.get("debugInfo") or {}).get("agent")
+            if isinstance(agent, dict):
+                d["agent_usage"] = {
+                    k: agent.get(k) for k in _AGENT_USAGE_KEYS if agent.get(k) is not None
+                }
     return d
+
+
+# ---------------------------------------------------------------------------
+# Run feedback: a user attaches a comment to a run and it lands with the
+# admin, who reads it next to the run's log.
+
+FEEDBACK_MAX_LENGTH = 4000
+
+
+def add_feedback(feedback_id: str, run_id: str, username: str, comment: str) -> Dict[str, Any]:
+    created_at = _utcnow_iso()
+    with _get_connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO run_feedback (id, run_id, username, comment, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (feedback_id, run_id, username, comment, created_at),
+        )
+        conn.commit()
+    return {
+        "id": feedback_id,
+        "run_id": run_id,
+        "username": username,
+        "comment": comment,
+        "created_at": created_at,
+    }
+
+
+def list_feedback(limit: int = 100) -> List[Dict[str, Any]]:
+    """All feedback entries (admin view), newest first, with the run's
+    range/status joined in so the list is readable without extra fetches."""
+    with _get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT f.id, f.run_id, f.username, f.comment, f.created_at,
+                   r.start_iso, r.end_iso, r.status AS run_status,
+                   r.result IS NOT NULL AS run_has_result
+            FROM run_feedback f
+            LEFT JOIN solver_runs r ON r.id = f.run_id
+            ORDER BY f.created_at DESC, f.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    out = []
+    for row in rows:
+        d = dict(row)
+        d["run_has_result"] = bool(d.get("run_has_result"))
+        out.append(d)
+    return out
+
+
+def delete_feedback(feedback_id: str) -> bool:
+    with _get_connection() as conn:
+        cur = conn.execute("DELETE FROM run_feedback WHERE id = ?", (feedback_id,))
+        conn.commit()
+    return cur.rowcount > 0

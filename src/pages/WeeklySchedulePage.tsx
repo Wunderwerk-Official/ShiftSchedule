@@ -29,6 +29,7 @@ import {
   listSolverRuns,
   rotateIcalToken,
   saveState,
+  sendRunFeedback,
   solveRange,
   rotateWeb,
   unpublishIcal,
@@ -51,7 +52,7 @@ import {
   type SolverRule,
 } from "../api/client";
 import SolverDebugPanel from "../components/schedule/SolverDebugPanel";
-import SolverInfoModal, { type SolverHistoryEntry } from "../components/schedule/SolverInfoModal";
+import SolverInfoModal from "../components/schedule/SolverInfoModal";
 import {
   Assignment,
   assignments,
@@ -434,7 +435,10 @@ export default function WeeklySchedulePage({
   // "Stop & apply best": apply the salvaged result as soon as the aborted
   // run's row lands in the inbox.
   const applyAfterAbortRef = useRef(false);
-  const [solverHistory, setSolverHistory] = useState<SolverHistoryEntry[]>([]);
+  // Per-solution stats collected while THIS tab watched a run live, keyed
+  // by run id. The progression is never stored server-side; the run detail
+  // view merges these in when the run was watched here.
+  const runStatsRef = useRef<Map<string, StatsHistoryEntry[]>>(new Map());
   const [solverInfoOpen, setSolverInfoOpen] = useState(false);
   const [holidays, setHolidays] = useState<Holiday[]>(defaultAppState.holidays ?? []);
   const [holidayCountry, setHolidayCountry] = useState(
@@ -1233,14 +1237,6 @@ export default function WeeklySchedulePage({
     return dates;
   };
 
-  const addSolverHistoryEntry = (entry: SolverHistoryEntry) => {
-    setSolverHistory((prev) => {
-      const updated = [entry, ...prev];
-      // Keep only the last 5 entries
-      return updated.slice(0, 5);
-    });
-  };
-
   const refreshServerRuns = async () => {
     try {
       setServerRuns(await listSolverRuns());
@@ -1295,8 +1291,8 @@ export default function WeeklySchedulePage({
 
   /** Follow a background run to its end: poll the run record (the run
    * itself lives server-side and survives connection losses, reloads and
-   * deploys), then build the history entry and surface the result in the
-   * inbox. Nothing is applied to the schedule until the admin applies it. */
+   * deploys), then surface the result in the inbox. Nothing is applied to
+   * the schedule until the admin applies it. */
   const watchRunToCompletion = async (
     runId: string,
     args: { startISO: string; endISO: string; solverMode?: SolverMode },
@@ -1304,9 +1300,6 @@ export default function WeeklySchedulePage({
     dateRangeLength: number,
     capturedExistingAssignments: Assignment[],
   ) => {
-    let historyStatus: "success" | "aborted" | "error" = "success";
-    let historyNotes: string[] = [];
-    let historyDebugInfo: SolverDebugInfo | undefined;
     let run: SolverRunDetail | null = null;
 
     try {
@@ -1321,13 +1314,7 @@ export default function WeeklySchedulePage({
       }
 
       const result = run.result;
-      historyNotes = [...(result?.notes ?? [])];
-      historyDebugInfo = result?.debugInfo;
-      if (run.status === "aborted") {
-        historyStatus = "aborted";
-      } else if (run.status === "failed" || run.status === "crashed") {
-        historyStatus = "error";
-        if (run.error) historyNotes.push(run.error);
+      if (run.status === "failed" || run.status === "crashed") {
         setAutoPlanError(
           run.error ??
             `Solver failed for the selected timeframe starting ${formatEuropeanDate(
@@ -1342,7 +1329,6 @@ export default function WeeklySchedulePage({
         args.solverMode === "agent" &&
         result?.debugInfo?.solver_status === "AGENT_FALLBACK_SEED"
       ) {
-        historyStatus = "error";
         setAutoPlanError(
           result.notes.find((n) => n.includes("Agent LLM unavailable")) ??
             "The AI agent could not start; the heuristic draft is in the run inbox.",
@@ -1379,7 +1365,8 @@ export default function WeeklySchedulePage({
       });
     } finally {
       applyAfterAbortRef.current = false;
-      // Compute statsHistory from live solutions before clearing state
+      // Keep the per-solution stats progression for this run so the run
+      // detail view (opened from the inbox) can chart it.
       const historyStatsHistory: StatsHistoryEntry[] = [];
       const solveRangeDates = { startISO: args.startISO, endISO: args.endISO };
       for (const solution of liveSolutionsRef.current) {
@@ -1397,18 +1384,14 @@ export default function WeeklySchedulePage({
           ...stats,
         });
       }
-
-      addSolverHistoryEntry({
-        id: `solver-${startedAt}`,
-        startISO: args.startISO,
-        endISO: args.endISO,
-        startedAt,
-        endedAt: Date.now(),
-        status: historyStatus,
-        notes: historyNotes,
-        debugInfo: historyDebugInfo,
-        statsHistory: historyStatsHistory,
-      });
+      if (historyStatsHistory.length > 0) {
+        runStatsRef.current.set(runId, historyStatsHistory);
+        while (runStatsRef.current.size > 10) {
+          const oldest = runStatsRef.current.keys().next().value;
+          if (oldest === undefined) break;
+          runStatsRef.current.delete(oldest);
+        }
+      }
 
       setAutoPlanRunning(false);
       setAutoPlanMinimized(false);
@@ -4018,12 +4001,13 @@ export default function WeeklySchedulePage({
       <SolverInfoModal
         isOpen={solverInfoOpen}
         onClose={() => setSolverInfoOpen(false)}
-        history={solverHistory}
         serverRuns={serverRuns}
         onApplyRun={handleApplyRun}
         onDiscardRun={handleDiscardRun}
         onRefreshRuns={refreshServerRuns}
         onFetchRunDetail={getSolverRun}
+        onSendFeedback={sendRunFeedback}
+        getLocalRunStats={(runId) => runStatsRef.current.get(runId)}
         solverSettings={solverSettings}
         onSolverSettingsChange={(partial) =>
           setSolverSettings((prev) => ({ ...prev, ...partial }))

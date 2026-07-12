@@ -1,10 +1,16 @@
 import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
-import type { SolverDebugInfo, SolverRunDetail, SolverRunSummary, SolverSettings } from "../../api/client";
-import { APP_BUILD, APP_VERSION } from "../../version";
+import type { SolverRunDetail, SolverRunSummary, SolverSettings } from "../../api/client";
 import { cx } from "../../lib/classNames";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import { formatFeedDate } from "../../lib/agentActivity";
+import {
+  buildRunLog,
+  downloadTextFile,
+  formatRunDuration,
+  serverRunToHistoryEntry,
+  type SolverHistoryEntry,
+} from "../../lib/runLog";
 import SolverDebugPanel from "./SolverDebugPanel";
 import type { StatsHistoryEntry } from "./SolverOverlay";
 
@@ -76,27 +82,19 @@ const WEIGHT_LABELS: Record<
   },
 };
 
-export type SolverHistoryEntry = {
-  id: string;
-  startISO: string;
-  endISO: string;
-  startedAt: number;
-  endedAt: number;
-  status: "success" | "aborted" | "error";
-  notes: string[];
-  debugInfo?: SolverDebugInfo;
-  statsHistory?: StatsHistoryEntry[]; // Stats for each solution found
-};
-
 type SolverInfoModalProps = {
   isOpen: boolean;
   onClose: () => void;
-  history: SolverHistoryEntry[];
   serverRuns: SolverRunSummary[];
   onApplyRun: (runId: string) => Promise<void>;
   onDiscardRun: (runId: string) => Promise<void>;
   onRefreshRuns: () => Promise<void>;
   onFetchRunDetail: (runId: string) => Promise<SolverRunDetail>;
+  onSendFeedback: (runId: string, comment: string) => Promise<void>;
+  /** Stats collected while THIS tab watched the run live (per-solution
+   * progression is never stored server-side) - merged into the detail
+   * view when available. */
+  getLocalRunStats?: (runId: string) => StatsHistoryEntry[] | undefined;
   solverSettings?: SolverSettings;
   onSolverSettingsChange?: (settings: Partial<SolverSettings>) => void;
 };
@@ -125,91 +123,6 @@ const formatDateTime = (timestamp: number) => {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
   return `${day}.${month}. ${hours}:${minutes}`;
-};
-
-const formatDuration = (ms: number) => {
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const seconds = ms / 1000;
-  if (seconds < 60) return `${seconds.toFixed(1)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const secs = Math.round(seconds % 60);
-  return `${minutes}m ${secs}s`;
-};
-
-// Plain-text log of one run, made to be pasted into a bug report or an AI
-// chat: human-readable header plus the full debugInfo JSON (which includes
-// the agent's summary, every accepted move, token counts and timing).
-const buildRunLog = (entry: SolverHistoryEntry): string => {
-  const agent = entry.debugInfo?.agent;
-  const lines: string[] = [
-    `ShiftSchedule run log — app v${APP_VERSION} (${APP_BUILD})`,
-    `Range: ${entry.startISO} to ${entry.endISO}`,
-    `Started: ${new Date(entry.startedAt).toISOString()} | ` +
-      `duration: ${formatDuration(entry.endedAt - entry.startedAt)} | status: ${entry.status}`,
-  ];
-  if (entry.debugInfo) {
-    lines.push(`Solver status: ${entry.debugInfo.solver_status}`);
-  }
-  if (agent) {
-    lines.push(
-      `Agent: model ${agent.model ?? "?"} | iterations ${agent.iterations ?? "?"} | ` +
-        `moves accepted ${agent.moves_accepted ?? 0} / rejected ${agent.moves_rejected ?? 0}`,
-      `Tokens: input ${agent.input_tokens ?? 0}, output ${agent.output_tokens ?? 0}, ` +
-        `cache read ${agent.cache_read_input_tokens ?? 0}, cache write ${agent.cache_creation_input_tokens ?? 0}`,
-    );
-  }
-  if (entry.notes.length) {
-    lines.push("", "Notes:", ...entry.notes.map((n) => `- ${n}`));
-  }
-  // Pull the long diagnostic arrays out of the JSON dump and print them as
-  // readable text sections instead (JSON string-escaping makes multi-line
-  // thoughts unreadable and would double the size).
-  const {
-    open_slots_seed,
-    open_slots_final,
-    seed_plan,
-    final_plan,
-    violations_final,
-    thoughts,
-    moves,
-    ...agentRest
-  } = agent ?? {};
-  const section = (title: string, items: string[] | undefined, empty: string) => {
-    lines.push("", `${title}:`);
-    if (items?.length) lines.push(...items.map((item) => `- ${item}`));
-    else lines.push(`(${empty})`);
-  };
-  if (agent) {
-    section("Open slots at seed", open_slots_seed, "none");
-    section("Open slots remaining", open_slots_final, "none — all filled");
-    section(
-      "Plan before AI changes (date|section|time|clinician|origin)",
-      seed_plan,
-      "not captured",
-    );
-    section(
-      "Changes in order (#iteration action clinician section date time)",
-      moves?.map(
-        (m) =>
-          `#${m.iteration ?? "?"} ${m.action} ${m.clinician} ${m.section || "shift"} ` +
-          `${m.dateISO}${m.start ? ` ${m.start}-${m.end}` : ""}`,
-      ),
-      "none",
-    );
-    section("Final plan (date|section|time|clinician|origin)", final_plan, "empty");
-    section("Violations in final plan", violations_final, "none");
-    lines.push("", "Agent reasoning:");
-    if (thoughts?.length) {
-      for (const t of thoughts) lines.push("", t);
-    } else {
-      lines.push("(no reasoning captured)");
-    }
-  }
-  const debugForJson = entry.debugInfo
-    ? { ...entry.debugInfo, ...(agent ? { agent: agentRest } : {}) }
-    : null;
-  lines.push("", "debugInfo JSON:", JSON.stringify(debugForJson, null, 2));
-  return lines.join("\n");
 };
 
 const copyTextToClipboard = async (text: string): Promise<boolean> => {
@@ -249,19 +162,6 @@ function GearIcon({ className }: { className?: string }) {
     >
       <path d="M12 15a3 3 0 100-6 3 3 0 000 6z" />
       <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z" />
-    </svg>
-  );
-}
-
-function ChartIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      className={className}
-    >
-      <path d="M15.5 2A1.5 1.5 0 0014 3.5v13a1.5 1.5 0 001.5 1.5h1a1.5 1.5 0 001.5-1.5v-13A1.5 1.5 0 0016.5 2h-1zM9.5 6A1.5 1.5 0 008 7.5v9A1.5 1.5 0 009.5 18h1a1.5 1.5 0 001.5-1.5v-9A1.5 1.5 0 0010.5 6h-1zM3.5 10A1.5 1.5 0 002 11.5v5A1.5 1.5 0 003.5 18h1A1.5 1.5 0 006 16.5v-5A1.5 1.5 0 004.5 10h-1z" />
     </svg>
   );
 }
@@ -420,12 +320,13 @@ type View = "info" | "detail";
 export default function SolverInfoModal({
   isOpen,
   onClose,
-  history,
   serverRuns,
   onApplyRun,
   onDiscardRun,
   onRefreshRuns,
   onFetchRunDetail,
+  onSendFeedback,
+  getLocalRunStats,
   solverSettings,
   onSolverSettingsChange,
 }: SolverInfoModalProps) {
@@ -435,6 +336,10 @@ export default function SolverInfoModal({
   const [weightsExpanded, setWeightsExpanded] = useState(false);
   const [debugExpanded, setDebugExpanded] = useState(false);
   const [logCopied, setLogCopied] = useState(false);
+  const [feedbackFor, setFeedbackFor] = useState<string | null>(null);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [feedbackSentFor, setFeedbackSentFor] = useState<string | null>(null);
   const logCopiedTimerRef = useRef<number | null>(null);
   useEffect(() => {
     return () => {
@@ -451,34 +356,6 @@ export default function SolverInfoModal({
     }
     logCopiedTimerRef.current = window.setTimeout(() => setLogCopied(false), 2000);
   };
-  // The server run row carries everything the local history entry does —
-  // so the run log stays downloadable after apply, reloads and on other
-  // devices (the local history is in-memory only).
-  const serverRunToHistoryEntry = (run: SolverRunDetail): SolverHistoryEntry => {
-    const startedAt = Date.parse(run.created_at) || Date.now();
-    const endedAt = run.finished_at ? Date.parse(run.finished_at) : startedAt;
-    const status =
-      run.status === "failed" || run.status === "crashed"
-        ? "error"
-        : run.status === "aborted"
-          ? "aborted"
-          : "success";
-    return {
-      id: run.id,
-      startISO: run.start_iso,
-      endISO: run.end_iso,
-      startedAt,
-      endedAt,
-      status,
-      notes: [
-        ...(run.result?.notes ?? []),
-        ...(run.notes ? run.notes.split("\n").filter(Boolean) : []),
-        ...(run.error ? [run.error] : []),
-      ],
-      debugInfo: run.result?.debugInfo,
-    };
-  };
-
   const handleDownloadServerRunLog = async (runId: string) => {
     try {
       const detail = await onFetchRunDetail(runId);
@@ -489,17 +366,46 @@ export default function SolverInfoModal({
   };
 
   const handleDownloadRunLog = (entry: SolverHistoryEntry) => {
-    const blob = new Blob([buildRunLog(entry)], {
-      type: "text/plain;charset=utf-8",
-    });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `shiftschedule-run-${entry.startISO}_${entry.endISO}.txt`;
-    document.body.appendChild(anchor);
-    anchor.click();
-    document.body.removeChild(anchor);
-    URL.revokeObjectURL(url);
+    downloadTextFile(
+      `shiftschedule-run-${entry.startISO}_${entry.endISO}.txt`,
+      buildRunLog(entry),
+    );
+  };
+
+  // Open a run's detail view from its server record; per-solution stats
+  // exist only when this tab watched the run live.
+  const handleOpenRunDetail = async (runId: string) => {
+    setBusyRunId(runId);
+    try {
+      const detail = await onFetchRunDetail(runId);
+      const entry = serverRunToHistoryEntry(detail);
+      entry.statsHistory = getLocalRunStats?.(runId);
+      setSelectedEntry(entry);
+      setView("detail");
+    } catch {
+      // Best-effort: the next click retries.
+    } finally {
+      setBusyRunId(null);
+    }
+  };
+
+  const handleSendFeedback = async (runId: string) => {
+    const comment = feedbackText.trim();
+    if (!comment) return;
+    setFeedbackBusy(true);
+    try {
+      await onSendFeedback(runId, comment);
+      setFeedbackFor(null);
+      setFeedbackText("");
+      setFeedbackSentFor(runId);
+      window.setTimeout(() => {
+        setFeedbackSentFor((current) => (current === runId ? null : current));
+      }, 3000);
+    } catch {
+      // Keep the text so the user can retry.
+    } finally {
+      setFeedbackBusy(false);
+    }
   };
 
   // Reset view to info when modal opens; refresh the server run inbox
@@ -532,11 +438,6 @@ export default function SolverInfoModal({
     setView("info");
     setSelectedEntry(null);
     onClose();
-  };
-
-  const handleViewDetail = (entry: SolverHistoryEntry) => {
-    setSelectedEntry(entry);
-    setView("detail");
   };
 
   const handleBack = () => {
@@ -622,19 +523,56 @@ export default function SolverInfoModal({
                   </p>
                 </div>
 
-                {/* Run inbox: server-side background runs. Results wait
-                    here until they are applied to the schedule. */}
+                {/* Runs: the server-side inbox is the single run list.
+                    Results wait here until applied; clicking a run opens
+                    its detail view (stats, cost, changes, log). */}
                 {serverRuns.length > 0 && (
                   <div className="flex flex-col gap-2">
-                    <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                      Run Inbox
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
+                        Runs
+                      </div>
+                      {(() => {
+                        // Cost is estimated from token counts and known API
+                        // prices; runs on the self-hosted model have no
+                        // price and are excluded (nothing shown if all runs
+                        // are local).
+                        const costs = serverRuns
+                          .map((r) => estimateAgentCostUSD(r.agent_usage?.model, r.agent_usage))
+                          .filter((c): c is number => c !== null);
+                        if (costs.length === 0) return null;
+                        return (
+                          <div className="text-xs text-slate-500 dark:text-slate-400">
+                            AI cost (runs shown):{" "}
+                            <span className="font-semibold text-violet-600 dark:text-violet-400">
+                              {formatCostUSD(costs.reduce((sum, c) => sum + c, 0))}
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </div>
-                    {serverRuns.map((run) => (
+                    {serverRuns.map((run) => {
+                      const runCost = estimateAgentCostUSD(run.agent_usage?.model, run.agent_usage);
+                      const durationMs =
+                        run.finished_at && Date.parse(run.finished_at) && Date.parse(run.created_at)
+                          ? Date.parse(run.finished_at) - Date.parse(run.created_at)
+                          : null;
+                      return (
                       <div
                         key={run.id}
-                        className="flex items-center justify-between gap-3 rounded-xl border border-slate-200 bg-white px-3 py-2.5 dark:border-slate-700 dark:bg-slate-800"
+                        className="flex flex-col rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"
                       >
-                        <div className="flex min-w-0 flex-col gap-0.5">
+                        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
+                        <button
+                          type="button"
+                          disabled={!run.has_result}
+                          onClick={() => void handleOpenRunDetail(run.id)}
+                          title={run.has_result ? "Show run details (stats, changes, log)." : undefined}
+                          className={cx(
+                            "flex min-w-0 flex-1 flex-col gap-0.5 text-left",
+                            run.has_result && "cursor-pointer",
+                          )}
+                        >
                           <div className="flex items-center gap-2">
                             <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
                               {formatEuropeanDate(run.start_iso)} – {formatEuropeanDate(run.end_iso)}
@@ -659,8 +597,16 @@ export default function SolverInfoModal({
                           </div>
                           <div className="text-xs text-slate-500 dark:text-slate-400">
                             {run.created_at.replace("T", " ").slice(0, 16)}
+                            {durationMs !== null && durationMs > 0
+                              ? ` · ${formatRunDuration(durationMs)}`
+                              : ""}
                             {run.attempt > 1 ? " · restarted after interruption" : ""}
                             {run.error ? ` · ${run.error.slice(0, 80)}` : ""}
+                            {runCost !== null && (
+                              <span className="font-medium text-violet-600 dark:text-violet-400">
+                                {" "}· AI {formatCostUSD(runCost)}
+                              </span>
+                            )}
                           </div>
                           {run.notes?.split("\n").find((n) => n.startsWith("Unresolved after this run:")) && (
                             <div className="text-xs font-medium text-amber-600 dark:text-amber-400">
@@ -672,7 +618,7 @@ export default function SolverInfoModal({
                               No unresolved issues
                             </div>
                           )}
-                        </div>
+                        </button>
                         <div className="flex shrink-0 items-center gap-2">
                           {run.has_result && (
                             <button
@@ -682,6 +628,24 @@ export default function SolverInfoModal({
                               className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
                             >
                               Log
+                            </button>
+                          )}
+                          {run.status !== "running" && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFeedbackFor(feedbackFor === run.id ? null : run.id);
+                                setFeedbackText("");
+                              }}
+                              title="Write a comment about this run - it is sent to the admin together with a reference to the run's log."
+                              className={cx(
+                                "rounded-lg border px-3 py-1 text-xs font-medium transition-colors",
+                                feedbackSentFor === run.id
+                                  ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                                  : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300",
+                              )}
+                            >
+                              {feedbackSentFor === run.id ? "Sent ✓" : "Comment"}
                             </button>
                           )}
                         {(run.status === "finished" || run.status === "aborted") &&
@@ -722,8 +686,42 @@ export default function SolverInfoModal({
                             </div>
                           )}
                         </div>
+                        </div>
+                        {feedbackFor === run.id && (
+                          <div className="flex flex-col gap-2 border-t border-slate-200 px-3 py-2.5 dark:border-slate-700">
+                            <textarea
+                              value={feedbackText}
+                              onChange={(e) => setFeedbackText(e.target.value)}
+                              rows={3}
+                              maxLength={4000}
+                              placeholder="What should the admin know about this run? Your comment is stored next to the run so the admin can read it together with the run's log."
+                              className="w-full resize-y rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-xs text-slate-700 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200"
+                            />
+                            <div className="flex items-center justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setFeedbackFor(null);
+                                  setFeedbackText("");
+                                }}
+                                className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                              >
+                                Cancel
+                              </button>
+                              <button
+                                type="button"
+                                disabled={feedbackBusy || !feedbackText.trim()}
+                                onClick={() => void handleSendFeedback(run.id)}
+                                className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-600 transition-colors hover:border-indigo-300 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300"
+                              >
+                                {feedbackBusy ? "Sending..." : "Send to admin"}
+                              </button>
+                            </div>
+                          </div>
+                        )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 )}
 
@@ -826,85 +824,6 @@ export default function SolverInfoModal({
                   )}
                 </div>
 
-                {/* Recent runs list */}
-                {history.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                        Recent Runs
-                      </div>
-                      {history.some((entry) => entry.debugInfo?.agent) && (
-                        <div className="text-xs text-slate-500 dark:text-slate-400">
-                          AI cost (runs shown):{" "}
-                          <span className="font-semibold text-violet-600 dark:text-violet-400">
-                            {formatCostUSD(
-                              history.reduce(
-                                (sum, entry) =>
-                                  sum +
-                                  (estimateAgentCostUSD(
-                                    entry.debugInfo?.agent?.model,
-                                    entry.debugInfo?.agent,
-                                  ) ?? 0),
-                                0,
-                              ),
-                            )}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                    {history.map((entry) => (
-                      <button
-                        key={entry.id}
-                        type="button"
-                        onClick={() => handleViewDetail(entry)}
-                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-left transition-colors hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:hover:border-slate-600 dark:hover:bg-slate-700"
-                      >
-                        <div className="flex flex-col gap-0.5">
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                              {formatEuropeanDate(entry.startISO)} – {formatEuropeanDate(entry.endISO)}
-                            </span>
-                            <span
-                              className={cx(
-                                "rounded-full px-2 py-0.5 text-xs font-medium",
-                                entry.status === "success" &&
-                                  "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
-                                entry.status === "aborted" &&
-                                  "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-                                entry.status === "error" &&
-                                  "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400"
-                              )}
-                            >
-                              {entry.status === "success" && "Completed"}
-                              {entry.status === "aborted" && "Aborted"}
-                              {entry.status === "error" && "Error"}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
-                            <span>{formatDateTime(entry.startedAt)}</span>
-                            <span>•</span>
-                            <span>{formatDuration(entry.endedAt - entry.startedAt)}</span>
-                            {entry.debugInfo?.agent && (
-                              <>
-                                <span>•</span>
-                                <span className="font-medium text-violet-600 dark:text-violet-400">
-                                  AI{" "}
-                                  {formatCostUSD(
-                                    estimateAgentCostUSD(
-                                      entry.debugInfo.agent.model,
-                                      entry.debugInfo.agent,
-                                    ) ?? 0,
-                                  )}
-                                </span>
-                              </>
-                            )}
-                          </div>
-                        </div>
-                        <ChartIcon className="h-4 w-4 text-slate-400 dark:text-slate-500" />
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             )}
 
@@ -919,7 +838,7 @@ export default function SolverInfoModal({
                     <div className="flex items-center gap-3 text-xs text-slate-500 dark:text-slate-400">
                       <span>{formatDateTime(selectedEntry.startedAt)}</span>
                       <span>•</span>
-                      <span>{formatDuration(selectedEntry.endedAt - selectedEntry.startedAt)}</span>
+                      <span>{formatRunDuration(selectedEntry.endedAt - selectedEntry.startedAt)}</span>
                     </div>
                   </div>
                   <span
@@ -963,11 +882,15 @@ export default function SolverInfoModal({
                           (agent.cache_creation_input_tokens ?? 0),
                       )} in · ${fmtTokens(agent.output_tokens)} out`,
                     },
-                    {
-                      label: "Estimated cost",
-                      value: formatCostUSD(cost) ?? "n/a (unknown model pricing)",
-                    },
                   ];
+                  // Only API models have a known price; self-hosted models
+                  // cost nothing per run, so no cost tile at all.
+                  if (cost !== null) {
+                    tiles.push({
+                      label: "Estimated cost",
+                      value: formatCostUSD(cost) ?? "",
+                    });
+                  }
                   return (
                     <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900/50 dark:bg-violet-950/20">
                       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-violet-500 dark:text-violet-400">
