@@ -1735,6 +1735,134 @@ export default function WeeklySchedulePage({
     });
   };
 
+  const handleMoveWithinDay = ({
+    dateISO,
+    fromRowId,
+    toRowId,
+    assignmentId,
+    clinicianId,
+  }: {
+    dateISO: string;
+    fromRowId: string;
+    toRowId: string;
+    assignmentId: string;
+    clinicianId: string;
+  }) => {
+    setAssignmentMap((prev) => {
+      const fromKey = `${fromRowId}__${dateISO}`;
+      const toKey = `${toRowId}__${dateISO}`;
+      if (fromKey === toKey) return prev;
+      const fromRow = rowById.get(fromRowId);
+      const toRow = rowById.get(toRowId);
+      if (!fromRow || !toRow) return prev;
+
+      const next = new Map(prev);
+      const removeAssignment = (key: string, targetId: string) => {
+        const list = next.get(key) ?? [];
+        const nextList = list.filter((a) => a.id !== targetId);
+        if (nextList.length === 0) next.delete(key);
+        else next.set(key, nextList);
+      };
+      const removeAssignmentsForDate = (
+        targetClinicianId: string,
+        targetDateISO: string,
+      ) => {
+        for (const [key, list] of next.entries()) {
+          const { dateISO: keyDate } = splitAssignmentKey(key);
+          if (keyDate !== targetDateISO) continue;
+          const filtered = list.filter(
+            (assignment) => assignment.clinicianId !== targetClinicianId,
+          );
+          if (filtered.length === 0) next.delete(key);
+          else next.set(key, filtered);
+        }
+      };
+      const isToVacation = toRow.id === VACATION_POOL_ID;
+      const isFromVacation = fromRow.id === VACATION_POOL_ID;
+
+      if (isToVacation) {
+        addVacationDay(clinicianId, dateISO);
+        removeAssignmentsForDate(clinicianId, dateISO);
+        return next;
+      }
+
+      if (isFromVacation) {
+        removeVacationDay(clinicianId, dateISO);
+      }
+      // Handle dropping to Rest Day pool
+      if (toRow.kind === "pool" && toRow.id === REST_DAY_POOL_ID) {
+        if (fromRow.kind === "class" || fromRow.id === REST_DAY_POOL_ID) {
+          const fromList = next.get(fromKey) ?? [];
+          const moving = fromList.find((a) => a.id === assignmentId);
+          if (!moving) return prev;
+          removeAssignment(fromKey, assignmentId);
+          const toList = next.get(toKey) ?? [];
+          const already = toList.some((item) => item.clinicianId === clinicianId);
+          if (!already) {
+            next.set(toKey, [...toList, { ...moving, rowId: toRowId, dateISO }]);
+          }
+          return next;
+        }
+
+        const toList = next.get(toKey) ?? [];
+        const already = toList.some((item) => item.clinicianId === clinicianId);
+        if (!already) {
+          const newItem: Assignment = {
+            id: `pool-${toRowId}-${clinicianId}-${dateISO}`,
+            rowId: toRowId,
+            dateISO,
+            clinicianId,
+            source: "manual",
+          };
+          next.set(toKey, [...toList, newItem]);
+        }
+        return next;
+      }
+
+      // Handle dropping to other pool types (e.g., Vacation handled above)
+      if (toRow.kind === "pool") {
+        if (fromRow.kind === "class" || fromRow.id === REST_DAY_POOL_ID) {
+          removeAssignment(fromKey, assignmentId);
+        }
+        return next;
+      }
+
+      if (fromRow.kind === "pool") {
+        if (fromRow.id === REST_DAY_POOL_ID) {
+          removeAssignment(fromKey, assignmentId);
+        }
+        const toList = next.get(toKey) ?? [];
+        const alreadyInTarget = toList.some(
+          (item) => item.clinicianId === clinicianId,
+        );
+        if (alreadyInTarget) return prev;
+        const newItem: Assignment = {
+          id: `as-${Date.now().toString(36)}-${clinicianId}`,
+          rowId: toRowId,
+          dateISO,
+          clinicianId,
+          source: "manual",
+        };
+        next.set(toKey, [...toList, newItem]);
+        return next;
+      }
+
+      const fromList = next.get(fromKey) ?? [];
+      const moving = fromList.find((a) => a.id === assignmentId);
+      if (!moving) return prev;
+      const nextFrom = fromList.filter((a) => a.id !== assignmentId);
+      if (nextFrom.length === 0) next.delete(fromKey);
+      else next.set(fromKey, nextFrom);
+      const toList = next.get(toKey) ?? [];
+      const alreadyInTarget = toList.some(
+        (item) => item.clinicianId === clinicianId,
+      );
+      if (alreadyInTarget) return prev;
+      next.set(toKey, [...toList, { ...moving, rowId: toRowId, dateISO }]);
+      return next;
+    });
+  };
+
   const openSlotsCount = useMemo(() => {
     const dateISOs = fullWeekDays.map(toISODate);
     let openSlots = 0;
@@ -3432,127 +3560,7 @@ export default function WeeklySchedulePage({
             onClinicianClick={(clinicianId) => openClinicianEditor(clinicianId)}
             onAddAssignment={handleAddAssignment}
             onRemoveAssignment={handleRemoveAssignment}
-            onMoveWithinDay={({ 
-              dateISO,
-              fromRowId,
-              toRowId,
-              assignmentId,
-              clinicianId,
-            }) => {
-              setAssignmentMap((prev) => {
-                const fromKey = `${fromRowId}__${dateISO}`;
-                const toKey = `${toRowId}__${dateISO}`;
-                if (fromKey === toKey) return prev;
-                const fromRow = rowById.get(fromRowId);
-                const toRow = rowById.get(toRowId);
-                if (!fromRow || !toRow) return prev;
-
-                const next = new Map(prev);
-                const removeAssignment = (key: string, targetId: string) => {
-                  const list = next.get(key) ?? [];
-                  const nextList = list.filter((a) => a.id !== targetId);
-                  if (nextList.length === 0) next.delete(key);
-                  else next.set(key, nextList);
-                };
-                const removeAssignmentsForDate = (
-                  targetClinicianId: string,
-                  targetDateISO: string,
-                ) => {
-                  for (const [key, list] of next.entries()) {
-                    const { dateISO: keyDate } = splitAssignmentKey(key);
-                    if (keyDate !== targetDateISO) continue;
-                    const filtered = list.filter(
-                      (assignment) => assignment.clinicianId !== targetClinicianId,
-                    );
-                    if (filtered.length === 0) next.delete(key);
-                    else next.set(key, filtered);
-                  }
-                };
-                const isToVacation = toRow.id === VACATION_POOL_ID;
-                const isFromVacation = fromRow.id === VACATION_POOL_ID;
-
-              if (isToVacation) {
-                addVacationDay(clinicianId, dateISO);
-                removeAssignmentsForDate(clinicianId, dateISO);
-                return next;
-              }
-
-                if (isFromVacation) {
-                  removeVacationDay(clinicianId, dateISO);
-                }
-                // Handle dropping to Rest Day pool
-                if (toRow.kind === "pool" && toRow.id === REST_DAY_POOL_ID) {
-                  if (fromRow.kind === "class" || fromRow.id === REST_DAY_POOL_ID) {
-                    const fromList = next.get(fromKey) ?? [];
-                    const moving = fromList.find((a) => a.id === assignmentId);
-                    if (!moving) return prev;
-                    removeAssignment(fromKey, assignmentId);
-                    const toList = next.get(toKey) ?? [];
-                    const already = toList.some((item) => item.clinicianId === clinicianId);
-                    if (!already) {
-                      next.set(toKey, [...toList, { ...moving, rowId: toRowId, dateISO }]);
-                    }
-                    return next;
-                  }
-
-                  const toList = next.get(toKey) ?? [];
-                  const already = toList.some((item) => item.clinicianId === clinicianId);
-                  if (!already) {
-                    const newItem: Assignment = {
-                      id: `pool-${toRowId}-${clinicianId}-${dateISO}`,
-                      rowId: toRowId,
-                      dateISO,
-                      clinicianId,
-                      source: "manual",
-                    };
-                    next.set(toKey, [...toList, newItem]);
-                  }
-                  return next;
-                }
-
-                // Handle dropping to other pool types (e.g., Vacation handled above)
-                if (toRow.kind === "pool") {
-                  if (fromRow.kind === "class" || fromRow.id === REST_DAY_POOL_ID) {
-                    removeAssignment(fromKey, assignmentId);
-                  }
-                  return next;
-                }
-
-                if (fromRow.kind === "pool") {
-                  if (fromRow.id === REST_DAY_POOL_ID) {
-                    removeAssignment(fromKey, assignmentId);
-                  }
-                  const toList = next.get(toKey) ?? [];
-                  const alreadyInTarget = toList.some(
-                    (item) => item.clinicianId === clinicianId,
-                  );
-                  if (alreadyInTarget) return prev;
-                  const newItem: Assignment = {
-                    id: `as-${Date.now().toString(36)}-${clinicianId}`,
-                    rowId: toRowId,
-                    dateISO,
-                    clinicianId,
-                    source: "manual",
-                  };
-                  next.set(toKey, [...toList, newItem]);
-                  return next;
-                }
-
-                const fromList = next.get(fromKey) ?? [];
-                const moving = fromList.find((a) => a.id === assignmentId);
-                if (!moving) return prev;
-                const nextFrom = fromList.filter((a) => a.id !== assignmentId);
-                if (nextFrom.length === 0) next.delete(fromKey);
-                else next.set(fromKey, nextFrom);
-                const toList = next.get(toKey) ?? [];
-                const alreadyInTarget = toList.some(
-                  (item) => item.clinicianId === clinicianId,
-                );
-                if (alreadyInTarget) return prev;
-                next.set(toKey, [...toList, { ...moving, rowId: toRowId, dateISO }]);
-                return next;
-              });
-            }}
+            onMoveWithinDay={handleMoveWithinDay}
             onCellClick={() => {}}
           />
           <div className="mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10">
