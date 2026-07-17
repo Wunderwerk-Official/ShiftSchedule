@@ -41,6 +41,14 @@
   -webkit-user-drag: none;
 }
 
+/* Clinic sheet layout: plain-text name entries are draggable the same way
+   assignment pills are — Safari needs the explicit -webkit-user-drag. */
+[data-sheet-name][draggable="true"] {
+  -webkit-user-drag: element;
+  -webkit-user-select: auto;
+  user-select: auto;
+}
+
 /* The drag preview is a cloned pill that gets tagged with this attribute
    instead of having 30+ Tailwind classes mutated per dragstart. Keep the
    selector tight so it only applies to the off-screen clone. */

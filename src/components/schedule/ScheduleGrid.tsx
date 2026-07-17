@@ -6,6 +6,7 @@ import {
   buildDateIntervalIndex,
   buildRowKindById,
   buildShiftIntervalsByRowId,
+  canDropAssignment as canDropAssignmentPure,
 } from "../../lib/clinicianSlotOptions";
 import { formatDayHeader, toISODate } from "../../lib/date";
 import {
@@ -808,48 +809,13 @@ function RowSection({
     },
     targetRowId: string,
     targetDateISO: string,
-  ) => {
-    const targetKind = rowKindById.get(targetRowId);
-    if (targetKind === "pool") return true;
-    // Note: We allow dropping clinicians on rest day - manual overrides are allowed
-    // and will show a warning. The solver enforces rules but UI allows overrides.
-    const assignedIntervals =
-      assignedIntervalsByDate
-        .get(targetDateISO)
-        ?.get(payload.clinicianId) ?? [];
-    const currentInterval =
-      payload.dateISO === targetDateISO
-        ? shiftIntervalsByRowId.get(payload.rowId) ?? null
-        : null;
-    let effectiveIntervals = assignedIntervals;
-    if (currentInterval && payload.rowId !== targetRowId) {
-      let removed = false;
-      effectiveIntervals = assignedIntervals.filter((interval) => {
-        if (removed) return true;
-        const matches =
-          interval.start === currentInterval.start &&
-          interval.end === currentInterval.end;
-        if (matches) {
-          removed = true;
-          return false;
-        }
-        return true;
-      });
-    }
-    const hasUnknown =
-      unknownIntervalsByDate
-        .get(targetDateISO)
-        ?.has(payload.clinicianId) ?? false;
-    const hasAny = effectiveIntervals.length > 0 || hasUnknown;
-    // Always allow multiple shifts as long as times don't overlap
-    if (!hasAny) return true;
-    if (hasUnknown) return false;
-    const targetInterval = shiftIntervalsByRowId.get(targetRowId);
-    if (!targetInterval) return false;
-    return !effectiveIntervals.some((interval) =>
-      intervalsOverlap(interval, targetInterval),
-    );
-  };
+  ) =>
+    canDropAssignmentPure(payload, targetRowId, targetDateISO, {
+      rowKindById,
+      shiftIntervalsByRowId,
+      assignedIntervalsByDate,
+      unknownIntervalsByDate,
+    });
   return (
     <>
       <div

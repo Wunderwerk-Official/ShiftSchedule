@@ -12,6 +12,8 @@ import VacationOverviewModal from "../components/schedule/VacationOverviewModal"
 import ViolationLinesOverlay from "../components/schedule/ViolationLinesOverlay";
 import WorkingHoursOverviewModal from "../components/schedule/WorkingHoursOverviewModal";
 import WeekNavigator from "../components/schedule/WeekNavigator";
+import MonthNavigator from "../components/schedule/MonthNavigator";
+import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
 import AdminUsersPanel from "../components/auth/AdminUsersPanel";
 import { ChevronLeftIcon, ChevronRightIcon } from "../components/schedule/icons";
 import {
@@ -70,7 +72,8 @@ import {
 import { cx } from "../lib/classNames";
 import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
-import { addDays, addWeeks, startOfWeek, toISODate } from "../lib/date";
+import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
+import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
 import { getDayType } from "../lib/dayTypes";
 import {
   buildCalendarRows,
@@ -185,6 +188,7 @@ import {
   REST_DAY_POOL_ID,
   splitAssignmentKey,
   VACATION_POOL_ID,
+  type RenderedAssignment,
 } from "../lib/schedule";
 import {
   buildScheduleRows,
@@ -1193,6 +1197,60 @@ export default function WeeklySchedulePage({
 
   const isOnRestDay = (clinicianId: string, dateISO: string) => {
     const restAssignments = renderAssignmentMap.get(
+      `${REST_DAY_POOL_ID}__${dateISO}`,
+    );
+    if (!restAssignments || restAssignments.length === 0) return false;
+    return restAssignments.some((assignment) => assignment.clinicianId === clinicianId);
+  };
+
+  // Clinic sheet layout (Excel-style monthly view). Month-scoped derived
+  // data — the weekly renderAssignmentMap only synthesizes vacation/rest
+  // pool entries for the displayed week, so the sheet needs its own map.
+  const isClinicSheet =
+    (solverSettings.scheduleLayout ?? "classic") === "clinicSheet" && !isMobile;
+  const monthStart = useMemo(() => startOfMonth(anchorDate), [anchorDate]);
+  const clinicSheetDays = useMemo(
+    () =>
+      isClinicSheet ? buildMonthDays(monthStart, holidayDates, holidayNameByDate) : [],
+    [isClinicSheet, monthStart, holidayDates, holidayNameByDate],
+  );
+  const clinicSheetDayDates = useMemo(
+    () => clinicSheetDays.map((day) => day.date),
+    [clinicSheetDays],
+  );
+  const clinicSheetAssignmentMap = useMemo(
+    () =>
+      isClinicSheet
+        ? buildRenderedAssignmentMap(assignmentMap, clinicians, clinicSheetDayDates, {
+            scheduleRows,
+            solverSettings,
+            holidayDates,
+          })
+        : new Map<string, RenderedAssignment[]>(),
+    [
+      isClinicSheet,
+      assignmentMap,
+      clinicians,
+      clinicSheetDayDates,
+      scheduleRows,
+      solverSettings,
+      holidayDates,
+    ],
+  );
+  const clinicSheetModel = useMemo(
+    () =>
+      isClinicSheet
+        ? buildClinicSheetModel({
+            calendarRows,
+            days: clinicSheetDays,
+            slotOverridesByKey,
+            minSlotsByRowId,
+          })
+        : null,
+    [isClinicSheet, calendarRows, clinicSheetDays, slotOverridesByKey, minSlotsByRowId],
+  );
+  const isOnRestDayInSheet = (clinicianId: string, dateISO: string) => {
+    const restAssignments = clinicSheetAssignmentMap.get(
       `${REST_DAY_POOL_ID}__${dateISO}`,
     );
     if (!restAssignments || restAssignments.length === 0) return false;
@@ -3486,6 +3544,51 @@ export default function WeeklySchedulePage({
 
       {viewMode === "calendar" ? (
         <>
+          {isClinicSheet && clinicSheetModel ? (
+            <ClinicSheetGrid
+              model={clinicSheetModel}
+              assignmentMap={clinicSheetAssignmentMap}
+              rows={calendarRows}
+              header={
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <MonthNavigator
+                      variant="card"
+                      month={monthStart}
+                      onPrevMonth={() =>
+                        setAnchorDate((d) => addMonths(startOfMonth(d), -1))
+                      }
+                      onNextMonth={() =>
+                        setAnchorDate((d) => addMonths(startOfMonth(d), 1))
+                      }
+                      onToday={() => {
+                        setAnchorDate(new Date());
+                        scrollToDateColumn(toISODate(new Date()));
+                      }}
+                      onGoToDate={(date) => setAnchorDate(date)}
+                    />
+                  </div>
+                </div>
+              }
+              getClinicianName={(id) => clinicianNameById.get(id) ?? "Unknown"}
+              getIsQualified={(clinicianId, rowId) => {
+                const scheduleRow = rowById.get(rowId);
+                const classId =
+                  scheduleRow?.kind === "class"
+                    ? scheduleRow.sectionId ?? scheduleRow.id
+                    : rowId;
+                const clinician = clinicians.find((item) => item.id === clinicianId);
+                return clinician ? clinician.qualifiedClassIds.includes(classId) : false;
+              }}
+              clinicians={clinicians}
+              getIsOnRestDay={isOnRestDayInSheet}
+              enforceSameLocationPerDay={solverSettings.enforceSameLocationPerDay}
+              onClinicianClick={(clinicianId) => openClinicianEditor(clinicianId)}
+              onAddAssignment={handleAddAssignment}
+              onRemoveAssignment={handleRemoveAssignment}
+              onMoveWithinDay={handleMoveWithinDay}
+            />
+          ) : (
           <ScheduleGrid
             leftHeaderTitle=""
             weekDays={displayDays}
@@ -3563,6 +3666,7 @@ export default function WeeklySchedulePage({
             onMoveWithinDay={handleMoveWithinDay}
             onCellClick={() => {}}
           />
+          )}
           <div className="mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10">
             <div className="flex flex-col gap-6">
               {/* First row: Automated Planning, Vacation Planner, Export */}
