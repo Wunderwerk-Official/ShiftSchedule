@@ -24,6 +24,29 @@ export function addWeeks(date: Date, weeks: number) {
   return addDays(date, weeks * 7);
 }
 
+export function startOfMonth(date: Date) {
+  const d = new Date(date.getFullYear(), date.getMonth(), 1);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+// Always lands on the 1st of the target month, so there is no
+// end-of-month day overflow to worry about.
+export function addMonths(date: Date, months: number) {
+  return new Date(date.getFullYear(), date.getMonth() + months, 1);
+}
+
+export function daysInMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+}
+
+export function formatMonthLabel(date: Date) {
+  return new Intl.DateTimeFormat("de-DE", {
+    month: "long",
+    year: "numeric",
+  }).format(date);
+}
+
 export function formatDayHeader(date: Date) {
   const weekday = new Intl.DateTimeFormat("en-US", { weekday: "short" })
     .format(date)
