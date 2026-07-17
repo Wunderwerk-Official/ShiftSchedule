@@ -128,8 +128,14 @@ export type WeeklyCalendarTemplate = {
   locations: WeeklyTemplateLocation[];
 };
 
+export type ScheduleLayout = "classic" | "clinicSheet";
+
 export type SolverSettings = {
   enforceSameLocationPerDay: boolean;
+  // Calendar layout of the main schedule view. Per-user preference that rides
+  // along in the persisted state; "classic" is the default weekly grid,
+  // "clinicSheet" the Excel-style monthly sheet.
+  scheduleLayout?: ScheduleLayout;
   onCallRestEnabled: boolean;
   onCallRestClassId?: string;
   onCallRestDaysBefore: number;

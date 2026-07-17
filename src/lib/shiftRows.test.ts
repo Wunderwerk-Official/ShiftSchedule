@@ -290,6 +290,56 @@ describe("normalizeAppState", () => {
     });
   });
 
+  describe("schedule layout setting", () => {
+    it("defaults scheduleLayout to classic when absent", () => {
+      const state = makeMinimalState();
+
+      const { state: normalized } = normalizeAppState(state);
+
+      expect(normalized.solverSettings?.scheduleLayout).toBe("classic");
+    });
+
+    it("preserves clinicSheet", () => {
+      const state = makeMinimalState({
+        solverSettings: {
+          enforceSameLocationPerDay: false,
+          onCallRestEnabled: false,
+          onCallRestDaysBefore: 0,
+          onCallRestDaysAfter: 0,
+          preferContinuousShifts: true,
+          scheduleLayout: "clinicSheet",
+        },
+      });
+
+      const { state: normalized } = normalizeAppState(state);
+
+      expect(normalized.solverSettings?.scheduleLayout).toBe("clinicSheet");
+    });
+
+    it("sanitizes unknown layout values to classic", () => {
+      const state = makeMinimalState({
+        // Using 'as any' to simulate corrupted/foreign data
+        solverSettings: { scheduleLayout: "table-flip" } as any,
+      });
+
+      const { state: normalized } = normalizeAppState(state);
+
+      expect(normalized.solverSettings?.scheduleLayout).toBe("classic");
+    });
+
+    it("normalizing the layout twice is idempotent", () => {
+      const state = makeMinimalState({
+        solverSettings: { scheduleLayout: "clinicSheet" } as any,
+      });
+
+      const { state: first } = normalizeAppState(state);
+      const { state: second } = normalizeAppState(first);
+
+      expect(second.solverSettings?.scheduleLayout).toBe("clinicSheet");
+      expect(second.solverSettings).toEqual(first.solverSettings);
+    });
+  });
+
   describe("idempotence", () => {
     it("normalizing twice produces the same result", () => {
       const state = makeMinimalState({

@@ -4,6 +4,7 @@ import type {
   DayType,
   Location,
   MinSlots,
+  ScheduleLayout,
   SubShift,
   TemplateBlock,
   TemplateColBand,
@@ -750,6 +751,7 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
     onCallRestDaysBefore: 1,
     onCallRestDaysAfter: 1,
     preferContinuousShifts: true,
+    scheduleLayout: "classic" as ScheduleLayout,
   };
   // Remove deprecated settings during migration
   const {
@@ -775,6 +777,9 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
   };
   solverSettings.onCallRestDaysBefore = clampDays(solverSettings.onCallRestDaysBefore);
   solverSettings.onCallRestDaysAfter = clampDays(solverSettings.onCallRestDaysAfter);
+  if (solverSettings.scheduleLayout !== "clinicSheet") {
+    solverSettings.scheduleLayout = "classic";
+  }
   if (JSON.stringify(solverSettings) !== JSON.stringify(state.solverSettings ?? {})) {
     changed = true;
   }

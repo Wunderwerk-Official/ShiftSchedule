@@ -495,6 +495,38 @@ export default function SettingsView({
         </div>
 
       <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="text-base font-semibold text-slate-900 dark:text-slate-100">
+                Calendar Layout
+              </div>
+              <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+                Choose how the calendar is displayed. The monthly sheet mirrors the
+                clinic&apos;s Excel Arbeitsplan (whole month, horizontal). Desktop only —
+                phones keep the daily view.
+              </div>
+            </div>
+            <CustomSelect
+              className="w-80"
+              value={solverSettings.scheduleLayout ?? "classic"}
+              onChange={(value) =>
+                onChangeSolverSettings({
+                  ...solverSettings,
+                  scheduleLayout: value === "clinicSheet" ? "clinicSheet" : "classic",
+                })
+              }
+              options={[
+                { value: "classic", label: "Standard — weekly grid" },
+                {
+                  value: "clinicSheet",
+                  label: "Klinik-Monatslayout — monthly sheet (Arbeitsplan)",
+                },
+              ]}
+            />
+          </div>
+        </div>
+
+      <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="text-base font-semibold text-slate-900 dark:text-slate-100">
