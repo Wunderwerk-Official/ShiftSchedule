@@ -93,6 +93,13 @@ Cells
 - Warning tooltips show only when hovering the icon itself.
 - Hovering a section cell highlights eligible clinicians for that section on the same date (desktop only); highlight stays when hovering a pill and is cleared while dragging.
 
+Clinic sheet layout (Klinik-Monatslayout)
+- Second calendar layout selectable in Settings → Calendar Layout (`solverSettings.scheduleLayout`: `"classic"` default | `"clinicSheet"`); per-user, persisted in the state blob, no backend change. Sanitized in `normalizeAppState` (frontend) — unknown values fall back to classic.
+- Faithful clone of a clinic's Excel "Arbeitsplan": the whole month as horizontal day blocks, Arial plain-text surnames (no pills), gray weekday headers (#C0C0C0), fully cyan weekend/holiday day blocks (#00CCFF), tinted row labels, medium/hair borders with spacer rows between location sections, absence pools at the bottom.
+- Each day block is 6 name columns: one colBand spans all 6; two colBands split 4+2 (assistants left, senior/OA area right, tinted with the slot's section color — Excel pink #FF99CC fallback); >2 colBands split evenly. Structure comes from the template (rowBands/colBands), not code — see `src/lib/clinicSheet.ts` (`buildMonthDays`, `buildClinicSheetModel`).
+- Renderer: `src/components/schedule/ClinicSheetGrid.tsx` + `MonthNavigator`; fully editable (click cell → clinician picker, same-day drag, drop-outside removes) via the shared logic in `src/lib/clinicianSlotOptions.ts` and the page's `handleAddAssignment`/`handleRemoveAssignment`/`handleMoveWithinDay`.
+- Month-scoped `buildRenderedAssignmentMap` (do NOT reuse the week-scoped map — pool synthesis is day-bound). Desktop only (mobile keeps the daily view); week-scoped badges and the Publish toggle are hidden in sheet mode; print/PDF/public pages always use the classic grid. The sheet stays paper-light in dark mode by design.
+
 Pills
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
