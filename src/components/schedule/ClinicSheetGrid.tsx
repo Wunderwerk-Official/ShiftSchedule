@@ -3,7 +3,7 @@ import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import { cx } from "../../lib/classNames";
 import type { RenderedAssignment } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
-import { getContrastTextColor } from "../../lib/shiftRows";
+import { getLuminance } from "../../lib/shiftRows";
 import {
   buildClinicianOptionsForSlot,
   buildDateIntervalIndex,
@@ -68,6 +68,15 @@ const buildDisplayNames = (
 
 const WEEKDAY_FORMAT = new Intl.DateTimeFormat("de-DE", { weekday: "long" });
 const WEEKDAY_SHORT_FORMAT = new Intl.DateTimeFormat("de-DE", { weekday: "short" });
+
+// The Excel sheet uses black text on its pink/gray/cyan fills. Only clearly
+// dark backgrounds (e.g. the conference green) flip to white — a lower
+// threshold than the app-wide getContrastTextColor, which would render the
+// Excel pink with white text.
+const sheetTextClass = (bgColor: string | undefined) => {
+  if (!bgColor) return "text-slate-900";
+  return getLuminance(bgColor) < 0.3 ? "text-white" : "text-slate-900";
+};
 
 const formatSheetDate = (date: Date) => {
   const day = String(date.getDate()).padStart(2, "0");
@@ -354,7 +363,7 @@ export default function ClinicSheetGrid({
         ? area.blockColor
         : undefined;
     const textClass = areaBackground
-      ? getContrastTextColor(areaBackground).primary
+      ? sheetTextClass(areaBackground)
       : "text-slate-900";
     const openSlots = Math.max(0, area.requiredSlots - assignments.length);
     const canEdit = !readOnly && Boolean(onAddAssignment);
@@ -587,7 +596,7 @@ export default function ClinicSheetGrid({
                             ? "border-b-2 border-b-slate-500"
                             : "border-b border-b-slate-300",
                         );
-                        const labelText = getContrastTextColor(row.labelColor).primary;
+                        const labelText = sheetTextClass(row.labelColor);
                         return (
                           <Fragment key={row.key}>
                             <div

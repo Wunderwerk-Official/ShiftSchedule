@@ -29,7 +29,7 @@ const DEFAULT_SUB_SHIFT_START_MINUTES = 8 * 60;
  * Calculate relative luminance of a hex color using WCAG formula.
  * Returns a value between 0 (black) and 1 (white).
  */
-function getLuminance(hex: string): number {
+export function getLuminance(hex: string): number {
   const cleanHex = hex.replace("#", "");
   const r = parseInt(cleanHex.slice(0, 2), 16) / 255;
   const g = parseInt(cleanHex.slice(2, 4), 16) / 255;
