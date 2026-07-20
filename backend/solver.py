@@ -58,11 +58,13 @@ KEY DATA STRUCTURES
 
 import asyncio
 import atexit
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 import json
 import multiprocessing
 import os
 import signal
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -76,26 +78,48 @@ from pydantic import BaseModel
 from .auth import _get_current_user, _require_admin, _verify_token_and_get_user
 from . import solver_runs
 
-# Global cancellation event for solver abort
-_solver_cancel_event = threading.Event()
-_solver_running_lock = threading.Lock()
-_solver_is_running = False
-_solver_process: Optional[multiprocessing.Process] = None  # The solver subprocess
+@dataclass
+class _RunHandle:
+    """Everything the backend holds about one live solver run.
+
+    One handle per active run; the registry below keys handles by username,
+    which is what enforces the invariant "at most one run per user". The
+    per-run abort_requested event replaces the old process-global cancel
+    event: the monitor thread bridges it into the subprocess mp event.
+    """
+
+    run_id: str
+    username: str
+    mode: str  # payload.resolved_mode() at admission time
+    exclusive: bool  # non-agent modes claim the whole machine
+    process: multiprocessing.Process
+    progress_queue: Any  # mp Queue relaying progress/result/error messages
+    mp_cancel_event: Any  # mp Event handed into the subprocess
+    heartbeat_value: Any  # mp Value the monitor bumps to keep the child alive
+    started_at: float
+    abort_requested: threading.Event = field(default_factory=threading.Event)
+
+
+# Registry of live runs, keyed by username (invariant: <=1 run per user).
+# Lock discipline: _registry_lock is only ever held for dict operations and
+# process.start(); never across join()/DB calls/broadcasts, and it never
+# nests with _subscribers_lock — deadlock is impossible by construction.
+_active_runs: Dict[str, _RunHandle] = {}
+_registry_lock = threading.Lock()
 
 # Global list of (username, queue) for SSE clients to receive solver progress.
-# Progress is delivered only to subscribers of the user who owns the active
+# Progress is delivered only to subscribers of the user who owns the emitting
 # run — the channel used to be a broadcast to everyone, which leaked one
 # user's draft assignments to all others and mixed foreign solution events
 # into the live score chart (visible as a full-height "jump" mid-run).
 _solver_progress_subscribers: List[Tuple[str, asyncio.Queue]] = []
 _subscribers_lock = threading.Lock()
 
-# Identity of the active run. Written under _solver_running_lock when a run
-# starts; read by _broadcast_solver_progress. Deliberately NOT cleared when a
-# run ends: late queue drains keep the old token, so a client that already
-# started its next run filters them out by token mismatch.
-_active_run_owner: Optional[str] = None
-_active_run_token: Optional[str] = None
+
+def active_run_count() -> int:
+    """Number of live solver runs (used by /health)."""
+    with _registry_lock:
+        return len(_active_runs)
 
 # Watchdog for the monitor loop: a run that overshoots its own time budget
 # (when one was requested) is first asked to stop (cancel event — the
@@ -119,28 +143,27 @@ SOLVER_NUM_WORKERS = max(1, multiprocessing.cpu_count() - 2)
 SUBPROCESS_HEARTBEAT_TIMEOUT_SECONDS = 10.0
 
 
-def _cleanup_solver_process():
-    """Aggressively cleanup any running solver subprocess."""
-    global _solver_process, _solver_is_running
-    if _solver_process is not None:
+def _cleanup_solver_processes():
+    """Aggressively cleanup all running solver subprocesses."""
+    with _registry_lock:
+        handles = list(_active_runs.values())
+        _active_runs.clear()
+    for handle in handles:
         try:
-            if _solver_process.is_alive():
+            if handle.process.is_alive():
                 # First try graceful terminate
-                _solver_process.terminate()
-                _solver_process.join(timeout=2.0)
+                handle.process.terminate()
+                handle.process.join(timeout=2.0)
                 # If still alive, force kill
-                if _solver_process.is_alive():
-                    _solver_process.kill()
-                    _solver_process.join(timeout=1.0)
+                if handle.process.is_alive():
+                    handle.process.kill()
+                    handle.process.join(timeout=1.0)
         except Exception:
             pass
-        finally:
-            _solver_process = None
-            _solver_is_running = False
 
 
 # Register cleanup on process exit
-atexit.register(_cleanup_solver_process)
+atexit.register(_cleanup_solver_processes)
 
 
 def _cleanup_orphaned_solver_processes():
@@ -401,18 +424,19 @@ def _solver_subprocess_worker(
         watchdog_stop.set()
 
 
-def _broadcast_solver_progress(event_type: str, data: dict):
-    """Deliver solver progress to the SSE subscribers of the run owner.
+def _broadcast_solver_progress(owner: str, run_token: str, event_type: str, data: dict):
+    """Deliver one run's progress to the SSE subscribers of its owner.
 
-    Events are tagged with the client-chosen run token so the frontend can
-    drop stragglers from a previous run (e.g. the drain after a force-abort)
+    Owner and token come from the emitting run (never from shared state), so
+    concurrent runs can never leak events into another user's stream. Events
+    are tagged with the client-chosen run token so the frontend can drop
+    stragglers from a previous run (e.g. the drain after a force-abort)
     instead of mixing them into the current run's chart.
     """
-    if _active_run_token:
-        data = {**data, "run_token": _active_run_token}
+    data = {**data, "run_token": run_token}
     with _subscribers_lock:
         for username, queue in _solver_progress_subscribers:
-            if _active_run_owner is not None and username != _active_run_owner:
+            if username != owner:
                 continue
             try:
                 # Use put_nowait since we're in a sync context
@@ -435,26 +459,27 @@ async def abort_solver(
         force: If True, immediately kills the solver subprocess.
                Otherwise, signals graceful abort (stops at next solution).
     """
-    global _solver_is_running, _solver_process
-    # Note: We don't use the lock here to avoid potential deadlock with the solver
-    # The worst case is a race condition that returns slightly stale status
-    if _solver_is_running:
-        _solver_cancel_event.set()
-        if force and _solver_process is not None:
-            # Immediately terminate the subprocess
-            try:
-                if _solver_process.is_alive():
-                    _solver_process.terminate()
-                    _solver_process.join(timeout=1.0)
-                    if _solver_process.is_alive():
-                        _solver_process.kill()
-                        _solver_process.join(timeout=1.0)
-                return {"status": "force_killed", "message": "Solver process terminated immediately"}
-            except Exception as e:
-                return {"status": "force_kill_error", "message": f"Error terminating solver: {e}"}
-        return {"status": "abort_requested", "message": "Solver abort signal sent"}
-    else:
+    # The registry lock is held only for the lookup (microseconds); the
+    # terminate/join escalation happens outside it so an unresponsive child
+    # can never stall other requests (same intent as the old lock-free read).
+    with _registry_lock:
+        handle = next(iter(_active_runs.values()), None)
+    if handle is None:
         return {"status": "no_solver_running", "message": "No solver is currently running"}
+    handle.abort_requested.set()
+    if force:
+        # Immediately terminate the subprocess
+        try:
+            if handle.process.is_alive():
+                handle.process.terminate()
+                handle.process.join(timeout=1.0)
+                if handle.process.is_alive():
+                    handle.process.kill()
+                    handle.process.join(timeout=1.0)
+            return {"status": "force_killed", "message": "Solver process terminated immediately"}
+        except Exception as e:
+            return {"status": "force_kill_error", "message": f"Error terminating solver: {e}"}
+    return {"status": "abort_requested", "message": "Solver abort signal sent"}
 
 
 @router.get("/v1/solve/progress")
@@ -1581,35 +1606,32 @@ class SolveRangeStartResponse(BaseModel):
 def _start_solver_job(
     username: str, payload: SolveRangeRequest, run_id: str, attempt: int = 1
 ) -> None:
-    """Reserve the (single) solve slot, persist the run row, spawn the
-    subprocess and the monitor thread. Raises 409 when a run is live."""
-    global _solver_is_running, _solver_process, _active_run_owner, _active_run_token
-
+    """Admit the run into the registry, persist the run row, spawn the
+    subprocess and the monitor thread. Raises 409 when admission fails."""
     request_start_time = time.time()
-    with _solver_running_lock:
-        if _solver_is_running:
-            process_alive = (
-                _solver_process is not None and _solver_process.is_alive()
-            )
-            if process_alive:
-                raise HTTPException(
-                    status_code=409,
-                    detail=(
-                        "Another solve is already running. Abort it first "
-                        "via POST /v1/solve/abort."
-                    ),
-                )
-            # Zombie state — clear residue so the new run starts fresh.
-            if _solver_process is not None:
+    mode = payload.resolved_mode()
+    exclusive = mode != "agent"
+
+    with _registry_lock:
+        # Zombie sweep: entries whose process died but whose monitor thread
+        # has not removed them yet — join the corpse and clear the residue
+        # so a fresh run is never blocked by a dead one.
+        for user, stale in list(_active_runs.items()):
+            if not stale.process.is_alive():
                 try:
-                    _solver_process.join(timeout=0.5)
+                    stale.process.join(timeout=0.5)
                 except Exception:
                     pass
-            _solver_process = None
-        _solver_is_running = True
-        _solver_cancel_event.clear()
-        _active_run_owner = username
-        _active_run_token = run_id
+                del _active_runs[user]
+
+        if _active_runs:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Another solve is already running. Abort it first "
+                    "via POST /v1/solve/abort."
+                ),
+            )
 
         progress_queue = _mp_context.Queue(maxsize=1000)
         cancel_event = _mp_context.Event()
@@ -1626,7 +1648,18 @@ def _start_solver_job(
                 request_start_time,
             ),
         )
-        _solver_process = owned_process
+        handle = _RunHandle(
+            run_id=run_id,
+            username=username,
+            mode=mode,
+            exclusive=exclusive,
+            process=owned_process,
+            progress_queue=progress_queue,
+            mp_cancel_event=cancel_event,
+            heartbeat_value=heartbeat_value,
+            started_at=request_start_time,
+        )
+        _active_runs[username] = handle
         owned_process.start()
 
     fingerprint = _range_fingerprint(
@@ -1646,7 +1679,7 @@ def _start_solver_job(
         # time change check must compare against that snapshot.
         solver_runs.set_fingerprint(run_id, fingerprint)
 
-    _broadcast_solver_progress("start", {
+    _broadcast_solver_progress(username, run_id, "start", {
         "startISO": payload.startISO,
         "endISO": payload.endISO,
         "timeout_seconds": payload.timeout_seconds,
@@ -1654,37 +1687,25 @@ def _start_solver_job(
 
     monitor = threading.Thread(
         target=_monitor_solver_job,
-        args=(
-            run_id,
-            username,
-            payload,
-            owned_process,
-            progress_queue,
-            cancel_event,
-            heartbeat_value,
-            request_start_time,
-        ),
+        args=(handle, payload),
         name=f"solver-monitor-{run_id[:8]}",
         daemon=True,
     )
     monitor.start()
 
 
-def _monitor_solver_job(
-    run_id: str,
-    username: str,
-    payload: SolveRangeRequest,
-    owned_process,
-    progress_queue,
-    cancel_event,
-    heartbeat_value,
-    request_start_time: float,
-) -> None:
+def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
     """Own the subprocess for its whole life: relay progress to SSE, enforce
     the (optional) budget watchdog, persist the outcome to solver_runs, and
-    release the solve slot. Runs in a daemon thread — the HTTP request that
-    started the job is long gone."""
-    global _solver_is_running, _solver_process
+    remove the run from the registry. Runs in a daemon thread — the HTTP
+    request that started the job is long gone."""
+    run_id = handle.run_id
+    username = handle.username
+    owned_process = handle.process
+    progress_queue = handle.progress_queue
+    cancel_event = handle.mp_cancel_event
+    heartbeat_value = handle.heartbeat_value
+    request_start_time = handle.started_at
 
     from .agent_budget import add_spend_usd, estimate_cost_usd
 
@@ -1709,7 +1730,7 @@ def _monitor_solver_job(
             heartbeat_counter += 1
             heartbeat_value.value = heartbeat_counter
 
-            if _solver_cancel_event.is_set():
+            if handle.abort_requested.is_set():
                 user_aborted = True
                 cancel_event.set()
             if soft_stop_at is not None and time.time() > soft_stop_at:
@@ -1726,7 +1747,7 @@ def _monitor_solver_job(
                     try:
                         msg = progress_queue.get_nowait()
                         if msg["type"] == "progress":
-                            _broadcast_solver_progress(msg["event"], msg["data"])
+                            _broadcast_solver_progress(username, run_id, msg["event"], msg["data"])
                             if msg["event"] == "solution" and "assignments" in msg["data"]:
                                 last_solution_assignments = msg["data"]["assignments"]
                         elif msg["type"] == "result":
@@ -1740,7 +1761,7 @@ def _monitor_solver_job(
             try:
                 msg = progress_queue.get(timeout=0.1)
                 if msg["type"] == "progress":
-                    _broadcast_solver_progress(msg["event"], msg["data"])
+                    _broadcast_solver_progress(username, run_id, msg["event"], msg["data"])
                     if msg["event"] == "solution" and "assignments" in msg["data"]:
                         last_solution_assignments = msg["data"]["assignments"]
                 elif msg["type"] == "result":
@@ -1803,7 +1824,7 @@ def _monitor_solver_job(
             None,
         )
         solver_runs.finish_run(run_id, status, result=result, note=summary_note)
-        _broadcast_solver_progress("complete", {
+        _broadcast_solver_progress(username, run_id, "complete", {
             "startISO": payload.startISO,
             "endISO": payload.endISO,
             "status": "success" if status == "finished" else "aborted",
@@ -1812,7 +1833,7 @@ def _monitor_solver_job(
 
     except Exception as e:
         solver_runs.finish_run(run_id, "failed", error=str(e))
-        _broadcast_solver_progress("complete", {
+        _broadcast_solver_progress(username, run_id, "complete", {
             "startISO": payload.startISO,
             "endISO": payload.endISO,
             "status": "error",
@@ -1830,11 +1851,11 @@ def _monitor_solver_job(
         except Exception:
             pass
 
-        with _solver_running_lock:
-            if _solver_process is owned_process:
-                _solver_process = None
-                _solver_is_running = False
-                _solver_cancel_event.clear()
+        # Remove exactly our own registry entry: the identity check prevents
+        # a finishing monitor from deleting a successor run's entry.
+        with _registry_lock:
+            if _active_runs.get(username) is handle:
+                del _active_runs[username]
 
 
 @router.post("/v1/solve/range", response_model=SolveRangeStartResponse)
@@ -2135,11 +2156,13 @@ def _solve_range_impl(
     Raises:
         ValueError: If date range is invalid
     """
-    # Use defaults if not provided
+    # Use defaults if not provided: a private (never-set) cancel event and a
+    # no-op progress sink. In-process callers that want streaming pass both
+    # explicitly; the subprocess worker always does.
     if cancel_event is None:
-        cancel_event = _solver_cancel_event
+        cancel_event = threading.Event()
     if on_progress is None:
-        on_progress = _broadcast_solver_progress
+        on_progress = lambda _event_type, _data: None  # noqa: E731
 
     # Use provided start_time for accurate timeout calculation, or current time as fallback
     actual_start_time = start_time if start_time is not None else time.time()

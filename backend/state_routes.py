@@ -32,7 +32,7 @@ def health():
     # SIGKILLed the backend 3 minutes into a user's run).
     from . import solver as _solver
 
-    return {"status": "ok", "solver_running": bool(_solver._solver_is_running)}
+    return {"status": "ok", "solver_running": _solver.active_run_count() > 0}
 
 
 @router.get("/v1/state", response_model=AppState)
