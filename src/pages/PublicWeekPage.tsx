@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
 import ScheduleGrid from "../components/schedule/ScheduleGrid";
 import WeekNavigator from "../components/schedule/WeekNavigator";
 import { getPublicWebWeek, type PublicWebWeekResponse } from "../api/client";
@@ -11,6 +12,7 @@ import {
   locations as defaultLocations,
 } from "../data/mockData";
 import { addDays, addWeeks, startOfWeek, toISODate } from "../lib/date";
+import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState } from "../lib/shiftRows";
@@ -188,6 +190,36 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
     [calendarRows],
   );
 
+  // The publisher's layout choice travels with the public payload (and is
+  // sanitized by normalizeAppState), so shared links mirror their view.
+  const isClinicSheet =
+    (normalized?.solverSettings?.scheduleLayout ?? "classic") === "clinicSheet";
+  const sheetDays = useMemo(
+    () =>
+      isClinicSheet
+        ? buildSheetDays(weekStartDate, 7, holidayDates, holidayNameByDate)
+        : [],
+    [isClinicSheet, weekStartDate, holidayDates, holidayNameByDate],
+  );
+  const sheetModel = useMemo(
+    () =>
+      isClinicSheet
+        ? buildClinicSheetModel({
+            calendarRows,
+            days: sheetDays,
+            slotOverridesByKey: normalized?.slotOverridesByKey ?? {},
+            minSlotsByRowId: normalized?.minSlotsByRowId ?? {},
+          })
+        : null,
+    [
+      isClinicSheet,
+      calendarRows,
+      sheetDays,
+      normalized?.slotOverridesByKey,
+      normalized?.minSlotsByRowId,
+    ],
+  );
+
   const handlePrevWeek = () => setWeekStartDate((prev) => addWeeks(prev, -1));
   const handleNextWeek = () => setWeekStartDate((prev) => addWeeks(prev, 1));
   const handleToday = () => setWeekStartDate(startOfWeek(new Date(), 1));
@@ -226,6 +258,24 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
           </div>
         </div>
       ) : status === "ready" ? (
+        isClinicSheet && sheetModel ? (
+          <ClinicSheetGrid
+            model={sheetModel}
+            assignmentMap={renderAssignmentMap}
+            rows={calendarRows}
+            readOnly
+            getClinicianName={(id) => clinicians.find((c) => c.id === id)?.name ?? "Unknown"}
+            getIsQualified={(clinicianId, rowId) => {
+              const scheduleRow = rowById.get(rowId);
+              const classId =
+                scheduleRow?.kind === "class"
+                  ? scheduleRow.sectionId ?? scheduleRow.id
+                  : rowId;
+              const clinician = clinicians.find((item) => item.id === clinicianId);
+              return clinician ? clinician.qualifiedClassIds.includes(classId) : false;
+            }}
+          />
+        ) : (
         <ScheduleGrid
           leftHeaderTitle=""
           weekDays={weekDays}
@@ -257,6 +307,7 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
           onCellClick={() => {}}
           onMoveWithinDay={() => {}}
         />
+        )
       ) : (
         <div className="mx-auto max-w-xl px-6 py-8 text-center text-sm text-slate-500 dark:text-slate-300">
           Loading…
