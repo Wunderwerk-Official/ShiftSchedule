@@ -154,3 +154,199 @@ def test_owner_aborts_own_run_without_run_id(multi_user_client):
     resp = client.post("/v1/solve/abort")
     assert resp.json()["status"] == "abort_requested"
     assert _wait_terminal(client, "run-own") in {"aborted", "finished"}
+
+
+def test_same_user_second_solve_409(multi_user_client):
+    client, as_user = multi_user_client
+    _seed_user("user-a")
+
+    as_user("user-a")
+    _start_agent_run(client, "run-first")
+    resp = client.post(
+        "/v1/solve/range",
+        json={
+            "startISO": MON,
+            "endISO": MON,
+            "solver_mode": "agent",
+            "run_token": "run-second",
+        },
+    )
+    assert resp.status_code == 409
+    assert "already have a planning run" in resp.json()["detail"]
+    assert _wait_terminal(client, "run-first") == "finished"
+
+
+def test_two_users_agent_runs_concurrently(multi_user_client):
+    client, as_user = multi_user_client
+    _seed_user("user-a")
+    _seed_user("user-b")
+
+    as_user("user-a")
+    _start_agent_run(client, "run-a")
+    as_user("user-b")
+    _start_agent_run(client, "run-b")  # would have been 409 under the old slot
+
+    # Both runs are observably running at the same time.
+    assert _run_status(client, "run-b") == "running"
+    as_user("user-a")
+    assert _run_status(client, "run-a") == "running"
+
+    # Run listings stay strictly per user.
+    as_user("user-b")
+    own_ids = {run["id"] for run in client.get("/v1/solve/runs").json()["runs"]}
+    assert "run-b" in own_ids
+    assert "run-a" not in own_ids
+
+    assert _wait_terminal(client, "run-b") == "finished"
+    as_user("user-a")
+    assert _wait_terminal(client, "run-a") == "finished"
+
+
+def test_exclusive_mode_blocked_while_agent_runs(multi_user_client):
+    client, as_user = multi_user_client
+    _seed_user("user-a")
+    _seed_user("user-b")
+
+    as_user("user-a")
+    _start_agent_run(client, "run-agent")
+
+    as_user("user-b")
+    for legacy_payload in (
+        {"solver_mode": "cpsat"},
+        {"use_heuristic": True},
+    ):
+        resp = client.post(
+            "/v1/solve/range",
+            json={"startISO": MON, "endISO": MON, "run_token": "run-legacy", **legacy_payload},
+        )
+        assert resp.status_code == 409
+        assert "exclusive access" in resp.json()["detail"]
+
+    as_user("user-a")
+    assert _wait_terminal(client, "run-agent") == "finished"
+
+
+def test_admission_matrix():
+    from types import SimpleNamespace
+
+    from backend import solver as solver_module
+
+    agent_handle = SimpleNamespace(exclusive=False)
+    exclusive_handle = SimpleNamespace(exclusive=True)
+    check = solver_module._admission_error
+
+    # Empty registry admits both modes.
+    assert check({}, "user-a", exclusive=False) is None
+    assert check({}, "user-a", exclusive=True) is None
+    # Self-overlap always rejected (and wins over other rules).
+    assert "already have" in check({"user-a": agent_handle}, "user-a", exclusive=False)
+    assert "already have" in check({"user-a": exclusive_handle}, "user-a", exclusive=True)
+    # A live exclusive run blocks everyone else.
+    assert "exclusive solver run" in check({"user-b": exclusive_handle}, "user-a", exclusive=False)
+    # An exclusive start needs an empty registry.
+    assert "exclusive access" in check({"user-b": agent_handle}, "user-a", exclusive=True)
+    # Agent runs of different users coexist below the cap.
+    assert check({"user-b": agent_handle}, "user-a", exclusive=False) is None
+    # The cap rejects further agent runs.
+    crowd = {f"user-{i}": agent_handle for i in range(solver_module.MAX_CONCURRENT_SOLVES)}
+    assert "limit of concurrent" in check(crowd, "user-z", exclusive=False)
+
+
+def test_run_token_cross_user_collision_rejected(multi_user_client):
+    client, as_user = multi_user_client
+    from backend import solver_runs
+
+    _seed_user("user-b")
+    solver_runs.create_run(
+        "shared-token", "user-a", MON, MON, {"startISO": MON, "solver_mode": "agent"}
+    )
+    solver_runs.finish_run("shared-token", "finished")
+
+    as_user("user-b")
+    resp = client.post(
+        "/v1/solve/range",
+        json={"startISO": MON, "endISO": MON, "solver_mode": "agent", "run_token": "shared-token"},
+    )
+    assert resp.status_code == 409
+    assert "already in use" in resp.json()["detail"]
+    # The original row was not hijacked.
+    assert solver_runs.get_run_any_user("shared-token")["username"] == "user-a"
+
+
+def test_recovery_restarts_one_run_per_user(multi_user_client):
+    client, as_user = multi_user_client
+    from backend import solver_runs
+    from backend.solver import recover_interrupted_runs
+
+    _seed_user("user-a")
+    _seed_user("user-b")
+    params = {
+        "startISO": MON,
+        "endISO": MON,
+        "only_fill_required": True,
+        "solver_mode": "agent",
+        "agent_strategy": "repair",
+        "timeout_seconds": 60,
+    }
+    # Older stranded run of user-a (created first), then the newer one, plus
+    # one stranded run of user-b.
+    solver_runs.create_run("stranded-a-old", "user-a", MON, MON, {**params, "run_token": "stranded-a-old"})
+    time.sleep(1.1)  # created_at has second resolution
+    solver_runs.create_run("stranded-a-new", "user-a", MON, MON, {**params, "run_token": "stranded-a-new"})
+    solver_runs.create_run("stranded-b", "user-b", MON, MON, {**params, "run_token": "stranded-b"})
+
+    recover_interrupted_runs()
+
+    as_user("user-a")
+    assert _run_status(client, "stranded-a-old") == "crashed"
+    assert _wait_terminal(client, "stranded-a-new") == "finished"
+    as_user("user-b")
+    assert _wait_terminal(client, "stranded-b") == "finished"
+
+    as_user("user-a")
+    new_run = client.get("/v1/solve/runs/stranded-a-new").json()
+    assert new_run["attempt"] == 2
+    assert any("restarted" in (note or "") for note in [new_run.get("notes")])
+
+
+def test_health_counts_running_solves(multi_user_client):
+    client, as_user = multi_user_client
+    _seed_user("user-a")
+
+    as_user("user-a")
+    _start_agent_run(client, "run-health")
+    body = client.get("/health").json()
+    assert body["solver_running"] is True
+    assert body["running_solves"] == 1
+
+    assert _wait_terminal(client, "run-health") == "finished"
+    deadline = time.time() + 10.0
+    while time.time() < deadline:
+        body = client.get("/health").json()
+        if body["running_solves"] == 0:
+            break
+        time.sleep(0.2)
+    assert body == {"status": "ok", "solver_running": False, "running_solves": 0}
+
+
+def test_broadcast_is_owner_scoped():
+    import asyncio
+
+    from backend import solver as solver_module
+
+    queue_a: asyncio.Queue = asyncio.Queue()
+    queue_b: asyncio.Queue = asyncio.Queue()
+    entry_a = ("user-a", queue_a)
+    entry_b = ("user-b", queue_b)
+    with solver_module._subscribers_lock:
+        solver_module._solver_progress_subscribers.extend([entry_a, entry_b])
+    try:
+        solver_module._broadcast_solver_progress("user-a", "tok-1", "phase", {"phase": "x"})
+        assert queue_b.empty()
+        event = queue_a.get_nowait()
+        assert event["event"] == "phase"
+        assert event["data"]["run_token"] == "tok-1"
+    finally:
+        with solver_module._subscribers_lock:
+            solver_module._solver_progress_subscribers.remove(entry_a)
+            solver_module._solver_progress_subscribers.remove(entry_b)

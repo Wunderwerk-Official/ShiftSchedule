@@ -13,4 +13,8 @@ def test_health() -> None:
     assert response.status_code == 200
     # solver_running is what the deploy script polls so it never replaces
     # the container while a run is in flight.
-    assert response.json() == {"status": "ok", "solver_running": False}
+    assert response.json() == {
+        "status": "ok",
+        "solver_running": False,
+        "running_solves": 0,
+    }

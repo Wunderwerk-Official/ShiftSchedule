@@ -107,6 +107,42 @@ class _RunHandle:
 _active_runs: Dict[str, _RunHandle] = {}
 _registry_lock = threading.Lock()
 
+# Safety valve for concurrent agent runs (they are LLM-I/O-bound, not
+# CPU-bound). Legacy cpsat/heuristic runs stay machine-exclusive regardless.
+# Setting this to 1 restores the old single-slot admission without a deploy.
+MAX_CONCURRENT_SOLVES = max(1, int(os.getenv("MAX_CONCURRENT_SOLVES", "4")))
+
+
+def _admission_error(
+    active: Dict[str, _RunHandle], username: str, exclusive: bool
+) -> Optional[str]:
+    """Pure admission rule for a new run against the current registry.
+
+    Returns the 409 detail string when the run must be rejected, or None
+    when it may start. Callers pass the registry AFTER the zombie sweep.
+    """
+    if username in active:
+        return (
+            "You already have a planning run in progress. Abort it first "
+            "or wait for it to finish."
+        )
+    if any(handle.exclusive for handle in active.values()):
+        return (
+            "An exclusive solver run (legacy optimizer mode) is currently "
+            "in progress on the server. Please try again when it finishes."
+        )
+    if exclusive and active:
+        return (
+            "Legacy solver modes (cpsat/heuristic) require exclusive access "
+            "to the server. Please try again when the running plans finish."
+        )
+    if len(active) >= MAX_CONCURRENT_SOLVES:
+        return (
+            "The server is at its limit of concurrent planning runs. "
+            "Please try again in a moment."
+        )
+    return None
+
 # Global list of (username, queue) for SSE clients to receive solver progress.
 # Progress is delivered only to subscribers of the user who owns the emitting
 # run — the channel used to be a broadcast to everyone, which leaked one
@@ -1631,6 +1667,21 @@ def _start_solver_job(
     mode = payload.resolved_mode()
     exclusive = mode != "agent"
 
+    # Cross-user run_token collision guard (DB read BEFORE taking the lock
+    # and before any process is spawned): run ids are stored with INSERT OR
+    # REPLACE, so a client reusing another user's id would otherwise hijack
+    # that row. Same-user reuse keeps its existing replace semantics.
+    if attempt == 1:
+        existing_run = solver_runs.get_run_any_user(run_id)
+        if existing_run is not None and existing_run.get("username") != username:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "This run id is already in use. Start the run again "
+                    "(a fresh run id will be generated)."
+                ),
+            )
+
     with _registry_lock:
         # Zombie sweep: entries whose process died but whose monitor thread
         # has not removed them yet — join the corpse and clear the residue
@@ -1643,14 +1694,9 @@ def _start_solver_job(
                     pass
                 del _active_runs[user]
 
-        if _active_runs:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Another solve is already running. Abort it first "
-                    "via POST /v1/solve/abort."
-                ),
-            )
+        detail = _admission_error(_active_runs, username, exclusive)
+        if detail is not None:
+            raise HTTPException(status_code=409, detail=detail)
 
         progress_queue = _mp_context.Queue(maxsize=1000)
         cancel_event = _mp_context.Event()
@@ -2084,16 +2130,21 @@ def _apply_run_result(username: str, run: dict) -> int:
 
 def recover_interrupted_runs() -> None:
     """Called on backend startup: any run still marked 'running' was killed
-    by a restart/crash/deploy. The most recent first-attempt run is
+    by a restart/crash/deploy. The most recent first-attempt run PER USER is
     restarted automatically (it replans against the current state — results
     are never auto-applied, so this is safe); everything else is marked
-    crashed. Never raises: startup must not depend on it."""
+    crashed. Iteration stays newest-first globally so admission conflicts
+    (an exclusive legacy run, or more stranded users than the concurrency
+    cap) resolve deterministically in favor of the newest runs; rejected
+    restarts fall through to 'crashed'. Never raises: startup must not
+    depend on it."""
     try:
         stranded = solver_runs.interrupted_runs()
         stranded.sort(key=lambda r: r.get("created_at") or "", reverse=True)
-        restarted = False
+        restarted_users: set = set()
         for run in stranded:
-            if not restarted and run.get("attempt", 1) < 2:
+            username = run.get("username")
+            if username not in restarted_users and run.get("attempt", 1) < 2:
                 try:
                     payload = SolveRangeRequest(**run["params"])
                     solver_runs.bump_attempt(
@@ -2101,10 +2152,8 @@ def recover_interrupted_runs() -> None:
                         "Interrupted by a backend restart - restarted "
                         "automatically.",
                     )
-                    _start_solver_job(
-                        run["username"], payload, run["id"], attempt=2
-                    )
-                    restarted = True
+                    _start_solver_job(username, payload, run["id"], attempt=2)
+                    restarted_users.add(username)
                     print(f"[solver] Restarted interrupted run {run['id']}")
                     continue
                 except Exception as exc:
