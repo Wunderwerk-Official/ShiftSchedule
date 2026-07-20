@@ -673,11 +673,12 @@ Subprocess architecture (force abort):
 - Main process spawns `_solver_subprocess_worker` which runs the actual CP-SAT solving.
 - Progress is relayed via `multiprocessing.Queue` from subprocess to main process, then broadcast to SSE subscribers.
 - Abort endpoint (`POST /v1/solve/abort`) supports two modes:
-  - Default: Sets cancel event flag, solver stops at next solution callback (graceful).
+  - Default: Sets the run's abort event, solver stops at next solution callback (graceful).
   - `force=true`: Immediately terminates the subprocess via `Process.terminate()` then `Process.kill()` if needed.
+- Abort is OWNER-SCOPED: without `run_id` it targets the caller's own active run; with `run_id` only the run's owner (or an admin) may abort it. Foreign/unknown ids uniformly report `no_solver_running`.
 - This enables instant abort even when the solver is stuck without finding new solutions.
-- Global tracking: `_solver_process` holds the subprocess reference, `_solver_cancel_event` for graceful abort.
-- Subprocess cleanup: `atexit` handler and aggressive cleanup function (`_cleanup_solver_process`) ensure subprocesses are killed on backend restart/crash. Uses `terminate()` first, then `kill()` after 2s timeout.
+- Run tracking: `_active_runs` (username → `_RunHandle` with process, per-run mp cancel event, per-run `abort_requested`) under `_registry_lock`. At most ONE run per user; different users' AGENT runs execute concurrently (global cap `MAX_CONCURRENT_SOLVES`, env, default 4 — set to 1 to restore single-slot admission). Legacy cpsat/heuristic modes stay machine-exclusive (require empty registry, block all other starts).
+- Subprocess cleanup: `atexit` handler and aggressive cleanup function (`_cleanup_solver_processes`) ensure subprocesses are killed on backend restart/crash. Uses `terminate()` first, then `kill()` after 2s timeout.
 
 SSE live updates (real-time progress):
 - Endpoint: `GET /v1/solve/progress?token=<jwt>` (Server-Sent Events stream).
@@ -853,7 +854,9 @@ A solve is a SERVER-SIDE JOB, not an HTTP request: `POST /v1/solve/range`
 creates a row in the `solver_runs` table, spawns the solver subprocess plus
 a monitor thread, and returns the run id immediately. The monitor relays
 progress to SSE, persists the outcome (`finished`/`aborted`/`failed`) with
-the full result JSON, and frees the solve slot. Nothing is applied to the
+the full result JSON, and removes the run from the per-user registry
+(runs of different users execute concurrently; a user never has two
+overlapping runs). Nothing is applied to the
 schedule automatically: the result waits in the RUN INBOX until the admin
 applies it (`POST /v1/solve/runs/{id}/apply` — atomic server-side apply
 with the same semantics the frontend used: in-range solver assignments are

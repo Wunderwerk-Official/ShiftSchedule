@@ -137,7 +137,10 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 
 
 def _get_connection() -> sqlite3.Connection:
-    conn = sqlite3.connect(DB_PATH)
+    # 30s busy timeout: with concurrent solver runs, several monitor threads
+    # can write large finish_run result blobs at once; the default 5s window
+    # occasionally loses that race against a slow write.
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
     _ensure_schema(conn)
     return conn
