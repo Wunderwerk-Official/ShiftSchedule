@@ -448,9 +448,17 @@ def _broadcast_solver_progress(owner: str, run_token: str, event_type: str, data
 @router.post("/v1/solve/abort")
 async def abort_solver(
     force: bool = Query(False, description="Force immediate termination by killing subprocess"),
+    run_id: Optional[str] = Query(
+        None, description="Target run id; defaults to your own active run"
+    ),
     current_user: UserPublic = Depends(_get_current_user),
 ):
-    """Abort any currently running solver operation.
+    """Abort a running solver operation — your own, unless you are admin.
+
+    Without run_id the caller's own active run is targeted. With run_id the
+    run must belong to the caller (admins may target any run). Foreign or
+    unknown ids uniformly report no_solver_running so the endpoint never
+    reveals whether another user has a run in flight.
 
     This endpoint is async to ensure it can be processed even when the
     sync thread pool is blocked by a running solver.
@@ -463,7 +471,18 @@ async def abort_solver(
     # terminate/join escalation happens outside it so an unresponsive child
     # can never stall other requests (same intent as the old lock-free read).
     with _registry_lock:
-        handle = next(iter(_active_runs.values()), None)
+        if run_id is None:
+            handle = _active_runs.get(current_user.username)
+        else:
+            handle = next(
+                (h for h in _active_runs.values() if h.run_id == run_id), None
+            )
+            if (
+                handle is not None
+                and handle.username != current_user.username
+                and current_user.role != "admin"
+            ):
+                handle = None
     if handle is None:
         return {"status": "no_solver_running", "message": "No solver is currently running"}
     handle.abort_requested.set()
