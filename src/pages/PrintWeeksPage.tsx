@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
 import ScheduleGrid from "../components/schedule/ScheduleGrid";
 import { getState, type Holiday, type WeeklyCalendarTemplate } from "../api/client";
 import {
@@ -11,6 +12,7 @@ import {
   WorkplaceRow,
 } from "../data/mockData";
 import { addDays, addWeeks, formatRangeLabel, startOfWeek } from "../lib/date";
+import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState, type ScheduleRow } from "../lib/shiftRows";
@@ -104,6 +106,27 @@ const PrintableWeek = ({
     () => buildDayColumns(weekDays, weeklyTemplate, holidayDates, columnTimeMetaByKey),
     [weekDays, weeklyTemplate, holidayDates, columnTimeMetaByKey],
   );
+  const isClinicSheet =
+    (solverSettings.scheduleLayout ?? "classic") === "clinicSheet";
+  const sheetDays = useMemo(
+    () =>
+      isClinicSheet
+        ? buildSheetDays(weekDays[0], 7, holidayDates, holidayNameByDate)
+        : [],
+    [isClinicSheet, weekDays, holidayDates, holidayNameByDate],
+  );
+  const sheetModel = useMemo(
+    () =>
+      isClinicSheet
+        ? buildClinicSheetModel({
+            calendarRows,
+            days: sheetDays,
+            slotOverridesByKey,
+            minSlotsByRowId,
+          })
+        : null,
+    [isClinicSheet, calendarRows, sheetDays, slotOverridesByKey, minSlotsByRowId],
+  );
 
   useLayoutEffect(() => {
     const content = printContentRef.current;
@@ -172,6 +195,38 @@ const PrintableWeek = ({
               transformOrigin: "top left",
             }}
           >
+            {isClinicSheet && sheetModel ? (
+              // w-max: size the measure container to the sheet's max-content
+              // width so the last day column is never clipped (see
+              // PrintWeekPage for the min-content pitfall).
+              <div className="w-max">
+                <ClinicSheetGrid
+                  model={sheetModel}
+                  assignmentMap={weekAssignments}
+                  rows={calendarRows}
+                  readOnly
+                  header={
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+                        {rangeLabel}
+                      </div>
+                    </div>
+                  }
+                  getClinicianName={(id) =>
+                    clinicians.find((c) => c.id === id)?.name ?? "Unknown"
+                  }
+                  getIsQualified={(clinicianId, rowId) => {
+                    const scheduleRow = rowById.get(rowId);
+                    const classId =
+                      scheduleRow?.kind === "class"
+                        ? scheduleRow.sectionId ?? scheduleRow.id
+                        : rowId;
+                    const clinician = clinicians.find((item) => item.id === clinicianId);
+                    return clinician ? clinician.qualifiedClassIds.includes(classId) : false;
+                  }}
+                />
+              </div>
+            ) : (
             <ScheduleGrid
               leftHeaderTitle=""
               weekDays={weekDays}
@@ -212,6 +267,7 @@ const PrintableWeek = ({
               onMoveWithinDay={() => {}}
               onCellClick={() => {}}
             />
+            )}
           </div>
         </div>
       </div>

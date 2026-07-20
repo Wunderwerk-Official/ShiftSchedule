@@ -97,6 +97,7 @@ export const defaultSolverSettings = {
   onCallRestDaysBefore: 1,
   onCallRestDaysAfter: 1,
   preferContinuousShifts: true,
+  scheduleLayout: "classic" as import("../api/client").ScheduleLayout,
   // Optimization weights
   weightCoverage: 1000,
   weightSlack: 1000,

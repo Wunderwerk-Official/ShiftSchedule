@@ -761,6 +761,76 @@ test.describe.serial("ui login flows", () => {
 
   });
 
+  test("pdf export renders the clinic sheet layout, one week per page", async ({
+    page,
+    request,
+  }, testInfo) => {
+    test.setTimeout(90000);
+    const locationId = "loc-default";
+    const dayType = getDayTypeForISO(testDateISO);
+    const colBandId = `${locationId}-col-${dayType}-1`;
+    const rowBands = Array.from({ length: 6 }, (_, index) => ({
+      id: `${locationId}-row-${index + 1}`,
+      label: `Arbeitsplatz ${index + 1}`,
+      order: index + 1,
+    }));
+    const slots = rowBands.map((rowBand, index) => ({
+      id: `slot-${index + 1}`,
+      locationId,
+      rowBandId: rowBand.id,
+      colBandId,
+      blockId: "block-1",
+      requiredSlots: 1,
+      startTime: "08:00",
+      endTime: "16:00",
+      endDayOffset: 0,
+    }));
+    await request.post(`${API_BASE}/v1/state`, {
+      headers: { Authorization: `Bearer ${token}` },
+      data: buildTemplateState({
+        dateISO: testDateISO,
+        classRows: [{ id: primaryClassId, name: "MRI" }],
+        blocks: [{ id: "block-1", sectionId: primaryClassId }],
+        rowBands,
+        slots,
+        solverSettings: { scheduleLayout: "clinicSheet" },
+      }),
+    });
+    await seedAuthToken(page, token);
+    await page.emulateMedia({ media: "print" });
+    await page.goto(`/print/week?start=${encodeURIComponent(testDateISO)}`);
+    await page.waitForFunction("window.__PDF_READY__ === true");
+    // Sheet markers: German weekday headers and no classic assignment pills.
+    await expect(page.locator("[data-schedule-grid]").first()).toBeVisible();
+    expect(await page.locator("[data-assignment-pill]").count()).toBe(0);
+    await attachStepScreenshot(page, testInfo, "print-week-clinic-sheet");
+    const response = await request.get(
+      `${API_BASE}/v1/pdf/week?start=${encodeURIComponent(testDateISO)}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(response.ok()).toBeTruthy();
+    const buffer = Buffer.from(await response.body());
+    expect(buffer.toString("ascii", 0, 4)).toBe("%PDF");
+    await testInfo.attach("week-clinic-sheet.pdf", {
+      body: buffer,
+      contentType: "application/pdf",
+    });
+    expect(countPdfPages(buffer)).toBe(1);
+
+    const multiResponse = await request.get(
+      `${API_BASE}/v1/pdf/weeks?start=${encodeURIComponent(testDateISO)}&weeks=3`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    expect(multiResponse.ok()).toBeTruthy();
+    const multiBuffer = Buffer.from(await multiResponse.body());
+    expect(multiBuffer.toString("ascii", 0, 4)).toBe("%PDF");
+    await testInfo.attach("weeks-clinic-sheet.pdf", {
+      body: multiBuffer,
+      contentType: "application/pdf",
+    });
+    expect(countPdfPages(multiBuffer)).toBe(3);
+  });
+
   test("print layout fits within one A4 page and fills at least one dimension", async ({
     page,
     request,

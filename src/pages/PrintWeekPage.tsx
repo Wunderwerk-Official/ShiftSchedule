@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
 import ScheduleGrid from "../components/schedule/ScheduleGrid";
 import { getState, type Holiday, type WeeklyCalendarTemplate } from "../api/client";
 import {
@@ -11,6 +12,7 @@ import {
   locations as defaultLocations,
 } from "../data/mockData";
 import { addDays, startOfWeek, formatRangeLabel } from "../lib/date";
+import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState } from "../lib/shiftRows";
@@ -153,6 +155,28 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
         holidayDates,
       }),
     [assignmentMap, clinicians, weekDays, scheduleRows, solverSettings],
+  );
+
+  const isClinicSheet =
+    (solverSettings.scheduleLayout ?? "classic") === "clinicSheet";
+  const sheetDays = useMemo(
+    () =>
+      isClinicSheet
+        ? buildSheetDays(weekStart, 7, holidayDates, holidayNameByDate)
+        : [],
+    [isClinicSheet, weekStart, holidayDates, holidayNameByDate],
+  );
+  const sheetModel = useMemo(
+    () =>
+      isClinicSheet
+        ? buildClinicSheetModel({
+            calendarRows,
+            days: sheetDays,
+            slotOverridesByKey,
+            minSlotsByRowId,
+          })
+        : null,
+    [isClinicSheet, calendarRows, sheetDays, slotOverridesByKey, minSlotsByRowId],
   );
 
   useEffect(() => {
@@ -309,6 +333,39 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
               transformOrigin: "top left",
             }}
           >
+            {isClinicSheet && sheetModel ? (
+              // w-max lets the measure container size to the sheet's
+              // max-content width — without it the shrink-to-fit width lands
+              // at min-content and the overflow-hidden shell clips the last
+              // day column in the PDF.
+              <div className="w-max">
+                <ClinicSheetGrid
+                  model={sheetModel}
+                  assignmentMap={renderAssignmentMap}
+                  rows={calendarRows}
+                  readOnly
+                  header={
+                    <div className="flex items-center justify-between">
+                      <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
+                        {formatRangeLabel(weekStart, weekEndInclusive)}
+                      </div>
+                    </div>
+                  }
+                  getClinicianName={(id) =>
+                    clinicians.find((c) => c.id === id)?.name ?? "Unknown"
+                  }
+                  getIsQualified={(clinicianId, rowId) => {
+                    const scheduleRow = rowById.get(rowId);
+                    const classId =
+                      scheduleRow?.kind === "class"
+                        ? scheduleRow.sectionId ?? scheduleRow.id
+                        : rowId;
+                    const clinician = clinicians.find((item) => item.id === clinicianId);
+                    return clinician ? clinician.qualifiedClassIds.includes(classId) : false;
+                  }}
+                />
+              </div>
+            ) : (
             <ScheduleGrid
                 leftHeaderTitle=""
                 weekDays={weekDays}
@@ -349,6 +406,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                 onMoveWithinDay={() => {}}
                 onCellClick={() => {}}
               />
+            )}
           </div>
         </div>
       </div>
