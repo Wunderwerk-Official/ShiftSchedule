@@ -40,6 +40,20 @@ export function daysInMonth(date: Date) {
   return new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
 }
 
+// All Monday-start weeks that overlap the given month (i.e. contain at
+// least one day of it). The first week may start in the previous month.
+export function listWeekStartsOverlappingMonth(monthAnchor: Date): Date[] {
+  const monthStart = startOfMonth(monthAnchor);
+  const monthEnd = addDays(addMonths(monthStart, 1), -1);
+  const weeks: Date[] = [];
+  let week = startOfWeek(monthStart, 1);
+  while (week.getTime() <= monthEnd.getTime()) {
+    weeks.push(week);
+    week = addWeeks(week, 1);
+  }
+  return weeks;
+}
+
 export function formatMonthLabel(date: Date) {
   return new Intl.DateTimeFormat("de-DE", {
     month: "long",

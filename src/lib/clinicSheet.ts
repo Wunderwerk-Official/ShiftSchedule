@@ -1,7 +1,7 @@
 import type { DayType } from "../api/client";
 import type { ScheduleRow } from "./shiftRows";
 import { getDayType } from "./dayTypes";
-import { daysInMonth, formatMonthLabel, toISODate } from "./date";
+import { addDays, daysInMonth, formatMonthLabel, startOfMonth, toISODate } from "./date";
 
 // Colors lifted verbatim from the clinic's Excel Arbeitsplan.
 export const EXCEL_GRAY = "#C0C0C0";
@@ -57,17 +57,18 @@ export type ClinicSheetModel = {
   poolRows: ScheduleRow[];
 };
 
-export function buildMonthDays(
-  monthAnchor: Date,
+// Day blocks for an arbitrary consecutive range — the sheet grid renders
+// whatever days it is given, so print/public pages can show single weeks
+// in the same Excel optic the month view uses.
+export function buildSheetDays(
+  startDate: Date,
+  dayCount: number,
   holidayDates: Set<string>,
   holidayNameByDate?: Record<string, string>,
 ): ClinicSheetDay[] {
-  const year = monthAnchor.getFullYear();
-  const month = monthAnchor.getMonth();
-  const total = daysInMonth(monthAnchor);
   const days: ClinicSheetDay[] = [];
-  for (let dayOfMonth = 1; dayOfMonth <= total; dayOfMonth += 1) {
-    const date = new Date(year, month, dayOfMonth);
+  for (let offset = 0; offset < dayCount; offset += 1) {
+    const date = addDays(startDate, offset);
     const dateISO = toISODate(date);
     const dayType = getDayType(dateISO, holidayDates);
     days.push({
@@ -79,6 +80,19 @@ export function buildMonthDays(
     });
   }
   return days;
+}
+
+export function buildMonthDays(
+  monthAnchor: Date,
+  holidayDates: Set<string>,
+  holidayNameByDate?: Record<string, string>,
+): ClinicSheetDay[] {
+  return buildSheetDays(
+    startOfMonth(monthAnchor),
+    daysInMonth(monthAnchor),
+    holidayDates,
+    holidayNameByDate,
+  );
 }
 
 // How the 6 columns of a day block are shared between the row's areas.

@@ -5,6 +5,7 @@ import {
   SHEET_DAY_COLUMNS,
   buildClinicSheetModel,
   buildMonthDays,
+  buildSheetDays,
   resolveAreaWidths,
 } from "./clinicSheet";
 
@@ -73,6 +74,47 @@ describe("buildMonthDays", () => {
     expect(holiday?.dayType).toBe("holiday");
     expect(holiday?.isCyan).toBe(true);
     expect(holiday?.holidayName).toBe("Tag der Deutschen Einheit");
+  });
+});
+
+describe("buildSheetDays", () => {
+  it("builds a 7-day week spanning a month boundary", () => {
+    // 2026-06-29 is the Monday of the week containing 2026-07-01.
+    const days = buildSheetDays(new Date(2026, 5, 29), 7, new Set());
+    expect(days).toHaveLength(7);
+    expect(days.map((d) => d.dateISO)).toEqual([
+      "2026-06-29",
+      "2026-06-30",
+      "2026-07-01",
+      "2026-07-02",
+      "2026-07-03",
+      "2026-07-04",
+      "2026-07-05",
+    ]);
+    expect(days[0].dayType).toBe("mon");
+    expect(days[5].isCyan).toBe(true); // Saturday
+    expect(days[6].isCyan).toBe(true); // Sunday
+  });
+
+  it("marks holidays with name and cyan tint", () => {
+    const days = buildSheetDays(
+      new Date(2026, 9, 1),
+      7,
+      new Set(["2026-10-03"]),
+      { "2026-10-03": "Tag der Deutschen Einheit" },
+    );
+    const holiday = days.find((d) => d.dateISO === "2026-10-03");
+    expect(holiday?.dayType).toBe("holiday");
+    expect(holiday?.isCyan).toBe(true);
+    expect(holiday?.holidayName).toBe("Tag der Deutschen Einheit");
+  });
+
+  it("is the primitive buildMonthDays delegates to", () => {
+    const holidays = new Set(["2026-07-22"]);
+    const names = { "2026-07-22": "Testfeiertag" };
+    expect(buildMonthDays(new Date(2026, 6, 15), holidays, names)).toEqual(
+      buildSheetDays(new Date(2026, 6, 1), 31, holidays, names),
+    );
   });
 });
 
