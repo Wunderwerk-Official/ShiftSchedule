@@ -14,6 +14,7 @@ import WorkingHoursOverviewModal from "../components/schedule/WorkingHoursOvervi
 import WeekNavigator from "../components/schedule/WeekNavigator";
 import MonthNavigator from "../components/schedule/MonthNavigator";
 import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
+import PublishWeeksPopover from "../components/schedule/PublishWeeksPopover";
 import AdminUsersPanel from "../components/auth/AdminUsersPanel";
 import { ChevronLeftIcon, ChevronRightIcon } from "../components/schedule/icons";
 import {
@@ -3450,7 +3451,7 @@ export default function WeeklySchedulePage({
         type="button"
         role="switch"
         aria-checked={isWeekPublished}
-        onClick={() => handleWeekPublishToggle(!isWeekPublished)}
+        onClick={() => handleSetWeekPublished(currentWeekStartISO, !isWeekPublished)}
         className={cx(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
           isWeekPublished
@@ -3467,13 +3468,26 @@ export default function WeeklySchedulePage({
       </button>
     </div>
   );
-  const handleWeekPublishToggle = (nextPublished: boolean) => {
+  const handleSetWeekPublished = (weekStartISO: string, published: boolean) => {
     setPublishedWeekStartISOs((prev) => {
       const next = new Set(prev);
-      if (nextPublished) {
-        next.add(currentWeekStartISO);
+      if (published) {
+        next.add(weekStartISO);
       } else {
-        next.delete(currentWeekStartISO);
+        next.delete(weekStartISO);
+      }
+      return Array.from(next);
+    });
+  };
+  const handleSetWeeksPublished = (weekStartISOs: string[], published: boolean) => {
+    setPublishedWeekStartISOs((prev) => {
+      const next = new Set(prev);
+      for (const weekStartISO of weekStartISOs) {
+        if (published) {
+          next.add(weekStartISO);
+        } else {
+          next.delete(weekStartISO);
+        }
       }
       return Array.from(next);
     });
@@ -3566,6 +3580,14 @@ export default function WeeklySchedulePage({
                         scrollToDateColumn(toISODate(new Date()));
                       }}
                       onGoToDate={(date) => setAnchorDate(date)}
+                    />
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <PublishWeeksPopover
+                      monthStart={monthStart}
+                      publishedWeekStartISOs={publishedWeekStartISOs}
+                      onSetWeekPublished={handleSetWeekPublished}
+                      onSetWeeksPublished={handleSetWeeksPublished}
                     />
                   </div>
                 </div>
