@@ -1557,7 +1557,7 @@ export default function WeeklySchedulePage({
   // in the inbox (nothing is applied).
   const handleAbortWithoutApplying = () => {
     applyAfterAbortRef.current = false;
-    abortSolver(true).catch(() => {
+    abortSolver(true, autoPlanRunTokenRef.current ?? undefined).catch(() => {
       // Ignore errors - the abort request is best-effort
     });
     setLiveSolutions([]);
@@ -1568,7 +1568,7 @@ export default function WeeklySchedulePage({
   // the inbox, the poll loop applies it automatically.
   const handleApplySolution = () => {
     applyAfterAbortRef.current = true;
-    abortSolver(true).catch(() => {
+    abortSolver(true, autoPlanRunTokenRef.current ?? undefined).catch(() => {
       // Ignore errors - the abort request is best-effort
     });
     showSolverNoticeBriefly(

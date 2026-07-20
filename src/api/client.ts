@@ -890,9 +890,18 @@ export async function adminGetSolverRun(runId: string): Promise<SolverRunDetail>
   return res.json();
 }
 
-export async function abortSolver(force = false): Promise<{ status: string; message: string }> {
-  const url = force
-    ? `${API_BASE}/v1/solve/abort?force=true`
+export async function abortSolver(
+  force = false,
+  runId?: string,
+): Promise<{ status: string; message: string }> {
+  // Without runId the backend aborts the caller's own active run; with it,
+  // only the run's owner (or an admin) may abort that specific run.
+  const params = new URLSearchParams();
+  if (force) params.set("force", "true");
+  if (runId) params.set("run_id", runId);
+  const query = params.toString();
+  const url = query
+    ? `${API_BASE}/v1/solve/abort?${query}`
     : `${API_BASE}/v1/solve/abort`;
   const res = await fetch(url, {
     method: "POST",

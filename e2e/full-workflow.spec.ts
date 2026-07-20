@@ -375,9 +375,10 @@ async function addEligibilityToClinician(
 const SOLVER_API_BASE = process.env.PLAYWRIGHT_API_URL ?? "http://localhost:8000";
 
 async function runSolver(page: Page) {
-  // The backend allows only ONE solve globally (not per user). A solver run
-  // still finishing from an earlier spec would make this run's POST
-  // /v1/solve/range fail with 409, so clear any leftover solve first.
+  // Each user may have one active solve; aborting without a run_id targets
+  // the CALLER's own run. A run still finishing from an earlier spec (same
+  // test user) would make this spec's POST /v1/solve/range fail with 409,
+  // so clear any leftover own solve first.
   await page.evaluate(async (apiBase) => {
     const token = window.localStorage.getItem("authToken");
     if (!token) return;
