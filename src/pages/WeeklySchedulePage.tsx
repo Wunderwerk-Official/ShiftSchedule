@@ -74,6 +74,7 @@ import { cx } from "../lib/classNames";
 import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
 import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
+import { insertVacationRange } from "../lib/vacations";
 import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
 import { getDayType } from "../lib/dayTypes";
 import {
@@ -1629,45 +1630,24 @@ export default function WeeklySchedulePage({
     });
   };
 
-  const addVacationDay = (clinicianId: string, dateISO: string) => {
+  const addVacationRange = (clinicianId: string, startISO: string, endISO: string) => {
+    const [lo, hi] = startISO <= endISO ? [startISO, endISO] : [endISO, startISO];
     setClinicians((prev) =>
       prev.map((clinician) => {
         if (clinician.id !== clinicianId) return clinician;
-        if (
-          clinician.vacations.some(
-            (vacation) => vacation.startISO <= dateISO && dateISO <= vacation.endISO,
-          )
-        ) {
-          return clinician;
-        }
-        const nextVacations = [
-          ...clinician.vacations,
-          {
-            id: `vac-${clinicianId}-${Date.now().toString(36)}`,
-            startISO: dateISO,
-            endISO: dateISO,
-          },
-        ].sort((a, b) => a.startISO.localeCompare(b.startISO));
-        const merged: typeof nextVacations = [];
-        for (const vacation of nextVacations) {
-          const last = merged[merged.length - 1];
-          if (!last) {
-            merged.push(vacation);
-            continue;
-          }
-          const lastEndPlus = shiftDateISO(last.endISO, 1);
-          if (vacation.startISO <= lastEndPlus) {
-            merged[merged.length - 1] = {
-              ...last,
-              endISO: vacation.endISO > last.endISO ? vacation.endISO : last.endISO,
-            };
-          } else {
-            merged.push(vacation);
-          }
-        }
-        return { ...clinician, vacations: merged };
+        const nextVacations = insertVacationRange(
+          clinician.vacations,
+          { startISO: lo, endISO: hi },
+          () => `vac-${clinicianId}-${Date.now().toString(36)}`,
+        );
+        if (nextVacations === clinician.vacations) return clinician;
+        return { ...clinician, vacations: nextVacations };
       }),
     );
+  };
+
+  const addVacationDay = (clinicianId: string, dateISO: string) => {
+    addVacationRange(clinicianId, dateISO, dateISO);
   };
 
   const removeVacationDay = (clinicianId: string, dateISO: string) => {
@@ -3958,6 +3938,7 @@ export default function WeeklySchedulePage({
         assignments={toRenderedAssignments()}
         weeklyTemplate={weeklyTemplate}
         onSelectClinician={(clinicianId) => openClinicianEditor(clinicianId, "vacations")}
+        onCreateVacationRange={addVacationRange}
         onReorderClinicians={(reorderedIds) => {
           setClinicians((prev) => {
             const byId = new Map(prev.map((c) => [c.id, c]));
@@ -3980,6 +3961,9 @@ export default function WeeklySchedulePage({
         clinician={editingClinician ?? null}
         classRows={eligibleClassRows}
         initialSection={editingClinicianSection ?? undefined}
+        // The vacation planner is the only caller passing "vacations"; that
+        // entry point shows just the vacation panel.
+        vacationOnly={editingClinicianSection === "vacations"}
         onToggleQualification={handleToggleQualification}
         onReorderQualification={handleReorderQualification}
         onAddVacation={handleAddVacation}

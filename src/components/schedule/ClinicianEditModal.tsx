@@ -39,6 +39,7 @@ type ClinicianEditModalProps = {
   onRemoveVacation: (clinicianId: string, vacationId: string) => void;
   onUpdateName: (clinicianId: string, name: string) => void;
   initialSection?: "vacations";
+  vacationOnly?: boolean;
 };
 
 export default function ClinicianEditModal({
@@ -56,6 +57,7 @@ export default function ClinicianEditModal({
   onRemoveVacation,
   onUpdateName,
   initialSection,
+  vacationOnly = false,
 }: ClinicianEditModalProps) {
   const [isEditingName, setIsEditingName] = useState(false);
   const [nameValue, setNameValue] = useState("");
@@ -147,7 +149,7 @@ export default function ClinicianEditModal({
                 )}
               </div>
               <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                Update eligible sections and vacations.
+                {vacationOnly ? "Update vacations." : "Update eligible sections and vacations."}
               </div>
             </div>
             <button
@@ -163,6 +165,7 @@ export default function ClinicianEditModal({
               clinician={clinician}
               classRows={classRows}
               initialSection={initialSection}
+              vacationOnly={vacationOnly}
               onUpdateWorkingHours={onUpdateWorkingHours}
               onUpdateWorkingHoursTolerance={onUpdateWorkingHoursTolerance}
               onUpdatePreferredWorkingTimes={onUpdatePreferredWorkingTimes}

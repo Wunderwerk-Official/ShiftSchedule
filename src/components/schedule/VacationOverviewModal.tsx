@@ -21,10 +21,12 @@ type VacationOverviewModalProps = {
   assignments: Assignment[];
   weeklyTemplate?: WeeklyCalendarTemplate;
   onSelectClinician: (clinicianId: string) => void;
+  onCreateVacationRange?: (clinicianId: string, startISO: string, endISO: string) => void;
   onReorderClinicians?: (reorderedIds: string[]) => void;
 };
 
 const DAY_WIDTH = 20;
+const DRAG_THRESHOLD_PX = 5;
 const MIN_LEFT_COLUMN_WIDTH = 100;
 const LEFT_COLUMN_PADDING = 24; // px-3 = 12px each side
 const BAR_HEIGHT = 16;
@@ -74,6 +76,14 @@ const parseISODate = (value: string) => {
   return { year, month, day };
 };
 
+const dayIndexToISOInTimeline = (dayIndex: number, startYear: number) => {
+  const date = new Date(Date.UTC(startYear, 0, 1) + dayIndex * MS_PER_DAY);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+
 const dateToDayIndexInTimeline = (
   dateISO: string,
   startYear: number,
@@ -118,6 +128,7 @@ export default function VacationOverviewModal({
   assignments,
   weeklyTemplate,
   onSelectClinician,
+  onCreateVacationRange,
   onReorderClinicians,
 }: VacationOverviewModalProps) {
   const currentYear = new Date().getFullYear();
@@ -159,6 +170,26 @@ export default function VacationOverviewModal({
   const [dragClinicianId, setDragClinicianId] = useState<string | null>(null);
   const [dragOverClinicianId, setDragOverClinicianId] = useState<string | null>(null);
 
+  // Drag-to-create vacation state. The ref mirrors the state so the Escape
+  // handler and pointer events see the current drag without re-subscribing.
+  type VacationDragState = {
+    clinicianId: string;
+    pointerId: number;
+    anchorIndex: number;
+    currentIndex: number;
+    startClientX: number;
+    status: "pending" | "dragging";
+  };
+  const [vacationDrag, setVacationDrag] = useState<VacationDragState | null>(null);
+  const vacationDragRef = useRef<VacationDragState | null>(null);
+  // Pointer capture makes the browser fire a click on the row button after
+  // every completed drag; this ref swallows exactly that one click.
+  const suppressRowClickRef = useRef(false);
+  const updateVacationDrag = useCallback((next: VacationDragState | null) => {
+    vacationDragRef.current = next;
+    setVacationDrag(next);
+  }, []);
+
   // Scroll to today every time the modal opens
   useEffect(() => {
     if (!open) return;
@@ -171,12 +202,19 @@ export default function VacationOverviewModal({
     if (!open) return;
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
+        if (vacationDragRef.current) {
+          // Cancel an active drag without closing the modal; the pointerup
+          // that follows still triggers a click, so swallow it too.
+          suppressRowClickRef.current = true;
+          updateVacationDrag(null);
+          return;
+        }
         onClose();
       }
     };
     window.addEventListener("keydown", handleKey);
     return () => window.removeEventListener("keydown", handleKey);
-  }, [open, onClose]);
+  }, [open, onClose, updateVacationDrag]);
 
   // Close reference panel on click outside
   useEffect(() => {
@@ -416,22 +454,38 @@ export default function VacationOverviewModal({
     setPendingScrollToToday(true);
   };
 
+  const dayIndexFromClientX = useCallback(
+    (clientX: number) => {
+      const timeline = timelineRef.current;
+      if (!timeline) return null;
+      const rect = timeline.getBoundingClientRect();
+      // Subtract leftColumnWidth since timeline includes the name column
+      const x = clientX - rect.left - leftColumnWidth;
+      const dayIndex = Math.floor(x / DAY_WIDTH);
+      if (dayIndex < 0 || dayIndex >= totalDays) return null;
+      return dayIndex;
+    },
+    [totalDays, leftColumnWidth],
+  );
+
+  const clampedDayIndexFromClientX = useCallback(
+    (clientX: number) => {
+      const timeline = timelineRef.current;
+      if (!timeline) return null;
+      const rect = timeline.getBoundingClientRect();
+      const x = clientX - rect.left - leftColumnWidth;
+      const dayIndex = Math.floor(x / DAY_WIDTH);
+      return Math.min(Math.max(dayIndex, 0), totalDays - 1);
+    },
+    [totalDays, leftColumnWidth],
+  );
+
   // Mouse move handler to track hovered day
   const handleTimelineMouseMove = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
-      const timeline = timelineRef.current;
-      if (!timeline) return;
-      const rect = timeline.getBoundingClientRect();
-      // Subtract leftColumnWidth since timeline includes the name column
-      const x = event.clientX - rect.left - leftColumnWidth;
-      const dayIndex = Math.floor(x / DAY_WIDTH);
-      if (dayIndex >= 0 && dayIndex < totalDays) {
-        setHoverDayIndex(dayIndex);
-      } else {
-        setHoverDayIndex(null);
-      }
+      setHoverDayIndex(dayIndexFromClientX(event.clientX));
     },
-    [totalDays, leftColumnWidth],
+    [dayIndexFromClientX],
   );
 
   const handleTimelineMouseLeave = useCallback(() => {
@@ -485,6 +539,78 @@ export default function VacationOverviewModal({
       handleClinicianDragEnd();
     },
     [dragClinicianId, clinicians, onReorderClinicians, handleClinicianDragEnd],
+  );
+
+  // Drag-to-create vacation pointer handlers (mouse/pen only; touch keeps
+  // panning the timeline and taps still open the vacation editor).
+  const handleVacationPointerDown = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>, clinicianId: string) => {
+      if (!onCreateVacationRange) return;
+      if (event.pointerType === "touch") return;
+      if (event.button !== 0) return;
+      if (vacationDragRef.current) return;
+      const dayIndex = dayIndexFromClientX(event.clientX);
+      if (dayIndex === null) return;
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // Pointer capture is unavailable in jsdom and some older browsers.
+      }
+      updateVacationDrag({
+        clinicianId,
+        pointerId: event.pointerId,
+        anchorIndex: dayIndex,
+        currentIndex: dayIndex,
+        startClientX: event.clientX,
+        status: "pending",
+      });
+    },
+    [onCreateVacationRange, dayIndexFromClientX, updateVacationDrag],
+  );
+
+  const handleVacationPointerMove = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      const drag = vacationDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      const dayIndex = clampedDayIndexFromClientX(event.clientX);
+      if (dayIndex === null) return;
+      const status =
+        drag.status === "pending" &&
+        Math.abs(event.clientX - drag.startClientX) >= DRAG_THRESHOLD_PX
+          ? "dragging"
+          : drag.status;
+      if (dayIndex === drag.currentIndex && status === drag.status) return;
+      updateVacationDrag({ ...drag, currentIndex: dayIndex, status });
+    },
+    [clampedDayIndexFromClientX, updateVacationDrag],
+  );
+
+  const handleVacationPointerUp = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      const drag = vacationDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      if (drag.status === "dragging" && onCreateVacationRange) {
+        const lo = Math.min(drag.anchorIndex, drag.currentIndex);
+        const hi = Math.max(drag.anchorIndex, drag.currentIndex);
+        onCreateVacationRange(
+          drag.clinicianId,
+          dayIndexToISOInTimeline(lo, rangeStartYear),
+          dayIndexToISOInTimeline(hi, rangeStartYear),
+        );
+        suppressRowClickRef.current = true;
+      }
+      updateVacationDrag(null);
+    },
+    [onCreateVacationRange, rangeStartYear, updateVacationDrag],
+  );
+
+  const handleVacationPointerCancel = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      const drag = vacationDragRef.current;
+      if (!drag || event.pointerId !== drag.pointerId) return;
+      updateVacationDrag(null);
+    },
+    [updateVacationDrag],
   );
 
   useEffect(() => {
@@ -743,7 +869,7 @@ export default function VacationOverviewModal({
             <div ref={scrollContainerRef} className="h-full overflow-auto">
               <div
                 ref={timelineRef}
-                className="relative min-w-max"
+                className={cx("relative min-w-max", vacationDrag && "select-none")}
                 onMouseMove={handleTimelineMouseMove}
                 onMouseLeave={handleTimelineMouseLeave}
               >
@@ -898,10 +1024,43 @@ export default function VacationOverviewModal({
                         </div>
                         <button
                           type="button"
-                          onClick={() => onSelectClinician(clinician.id)}
-                          className="relative flex flex-shrink-0 flex-col justify-center gap-1"
+                          onClick={() => {
+                            if (suppressRowClickRef.current) {
+                              suppressRowClickRef.current = false;
+                              return;
+                            }
+                            onSelectClinician(clinician.id);
+                          }}
+                          onPointerDown={(e) => handleVacationPointerDown(e, clinician.id)}
+                          onPointerMove={handleVacationPointerMove}
+                          onPointerUp={handleVacationPointerUp}
+                          onPointerCancel={handleVacationPointerCancel}
+                          aria-label={`${clinician.name} vacation timeline`}
+                          className={cx(
+                            "relative flex flex-shrink-0 flex-col justify-center gap-1",
+                            onCreateVacationRange && "cursor-crosshair",
+                          )}
                           style={{ width: totalWidth, height: rowHeight }}
                         >
+                          {vacationDrag &&
+                            vacationDrag.status === "dragging" &&
+                            vacationDrag.clinicianId === clinician.id && (
+                              <div
+                                className="pointer-events-none absolute inset-y-0.5 z-20 rounded-md"
+                                style={{
+                                  left:
+                                    Math.min(vacationDrag.anchorIndex, vacationDrag.currentIndex) *
+                                    DAY_WIDTH,
+                                  width:
+                                    (Math.abs(vacationDrag.anchorIndex - vacationDrag.currentIndex) +
+                                      1) *
+                                    DAY_WIDTH,
+                                  backgroundColor: vacationColor,
+                                  opacity: 0.5,
+                                  boxShadow: `inset 0 0 0 2px ${vacationColor}`,
+                                }}
+                              />
+                            )}
                           {isVacationActive && (
                             <div
                               className="relative w-full overflow-visible rounded-full bg-slate-200 dark:bg-slate-800"

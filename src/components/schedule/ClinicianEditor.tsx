@@ -40,6 +40,7 @@ type ClinicianEditorProps = {
   };
   classRows: Array<{ id: string; name: string }>;
   initialSection?: "vacations";
+  vacationOnly?: boolean;
   onUpdateWorkingHours?: (clinicianId: string, workingHoursPerWeek?: number) => void;
   onUpdateWorkingHoursTolerance?: (clinicianId: string, toleranceHours?: number) => void;
   onUpdatePreferredWorkingTimes?: (
@@ -70,6 +71,7 @@ export default function ClinicianEditor({
   onUpdateVacation,
   onRemoveVacation,
   initialSection,
+  vacationOnly = false,
   onUpdateWorkingHours,
   onUpdateWorkingHoursTolerance,
   onUpdatePreferredWorkingTimes,
@@ -178,10 +180,11 @@ export default function ClinicianEditor({
     if (pastVacations.length > 0) {
       setShowPastVacations(true);
     }
-    if (vacationPanelRef.current) {
+    // In vacation-only mode there is nothing above the panel to scroll past.
+    if (!vacationOnly && vacationPanelRef.current) {
       vacationPanelRef.current.scrollIntoView({ block: "start", behavior: "smooth" });
     }
-  }, [initialSection, clinician.id, pastVacations.length]);
+  }, [initialSection, vacationOnly, clinician.id, pastVacations.length]);
   useEffect(() => {
     setWorkingHoursPerWeek(clinician.workingHoursPerWeek ?? "");
   }, [clinician.id, clinician.workingHoursPerWeek]);
@@ -219,6 +222,7 @@ export default function ClinicianEditor({
 
   return (
     <div>
+      {!vacationOnly && (
       <div className="relative mt-4 rounded-2xl border-2 border-sky-200 bg-sky-50/60 px-4 py-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.8)] dark:border-sky-500/40 dark:bg-sky-900/20">
         <div className="absolute -top-3 left-4 rounded-full border border-sky-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-sky-600 dark:border-sky-500/40 dark:bg-slate-900 dark:text-sky-200">
           Eligible Sections
@@ -324,6 +328,7 @@ export default function ClinicianEditor({
           </div>
         ) : null}
       </div>
+      )}
 
       <div
         ref={vacationPanelRef}
@@ -488,6 +493,7 @@ export default function ClinicianEditor({
         ) : null}
       </div>
 
+      {!vacationOnly && (
       <div className="relative mt-4 rounded-2xl border-2 border-indigo-200 bg-indigo-50/60 px-4 py-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.8)] dark:border-indigo-500/40 dark:bg-indigo-900/20">
         <div className="absolute -top-3 left-4 rounded-full border border-indigo-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-600 dark:border-indigo-500/40 dark:bg-slate-900 dark:text-indigo-200">
           Preferred Working Times
@@ -653,6 +659,7 @@ export default function ClinicianEditor({
           })}
         </div>
       </div>
+      )}
     </div>
   );
 }
