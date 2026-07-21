@@ -33,7 +33,14 @@ import json
 from typing import List, Optional
 
 from .config import AgentConfig
-from .provider import ChatMessage, LLMProvider, ProviderResponse, ToolCall, ToolSpec
+from .provider import (
+    ChatMessage,
+    LLMProvider,
+    ProviderResponse,
+    ToolCall,
+    ToolSpec,
+    is_retryable_status,
+)
 
 
 def _parse_arguments(raw: object) -> dict:
@@ -155,8 +162,20 @@ class OpenAICompatibleProvider(LLMProvider):
             return ProviderResponse(
                 text=None, tool_calls=[], stop_reason="error",
                 error=f"OpenAI-compatible API error {exc.status_code}: {exc.message}",
+                error_status=exc.status_code,
+                retryable=is_retryable_status(exc.status_code),
+            )
+        except openai.APIConnectionError as exc:
+            # Subclass of OpenAIError — must be caught before the broad
+            # handler below. Includes timeouts; both are transient.
+            return ProviderResponse(
+                text=None, tool_calls=[], stop_reason="error",
+                error=f"OpenAI-compatible endpoint unreachable: {exc}",
+                retryable=True,
             )
         except openai.OpenAIError as exc:
+            # Non-transient (e.g. a server rejecting the tools parameter) —
+            # retrying the same request would fail identically.
             return ProviderResponse(
                 text=None, tool_calls=[], stop_reason="error",
                 error=f"OpenAI-compatible endpoint unreachable: {exc}",

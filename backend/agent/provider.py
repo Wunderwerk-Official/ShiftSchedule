@@ -61,6 +61,17 @@ class ChatMessage:
     raw_content: Optional[List[dict]] = None
 
 
+# Status codes worth retrying: request timeout, conflict, rate limit, and
+# any server-side failure (Anthropic uses 529 for "overloaded"). Mirrors the
+# Anthropic SDK's own retry policy; connection errors are retryable too but
+# carry no status code (adapters set retryable=True directly).
+RETRYABLE_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 529})
+
+
+def is_retryable_status(status: Optional[int]) -> bool:
+    return status is not None and (status in RETRYABLE_STATUS_CODES or status >= 500)
+
+
 @dataclass
 class ProviderResponse:
     text: Optional[str]
@@ -69,6 +80,12 @@ class ProviderResponse:
     stop_reason: str
     usage: Dict[str, int] = field(default_factory=dict)  # input_tokens/output_tokens
     error: Optional[str] = None  # set when stop_reason == "error"
+    # HTTP status behind an "error" stop, when one exists (connection errors
+    # have none). Providers classify; the harness decides whether to retry.
+    error_status: Optional[int] = None
+    # True when the failure is transient (429/5xx/connection) and a retry of
+    # the SAME request may succeed. Never True for refusals or client errors.
+    retryable: bool = False
     # Chain of thought of reasoning models (Anthropic thinking blocks, vLLM
     # reasoning_content, LiteLLM reasoning) when it accompanies answer text.
     # When a turn has ONLY reasoning, adapters put it into ``text`` instead so

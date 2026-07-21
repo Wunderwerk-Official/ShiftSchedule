@@ -15,8 +15,9 @@ Maps the provider-neutral protocol in ``provider.py`` onto the official
   ("adaptive thinking is not supported"). No sampling parameters — current
   Opus models reject them.
 - API failures never raise: typed SDK errors are mapped to
-  ``ProviderResponse(stop_reason="error")`` after the SDK's built-in retries
-  (2 by default for 429/5xx/connection errors).
+  ``ProviderResponse(stop_reason="error")`` with ``retryable`` classifying
+  transient failures (429/5xx/connection). SDK retries are disabled
+  (``max_retries=0``) — the harness retries deadline-aware instead.
 """
 
 from __future__ import annotations
@@ -25,7 +26,14 @@ import os
 from typing import List
 
 from .config import AgentConfig
-from .provider import ChatMessage, LLMProvider, ProviderResponse, ToolCall, ToolSpec
+from .provider import (
+    ChatMessage,
+    LLMProvider,
+    ProviderResponse,
+    ToolCall,
+    ToolSpec,
+    is_retryable_status,
+)
 
 # Model families that accept ``thinking: {"type": "adaptive"}``. Anything else
 # (Haiku 4.5, older Sonnet/Opus, unknown ids) runs without a thinking param —
@@ -108,11 +116,15 @@ class AnthropicProvider(LLMProvider):
             return ProviderResponse(
                 text=None, tool_calls=[], stop_reason="error",
                 error=f"Anthropic API error {exc.status_code}: {exc.message}",
+                error_status=exc.status_code,
+                retryable=is_retryable_status(exc.status_code),
             )
         except anthropic.APIConnectionError as exc:
+            # Includes APITimeoutError — both are transient by nature.
             return ProviderResponse(
                 text=None, tool_calls=[], stop_reason="error",
                 error=f"Anthropic connection error: {exc}",
+                retryable=True,
             )
 
         text_parts: List[str] = []

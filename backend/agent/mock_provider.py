@@ -11,6 +11,18 @@ too-short script terminates the loop instead of hanging it. An optional
 ``"delay_ms"`` per turn (capped at 3000) simulates LLM latency so the live UI
 can be demoed/screenshotted; CI scripts simply omit it.
 
+Failure turns, for testing the harness's retry/skip behavior:
+
+    {"error": "simulated overload", "status": 529}   # retryable (via status)
+    {"error": "bad request", "status": 400}          # not retryable
+    {"error": "conn reset", "retryable": true}       # explicit, no status
+    {"stop_reason": "refusal"}                       # scripted refusal
+
+Without an explicit ``"retryable"``, retryability derives from ``"status"``
+through :func:`provider.is_retryable_status`. The script is strictly
+sequential: a harness RETRY consumes the NEXT turn — interleave error and
+success turns deliberately when scripting recovery scenarios.
+
 Injection paths:
 - in-process (unit tests): ``MockProvider(script=[...])`` passed straight to
   ``agent_solve_range(provider=...)``
@@ -29,7 +41,14 @@ import time
 from typing import List, Optional
 
 from .config import AgentConfig
-from .provider import ChatMessage, LLMProvider, ProviderResponse, ToolCall, ToolSpec
+from .provider import (
+    ChatMessage,
+    LLMProvider,
+    ProviderResponse,
+    ToolCall,
+    ToolSpec,
+    is_retryable_status,
+)
 
 DEFAULT_SCRIPT = [
     {"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]},
@@ -67,6 +86,20 @@ class MockProvider(LLMProvider):
         delay_ms = entry.get("delay_ms")
         if isinstance(delay_ms, (int, float)) and delay_ms > 0:
             time.sleep(min(delay_ms, 3000) / 1000.0)
+        if "error" in entry:
+            status = entry.get("status")
+            return ProviderResponse(
+                text=None, tool_calls=[], stop_reason="error",
+                usage={"input_tokens": 0, "output_tokens": 0},
+                error=str(entry["error"]),
+                error_status=status,
+                retryable=bool(entry.get("retryable", is_retryable_status(status))),
+            )
+        if entry.get("stop_reason") == "refusal":
+            return ProviderResponse(
+                text=entry.get("text"), tool_calls=[], stop_reason="refusal",
+                usage={"input_tokens": 0, "output_tokens": 0},
+            )
         calls = [
             ToolCall(
                 id=f"mock-call-{self.turn}-{idx}",
