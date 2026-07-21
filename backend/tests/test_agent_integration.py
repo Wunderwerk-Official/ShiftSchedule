@@ -360,3 +360,62 @@ def test_run_feedback_flow(solve_client):
     assert solve_client.get("/v1/admin/run-feedback").json()["feedback"] == []
     missing = solve_client.delete(f"/v1/admin/run-feedback/{feedback_id}")
     assert missing.status_code == 404
+
+
+def test_day_by_day_failed_day_is_skipped_through_endpoint(
+    solve_client, tmp_path, monkeypatch
+):
+    """Full path for the empty-tail fix: endpoint -> subprocess -> day-by-day
+    harness with a scripted mid-range LLM failure. Day 2 fails (not
+    retryable), day 3 must still be planned and the stored run must carry
+    the outcome fields the UI warns from."""
+    from .conftest import make_template_slot
+
+    TUE = "2026-01-06"
+    WED = "2026-01-07"
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice"),
+            make_clinician("clin-2", "Bob"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-mon", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-tue", col_band_id="col-tue-1"),
+            make_template_slot(slot_id="slot-wed", col_band_id="col-wed-1"),
+        ],
+    )
+    _save_state(state, USER)
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        {"text": "Day 1 complete."},
+        {"error": "bad request", "status": 400},
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-wed__{WED}",
+             "clinicianId": "Bob"}]}}]},
+        {"text": "Day 3 complete."},
+    ]
+    script_path = tmp_path / "mock-error-script.json"
+    script_path.write_text(json.dumps(script))
+    monkeypatch.setenv("AGENT_MOCK_SCRIPT", str(script_path))
+
+    run = solve_via_endpoint(solve_client, {
+        "startISO": MON,
+        "endISO": WED,
+        "only_fill_required": True,
+        "solver_mode": "agent",
+        "timeout_seconds": 60,
+    })
+    assert run["status"] == "finished", run
+    body = run["result"]
+    assert body["debugInfo"]["solver_status"] == "AGENT_COMPLETE"
+    assert {(a["rowId"], a["dateISO"]) for a in body["assignments"]} == {
+        ("slot-mon", MON),
+        ("slot-wed", WED),
+    }
+    agent = body["debugInfo"]["agent"]
+    assert agent["daysSkipped"] == [TUE]
+    assert agent["daysPlanned"] == 2
+    assert agent["stopReason"] == "completed"
+    assert any("day skipped" in n for n in body["notes"])
