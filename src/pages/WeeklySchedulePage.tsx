@@ -410,6 +410,14 @@ export default function WeeklySchedulePage({
     durationMs: number;
   } | null>(null);
   const [autoPlanError, setAutoPlanError] = useState<string | null>(null);
+  // Coverage gaps of the LAST agent run (required positions nobody could
+  // fill, e.g. school-holiday weeks with a third of the team on vacation).
+  // A dismissible banner - a line in the run inbox proved too easy to miss:
+  // the Feb-2026 carnival week shipped with 16 open slots unnoticed.
+  const [coverageWarning, setCoverageWarning] = useState<{
+    count: number;
+    dates: string[];
+  } | null>(null);
   const [autoPlanRunning, setAutoPlanRunning] = useState(false);
   const [autoPlanElapsedMs, setAutoPlanElapsedMs] = useState(0);
   const [autoPlanDateRange, setAutoPlanDateRange] = useState<{
@@ -1406,6 +1414,13 @@ export default function WeeklySchedulePage({
           8000,
         );
       }
+      const openSlots = result?.debugInfo?.agent?.unsolved?.open_slots ?? [];
+      if (args.solverMode === "agent" && openSlots.length > 0) {
+        setCoverageWarning({
+          count: openSlots.length,
+          dates: [...new Set(openSlots.map((slot) => slot.dateISO))].sort(),
+        });
+      }
       const warningNotes = (result?.notes ?? []).filter(
         (n) =>
           n.toLowerCase().includes("warning") ||
@@ -1482,6 +1497,7 @@ export default function WeeklySchedulePage({
   }) => {
     if (autoPlanRunning) return;
     setAutoPlanError(null);
+    setCoverageWarning(null);
     const dateRange = buildDateRange(args.startISO, args.endISO);
     if (dateRange.length === 0) {
       setAutoPlanError("Select a valid timeframe to run the solver.");
@@ -3683,6 +3699,40 @@ export default function WeeklySchedulePage({
           )}
           <div className="mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10">
             <div className="flex flex-col gap-6">
+              {coverageWarning ? (
+                <div className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200">
+                  <div className="min-w-0">
+                    <span className="font-semibold">
+                      {coverageWarning.count} required position(s) could not be
+                      staffed
+                    </span>{" "}
+                    on{" "}
+                    {coverageWarning.dates.slice(0, 8).join(", ")}
+                    {coverageWarning.dates.length > 8
+                      ? ` and ${coverageWarning.dates.length - 8} more day(s)`
+                      : ""}
+                    . Often too few available qualified people (vacations) -
+                    the run log lists every open slot.
+                  </div>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSolverInfoOpen(true)}
+                      className="rounded-full border border-amber-400 bg-white px-3 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-600 dark:bg-amber-900/40 dark:text-amber-100 dark:hover:bg-amber-900/70"
+                    >
+                      Show run log
+                    </button>
+                    <button
+                      type="button"
+                      aria-label="Dismiss coverage warning"
+                      onClick={() => setCoverageWarning(null)}
+                      className="rounded-full px-2 py-1 text-base leading-none text-amber-700 hover:bg-amber-100 dark:text-amber-300 dark:hover:bg-amber-900/70"
+                    >
+                      ×
+                    </button>
+                  </div>
+                </div>
+              ) : null}
               {/* First row: Automated Planning, Vacation Planner, Export */}
               <div className="flex w-full flex-col gap-6 lg:flex-row lg:items-start">
                 <AutomatedPlanningPanel
