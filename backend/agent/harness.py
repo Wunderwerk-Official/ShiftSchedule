@@ -33,7 +33,13 @@ from .prompts import (
     build_problem_digest,
     build_review_digest,
 )
-from .provider import ChatMessage, LLMProvider, ToolSpec, get_provider
+from .provider import (
+    ChatMessage,
+    LLMProvider,
+    ProviderResponse,
+    ToolSpec,
+    get_provider,
+)
 from .tools import DAY_ONLY_TOOL_NAMES, TOOL_SPECS_RAW, PlanToolExecutor
 
 # History compaction: once the tool results in the conversation exceed this
@@ -66,6 +72,12 @@ def _compact_tool_history(messages) -> None:
                 result.content = TOOL_RESULT_STUB
 # Leave this many seconds of headroom before the deadline for finalization.
 DEADLINE_HEADROOM_SECONDS = 5.0
+# Bounded retry for transient provider failures (429/5xx/529, connection
+# errors): total attempts per LLM exchange and the backoff before retry 1
+# and 2. Retries live HERE, not in the SDK (max_retries=0 there), so each
+# attempt gets a freshly computed deadline-aware timeout.
+RETRY_MAX_ATTEMPTS = 3
+RETRY_BACKOFF_SECONDS = (2.0, 8.0)
 # Cap for a single LLM request. Sized for slow self-hosted reasoning models
 # (a 100B+ model can spend several minutes thinking through the first digest);
 # the run's own wall-clock deadline still bounds the total via min().
@@ -81,6 +93,55 @@ def _feed_text(text: str) -> str:
     if len(text) <= MAX_FEED_TEXT_CHARS:
         return text
     return text[:MAX_FEED_TEXT_CHARS] + "\n… [truncated]"
+
+
+def _complete_with_retry(
+    provider: LLMProvider,
+    *,
+    system: str,
+    messages: List[ChatMessage],
+    tools: List[ToolSpec],
+    compute_timeout: Callable[[], float],
+    deadline: float,
+    cancel_event,
+    on_retry: Callable[[int, ProviderResponse], None],
+) -> ProviderResponse:
+    """One LLM exchange with bounded, deadline-aware retries.
+
+    Only failures the provider marked ``retryable`` (429/5xx/529, connection
+    errors) are retried; refusals and client errors return immediately. The
+    timeout is recomputed per attempt — a retry after a long failed call must
+    not reuse a stale value. Born from a production incident: ONE transient
+    error near the end of a multi-month day-by-day run aborted every
+    remaining day and the last week came back empty.
+    """
+    response: Optional[ProviderResponse] = None
+    for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
+        response = provider.complete(
+            system=system,
+            messages=messages,
+            tools=tools,
+            timeout_seconds=compute_timeout(),
+        )
+        if not (response.stop_reason == "error" and response.retryable):
+            return response
+        if attempt >= RETRY_MAX_ATTEMPTS or cancel_event.is_set():
+            return response
+        backoff = RETRY_BACKOFF_SECONDS[
+            min(attempt - 1, len(RETRY_BACKOFF_SECONDS) - 1)
+        ]
+        # A retry must leave room for a useful follow-up call (inf-safe:
+        # UI runs carry no wall-clock deadline and therefore always retry).
+        if time.time() + backoff + 10.0 > deadline - DEADLINE_HEADROOM_SECONDS:
+            return response
+        on_retry(attempt, response)
+        # Sleep in slices so a user abort is honored mid-backoff.
+        slept = 0.0
+        while slept < backoff and not cancel_event.is_set():
+            step = min(0.5, backoff - slept)
+            time.sleep(step)
+            slept += step
+    return response
 
 # Repair strategy: the pre-strategy tool set, byte-identical (comparability
 # and prompt-cache stability). Day-by-day additionally gets the two
@@ -247,6 +308,7 @@ def agent_solve_range(
         )
 
     iterations_done = 0
+    retries_used = 0
     total_input_tokens = 0
     total_output_tokens = 0
     total_cache_read_tokens = 0
@@ -262,6 +324,21 @@ def agent_solve_range(
         data["moves_accepted"] = executor.moves_accepted if executor is not None else 0
         data["time_ms"] = (time.time() - start_time) * 1000.0
         on_progress("agent", data)
+
+    def note_retry(attempt: int, response: ProviderResponse) -> None:
+        """Bookkeeping callback for _complete_with_retry — counts the retry
+        and surfaces it in the live feed (unknown kinds are ignored by the
+        frontend's deriveAgentStatus, so this is backward-safe)."""
+        nonlocal retries_used
+        retries_used += 1
+        emit_agent(
+            "retry",
+            {
+                "attempt": attempt,
+                "error": response.error,
+                "status": response.error_status,
+            },
+        )
 
     executor: Optional[PlanToolExecutor] = None
     final_summary: Optional[str] = None
@@ -596,6 +673,7 @@ def agent_solve_range(
                     "model": config.model if config is not None else None,
                     "strategy": strategy,
                     "iterations": iterations_done,
+                    "retriesUsed": retries_used,
                     "moves_accepted": executor.moves_accepted,
                     "moves_rejected": executor.moves_rejected,
                     "input_tokens": total_input_tokens,
@@ -780,6 +858,17 @@ def agent_solve_range(
                     ),
                 },
             )
+
+            def duty_call_timeout() -> float:
+                return max(
+                    10.0,
+                    min(
+                        max(duty_deadline - time.time(), 30.0),
+                        (deadline - time.time()) - DEADLINE_HEADROOM_SECONDS,
+                        MAX_PER_CALL_TIMEOUT_SECONDS,
+                    ),
+                )
+
             while iterations_done < rounds_end:
                 if cancel_event.is_set():
                     return finalize(
@@ -792,22 +881,18 @@ def agent_solve_range(
                     break
                 if duty_deadline - time.time() <= 0:
                     break  # the pass's time share is spent — start the days
-                per_call_timeout = max(
-                    10.0,
-                    min(
-                        max(duty_deadline - time.time(), 30.0),
-                        global_left - DEADLINE_HEADROOM_SECONDS,
-                        MAX_PER_CALL_TIMEOUT_SECONDS,
-                    ),
-                )
                 _compact_tool_history(messages)
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
-                response = provider.complete(
+                response = _complete_with_retry(
+                    provider,
                     system=DUTY_SYSTEM_PROMPT,
                     messages=messages,
                     tools=DAY_TOOL_SPECS,
-                    timeout_seconds=per_call_timeout,
+                    compute_timeout=duty_call_timeout,
+                    deadline=deadline,
+                    cancel_event=cancel_event,
+                    on_retry=note_retry,
                 )
                 iterations_done += 1
                 absorb_response(response)
@@ -921,6 +1006,20 @@ def agent_solve_range(
             day_rounds = max(6, (config.max_iterations - iterations_done) // days_left)
             rounds_end = min(iterations_done + day_rounds, config.max_iterations)
 
+            def day_call_timeout() -> float:
+                # The 30s usefulness floor applies to the GLOBAL deadline
+                # only: a day's share may be smaller (short timeouts, many
+                # days), so the last call of a day may overrun its share
+                # rather than shrink into a guaranteed timeout.
+                return max(
+                    10.0,
+                    min(
+                        max(day_deadline - time.time(), 30.0),
+                        (deadline - time.time()) - DEADLINE_HEADROOM_SECONDS,
+                        MAX_PER_CALL_TIMEOUT_SECONDS,
+                    ),
+                )
+
             counts = executor._counts_by_instance(executor._working_list())
             on_call_class = (
                 ctx.settings.onCallRestClassId
@@ -1012,29 +1111,20 @@ def agent_solve_range(
                 if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
                     out_of_time = True  # whole run out of wall clock
                     break
-                day_left = day_deadline - time.time()
-                if day_left <= 0:
+                if day_deadline - time.time() <= 0:
                     break  # this day's share is spent — move to the next day
-                # The 30s usefulness floor applies to the GLOBAL deadline
-                # only: a day's share may be smaller (short timeouts, many
-                # days), so the last call of a day may overrun its share
-                # rather than shrink into a guaranteed timeout.
-                per_call_timeout = max(
-                    10.0,
-                    min(
-                        max(day_left, 30.0),
-                        global_left - DEADLINE_HEADROOM_SECONDS,
-                        MAX_PER_CALL_TIMEOUT_SECONDS,
-                    ),
-                )
                 _compact_tool_history(messages)
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
-                response = provider.complete(
+                response = _complete_with_retry(
+                    provider,
                     system=DAY_SYSTEM_PROMPT,
                     messages=messages,
                     tools=DAY_TOOL_SPECS,
-                    timeout_seconds=per_call_timeout,
+                    compute_timeout=day_call_timeout,
+                    deadline=deadline,
+                    cancel_event=cancel_event,
+                    on_retry=note_retry,
                 )
                 iterations_done += 1
                 absorb_response(response)
@@ -1166,27 +1256,34 @@ def agent_solve_range(
                 },
             )
             rounds_end = min(iterations_done + review_rounds, config.max_iterations)
+
+            def review_call_timeout() -> float:
+                return max(
+                    10.0,
+                    min(
+                        (deadline - time.time()) - DEADLINE_HEADROOM_SECONDS,
+                        MAX_PER_CALL_TIMEOUT_SECONDS,
+                    ),
+                )
+
             while iterations_done < rounds_end:
                 if cancel_event.is_set():
                     break
                 global_left = deadline - time.time()
                 if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
                     break
-                per_call_timeout = max(
-                    10.0,
-                    min(
-                        global_left - DEADLINE_HEADROOM_SECONDS,
-                        MAX_PER_CALL_TIMEOUT_SECONDS,
-                    ),
-                )
                 _compact_tool_history(messages)
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
-                response = provider.complete(
+                response = _complete_with_retry(
+                    provider,
                     system=REVIEW_SYSTEM_PROMPT,
                     messages=messages,
                     tools=DAY_TOOL_SPECS,
-                    timeout_seconds=per_call_timeout,
+                    compute_timeout=review_call_timeout,
+                    deadline=deadline,
+                    cancel_event=cancel_event,
+                    on_retry=note_retry,
                 )
                 iterations_done += 1
                 absorb_response(response)
@@ -1276,17 +1373,21 @@ def agent_solve_range(
             extra_notes.append("Agent time budget exhausted; best plan so far returned.")
             break
 
-        per_call_timeout = min(
-            max(remaining - DEADLINE_HEADROOM_SECONDS, 10.0), MAX_PER_CALL_TIMEOUT_SECONDS
-        )
         _compact_tool_history(messages)
         executor.current_iteration = iterations_done + 1
         emit_agent("iteration", {"iteration": iterations_done + 1})
-        response = provider.complete(
+        response = _complete_with_retry(
+            provider,
             system=SYSTEM_PROMPT,
             messages=messages,
             tools=TOOL_SPECS,
-            timeout_seconds=per_call_timeout,
+            compute_timeout=lambda: min(
+                max((deadline - time.time()) - DEADLINE_HEADROOM_SECONDS, 10.0),
+                MAX_PER_CALL_TIMEOUT_SECONDS,
+            ),
+            deadline=deadline,
+            cancel_event=cancel_event,
+            on_retry=note_retry,
         )
         iterations_done += 1
         absorb_response(response)
