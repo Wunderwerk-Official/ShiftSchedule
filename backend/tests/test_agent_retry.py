@@ -14,6 +14,7 @@ from backend.agent.harness import _complete_with_retry
 from backend.agent.mock_provider import MockProvider
 from backend.agent.provider import is_retryable_status
 
+from .conftest import make_app_state, make_clinician, make_template_slot
 from .test_agent_harness import (
     MON,
     MockCancelEvent,
@@ -22,6 +23,26 @@ from .test_agent_harness import (
     _payload,
     _two_clinician_state,
 )
+
+TUE = "2026-01-06"
+WED = "2026-01-07"
+THU = "2026-01-08"
+
+
+def _range_state(day_types):
+    """One required slot per requested weekday (mon..thu), two clinicians."""
+    return make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice"),
+            make_clinician("clin-2", "Bob"),
+        ],
+        slots=[
+            make_template_slot(
+                slot_id=f"slot-{day_type}", col_band_id=f"col-{day_type}-1"
+            )
+            for day_type in day_types
+        ],
+    )
 
 
 def _complete(provider):
@@ -184,3 +205,153 @@ def test_day_by_day_run_recovers_from_transient_error(monkeypatch):
     assert len(result["assignments"]) == 1
     assert provider.turn == 3  # error turn + both real turns consumed
     assert not any("LLM error" in n for n in result["notes"])
+
+
+# ---------------------------------------------------------------------------
+# Per-day failure isolation (day_by_day)
+# ---------------------------------------------------------------------------
+
+
+def _day_by_day(state, script, end_iso):
+    payload = _payload(endISO=end_iso)
+    payload.agent_strategy = "day_by_day"
+    provider = MockProvider(script)
+    result = harness.agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    return result, provider
+
+
+def test_persistent_day_failure_skips_day_and_continues():
+    """A day that still fails after retries is skipped - later days keep
+    planning instead of the whole tail being abandoned."""
+    state = _range_state(["mon", "tue", "wed"])
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        {"text": "Day 1 complete."},
+        {"error": "bad request", "status": 400},  # day 2: not retryable
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-wed__{WED}",
+             "clinicianId": "Bob"}]}}]},
+        {"text": "Day 3 complete."},
+    ]
+    result, _ = _day_by_day(state, script, WED)
+    agent = result["debugInfo"]["agent"]
+    assert result["debugInfo"]["solver_status"] == "AGENT_COMPLETE"
+    assert {(a["rowId"], a["dateISO"]) for a in result["assignments"]} == {
+        ("slot-mon", MON),
+        ("slot-wed", WED),
+    }
+    assert agent["daysSkipped"] == [TUE]
+    assert agent["daysPlanned"] == 2
+    assert agent["stopReason"] == "completed"
+    assert any("day skipped" in n for n in result["notes"])
+    # A lone failed day is no abort: the final range review still ran.
+    assert any(n.startswith("Final range review:") for n in result["notes"])
+
+
+def test_k_consecutive_failures_abort_remaining_days():
+    state = _range_state(["mon", "tue", "wed", "thu"])
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        {"text": "Day 1 complete."},
+        {"error": "still down", "status": 400},  # day 2
+        {"error": "still down", "status": 400},  # day 3 -> K=2 reached
+        {"text": "must never be consumed"},
+    ]
+    result, provider = _day_by_day(state, script, THU)
+    agent = result["debugInfo"]["agent"]
+    # Day 4 and the review never contacted the provider.
+    assert provider.turn == 4
+    assert agent["daysSkipped"] == [TUE, WED, THU]
+    assert agent["daysPlanned"] == 1
+    assert agent["stopReason"] == "provider_error"
+    assert any("consecutive day(s) failed" in n for n in result["notes"])
+    assert not any(n.startswith("Final range review:") for n in result["notes"])
+    # Best plan so far (day 1) is returned, not a fallback.
+    assert result["debugInfo"]["solver_status"] == "AGENT_COMPLETE"
+    assert [(a["rowId"], a["dateISO"]) for a in result["assignments"]] == [
+        ("slot-mon", MON)
+    ]
+
+
+def test_duty_pre_pass_error_does_not_abort_days():
+    """A failed duty pre-pass must not abandon the days (the old behavior):
+    day planning continues and can still staff the duties."""
+    from backend.models import TemplateBlock
+    from .conftest import make_pool_row, make_workplace_row
+
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           qualified_class_ids=["section-a", "section-oc"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob",
+                           qualified_class_ids=["section-a", "section-oc"],
+                           working_hours_per_week=40),
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-oc", "On Call"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1",
+                               start_time="08:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-oc__mon", col_band_id="col-mon-1",
+                               block_id="block-oc",
+                               start_time="19:00", end_time="07:00",
+                               end_day_offset=1),
+        ],
+        solver_settings={
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "section-oc",
+            "onCallRestDaysBefore": 0,
+            "onCallRestDaysAfter": 0,
+        },
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-oc", sectionId="section-oc", requiredSlots=0)
+    )
+    script = [
+        {"error": "bad request", "status": 400},  # duty pre-pass fails
+        # Day conversation staffs BOTH the duty and the ordinary slot.
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-oc__mon__{MON}",
+             "clinicianId": "Alice"},
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+             "clinicianId": "Bob"}]}}]},
+        {"text": "Day complete."},
+    ]
+    result, _ = _day_by_day(state, script, MON)
+    agent = result["debugInfo"]["agent"]
+    assert result["debugInfo"]["solver_status"] == "AGENT_COMPLETE"
+    assert agent["moves_accepted"] == 2
+    assert agent["daysSkipped"] == []
+    assert agent["stopReason"] == "completed"
+    assert any(
+        "duty pre-pass" in n and "continuing with day planning" in n
+        for n in result["notes"]
+    )
+
+
+def test_debug_info_outcome_fields_on_a_green_run():
+    state = _range_state(["mon"])
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        {"text": "Day complete."},
+    ]
+    result, _ = _day_by_day(state, script, MON)
+    agent = result["debugInfo"]["agent"]
+    assert agent["stopReason"] == "completed"
+    assert agent["daysSkipped"] == []
+    assert agent["daysPlanned"] == 1
+    assert agent["retriesUsed"] == 0

@@ -78,6 +78,12 @@ DEADLINE_HEADROOM_SECONDS = 5.0
 # attempt gets a freshly computed deadline-aware timeout.
 RETRY_MAX_ATTEMPTS = 3
 RETRY_BACKOFF_SECONDS = (2.0, 8.0)
+# Day-by-day failure isolation: a day whose LLM exchange still fails after
+# the retries above is SKIPPED (later days keep planning); only this many
+# consecutively failed days abort the remaining range — with 3 attempts per
+# call in front, two failed days in a row mean the provider is down, and
+# each further day would burn 3 more doomed API calls.
+MAX_CONSECUTIVE_FAILED_DAYS = 2
 # Cap for a single LLM request. Sized for slow self-hosted reasoning models
 # (a 100B+ model can spend several minutes thinking through the first digest);
 # the run's own wall-clock deadline still bounds the total via min().
@@ -309,6 +315,14 @@ def agent_solve_range(
 
     iterations_done = 0
     retries_used = 0
+    # Machine-readable run outcome for debugInfo.agent (day-by-day
+    # semantics; the repair strategy only ever reports completed/aborted).
+    run_meta: Dict[str, Any] = {
+        # "completed" | "budget_exhausted" | "provider_error" | "aborted"
+        "stop_reason": "completed",
+        "days_planned": [],  # ISO dates the day loop finished (or found full)
+        "days_skipped": [],  # ISO dates that failed or were never reached
+    }
     total_input_tokens = 0
     total_output_tokens = 0
     total_cache_read_tokens = 0
@@ -605,6 +619,8 @@ def agent_solve_range(
         return lines, unsolved
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
+        if status == "ABORTED":
+            run_meta["stop_reason"] = "aborted"
         if (
             strategy == "day_by_day"
             and executor.moves_accepted == 0
@@ -674,6 +690,9 @@ def agent_solve_range(
                     "strategy": strategy,
                     "iterations": iterations_done,
                     "retriesUsed": retries_used,
+                    "stopReason": run_meta["stop_reason"],
+                    "daysPlanned": len(run_meta["days_planned"]),
+                    "daysSkipped": sorted(set(run_meta["days_skipped"])),
                     "moves_accepted": executor.moves_accepted,
                     "moves_rejected": executor.moves_rejected,
                     "input_tokens": total_input_tokens,
@@ -790,7 +809,11 @@ def agent_solve_range(
         emit_agent("stage", {"stage": "improve"})
         total_days = len(ctx.target_day_isos)
         previous_day_lines: List[str] = []
+        # aborted means "the provider is persistently unhealthy" (K
+        # consecutive failed days): remaining days AND the final review are
+        # skipped. A single failed day only bumps consecutive_failures.
         aborted = False
+        consecutive_failures = 0
 
         # ---- Duty pre-pass ------------------------------------------------
         # On-call/duty slots are staffed FIRST across the WHOLE range: they
@@ -897,13 +920,17 @@ def agent_solve_range(
                 iterations_done += 1
                 absorb_response(response)
                 if response.stop_reason in ("error", "refusal"):
+                    # A failed pre-pass must not abandon the days: duties can
+                    # still be placed by the per-day conversations. It counts
+                    # toward the consecutive-failure abort, so a provider
+                    # that is truly down stops the run one failed day later.
                     kind = "error" if response.stop_reason == "error" else "refusal"
                     detail = f" ({response.error})" if response.error else ""
                     extra_notes.append(
                         f"LLM {kind} in the duty pre-pass after iteration "
-                        f"{iterations_done}{detail}; best plan so far returned."
+                        f"{iterations_done}{detail}; continuing with day planning."
                     )
-                    aborted = True
+                    consecutive_failures = 1
                     break
                 if response.stop_reason == "tool_use" and response.tool_calls:
                     assistant = ChatMessage(
@@ -979,6 +1006,7 @@ def agent_solve_range(
 
         for day_index, date_iso in enumerate(ctx.target_day_isos):
             if aborted:
+                run_meta["days_skipped"].extend(ctx.target_day_isos[day_index:])
                 break
             if cancel_event.is_set():
                 return finalize(
@@ -989,12 +1017,16 @@ def agent_solve_range(
             remaining = deadline - time.time()
             days_left = total_days - day_index
             if remaining <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
+                run_meta["days_skipped"].extend(ctx.target_day_isos[day_index:])
+                run_meta["stop_reason"] = "budget_exhausted"
                 extra_notes.append(
                     f"Agent time budget exhausted before {date_iso}; "
                     "remaining day(s) were left unplanned."
                 )
                 break
             if iterations_done >= config.max_iterations:
+                run_meta["days_skipped"].extend(ctx.target_day_isos[day_index:])
+                run_meta["stop_reason"] = "budget_exhausted"
                 extra_notes.append(
                     f"Agent iteration budget exhausted before {date_iso}; "
                     "remaining day(s) were left unplanned."
@@ -1055,6 +1087,9 @@ def agent_solve_range(
                 # Nothing to do (e.g. the duty pre-pass covered the whole
                 # day, or fixed assignments already fill it): starting a
                 # conversation just burns 2-3 rounds confirming emptiness.
+                # Counts as planned; no provider contact, so the
+                # consecutive-failure counter is left untouched.
+                run_meta["days_planned"].append(date_iso)
                 previous_day_lines.append(
                     f"- {date_iso}: already fully staffed, skipped"
                 )
@@ -1100,6 +1135,7 @@ def agent_solve_range(
             )
 
             out_of_time = False
+            day_failed = False
             while iterations_done < rounds_end:
                 if cancel_event.is_set():
                     return finalize(
@@ -1129,13 +1165,27 @@ def agent_solve_range(
                 iterations_done += 1
                 absorb_response(response)
                 if response.stop_reason in ("error", "refusal"):
+                    # Post-retry failure: skip THIS day only and keep
+                    # planning — one bad exchange used to abandon every
+                    # remaining day, which is exactly how a multi-month run
+                    # came back with its last week empty.
                     kind = "error" if response.stop_reason == "error" else "refusal"
                     detail = f" ({response.error})" if response.error else ""
                     extra_notes.append(
                         f"LLM {kind} on {date_iso} after iteration "
-                        f"{iterations_done}{detail}; best plan so far returned."
+                        f"{iterations_done}{detail}; day skipped."
                     )
-                    aborted = True
+                    run_meta["days_skipped"].append(date_iso)
+                    day_failed = True
+                    consecutive_failures += 1
+                    if consecutive_failures >= MAX_CONSECUTIVE_FAILED_DAYS:
+                        extra_notes.append(
+                            f"{MAX_CONSECUTIVE_FAILED_DAYS} consecutive day(s) "
+                            "failed with LLM errors; remaining day(s) were "
+                            "left unplanned."
+                        )
+                        run_meta["stop_reason"] = "provider_error"
+                        aborted = True
                     break
                 if response.stop_reason == "tool_use" and response.tool_calls:
                     assistant = ChatMessage(
@@ -1208,6 +1258,13 @@ def agent_solve_range(
                 break  # end_turn: the model declared the day done
 
             if out_of_time:
+                # The day was at least partially attempted — it counts as
+                # planned; everything after it was never reached.
+                run_meta["days_planned"].append(date_iso)
+                run_meta["days_skipped"].extend(
+                    ctx.target_day_isos[day_index + 1:]
+                )
+                run_meta["stop_reason"] = "budget_exhausted"
                 extra_notes.append(
                     "Agent time budget exhausted; best plan so far returned."
                 )
@@ -1219,6 +1276,14 @@ def agent_solve_range(
                 for i in ctx.instances.values()
                 if i.date_iso == date_iso
             )
+            if day_failed:
+                previous_day_lines.append(
+                    f"- {date_iso}: LLM failure, {still_open} position(s) "
+                    "left open"
+                )
+                continue
+            consecutive_failures = 0
+            run_meta["days_planned"].append(date_iso)
             previous_day_lines.append(
                 f"- {date_iso}: {max(0, open_positions - still_open)} filled, "
                 f"{still_open} left open"
