@@ -123,6 +123,32 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schedule_changes (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            run_id TEXT,
+            after_run_id TEXT,
+            diff TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_schedule_changes_user_time
+            ON schedule_changes (username, created_at DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_schedule_changes_after_run
+            ON schedule_changes (after_run_id)
+        """
+    )
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(app_state)").fetchall()]
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE app_state ADD COLUMN updated_at TEXT")

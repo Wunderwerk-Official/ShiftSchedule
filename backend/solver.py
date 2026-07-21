@@ -76,7 +76,7 @@ from ortools.sat.python import cp_model
 from pydantic import BaseModel
 
 from .auth import _get_current_user, _require_admin, _verify_token_and_get_user
-from . import solver_runs
+from . import schedule_changes, solver_runs
 
 @dataclass
 class _RunHandle:
@@ -2004,8 +2004,19 @@ def apply_solver_run(
                     "those changes - confirm with force=true.",
                 },
             )
-    added = _apply_run_result(current_user.username, run)
+    added, replaced = _apply_run_result(current_user.username, run)
     solver_runs.mark_run(run_id, "applied", note=f"Applied {added} assignments.")
+    try:
+        schedule_changes.record_run_applied(
+            current_user.username,
+            run_id,
+            run["start_iso"],
+            run["end_iso"],
+            added,
+            replaced,
+        )
+    except Exception as exc:  # pragma: no cover - logging must not break apply
+        print(f"[schedule-changes] run_applied logging failed: {exc}", file=sys.stderr)
     return {"status": "applied", "assignments_applied": added}
 
 
@@ -2057,6 +2068,17 @@ def admin_delete_run_feedback(feedback_id: str, _: UserPublic = Depends(_require
     return {"status": "deleted"}
 
 
+@router.get("/v1/admin/solver-runs")
+def admin_list_solver_runs(
+    username: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = Query(50, ge=1, le=500),
+    _: UserPublic = Depends(_require_admin),
+):
+    """Run metadata across all users (no result blobs) - newest first."""
+    return {"runs": solver_runs.list_runs_all(username=username, status=status, limit=limit)}
+
+
 @router.get("/v1/admin/solver-runs/{run_id}")
 def admin_get_solver_run(run_id: str, _: UserPublic = Depends(_require_admin)):
     """Full run record regardless of owner - lets the admin download the
@@ -2085,7 +2107,9 @@ def _range_fingerprint(username: str, start_iso: str, end_iso: str) -> str:
     return hashlib.sha256(json.dumps(items).encode("utf-8")).hexdigest()
 
 
-def _apply_run_result(username: str, run: dict) -> int:
+def _apply_run_result(username: str, run: dict) -> tuple:
+    """Returns (added, replaced): assignments merged in from the run and
+    prior assignments dropped by the replace step."""
     from .models import Assignment
     from .state import _load_state, _save_state
 
@@ -2110,6 +2134,7 @@ def _apply_run_result(username: str, run: dict) -> int:
         or a.source != "solver"
         or _on_vacation(a.clinicianId, a.dateISO)
     ]
+    replaced = len(state.assignments) - len(kept)
     seen = {(a.rowId, a.dateISO, a.clinicianId) for a in kept}
     added = 0
     for raw in result.get("assignments", []):
@@ -2125,7 +2150,7 @@ def _apply_run_result(username: str, run: dict) -> int:
         added += 1
     state.assignments = kept
     _save_state(state, username)
-    return added
+    return added, replaced
 
 
 def recover_interrupted_runs() -> None:

@@ -164,6 +164,36 @@ def list_runs(username: str, limit: int = KEPT_RUNS_PER_USER) -> List[Dict[str, 
     return [_row_to_dict(r, include_result=False) for r in rows]
 
 
+def list_runs_all(
+    username: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+) -> List[Dict[str, Any]]:
+    """Admin access: run metadata across all users (no result blobs, but
+    with the agent_usage slice)."""
+    clauses = []
+    params: List[Any] = []
+    if username:
+        clauses.append("username = ?")
+        params.append(username)
+    if status:
+        clauses.append("status = ?")
+        params.append(status)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    params.append(limit)
+    with _get_connection() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT * FROM solver_runs
+            {where}
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            params,
+        ).fetchall()
+    return [_row_to_dict(r, include_result=False) for r in rows]
+
+
 def interrupted_runs() -> List[Dict[str, Any]]:
     """Runs still marked 'running' — after a backend (re)start none of them
     can have a live subprocess; the caller decides restart vs crashed."""

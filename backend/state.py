@@ -1224,6 +1224,23 @@ def _save_state(state: AppState, user_id: str) -> None:
     conn.close()
 
 
+def _load_raw_state_blob(username: str) -> Optional[Dict[str, Any]]:
+    """Side-effect-free read of the stored state blob. Unlike _load_state
+    this never creates, normalizes, or re-saves anything - the change log
+    diffs against exactly what was on disk."""
+    conn = _get_connection()
+    row = conn.execute(
+        "SELECT data FROM app_state WHERE id = ?", (username,)
+    ).fetchone()
+    conn.close()
+    if not row:
+        return None
+    try:
+        return json.loads(row[0])
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_date_input(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None

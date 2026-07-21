@@ -1,0 +1,197 @@
+name: Inspect run history (truhn.ai)
+
+# Diagnostic: dump solver runs and the schedule-changes log (run applications
+# plus the manual edits users made afterwards) from the production DB as
+# JSON lines. Meant to be triggered on demand - including by Claude via the
+# GitHub integration - so agent runs and the follow-up manual fixes can be
+# inspected without server access.
+
+on:
+  workflow_dispatch:
+    inputs:
+      username:
+        description: "Filter by username (empty = all users)"
+        default: ""
+      run_id:
+        description: "Filter changes by run id / target of mode=full-run"
+        default: ""
+      since:
+        description: "Only rows created at/after this ISO timestamp (empty = last 14 days)"
+        default: ""
+      limit:
+        description: "Max rows per section"
+        default: "50"
+      mode:
+        description: "summary | full-run (full-run requires run_id; prints one run's result with plans truncated)"
+        default: "summary"
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up SSH (bastion jump)
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.SSH_KEY_FUER_SHIFTSCHEDULE_SERVER }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_truhn
+          chmod 600 ~/.ssh/id_truhn
+          cat > ~/.ssh/config <<'CFG'
+          Host truhn-bastion
+            HostName 49.13.89.75
+            Port 4444
+            User dtruhn
+            IdentityFile ~/.ssh/id_truhn
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+
+          Host truhn-target
+            HostName 10.10.10.6
+            User root
+            IdentityFile ~/.ssh/id_truhn
+            ProxyJump truhn-bastion
+            StrictHostKeyChecking accept-new
+            BatchMode yes
+          CFG
+          chmod 600 ~/.ssh/config
+
+      - name: Query history
+        env:
+          QUERY_USERNAME: ${{ inputs.username }}
+          QUERY_RUN_ID: ${{ inputs.run_id }}
+          QUERY_SINCE: ${{ inputs.since }}
+          QUERY_LIMIT: ${{ inputs.limit }}
+          QUERY_MODE: ${{ inputs.mode }}
+        run: |
+          ssh truhn-target QUERY_USERNAME="$QUERY_USERNAME" QUERY_RUN_ID="$QUERY_RUN_ID" QUERY_SINCE="$QUERY_SINCE" QUERY_LIMIT="$QUERY_LIMIT" QUERY_MODE="$QUERY_MODE" bash -s <<'EOS'
+          set -euo pipefail
+          cd /opt/app
+          docker compose -f docker-compose.proxied.yml exec -T \
+            -e QUERY_USERNAME="$QUERY_USERNAME" -e QUERY_RUN_ID="$QUERY_RUN_ID" \
+            -e QUERY_SINCE="$QUERY_SINCE" -e QUERY_LIMIT="$QUERY_LIMIT" \
+            -e QUERY_MODE="$QUERY_MODE" backend python - <<'PY'
+          import json
+          import os
+          import sqlite3
+          from datetime import datetime, timedelta, timezone
+
+          username = os.environ.get("QUERY_USERNAME", "").strip()
+          run_id = os.environ.get("QUERY_RUN_ID", "").strip()
+          since = os.environ.get("QUERY_SINCE", "").strip()
+          limit = int(os.environ.get("QUERY_LIMIT", "50") or "50")
+          mode = os.environ.get("QUERY_MODE", "summary").strip() or "summary"
+          if not since:
+              since = (datetime.now(timezone.utc) - timedelta(days=14)).strftime(
+                  "%Y-%m-%dT%H:%M:%S"
+              )
+
+          conn = sqlite3.connect("/data/schedule.db")
+          conn.row_factory = sqlite3.Row
+
+          AGENT_KEYS = (
+              "model", "iterations", "moves_accepted", "moves_rejected",
+              "input_tokens", "output_tokens", "cache_read_input_tokens",
+              "cache_creation_input_tokens", "seed_score", "best_score",
+          )
+
+          def run_summary(row):
+              out = {
+                  k: row[k]
+                  for k in (
+                      "id", "username", "status", "start_iso", "end_iso",
+                      "attempt", "created_at", "finished_at", "applied_at", "error",
+                  )
+                  if row[k] is not None
+              }
+              if row["result"]:
+                  try:
+                      parsed = json.loads(row["result"])
+                      out["result_assignments"] = len(parsed.get("assignments") or [])
+                      agent = (parsed.get("debugInfo") or {}).get("agent") or {}
+                      usage = {k: agent.get(k) for k in AGENT_KEYS if agent.get(k) is not None}
+                      if usage:
+                          out["agent"] = usage
+                  except (TypeError, ValueError):
+                      out["result_parse_error"] = True
+              return out
+
+          if mode == "full-run":
+              if not run_id:
+                  print(json.dumps({"error": "mode=full-run requires run_id"}))
+                  raise SystemExit(0)
+              row = conn.execute(
+                  "SELECT * FROM solver_runs WHERE id = ?", (run_id,)
+              ).fetchone()
+              if not row:
+                  print(json.dumps({"error": f"no run {run_id}"}))
+                  raise SystemExit(0)
+              out = run_summary(row)
+              out["notes"] = row["notes"]
+              try:
+                  parsed = json.loads(row["result"] or "{}")
+                  agent = dict((parsed.get("debugInfo") or {}).get("agent") or {})
+                  # Keep the log bounded: plans become counts, iteration
+                  # streams keep their tail, scores/summary stay verbatim.
+                  for key in ("seed_plan", "final_plan"):
+                      if isinstance(agent.get(key), list):
+                          agent[key] = {"count": len(agent[key])}
+                  for key in ("thoughts", "moves"):
+                      if isinstance(agent.get(key), list):
+                          agent[key] = agent[key][-30:]
+                  for key in ("open_slots_seed", "open_slots_final", "violations_final"):
+                      if isinstance(agent.get(key), list):
+                          agent[key] = {"count": len(agent[key]), "sample": agent[key][:10]}
+                  out["agent_full"] = agent
+                  out["result_notes"] = parsed.get("notes")
+              except (TypeError, ValueError) as exc:
+                  out["result_parse_error"] = str(exc)
+              print("=== RUN ===")
+              print(json.dumps(out, ensure_ascii=False))
+              raise SystemExit(0)
+
+          clauses, params = ["created_at >= ?"], [since]
+          if username:
+              clauses.append("username = ?")
+              params.append(username)
+          params.append(limit)
+          print("=== SOLVER RUNS (newest first) ===")
+          for row in conn.execute(
+              "SELECT * FROM solver_runs WHERE " + " AND ".join(clauses)
+              + " ORDER BY created_at DESC, id DESC LIMIT ?",
+              params,
+          ):
+              print(json.dumps(run_summary(row), ensure_ascii=False))
+
+          print("=== SCHEDULE CHANGES (newest first) ===")
+          clauses, params = ["created_at >= ?"], [since]
+          if username:
+              clauses.append("username = ?")
+              params.append(username)
+          if run_id:
+              clauses.append("(after_run_id = ? OR run_id = ?)")
+              params.extend([run_id, run_id])
+          params.append(limit)
+          try:
+              for row in conn.execute(
+                  "SELECT * FROM schedule_changes WHERE " + " AND ".join(clauses)
+                  + " ORDER BY created_at DESC, id DESC LIMIT ?",
+                  params,
+              ):
+                  entry = {
+                      k: row[k]
+                      for k in (
+                          "id", "username", "kind", "run_id", "after_run_id",
+                          "created_at", "updated_at",
+                      )
+                      if row[k] is not None
+                  }
+                  try:
+                      entry["diff"] = json.loads(row["diff"])
+                  except (TypeError, ValueError):
+                      entry["diff"] = row["diff"]
+                  print(json.dumps(entry, ensure_ascii=False))
+          except sqlite3.OperationalError as exc:
+              # Backend not yet deployed with the schedule_changes table.
+              print(json.dumps({"error": f"schedule_changes unavailable: {exc}"}))
+          PY
+          EOS

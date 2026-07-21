@@ -1,11 +1,13 @@
+import sys
 from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from . import schedule_changes
 from .auth import _get_current_user
 from .models import AppState, UserPublic
-from .state import _load_state, _normalize_state, _save_state
+from .state import _load_raw_state_blob, _load_state, _normalize_state, _save_state
 
 router = APIRouter()
 
@@ -44,7 +46,21 @@ def get_state(current_user: UserPublic = Depends(_get_current_user)):
 @router.post("/v1/state", response_model=AppState)
 def set_state(payload: AppState, current_user: UserPublic = Depends(_get_current_user)):
     normalized, _ = _normalize_state(payload)
+    # Change-log bookkeeping must never break the save path: the old blob is
+    # read best-effort before the overwrite, the diff is recorded after it.
+    old_blob = None
+    try:
+        old_blob = _load_raw_state_blob(current_user.username)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"[schedule-changes] pre-save load failed: {exc}", file=sys.stderr)
     _save_state(normalized, current_user.username)
+    if old_blob is not None:
+        try:
+            schedule_changes.record_manual_edit(
+                current_user.username, old_blob, normalized.model_dump()
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            print(f"[schedule-changes] diff logging failed: {exc}", file=sys.stderr)
     return normalized
 
 

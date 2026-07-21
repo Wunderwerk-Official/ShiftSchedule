@@ -13,6 +13,7 @@ from .auth import _ensure_admin_user, _ensure_test_user, router as auth_router
 from .db import _get_connection
 from .ical_routes import router as ical_router
 from .pdf import router as pdf_router
+from .schedule_changes import router as schedule_changes_router
 from .solver import router as solver_router
 from .state_routes import router as state_router
 from .web import router as web_router
@@ -133,6 +134,7 @@ app.include_router(pdf_router)
 app.include_router(ical_router)
 app.include_router(solver_router)
 app.include_router(agent_budget_router)
+app.include_router(schedule_changes_router)
 
 
 @app.on_event("startup")
