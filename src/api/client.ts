@@ -631,6 +631,13 @@ export type SolverSubScores = {
   hours_penalty: number;
 };
 
+export type SolverUnsolvedOpenSlot = {
+  dateISO: string;
+  section: string;
+  time: string;
+  missing: number;
+};
+
 export type SolverAgentDebug = {
   model?: string | null;
   iterations?: number;
@@ -664,6 +671,13 @@ export type SolverAgentDebug = {
   violations_final?: string[];
   /** The model's full reasoning texts, one entry per iteration. */
   thoughts?: string[];
+  /** Structured closing report of what stayed unsolved after the run. */
+  unsolved?: {
+    open_slots?: SolverUnsolvedOpenSlot[];
+    short_days?: unknown[];
+    overlong_days?: unknown[];
+    outside_preferred_times?: unknown[];
+  };
 };
 
 // Agent runs fill only timing.total_ms, solver_status, num_days, num_slots
