@@ -1393,6 +1393,18 @@ export default function WeeklySchedulePage({
             "The AI agent could not start; the heuristic draft is in the run inbox.",
         );
       }
+      // Partial runs (LLM errors or exhausted budgets skipped days) leave
+      // those days' slots OPEN - without a prominent notice the gap only
+      // shows up when someone scrolls to the end of the range.
+      const skippedDays = result?.debugInfo?.agent?.daysSkipped ?? [];
+      if (args.solverMode === "agent" && skippedDays.length > 0) {
+        showSolverNoticeBriefly(
+          `${skippedDays.length} day(s) could not be planned by the AI agent ` +
+            `(${skippedDays.join(", ")}) - the slots remain open; ` +
+            "review them in the run inbox.",
+          8000,
+        );
+      }
       const warningNotes = (result?.notes ?? []).filter(
         (n) =>
           n.toLowerCase().includes("warning") ||

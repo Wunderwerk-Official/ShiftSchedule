@@ -634,6 +634,14 @@ export type SolverSubScores = {
 export type SolverAgentDebug = {
   model?: string | null;
   iterations?: number;
+  /** Transient LLM failures that were retried successfully or not. */
+  retriesUsed?: number;
+  /** Machine-readable run outcome (day-by-day semantics):
+   * "completed" | "budget_exhausted" | "provider_error" | "aborted". */
+  stopReason?: string;
+  daysPlanned?: number;
+  /** ISO dates the agent could not plan (failed or never reached). */
+  daysSkipped?: string[];
   moves_accepted?: number;
   moves_rejected?: number;
   input_tokens?: number;

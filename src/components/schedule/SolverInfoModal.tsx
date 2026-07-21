@@ -891,6 +891,15 @@ export default function SolverInfoModal({
                       value: formatCostUSD(cost) ?? "",
                     });
                   }
+                  // Older stored runs predate the outcome fields.
+                  if (agent.daysSkipped !== undefined) {
+                    tiles.push({
+                      label: "Days",
+                      value: `${agent.daysPlanned ?? 0} planned · ${
+                        agent.daysSkipped.length
+                      } skipped`,
+                    });
+                  }
                   return (
                     <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900/50 dark:bg-violet-950/20">
                       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-violet-500 dark:text-violet-400">
