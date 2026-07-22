@@ -38,6 +38,7 @@ import {
   unpublishIcal,
   unpublishWeb,
   subscribeSolverProgress,
+  type AppState,
   type AuthUser,
   type Holiday,
   type IcalPublishStatus,
@@ -2449,6 +2450,66 @@ export default function WeeklySchedulePage({
     [clinicians, editingClinicianId],
   );
 
+  // Distributes a normalized AppState into the page's state slices.
+  // Shared by the initial load and snapshot restore so both hydrate
+  // identically (mutates `normalized`'s rows/assignments like the
+  // original load effect did — callers pass a fresh object).
+  const hydrateStateSlices = (normalized: AppState) => {
+    if (normalized.locations?.length) setLocations(normalized.locations);
+    setLocationsEnabled(normalized.locationsEnabled ?? true);
+    if (normalized.rows?.length) {
+      const filteredRows = normalized.rows.filter(
+        (row) => row.id !== "pool-not-working",
+      );
+      let nextRows = filteredRows;
+      const hasRestDayPool = nextRows.some((row) => row.id === REST_DAY_POOL_ID);
+      if (!hasRestDayPool) {
+        // Add Rest Day pool at the end if missing
+        nextRows = [...nextRows, {
+          id: REST_DAY_POOL_ID,
+          name: "Rest Day",
+          kind: "pool",
+          dotColorClass: "bg-slate-200",
+        }];
+      }
+      setRows(nextRows);
+      normalized.rows = nextRows;
+    }
+    if (normalized.clinicians?.length) {
+      setClinicians(
+        normalized.clinicians.map((clinician) => ({
+          ...clinician,
+          preferredClassIds: [...clinician.qualifiedClassIds],
+          preferredWorkingTimes: normalizePreferredWorkingTimes(
+            clinician.preferredWorkingTimes,
+          ),
+        })),
+      );
+    }
+    if (normalized.assignments) {
+      const filteredAssignments = normalized.assignments.filter(
+        (assignment) => assignment.rowId !== "pool-not-working",
+      );
+      setAssignmentMap(buildAssignmentMap(filteredAssignments));
+      normalized.assignments = filteredAssignments;
+    }
+    if (normalized.minSlotsByRowId) setMinSlotsByRowId(normalized.minSlotsByRowId);
+    if (normalized.slotOverridesByKey) {
+      setSlotOverridesByKey(normalized.slotOverridesByKey);
+    }
+    if (normalized.weeklyTemplate) {
+      setWeeklyTemplate(normalized.weeklyTemplate);
+    }
+    if (normalized.solverSettings) {
+      setSolverSettings(normalized.solverSettings as SolverSettings);
+    }
+    solverRulesRef.current = normalized.solverRules ?? [];
+    if (normalized.holidays) setHolidays(normalized.holidays);
+    if (normalized.holidayCountry) setHolidayCountry(normalized.holidayCountry);
+    if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
+    setPublishedWeekStartISOs(normalized.publishedWeekStartISOs ?? []);
+  };
+
   useEffect(() => {
     let alive = true;
     setHasLoaded(false);
@@ -2457,59 +2518,7 @@ export default function WeeklySchedulePage({
       .then((state) => {
         if (!alive) return;
         const { state: normalized } = normalizeAppState(state);
-        if (normalized.locations?.length) setLocations(normalized.locations);
-        setLocationsEnabled(normalized.locationsEnabled ?? true);
-        if (normalized.rows?.length) {
-          const filteredRows = normalized.rows.filter(
-            (row) => row.id !== "pool-not-working",
-          );
-          let nextRows = filteredRows;
-          const hasRestDayPool = nextRows.some((row) => row.id === REST_DAY_POOL_ID);
-          if (!hasRestDayPool) {
-            // Add Rest Day pool at the end if missing
-            nextRows = [...nextRows, {
-              id: REST_DAY_POOL_ID,
-              name: "Rest Day",
-              kind: "pool",
-              dotColorClass: "bg-slate-200",
-            }];
-          }
-          setRows(nextRows);
-          normalized.rows = nextRows;
-        }
-        if (normalized.clinicians?.length) {
-          setClinicians(
-            normalized.clinicians.map((clinician) => ({
-              ...clinician,
-              preferredClassIds: [...clinician.qualifiedClassIds],
-              preferredWorkingTimes: normalizePreferredWorkingTimes(
-                clinician.preferredWorkingTimes,
-              ),
-            })),
-          );
-        }
-        if (normalized.assignments) {
-          const filteredAssignments = normalized.assignments.filter(
-            (assignment) => assignment.rowId !== "pool-not-working",
-          );
-          setAssignmentMap(buildAssignmentMap(filteredAssignments));
-          normalized.assignments = filteredAssignments;
-        }
-        if (normalized.minSlotsByRowId) setMinSlotsByRowId(normalized.minSlotsByRowId);
-        if (normalized.slotOverridesByKey) {
-          setSlotOverridesByKey(normalized.slotOverridesByKey);
-        }
-        if (normalized.weeklyTemplate) {
-          setWeeklyTemplate(normalized.weeklyTemplate);
-        }
-        if (normalized.solverSettings) {
-          setSolverSettings(normalized.solverSettings as SolverSettings);
-        }
-        solverRulesRef.current = normalized.solverRules ?? [];
-        if (normalized.holidays) setHolidays(normalized.holidays);
-        if (normalized.holidayCountry) setHolidayCountry(normalized.holidayCountry);
-        if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
-        setPublishedWeekStartISOs(normalized.publishedWeekStartISOs ?? []);
+        hydrateStateSlices(normalized);
       })
       .catch(() => {
         /* Backend optional during local-only dev */
@@ -2523,6 +2532,7 @@ export default function WeeklySchedulePage({
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser.username]);
 
   // Adopt a background run that is still alive after a reload: the run
@@ -2574,9 +2584,11 @@ export default function WeeklySchedulePage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasLoaded, loadedUserId, currentUser.username]);
 
-  useEffect(() => {
-    if (!hasLoaded || loadedUserId !== currentUser.username) return;
-
+  // The exact payload the debounced auto-save persists — also the basis
+  // for named snapshots, so a snapshot always equals what is on screen
+  // (the server's stored row can lag by the 500ms debounce). Returns null
+  // when the colBand-explosion guard refuses to serialize corrupted state.
+  const buildCurrentStatePayload = (): AppState | null => {
     // SAFEGUARD: Check for colBand explosion before saving
     // With 20 max per day × 8 day types × 5 locations = 800 theoretical max
     // Using 300 as a sanity check (allows 2-3 locations with reasonable usage)
@@ -2589,7 +2601,7 @@ export default function WeeklySchedulePage({
         `[WeeklySchedulePage] BLOCKING SAVE - colBand explosion detected: ${totalColBands} total colBands (max: 300)`,
         { stack: new Error().stack }
       );
-      return; // Don't save corrupted state
+      return null; // Don't save corrupted state
     }
 
     const { state: normalized } = normalizeAppState({
@@ -2608,12 +2620,20 @@ export default function WeeklySchedulePage({
       solverRules: solverRulesRef.current,
       weeklyTemplate,
     });
+    return normalized;
+  };
+
+  useEffect(() => {
+    if (!hasLoaded || loadedUserId !== currentUser.username) return;
+    const normalized = buildCurrentStatePayload();
+    if (!normalized) return;
     const handle = window.setTimeout(() => {
       saveState(normalized).catch(() => {
         /* Backend optional during local-only dev */
       });
     }, 500);
     return () => window.clearTimeout(handle);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     locations,
     locationsEnabled,
