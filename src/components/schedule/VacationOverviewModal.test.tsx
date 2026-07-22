@@ -36,7 +36,14 @@ const clientXForDay = (dayIndex: number) => 100 + dayIndex * 20 + 10;
 
 const clinicians = [
   { id: "clin-1", name: "Dr. Smith", vacations: [] },
-  { id: "clin-2", name: "Dr. Jones", vacations: [] },
+  {
+    id: "clin-2",
+    name: "Dr. Jones",
+    vacations: [
+      { id: "v1", startISO: `${rangeStartYear}-02-03`, endISO: `${rangeStartYear}-02-07` },
+      { id: "v2", startISO: `${rangeStartYear}-03-12`, endISO: `${rangeStartYear}-03-12` },
+    ],
+  },
 ];
 
 const renderModal = (overrides: {
@@ -58,6 +65,14 @@ const renderModal = (overrides: {
 
 const getRow = (name: string) =>
   screen.getByRole("button", { name: `${name} vacation timeline` });
+
+describe("VacationOverviewModal vacation labels", () => {
+  it("labels each vacation bar with its short date range", () => {
+    renderModal({});
+    expect(screen.getByText("3.2.-7.2.")).toBeInTheDocument();
+    expect(screen.getByText("12.3.")).toBeInTheDocument();
+  });
+});
 
 describe("VacationOverviewModal drag-to-create", () => {
   it("opens the clinician editor on a plain click", () => {

@@ -11,6 +11,16 @@ export function shiftISODate(dateISO: string, delta: number): string {
   return `${y}-${m}-${d}`;
 }
 
+// Short German date label for a vacation bar: "31.7." or "31.7.-2.8.".
+export function formatVacationRangeLabel(startISO: string, endISO: string): string {
+  const short = (iso: string) => {
+    const [, month, day] = iso.split("-").map(Number);
+    if (!Number.isFinite(month) || !Number.isFinite(day)) return iso;
+    return `${day}.${month}.`;
+  };
+  return startISO === endISO ? short(startISO) : `${short(startISO)}-${short(endISO)}`;
+}
+
 // Inserts an inclusive date range into a vacation list, merging adjacent and
 // overlapping ranges into one. Returns the input array unchanged (same
 // reference) when the range is already fully covered, so callers can skip

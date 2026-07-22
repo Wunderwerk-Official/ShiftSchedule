@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { insertVacationRange, shiftISODate, type VacationRange } from "./vacations";
+import {
+  formatVacationRangeLabel,
+  insertVacationRange,
+  shiftISODate,
+  type VacationRange,
+} from "./vacations";
 
 const makeId = () => "vac-new";
 const range = (id: string, startISO: string, endISO: string): VacationRange => ({
@@ -17,6 +22,20 @@ describe("shiftISODate", () => {
   it("shifts across year boundaries", () => {
     expect(shiftISODate("2026-12-31", 1)).toBe("2027-01-01");
     expect(shiftISODate("2027-01-01", -1)).toBe("2026-12-31");
+  });
+});
+
+describe("formatVacationRangeLabel", () => {
+  it("formats a single day without a range", () => {
+    expect(formatVacationRangeLabel("2026-07-31", "2026-07-31")).toBe("31.7.");
+  });
+
+  it("formats a range across months without leading zeros", () => {
+    expect(formatVacationRangeLabel("2026-07-31", "2026-08-02")).toBe("31.7.-2.8.");
+  });
+
+  it("formats double-digit days and months", () => {
+    expect(formatVacationRangeLabel("2026-11-28", "2026-12-30")).toBe("28.11.-30.12.");
   });
 });
 

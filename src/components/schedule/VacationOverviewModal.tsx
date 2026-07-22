@@ -4,6 +4,7 @@ import { buttonPrimary, buttonSecondary, getPillToggleClasses } from "../../lib/
 import { cx } from "../../lib/classNames";
 import { BLOCK_COLOR_SWATCH_OPTIONS } from "../../lib/colorPalette";
 import { toISODate } from "../../lib/date";
+import { formatVacationRangeLabel } from "../../lib/vacations";
 import type { Assignment, WeeklyCalendarTemplate } from "../../api/client";
 import ColorPickerPopover from "./ColorPickerPopover";
 
@@ -294,10 +295,10 @@ export default function VacationOverviewModal({
   const vacationSegmentsByClinician = useMemo(() => {
     const map = new Map<
       string,
-      Array<{ id: string; left: number; width: number }>
+      Array<{ id: string; left: number; width: number; label: string }>
     >();
     for (const clinician of clinicians) {
-      const segments: Array<{ id: string; left: number; width: number }> = [];
+      const segments: Array<{ id: string; left: number; width: number; label: string }> = [];
       for (const vacation of clinician.vacations) {
         const clipped = clipRangeToTimeline(
           vacation.startISO,
@@ -311,6 +312,9 @@ export default function VacationOverviewModal({
           id: vacation.id,
           left: clipped.startIndex * DAY_WIDTH,
           width,
+          // Label the vacation's REAL range, even when the bar is clipped
+          // to the visible three-year timeline.
+          label: formatVacationRangeLabel(vacation.startISO, vacation.endISO),
         });
       }
       map.set(clinician.id, segments);
@@ -1044,23 +1048,36 @@ export default function VacationOverviewModal({
                         >
                           {vacationDrag &&
                             vacationDrag.status === "dragging" &&
-                            vacationDrag.clinicianId === clinician.id && (
-                              <div
-                                className="pointer-events-none absolute inset-y-0.5 z-20 rounded-md"
-                                style={{
-                                  left:
-                                    Math.min(vacationDrag.anchorIndex, vacationDrag.currentIndex) *
-                                    DAY_WIDTH,
-                                  width:
-                                    (Math.abs(vacationDrag.anchorIndex - vacationDrag.currentIndex) +
-                                      1) *
-                                    DAY_WIDTH,
-                                  backgroundColor: vacationColor,
-                                  opacity: 0.5,
-                                  boxShadow: `inset 0 0 0 2px ${vacationColor}`,
-                                }}
-                              />
-                            )}
+                            vacationDrag.clinicianId === clinician.id &&
+                            (() => {
+                              const lo = Math.min(
+                                vacationDrag.anchorIndex,
+                                vacationDrag.currentIndex,
+                              );
+                              const hi = Math.max(
+                                vacationDrag.anchorIndex,
+                                vacationDrag.currentIndex,
+                              );
+                              return (
+                                <div
+                                  className="pointer-events-none absolute inset-y-0.5 z-20 rounded-md"
+                                  style={{
+                                    left: lo * DAY_WIDTH,
+                                    width: (hi - lo + 1) * DAY_WIDTH,
+                                    backgroundColor: vacationColor,
+                                    opacity: 0.5,
+                                    boxShadow: `inset 0 0 0 2px ${vacationColor}`,
+                                  }}
+                                >
+                                  <div className="flex h-full items-center justify-center whitespace-nowrap text-[10px] font-semibold leading-none text-slate-900">
+                                    {formatVacationRangeLabel(
+                                      dayIndexToISOInTimeline(lo, rangeStartYear),
+                                      dayIndexToISOInTimeline(hi, rangeStartYear),
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
                           {isVacationActive && (
                             <div
                               className="relative w-full overflow-visible rounded-full bg-slate-200 dark:bg-slate-800"
@@ -1078,6 +1095,32 @@ export default function VacationOverviewModal({
                                   }}
                                 />
                               ))}
+                              {segments.map((segment) => {
+                                // The label may spill half a day cell to each
+                                // side. Merged vacations are always separated
+                                // by at least one free day, so neighbouring
+                                // labels can meet but never overlap. The font
+                                // shrinks until the text fits that box.
+                                const labelWidth = segment.width + DAY_WIDTH;
+                                const fontSize = Math.max(
+                                  7,
+                                  Math.min(10, labelWidth / (segment.label.length * 0.55)),
+                                );
+                                return (
+                                  <div
+                                    key={`${segment.id}-label`}
+                                    className="pointer-events-none absolute top-0 z-10 flex items-center justify-center whitespace-nowrap font-medium leading-none text-slate-800"
+                                    style={{
+                                      left: segment.left + segment.width / 2 - labelWidth / 2,
+                                      width: labelWidth,
+                                      height: BAR_HEIGHT,
+                                      fontSize,
+                                    }}
+                                  >
+                                    {segment.label}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                           {isRestDayActive && (
