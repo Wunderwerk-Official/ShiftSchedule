@@ -430,6 +430,74 @@ def test_admin_instructions_pass_through_with_real_names():
     assert "Dr. Anna Becker" in digest
 
 
+def test_clinician_wishes_pass_through_to_the_digest():
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Dr. Tom Braun",
+                           planning_wishes="Prefers early shifts; no Fridays."),
+            make_clinician("clin-2", "Dr. Anna Becker"),
+        ]
+    )
+    provider = CapturingProvider()
+    agent_solve_range(
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    digest = provider.seen_messages[0][0].content
+    assert "CLINICIAN WISHES" in digest
+    assert "Dr. Tom Braun: Prefers early shifts; no Fridays." in digest
+    # Only clinicians WITH a wish get a bullet.
+    assert "Dr. Anna Becker:" not in digest.split("CLINICIAN WISHES")[1]
+
+
+def test_no_wishes_means_no_wishes_block():
+    state = _two_clinician_state()
+    provider = CapturingProvider()
+    agent_solve_range(
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    assert "CLINICIAN WISHES" not in provider.seen_messages[0][0].content
+
+
+def test_clinician_wishes_reach_every_day_conversation():
+    """day_by_day opens a fresh conversation per day — the wishes block
+    must travel with EACH day digest, not just the first."""
+    from .conftest import make_template_slot
+
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", planning_wishes="Late starts please."),
+            make_clinician("clin-2", "Bob"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-b__tue", col_band_id="col-tue-1"),
+        ],
+    )
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        {"text": "Day 1 done."},
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-b__tue__2026-01-06",
+             "clinicianId": "Bob"}]}}]},
+        {"text": "Day 2 done."},
+    ]
+    provider = CapturingProvider(script)
+    payload = _payload(endISO="2026-01-06")
+    payload.agent_strategy = "day_by_day"
+    agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    day1_digest = provider.seen_messages[0][0].content
+    day2_digest = provider.seen_messages[2][0].content
+    assert "Late starts please." in day1_digest
+    assert "Late starts please." in day2_digest
+
+
 def test_default_instructions_apply_when_unset_and_empty_disables():
     from backend.agent.prompts import DEFAULT_AGENT_INSTRUCTIONS
 

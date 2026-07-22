@@ -78,6 +78,9 @@ always copy them exactly as they appear in tool results.
 The problem digest may end with ADMIN INSTRUCTIONS written by the planning
 admin. Treat them as important soft goals: follow them whenever possible, but
 they never override the hard constraints or fixed assignments above.
+It may also end with CLINICIAN WISHES — free-text soft preferences from
+individual clinicians. Weigh them like section/time preferences; they never
+override hard constraints, fixed assignments, or ADMIN INSTRUCTIONS.
 
 Tool usage policy:
 - Inspect before you move: list_candidates_for_slot tells you exactly which
@@ -272,8 +275,9 @@ Rules of engagement:
   among what is legal and what to report about what is not.
 - Identifiers: clinicians by their real names exactly as shown; slot
   instances by short keys like "S3__2026-07-07" — copy them exactly.
-- The day digest may end with ADMIN INSTRUCTIONS: important soft goals,
-  never overriding hard constraints or fixed assignments.
+- The day digest may end with ADMIN INSTRUCTIONS and CLINICIAN WISHES:
+  important soft goals (admin) and per-person free-text preferences, never
+  overriding hard constraints or fixed assignments.
 - Every reply must either CALL A TOOL or BE your final day summary.
   Announcing what you will do next without a tool call ends the day's work
   on the spot. Do not restate candidate lists in text — pick and act.
@@ -314,6 +318,10 @@ THE PROCEDURE:
    keeps the best plan; ties keep your latest state, so clean fairness
    swaps survive.
 
+The digest may end with ADMIN INSTRUCTIONS and CLINICIAN WISHES: important
+soft goals (admin) and per-person free-text preferences, never overriding
+hard constraints or fixed assignments.
+
 Every reply must either CALL A TOOL or BE your final summary: what you
 fixed, what stays unsolved and why."""
 
@@ -344,6 +352,10 @@ THE PROCEDURE:
 5. When every listed duty slot is staffed or skipped, reply WITHOUT tool
    calls: one short paragraph — who covers which duty, what was skipped
    and why. The harness then starts the day-by-day pass.
+
+The digest may end with ADMIN INSTRUCTIONS and CLINICIAN WISHES: important
+soft goals (admin) and per-person free-text preferences, never overriding
+hard constraints or fixed assignments.
 
 Identifiers: clinicians by their real names exactly as shown; slot keys
 copied exactly. Every reply must either CALL A TOOL or BE your final

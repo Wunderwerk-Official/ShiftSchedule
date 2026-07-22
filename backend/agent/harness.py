@@ -18,6 +18,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..heuristic.solver_v2 import heuristic_solve_range_v2
+from ..constants import PLANNING_WISHES_MAX_CHARS
 from ..models import Assignment, SolveRangeRequest, AppState
 from ..scoring import build_scoring_context, open_slots, plan_stats
 from ..validation import validate_solver_rules
@@ -770,6 +771,26 @@ def agent_solve_range(
         else ""
     )
 
+    # Per-clinician free-text wishes, one shared block for every
+    # conversation of the run (duty pre-pass, each day, review, repair) —
+    # the day loop opens a FRESH conversation per day, so the wishes must
+    # travel with every digest. Kept compact by the 500-char cap at input
+    # time instead of an LLM summarization pass (which would add a failure
+    # mode and could drop the one nuance that mattered).
+    wishes_lines = [
+        f"- {executor.alias_by_id.get(c.id, c.name)}: "
+        f"{executor.scrub_text((c.planningWishes or '').strip()[:PLANNING_WISHES_MAX_CHARS])}"
+        for c in state.clinicians
+        if (c.planningWishes or "").strip()
+    ]
+    wishes_block = (
+        "\n\nCLINICIAN WISHES (soft preferences from individual clinicians; "
+        "never override hard constraints, fixed assignments, or ADMIN "
+        "INSTRUCTIONS):\n" + "\n".join(wishes_lines)
+        if wishes_lines
+        else ""
+    )
+
     def absorb_response(response) -> None:
         """Token accounting + thought/summary feed emission — identical for
         the repair loop and the day-by-day loop."""
@@ -868,6 +889,7 @@ def agent_solve_range(
                     },
                 )
                 + admin_block
+                + wishes_block
             )
             messages = [ChatMessage(role="user", content=digest)]
             truncation_nudges = 0
@@ -1120,7 +1142,7 @@ def agent_solve_range(
                     for c in state.clinicians
                 },
                 distribute_all=not ctx.only_fill_required,
-            ) + admin_block
+            ) + admin_block + wishes_block
             messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
             truncation_nudges = 0
             on_progress(
@@ -1311,6 +1333,7 @@ def agent_solve_range(
                     ctx, unsolved_lines, previous_day_lines, review_rounds
                 )
                 + admin_block
+                + wishes_block
             )
             messages = [ChatMessage(role="user", content=review_digest)]
             on_progress(
@@ -1421,7 +1444,7 @@ def agent_solve_range(
         seed_hard_violation_count=executor.seed_quality[0],
         seed_hard_violation_lines=executor.seed_repairable_violation_lines,
     )
-    digest += admin_block
+    digest += admin_block + wishes_block
     messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
     extra_notes: List[str] = []
     truncation_nudges = 0

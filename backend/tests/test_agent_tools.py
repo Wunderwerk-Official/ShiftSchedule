@@ -246,9 +246,22 @@ def test_open_slots_and_overview_shapes():
 
     summary, _ = _run(executor, "get_clinician_summary", {"clinicianId": "clin-1"})
     assert summary["qualified_sections"] == ["section-a"]
+    assert summary["planning_wishes"] is None  # unset -> explicit None
 
     unknown, is_error = _run(executor, "get_clinician_summary", {"clinicianId": "nope"})
     assert "error" in unknown and not is_error
+
+
+def test_clinician_summary_exposes_planning_wishes():
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice",
+                           planning_wishes="Prefers early shifts."),
+        ]
+    )
+    executor = _make_executor(state)
+    summary, _ = _run(executor, "get_clinician_summary", {"clinicianId": "clin-1"})
+    assert summary["planning_wishes"] == "Prefers early shifts."
 
     _, is_error = _run(executor, "no_such_tool", {})
     assert is_error

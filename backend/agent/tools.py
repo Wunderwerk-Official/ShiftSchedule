@@ -134,7 +134,8 @@ TOOL_SPECS_RAW = [
         "description": (
             "One clinician's schedule in the solve range: assignments per "
             "day (fixed vs yours), weekly hours vs contract+tolerance, "
-            "ytd_worked_pct, preferred sections, time windows, vacations."
+            "ytd_worked_pct, preferred sections, time windows, vacations, "
+            "planning_wishes (free-text soft preferences)."
         ),
         "input_schema": {
             "type": "object",
@@ -942,6 +943,11 @@ class PlanToolExecutor:
                 {"startISO": v.startISO, "endISO": v.endISO}
                 for v in clinician.vacations or []
             ],
+            "planning_wishes": (
+                self.scrub_text(clinician.planningWishes)
+                if clinician.planningWishes
+                else None
+            ),
             "assignments_by_date": by_date,
         }
 
