@@ -88,6 +88,11 @@ class Clinician(BaseModel):
     )
     workingHoursPerWeek: Optional[float] = None
     workingHoursToleranceHours: int = 5
+    # Free-text wishes the AI planning agent reads as SOFT preferences
+    # (never overriding hard constraints). Must be declared here: pydantic
+    # defaults to extra="ignore", an undeclared field would be silently
+    # dropped on every save round-trip.
+    planningWishes: Optional[str] = None
 
 
 class PreferredWorkingTime(BaseModel):

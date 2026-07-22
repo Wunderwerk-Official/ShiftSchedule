@@ -40,6 +40,7 @@ def make_clinician(
     preferred_class_ids: Optional[List[str]] = None,
     vacations: Optional[List[VacationRange]] = None,
     working_hours_per_week: Optional[float] = None,
+    planning_wishes: Optional[str] = None,
 ) -> Clinician:
     """Create a test clinician with sensible defaults."""
     return Clinician(
@@ -49,6 +50,7 @@ def make_clinician(
         preferredClassIds=preferred_class_ids or [],
         vacations=vacations or [],
         workingHoursPerWeek=working_hours_per_week,
+        planningWishes=planning_wishes,
     )
 
 

@@ -9,6 +9,7 @@ from .constants import (
     DEFAULT_SUB_SHIFT_MINUTES,
     DEFAULT_SUB_SHIFT_START,
     DEFAULT_SUB_SHIFT_START_MINUTES,
+    PLANNING_WISHES_MAX_CHARS,
     SHIFT_ROW_SEPARATOR,
 )
 from .db import _get_connection, _utcnow_iso
@@ -769,14 +770,18 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
 
     normalized_clinicians: List[Clinician] = []
     for clinician in state.clinicians:
+        updates: Dict[str, Any] = {}
         preferred_working_times = _normalize_preferred_working_times(
             getattr(clinician, "preferredWorkingTimes", None)
         )
-        next_clinician = clinician
         if preferred_working_times != getattr(clinician, "preferredWorkingTimes", {}):
-            next_clinician = clinician.model_copy(
-                update={"preferredWorkingTimes": preferred_working_times}
-            )
+            updates["preferredWorkingTimes"] = preferred_working_times
+        wishes = (clinician.planningWishes or "").strip()[:PLANNING_WISHES_MAX_CHARS] or None
+        if wishes != clinician.planningWishes:
+            updates["planningWishes"] = wishes
+        next_clinician = clinician
+        if updates:
+            next_clinician = clinician.model_copy(update=updates)
             changed = True
         normalized_clinicians.append(next_clinician)
     if normalized_clinicians != state.clinicians:
