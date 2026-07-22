@@ -37,12 +37,14 @@ type ClinicianEditorProps = {
     preferredWorkingTimes?: PreferredWorkingTimes;
     workingHoursPerWeek?: number;
     workingHoursToleranceHours?: number;
+    planningWishes?: string;
   };
   classRows: Array<{ id: string; name: string }>;
   initialSection?: "vacations";
   vacationOnly?: boolean;
   onUpdateWorkingHours?: (clinicianId: string, workingHoursPerWeek?: number) => void;
   onUpdateWorkingHoursTolerance?: (clinicianId: string, toleranceHours?: number) => void;
+  onUpdatePlanningWishes?: (clinicianId: string, planningWishes?: string) => void;
   onUpdatePreferredWorkingTimes?: (
     clinicianId: string,
     preferredWorkingTimes: PreferredWorkingTimes,
@@ -75,6 +77,7 @@ export default function ClinicianEditor({
   onUpdateWorkingHours,
   onUpdateWorkingHoursTolerance,
   onUpdatePreferredWorkingTimes,
+  onUpdatePlanningWishes,
 }: ClinicianEditorProps) {
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
@@ -87,6 +90,9 @@ export default function ClinicianEditor({
   );
   const [workingHoursTolerance, setWorkingHoursTolerance] = useState(
     clinician.workingHoursToleranceHours ?? 5,
+  );
+  const [planningWishes, setPlanningWishes] = useState(
+    clinician.planningWishes ?? "",
   );
   const [timeWarnings, setTimeWarnings] = useState<Record<string, string>>({});
   const suppressPreferredWorkingTimesUpdate = useRef(true);
@@ -657,6 +663,35 @@ export default function ClinicianEditor({
               </div>
             );
           })}
+        </div>
+      </div>
+      )}
+
+      {!vacationOnly && (
+      <div className="relative mt-4 rounded-2xl border-2 border-violet-200 bg-violet-50/60 px-4 py-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.8)] dark:border-violet-500/40 dark:bg-violet-900/20">
+        <div className="absolute -top-3 left-4 rounded-full border border-violet-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-violet-600 dark:border-violet-500/40 dark:bg-slate-900 dark:text-violet-200">
+          Planning Wishes
+        </div>
+        <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+          Free-text wishes for the AI planner.
+        </div>
+        <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+          Treated as soft preferences — hard rules, vacations, and fixed
+          assignments always win.
+        </div>
+        <textarea
+          rows={4}
+          maxLength={500}
+          value={planningWishes}
+          onChange={(event) => setPlanningWishes(event.target.value)}
+          onBlur={() =>
+            onUpdatePlanningWishes?.(clinician.id, planningWishes.trim() || undefined)
+          }
+          placeholder="e.g. Prefers early shifts. No on-call before clinic days. Likes Fridays off."
+          className="mt-3 w-full resize-y rounded-2xl border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 placeholder:text-slate-400 focus:border-violet-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+        />
+        <div className="mt-1 text-right text-xs text-slate-400 dark:text-slate-500">
+          {planningWishes.length}/500
         </div>
       </div>
       )}

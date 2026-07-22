@@ -50,6 +50,8 @@ export type Clinician = {
   vacations: VacationPeriod[];
   preferredWorkingTimes?: PreferredWorkingTimes;
   workingHoursPerWeek?: number;
+  /** Free-text wishes the AI planner reads as soft preferences (max 500 chars). */
+  planningWishes?: string;
 };
 
 export const locations: Location[] = [{ id: "loc-default", name: "Berlin" }];

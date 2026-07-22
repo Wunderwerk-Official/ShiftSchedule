@@ -799,7 +799,13 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
     ) {
       changed = true;
     }
-    return { ...clinician, preferredWorkingTimes };
+    // Mirror of the backend cap: trimmed, max 500 chars, empty -> absent.
+    const planningWishes =
+      clinician.planningWishes?.trim().slice(0, 500) || undefined;
+    if (planningWishes !== clinician.planningWishes) {
+      changed = true;
+    }
+    return { ...clinician, preferredWorkingTimes, planningWishes };
   });
 
   let classIndex = 0;

@@ -58,6 +58,8 @@ export type Clinician = {
   preferredWorkingTimes?: PreferredWorkingTimes;
   workingHoursPerWeek?: number;
   workingHoursToleranceHours?: number;
+  /** Free-text wishes the AI planner reads as soft preferences (max 500 chars). */
+  planningWishes?: string;
 };
 
 export type AssignmentSource = "manual" | "solver";

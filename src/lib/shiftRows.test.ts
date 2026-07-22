@@ -340,6 +340,38 @@ describe("normalizeAppState", () => {
     });
   });
 
+  describe("planningWishes", () => {
+    const wishClinician = (planningWishes?: string) => ({
+      id: "clin-1",
+      name: "Alice",
+      qualifiedClassIds: ["section-a"],
+      preferredClassIds: [],
+      vacations: [],
+      planningWishes,
+    });
+
+    it("preserves a set wish", () => {
+      const { state } = normalizeAppState(
+        makeMinimalState({ clinicians: [wishClinician("Prefers early shifts.")] }),
+      );
+      expect(state.clinicians[0].planningWishes).toBe("Prefers early shifts.");
+    });
+
+    it("trims and drops empty wishes", () => {
+      const { state } = normalizeAppState(
+        makeMinimalState({ clinicians: [wishClinician("   ")] }),
+      );
+      expect(state.clinicians[0].planningWishes).toBeUndefined();
+    });
+
+    it("caps at 500 characters", () => {
+      const { state } = normalizeAppState(
+        makeMinimalState({ clinicians: [wishClinician("x".repeat(600))] }),
+      );
+      expect(state.clinicians[0].planningWishes).toHaveLength(500);
+    });
+  });
+
   describe("idempotence", () => {
     it("normalizing twice produces the same result", () => {
       const state = makeMinimalState({
