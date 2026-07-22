@@ -511,6 +511,107 @@ export async function saveState(state: AppState): Promise<AppState> {
   return res.json();
 }
 
+export type SnapshotMeta = {
+  id: string;
+  name: string;
+  kind: "named" | "auto_backup";
+  created_at: string;
+  updated_at: string;
+  size_bytes: number;
+};
+
+// Surfaces the backend's detail message (e.g. the snapshot-cap 409) so the
+// popover can show it verbatim instead of a generic status code.
+async function throwWithDetail(res: Response, fallback: string): Promise<never> {
+  let detail = fallback;
+  try {
+    const body = await res.json();
+    if (typeof body?.detail === "string") detail = body.detail;
+  } catch {
+    /* non-JSON error body */
+  }
+  throw new Error(detail);
+}
+
+export async function listSnapshots(): Promise<SnapshotMeta[]> {
+  const res = await fetch(`${API_BASE}/v1/state/snapshots`, {
+    headers: buildHeaders(),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    throw new Error(`Failed to load snapshots: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function createSnapshot(
+  name: string,
+  state: AppState,
+): Promise<SnapshotMeta> {
+  const res = await fetch(`${API_BASE}/v1/state/snapshots`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify({ name, state }),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    await throwWithDetail(res, `Failed to save snapshot: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function restoreSnapshot(
+  snapshotId: string,
+  currentState: AppState | null,
+): Promise<AppState> {
+  const res = await fetch(
+    `${API_BASE}/v1/state/snapshots/${encodeURIComponent(snapshotId)}/restore`,
+    {
+      method: "POST",
+      headers: buildHeaders(),
+      body: JSON.stringify({ currentState }),
+    },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    await throwWithDetail(res, `Failed to restore snapshot: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function renameSnapshot(
+  snapshotId: string,
+  name: string,
+): Promise<SnapshotMeta> {
+  const res = await fetch(
+    `${API_BASE}/v1/state/snapshots/${encodeURIComponent(snapshotId)}`,
+    {
+      method: "PATCH",
+      headers: buildHeaders(),
+      body: JSON.stringify({ name }),
+    },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    await throwWithDetail(res, `Failed to rename snapshot: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function deleteSnapshot(snapshotId: string): Promise<void> {
+  const res = await fetch(
+    `${API_BASE}/v1/state/snapshots/${encodeURIComponent(snapshotId)}`,
+    {
+      method: "DELETE",
+      headers: buildHeaders(),
+    },
+  );
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok && res.status !== 204) {
+    await throwWithDetail(res, `Failed to delete snapshot: ${res.status}`);
+  }
+}
+
 export type DatabaseHealthIssue = {
   type: "orphaned_assignment" | "slot_collision" | "duplicate_assignment" | "colband_explosion" | "pool_assignment_info";
   severity: "error" | "warning" | "info";

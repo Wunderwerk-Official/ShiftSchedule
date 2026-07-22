@@ -38,6 +38,8 @@ import {
   unpublishIcal,
   unpublishWeb,
   subscribeSolverProgress,
+  createSnapshot,
+  restoreSnapshot,
   type AppState,
   type AuthUser,
   type Holiday,
@@ -55,6 +57,7 @@ import {
   type WebPublishStatus,
   type SolverRule,
 } from "../api/client";
+import SnapshotPopover from "../components/schedule/SnapshotPopover";
 import SolverDebugPanel from "../components/schedule/SolverDebugPanel";
 import SolverInfoModal from "../components/schedule/SolverInfoModal";
 import {
@@ -2623,6 +2626,32 @@ export default function WeeklySchedulePage({
     return normalized;
   };
 
+  // Snapshot ("quicksave") handlers. Restore gates the debounced auto-save
+  // via hasLoaded: setting it false re-runs the save effect, whose cleanup
+  // clears any pending 500ms timer — so a stale pre-restore payload cannot
+  // be flushed after the restore lands.
+  const handleSaveSnapshot = async (name: string) => {
+    const payload = buildCurrentStatePayload();
+    if (!payload) {
+      throw new Error(
+        "Cannot save a snapshot: the current calendar failed the integrity check.",
+      );
+    }
+    await createSnapshot(name, payload);
+  };
+
+  const handleRestoreSnapshot = async (snapshotId: string) => {
+    setHasLoaded(false);
+    try {
+      const restored = await restoreSnapshot(snapshotId, buildCurrentStatePayload());
+      const { state: normalized } = normalizeAppState(restored);
+      hydrateStateSlices(normalized);
+    } finally {
+      // One idempotent echo-save of the restored state follows.
+      setHasLoaded(true);
+    }
+  };
+
   useEffect(() => {
     if (!hasLoaded || loadedUserId !== currentUser.username) return;
     const normalized = buildCurrentStatePayload();
@@ -3530,6 +3559,13 @@ export default function WeeklySchedulePage({
         onLogout={handleLogout}
         theme={theme}
         onToggleTheme={onToggleTheme}
+        snapshotSlot={
+          <SnapshotPopover
+            onSaveSnapshot={handleSaveSnapshot}
+            onRestoreSnapshot={handleRestoreSnapshot}
+            restoreDisabled={autoPlanRunning}
+          />
+        }
       />
 
       {slotCollisions.length > 0 && (

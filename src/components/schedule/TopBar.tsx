@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { getPillToggleClasses } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
 
@@ -9,6 +9,8 @@ type TopBarProps = {
   onLogout: () => void;
   theme: "light" | "dark";
   onToggleTheme: () => void;
+  // Snapshot control injected by the page — TopBar stays state-agnostic.
+  snapshotSlot?: ReactNode;
 };
 
 export default function TopBar({
@@ -18,6 +20,7 @@ export default function TopBar({
   onLogout,
   theme,
   onToggleTheme,
+  snapshotSlot,
 }: TopBarProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -51,6 +54,7 @@ export default function TopBar({
         </div>
 
         <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          {snapshotSlot}
           <button
             type="button"
             onClick={() =>
