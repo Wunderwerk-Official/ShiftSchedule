@@ -149,6 +149,36 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             ON schedule_changes (after_run_id)
         """
     )
+    # Named calendar snapshots ("quicksave"): the FULL AppState blob per
+    # version — assignments-only would be lossy, normalization drops
+    # assignments that don't match the CURRENT template on restore.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS calendar_snapshots (
+            id TEXT PRIMARY KEY,
+            username TEXT NOT NULL,
+            name TEXT NOT NULL,
+            kind TEXT NOT NULL DEFAULT 'named',
+            data TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_calendar_snapshots_user
+            ON calendar_snapshots(username, created_at)
+        """
+    )
+    # Exactly ONE reserved auto-backup slot per user (written before every
+    # restore so an accidental restore is always reversible).
+    conn.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_calendar_snapshots_auto_backup
+            ON calendar_snapshots(username) WHERE kind = 'auto_backup'
+        """
+    )
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(app_state)").fetchall()]
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE app_state ADD COLUMN updated_at TEXT")

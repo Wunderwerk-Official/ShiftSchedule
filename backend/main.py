@@ -14,6 +14,7 @@ from .db import _get_connection
 from .ical_routes import router as ical_router
 from .pdf import router as pdf_router
 from .schedule_changes import router as schedule_changes_router
+from .snapshots import router as snapshots_router
 from .solver import router as solver_router
 from .state_routes import router as state_router
 from .web import router as web_router
@@ -129,6 +130,7 @@ async def _log_requests(request, call_next):
 
 app.include_router(auth_router)
 app.include_router(state_router)
+app.include_router(snapshots_router)
 app.include_router(web_router)
 app.include_router(pdf_router)
 app.include_router(ical_router)
