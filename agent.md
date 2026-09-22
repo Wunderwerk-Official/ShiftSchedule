@@ -1611,3 +1611,30 @@ Database Inspector
   workers and arena processes (including stdin checkout jobs), and refuses to
   replace busy/uninspectable containers. Failure restores admission and is
   reported; it does not silently kill a running plan after the wait limit.
+
+## v1.62 — Qwen model availability fallback
+
+- The configured Qwen priority is `nvidia/Qwen3.8-Flash-Next-NVFP4`, then
+  `Qwen/Qwen3.8-27B`, then `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva`.
+  All three IDs were listed and returned valid synthetic tool calls on the
+  configured server on 2026-09-22. This policy selects only these known
+  planners, never arbitrary embedding/OCR/reranking models from `/models`.
+- On an explicit missing-model / unavailable-deployment response, the same
+  endpoint is retried with the next model and the remaining request budget.
+  Existing plan, conversation and tool results stay intact. The successful
+  replacement remains selected for that provider/run; the global preference
+  is unchanged, so new runs try the preferred model again. Selecting 27B
+  explicitly starts at 27B; unrelated model selections are left alone.
+- Authentication, context, malformed-tool, generic transport/timeout and
+  rate-limit errors do not trigger model switching. Existing bounded retries
+  remain in force. Cancellation is checked between model requests; exhausting
+  all known models does not restart the chain.
+- Run details and chat tests expose `model_selection` separately from the
+  heuristic `fallback`. Run token counts are also grouped by actual model.
+  Individual-model responsiveness checks and arena quality benchmarks keep
+  their exact requested model; they never silently measure a replacement.
+- Model prompts, day construction, proposal ranking and quality objectives
+  are unchanged. The 122B reserve is a suitability choice, not a measured
+  claim of optimal planner quality; the upstream model card reports stronger
+  BFCL-V4/DeepPlanning scores than 35B, and the deployed quantization passed
+  the server tool check: https://huggingface.co/Qwen/Qwen3.5-122B-A10B.

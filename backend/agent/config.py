@@ -43,6 +43,9 @@ class AgentConfig:
     # OpenAI-compatible endpoint (LiteLLM/vLLM honour ``reasoning_effort``);
     # lower effort = fewer thinking tokens = faster, cheaper turns.
     reasoning_effort: Optional[str] = None
+    # Same-server, known Qwen alternatives only. Explicit model benchmarks
+    # disable this so a fallback cannot be mistaken for the requested model.
+    allow_model_fallback: bool = True
 
     @classmethod
     def from_env(cls) -> "AgentConfig":

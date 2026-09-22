@@ -112,6 +112,11 @@ class ProviderResponse:
     # Provider ended generation at its output limit, including tool-call turns.
     # Independent of stop_reason so reporting does not change tool execution.
     output_truncated: bool = False
+    # Actual request model and safe, cumulative selection metadata. This is
+    # distinct from replacing the planner with a non-LLM heuristic fallback.
+    model: Optional[str] = None
+    model_selection: Optional[dict] = None
+    model_unavailable: bool = False
 
 
 class LLMProvider(ABC):
@@ -123,6 +128,10 @@ class LLMProvider(ABC):
     ``ProviderResponse(stop_reason="error", error=...)`` so the harness has a
     single failure path.
     """
+
+    # Bound by the harness; adapters with multiple attempts check it before
+    # starting a subsequent request. Direct connection tests can leave it unset.
+    cancel_event = None
 
     @abstractmethod
     def complete(

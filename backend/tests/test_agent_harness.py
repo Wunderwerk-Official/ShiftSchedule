@@ -13,7 +13,7 @@ from backend.agent.mock_provider import MockProvider
 from backend.agent.provider import LLMProvider, ProviderResponse, ToolCall
 from backend.models import SolveRangeRequest
 
-from .conftest import make_app_state, make_assignment, make_clinician
+from .conftest import make_app_state, make_assignment, make_clinician, make_template_slot
 
 
 class ResponseProvider(LLMProvider):
@@ -1426,3 +1426,104 @@ def test_generation_speed_is_none_when_no_output():
         config=_config(),
     )
     assert result["debugInfo"]["agent"]["output_tokens_per_second"] is None
+
+
+def test_midrun_model_change_keeps_plan_history_and_reports_actual_usage():
+    from copy import deepcopy
+    from backend.models import Assignment
+    from backend.validation import validate_assignments
+
+    flash, replacement = "requested-flash", "replacement-27b"
+    fixed = make_assignment("fixed-carol", "slot-a__mon", MON, "clin-3", source="manual")
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob"),
+                    make_clinician("clin-3", "Carol")],
+        slots=[make_template_slot(slot_id="slot-a__mon", required_slots=3)],
+        assignments=[fixed],
+    )
+    original = state.model_dump()
+    cancel = MockCancelEvent()
+    selection = {"requested_model": flash, "selected_model": flash,
+                 "attempts": [{"model": flash, "status": "selected"}]}
+
+    class SwitchingProvider(LLMProvider):
+        def __init__(self):
+            self.requests = []
+            self.responses = []
+
+        def complete(self, **kwargs):
+            assert self.cancel_event is cancel
+            self.requests.append(deepcopy(kwargs["messages"]))
+            turn = len(self.requests)
+            if turn == 2:
+                selection["selected_model"] = replacement
+                selection["attempts"].extend([
+                    {"model": flash, "status": "unavailable", "reason": "model_not_found"},
+                    {"model": replacement, "status": "selected"},
+                ])
+            calls = [ToolCall(f"move-{turn}", "apply_moves", {"moves": [{
+                "action": "assign", "slot_key": f"slot-a__mon__{MON}",
+                "clinicianId": f"clin-{turn}",
+            }]})] if turn <= 2 else []
+            response = ProviderResponse(
+                text=None if calls else "Complete.", tool_calls=calls,
+                stop_reason="tool_use" if calls else "end_turn",
+                usage={"input_tokens": turn * 100, "output_tokens": turn * 10},
+                generation_seconds=float(turn + 1),
+            )
+            response.model = flash if turn == 1 else replacement
+            response.model_selection = deepcopy(selection)
+            self.responses.append(response)
+            return response
+
+    provider, progress, config = SwitchingProvider(), ProgressRecorder(), _config(model=flash)
+    result = agent_solve_range(
+        _payload(agent_strategy="day_by_day"), state, cancel, progress,
+        time.time(), provider=provider, config=config,
+    )
+    agent = result["debugInfo"]["agent"]
+    assert config.model == flash
+    assert agent["requested_model"] == flash and agent["model"] == replacement
+    assert agent["model_selection"] == selection
+    assert agent["fallback"] is None and agent["result_producer"] == "agent"
+    assert agent["moves_accepted"] == 2 and agent["moves_rejected"] == 0
+    assert {a["clinicianId"] for a in result["assignments"]} == {"clin-1", "clin-2"}
+    assert state.model_dump() == original
+    assert validate_assignments(state, state.assignments + [Assignment.model_validate(a)
+                               for a in result["assignments"]], only_fill_required=True).is_valid
+    # The replacement sees the first model's applied call and result, so it
+    # continues the same plan instead of rebuilding or executing it twice.
+    history = provider.requests[1]
+    assert history[-2].tool_calls[0].id == "move-1"
+    assert history[-1].tool_results[0].tool_call_id == "move-1"
+    assert json.loads(history[-1].tool_results[0].content)["applied"]
+    assert agent["model_usage"][flash]["output_tokens"] == 10
+    assert agent["model_usage"][replacement]["output_tokens"] == sum(
+        response.usage["output_tokens"] for response in provider.responses[1:]
+    )
+    assert agent["generation_seconds"] == sum(response.generation_seconds for response in provider.responses)
+    switches = [d for kind, d in progress.events if kind == "agent" and d.get("model_change")]
+    assert len(switches) == 1
+    assert switches[0]["model_change"] == {"from": flash, "to": replacement}
+    assert sum("Planning model changed" in note for note in result["notes"]) == 1
+    selection["attempts"].clear()
+    assert agent["model_selection"]["attempts"]  # a saved result is a snapshot
+
+
+def test_failed_model_selection_does_not_claim_a_successful_model():
+    response = ProviderResponse(text=None, tool_calls=[], stop_reason="error", error="Unavailable")
+    response.model = "unavailable-flash"
+    response.model_selection = {
+        "requested_model": "unavailable-flash", "selected_model": None,
+        "attempts": [{"model": "unavailable-flash", "status": "unavailable", "reason": "model_not_found"}],
+    }
+    result = agent_solve_range(
+        _payload(), _two_clinician_state(), MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=ResponseProvider([response]), config=_config(model="unavailable-flash"),
+    )
+    agent = result["debugInfo"]["agent"]
+    assert agent["model"] is None
+    assert agent["requested_model"] == "unavailable-flash"
+    assert agent["model_selection"] == response.model_selection
+    assert agent["model_usage"] == {}
+    assert not any("Planning model changed" in note for note in result["notes"])

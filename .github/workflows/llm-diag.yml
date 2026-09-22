@@ -7,6 +7,15 @@ name: LLM endpoint diagnostics (truhn.ai)
 
 on:
   workflow_dispatch:
+    inputs:
+      probe_fallback_models:
+        description: "Check the Qwen fallback candidates with a synthetic tool call"
+        type: boolean
+        default: false
+      exercise_fallback:
+        description: "Simulate missing preferred models; ask the real deployed fallback to call a synthetic tool"
+        type: boolean
+        default: false
 
 jobs:
   diag:
@@ -39,12 +48,15 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Probe the configured endpoint from the LXC
+        env:
+          PROBE_FALLBACK_MODELS: ${{ inputs.probe_fallback_models }}
+          EXERCISE_FALLBACK: ${{ inputs.exercise_fallback }}
         run: |
-          ssh truhn-target bash -s <<'EOF'
+          ssh truhn-target PROBE_FALLBACK_MODELS="$PROBE_FALLBACK_MODELS" EXERCISE_FALLBACK="$EXERCISE_FALLBACK" bash -s <<'EOF'
           set -euo pipefail
           cd /opt/app
-          docker compose -f docker-compose.proxied.yml exec -T backend python - <<'PY'
-          import json, socket, sqlite3, time
+          docker compose -f docker-compose.proxied.yml exec -T -e PROBE_FALLBACK_MODELS -e EXERCISE_FALLBACK backend python - <<'PY'
+          import json, os, socket, sqlite3, time
           from urllib.parse import urlparse
 
           rows = dict(
@@ -56,6 +68,8 @@ jobs:
           model = (rows.get("openai_model") or "").strip()
           key = (rows.get("openai_api_key") or "").strip()
           print(f"provider={rows.get('provider')!r} base_url={base!r} model={model!r} key_set={bool(key)}")
+          from backend.agent_budget import get_agent_admin_settings
+          print("configured_fallback_order=" + json.dumps(get_agent_admin_settings().get("model_fallback_order")))
           if not base:
               raise SystemExit("no openai_base_url configured — nothing to test")
 
@@ -99,5 +113,72 @@ jobs:
                   print(f"reasoning_present={bool(msg.get('reasoning') or msg.get('reasoning_content'))}")
               else:
                   print(f"chat/completions: HTTP {r2.status_code} in {dt:.1f}s — {r2.text[:400]}")
+
+          if os.environ.get("PROBE_FALLBACK_MODELS") == "true":
+              candidates = [
+                  "nvidia/Qwen3.8-Flash-Next-NVFP4", "Qwen/Qwen3.8-27B",
+                  "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva",
+                  "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+              ]
+              for candidate in candidates:
+                  if candidate not in names:
+                      print(json.dumps({"tool_probe": candidate, "listed": False}), flush=True)
+                      continue
+                  started = time.monotonic()
+                  try:
+                      probe = client.post(f"{base}/chat/completions", json={
+                          "model": candidate, "max_tokens": 2048,
+                          "messages": [{"role": "user", "content":
+                              "This is a synthetic connection test. Call report_ready once with status ready. Do not return prose."}],
+                          "tools": [{"type": "function", "function": {
+                              "name": "report_ready", "description": "Report tool support for this synthetic test.",
+                              "parameters": {"type": "object", "properties": {
+                                  "status": {"type": "string", "enum": ["ready"]}},
+                                  "required": ["status"], "additionalProperties": False}}}],
+                      }, timeout=90)
+                      calls = []
+                      if probe.status_code == 200:
+                          calls = (probe.json().get("choices") or [{}])[0].get("message", {}).get("tool_calls") or []
+                      valid = len(calls) == 1 and calls[0].get("function", {}).get("name") == "report_ready"
+                      if valid:
+                          valid = json.loads(calls[0]["function"]["arguments"]) == {"status": "ready"}
+                      print(json.dumps({"tool_probe": candidate, "http_status": probe.status_code,
+                          "valid_tool_call": valid, "seconds": round(time.monotonic()-started, 2)}), flush=True)
+                  except Exception as exc:
+                      print(json.dumps({"tool_probe": candidate, "error_type": type(exc).__name__,
+                          "seconds": round(time.monotonic()-started, 2)}), flush=True)
+
+          if os.environ.get("EXERCISE_FALLBACK") == "true":
+              # Only this temporary provider instance sees simulated failures.
+              # No real deployment, global preference or calendar is changed.
+              from backend.agent.config import AgentConfig
+              from backend.agent.model_fallback import QWEN_MODEL_ORDER
+              from backend.agent.provider import ChatMessage, ProviderResponse, ToolSpec, get_provider
+              from backend.agent_budget import resolve_agent_runtime_config
+              for skipped in (1, 2):
+                  config = resolve_agent_runtime_config(AgentConfig.from_env())
+                  assert config.provider == "openai" and config.model == QWEN_MODEL_ORDER[0]
+                  config.max_tokens = 2048
+                  provider = get_provider(config)
+                  original = provider._complete_once
+                  def complete_with_missing_models(*, model, **kwargs):
+                      if model in QWEN_MODEL_ORDER[:skipped]:
+                          return ProviderResponse(text=None, tool_calls=[], stop_reason="error",
+                              error="Synthetic missing-model probe", model_unavailable=True)
+                      return original(model=model, **kwargs)
+                  provider._complete_once = complete_with_missing_models
+                  response = provider.complete(system="Use the provided tool to report readiness.",
+                      messages=[ChatMessage(role="user", content="Call report_ready with status ready. No prose.")],
+                      tools=[ToolSpec("report_ready", "Synthetic test only.", {
+                          "type": "object", "properties": {"status": {"type": "string", "enum": ["ready"]}},
+                          "required": ["status"], "additionalProperties": False})], timeout_seconds=90)
+                  valid = (response.model == QWEN_MODEL_ORDER[skipped]
+                      and response.stop_reason == "tool_use" and len(response.tool_calls) == 1
+                      and response.tool_calls[0].name == "report_ready"
+                      and response.tool_calls[0].arguments == {"status": "ready"}
+                      and not response.tool_calls[0].argument_error)
+                  print(json.dumps({"simulated_missing_models": skipped, "actual_model": response.model,
+                      "model_selection": response.model_selection, "valid_tool_call": valid}), flush=True)
+                  assert valid, "Deployed model fallback did not produce the expected tool call"
           PY
           EOF

@@ -145,6 +145,22 @@ def test_runtime_config_overlay_preserves_env_when_unset(temp_db):
     assert overlaid.anthropic_api_key == "k2"
 
 
+def test_qwen_fallback_order_is_visible_without_changing_the_saved_choice(temp_db):
+    from backend.agent.model_fallback import QWEN_MODEL_ORDER
+
+    client = _client_as("admin")
+    client.put("/v1/agent/settings", json={"provider": "openai", "openai_model": QWEN_MODEL_ORDER[0]})
+    settings = client.get("/v1/agent/settings").json()
+    assert settings["effective_model"] == QWEN_MODEL_ORDER[0]
+    assert settings["model_fallback_order"] == list(QWEN_MODEL_ORDER)
+    client.put("/v1/agent/settings", json={"openai_model": QWEN_MODEL_ORDER[1]})
+    assert client.get("/v1/agent/settings").json()["model_fallback_order"] == list(QWEN_MODEL_ORDER[1:])
+    client.put("/v1/agent/settings", json={"openai_model": "custom-model"})
+    assert client.get("/v1/agent/settings").json()["model_fallback_order"] == []
+    client.put("/v1/agent/settings", json={"provider": "anthropic"})
+    assert client.get("/v1/agent/settings").json()["model_fallback_order"] == []
+
+
 def test_runtime_config_overlay_resolves_provider_specific_model(temp_db):
     """The chat test calls providers straight from this config: with a
     self-hosted provider it must carry the admin's openai_model, never the

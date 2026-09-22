@@ -320,8 +320,10 @@ export async function getCurrentUser(): Promise<AuthUser> {
 export type AgentSettings = {
   model: string;
   provider: "anthropic" | "openai";
-  /** The model that actually runs (Anthropic pick or self-hosted name). */
+  /** Configured first choice; a run may use an available fallback model. */
   effective_model: string;
+  /** Server-selected availability fallback order, including the first choice. */
+  model_fallback_order?: string[];
   budget_usd: number;
   spent_usd: number;
   remaining_usd: number;
@@ -375,9 +377,16 @@ export async function updateAgentSettings(
 
 export type AgentChatTestMessage = { role: "user" | "assistant"; content: string };
 
+export type AgentModelSelection = {
+  requested_model: string;
+  selected_model: string | null;
+  attempts: Array<{ model: string; status: "unavailable" | "selected"; reason?: string }>;
+};
+
 export type AgentChatTestResult = {
   provider: string;
   model: string;
+  model_selection?: AgentModelSelection | null;
   text: string | null;
   /** Chain of thought of reasoning models, when returned alongside text. */
   reasoning: string | null;
@@ -772,6 +781,16 @@ export type SolverUnsolvedOpenSlot = {
 
 export type SolverAgentDebug = {
   model?: string | null;
+  requested_model?: string | null;
+  model_selection?: AgentModelSelection | null;
+  model_usage?: Record<string, {
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+    generation_seconds: number;
+    responses: number;
+  }>;
   provider?: string | null;
   result_producer?: "agent" | "heuristic_v2";
   fallback?: { producer: string; model_stop_reason?: string; solver_status?: string | null } | null;
