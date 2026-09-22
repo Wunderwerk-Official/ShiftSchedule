@@ -1,11 +1,13 @@
 import json
 import secrets
 import sqlite3
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 
 from .auth import _get_current_user
+from .account_lifecycle import authenticated_account_connection
 from .db import _get_connection, _utcnow_iso
 from .models import (
     IcalPublishRequest,
@@ -38,15 +40,13 @@ router = APIRouter()
 def get_ical_publication_status(
     request: Request, current_user: UserPublic = Depends(_get_current_user)
 ):
-    publication = _get_publication_by_username(current_user.username)
-    if not publication:
-        return IcalPublishStatus(published=False)
-    state = _load_state(current_user.username)
-    conn = _get_connection()
-    clinician_rows = _ensure_clinician_publications(conn, current_user.username, state.clinicians)
-    conn.commit()
-    conn.close()
-    return _build_publish_status(request, publication, clinician_rows, state.clinicians)
+    with authenticated_account_connection(current_user) as conn:
+        publication = _get_publication_by_username(current_user.username, connection=conn)
+        if not publication:
+            return IcalPublishStatus(published=False)
+        state = _load_state(current_user.username, connection=conn)
+        clinician_rows = _ensure_clinician_publications(conn, current_user.username, state.clinicians)
+        return _build_publish_status(request, publication, clinician_rows, state.clinicians)
 
 
 @router.post("/v1/ical/publish", response_model=IcalPublishStatus)
@@ -55,127 +55,108 @@ def publish_ical(
     current_user: UserPublic = Depends(_get_current_user),
     _payload: Optional[IcalPublishRequest] = None,
 ):
-    now = _utcnow_iso()
-    # Load state BEFORE opening the write transaction: _load_state can persist
-    # a normalized state on its own connection, which would block on this
-    # connection's uncommitted publication write ("database is locked").
-    state = _load_state(current_user.username)
-    conn = _get_connection()
-    existing = conn.execute(
-        "SELECT token FROM ical_publications WHERE username = ?",
-        (current_user.username,),
-    ).fetchone()
-    if existing:
-        token = existing["token"]
-        conn.execute(
-            """
-            UPDATE ical_publications
-            SET updated_at = ?
-            WHERE username = ?
-            """,
-            (now, current_user.username),
-        )
-        clinician_rows = _ensure_clinician_publications(
-            conn, current_user.username, state.clinicians
-        )
-        conn.commit()
-        conn.close()
-        return _build_publish_status(request, {"token": token}, clinician_rows, state.clinicians)
-
-    for _ in range(10):
-        token = secrets.token_urlsafe(32)
-        if _token_exists(conn, token):
-            continue
-        try:
+    with authenticated_account_connection(current_user) as conn:
+        now = _utcnow_iso()
+        state = _load_state(current_user.username, connection=conn)
+        existing = conn.execute(
+            "SELECT token FROM ical_publications WHERE username = ?",
+            (current_user.username,),
+        ).fetchone()
+        if existing:
+            token = existing["token"]
             conn.execute(
                 """
-                INSERT INTO ical_publications (
-                    username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
-                )
-                VALUES (?, ?, NULL, NULL, NULL, ?, ?)
+                UPDATE ical_publications
+                SET updated_at = ?
+                WHERE username = ?
                 """,
-                (current_user.username, token, now, now),
+                (now, current_user.username),
             )
             clinician_rows = _ensure_clinician_publications(
                 conn, current_user.username, state.clinicians
             )
-            conn.commit()
-            conn.close()
             return _build_publish_status(request, {"token": token}, clinician_rows, state.clinicians)
-        except sqlite3.IntegrityError:
-            conn.rollback()
-            # The conflict may be on the username primary key (a concurrent
-            # publish won the race) rather than the token; return the
-            # existing publication instead of retrying until a 500.
-            raced = conn.execute(
-                "SELECT token FROM ical_publications WHERE username = ?",
-                (current_user.username,),
-            ).fetchone()
-            if raced:
+
+        for _ in range(10):
+            token = secrets.token_urlsafe(32)
+            if _token_exists(conn, token):
+                continue
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO ical_publications (
+                        username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
+                    )
+                    VALUES (?, ?, NULL, NULL, NULL, ?, ?)
+                    """,
+                    (current_user.username, token, now, now),
+                )
                 clinician_rows = _ensure_clinician_publications(
                     conn, current_user.username, state.clinicians
                 )
-                conn.commit()
-                conn.close()
-                return _build_publish_status(
-                    request, {"token": raced["token"]}, clinician_rows, state.clinicians
-                )
-            continue
-    conn.close()
-    raise HTTPException(status_code=500, detail="Failed to generate token.")
+                return _build_publish_status(request, {"token": token}, clinician_rows, state.clinicians)
+            except sqlite3.IntegrityError:
+                # The conflict may be on the username primary key (a concurrent
+                # publish won the race) rather than the token; return the
+                # existing publication instead of retrying until a 500.
+                raced = conn.execute(
+                    "SELECT token FROM ical_publications WHERE username = ?",
+                    (current_user.username,),
+                ).fetchone()
+                if raced:
+                    clinician_rows = _ensure_clinician_publications(
+                        conn, current_user.username, state.clinicians
+                    )
+                    return _build_publish_status(
+                        request, {"token": raced["token"]}, clinician_rows, state.clinicians
+                    )
+                continue
+        raise HTTPException(status_code=500, detail="Failed to generate token.")
 
 
 @router.post("/v1/ical/publish/rotate", response_model=IcalPublishStatus)
 def rotate_ical(
     request: Request, current_user: UserPublic = Depends(_get_current_user)
 ):
-    now = _utcnow_iso()
-    # Load before the write transaction (see publish_ical).
-    state = _load_state(current_user.username)
-    conn = _get_connection()
-    existing = conn.execute(
-        "SELECT token FROM ical_publications WHERE username = ?",
-        (current_user.username,),
-    ).fetchone()
-    if not existing:
-        conn.close()
-        raise HTTPException(status_code=404, detail="No publication found.")
-    for _ in range(10):
-        token = secrets.token_urlsafe(32)
-        if _token_exists(conn, token):
-            continue
-        try:
-            conn.execute(
-                "UPDATE ical_publications SET token = ?, updated_at = ? WHERE username = ?",
-                (token, now, current_user.username),
-            )
-            conn.execute(
-                "DELETE FROM ical_clinician_publications WHERE username = ?",
-                (current_user.username,),
-            )
-            clinician_rows = _ensure_clinician_publications(
-                conn, current_user.username, state.clinicians
-            )
-            conn.commit()
-            conn.close()
-            return _build_publish_status(request, {"token": token}, clinician_rows, state.clinicians)
-        except sqlite3.IntegrityError:
-            conn.rollback()
-            continue
-    conn.close()
-    raise HTTPException(status_code=500, detail="Failed to generate token.")
+    with authenticated_account_connection(current_user) as conn:
+        now = _utcnow_iso()
+        state = _load_state(current_user.username, connection=conn)
+        existing = conn.execute(
+            "SELECT token FROM ical_publications WHERE username = ?",
+            (current_user.username,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="No publication found.")
+        for _ in range(10):
+            token = secrets.token_urlsafe(32)
+            if _token_exists(conn, token):
+                continue
+            try:
+                conn.execute(
+                    "UPDATE ical_publications SET token = ?, updated_at = ? WHERE username = ?",
+                    (token, now, current_user.username),
+                )
+                conn.execute(
+                    "DELETE FROM ical_clinician_publications WHERE username = ?",
+                    (current_user.username,),
+                )
+                clinician_rows = _ensure_clinician_publications(
+                    conn, current_user.username, state.clinicians
+                )
+                return _build_publish_status(request, {"token": token}, clinician_rows, state.clinicians)
+            except sqlite3.IntegrityError:
+                continue
+        raise HTTPException(status_code=500, detail="Failed to generate token.")
 
 
 @router.delete("/v1/ical/publish", status_code=204)
 def unpublish_ical(current_user: UserPublic = Depends(_get_current_user)):
-    conn = _get_connection()
-    conn.execute("DELETE FROM ical_publications WHERE username = ?", (current_user.username,))
-    conn.execute(
-        "DELETE FROM ical_clinician_publications WHERE username = ?",
-        (current_user.username,),
-    )
-    conn.commit()
-    conn.close()
+    with authenticated_account_connection(current_user) as conn:
+        conn.execute("DELETE FROM ical_publications WHERE username = ?", (current_user.username,))
+        conn.execute(
+            "DELETE FROM ical_clinician_publications WHERE username = ?",
+            (current_user.username,),
+        )
 
 
 @router.get("/v1/ical/{token}.ics")
@@ -185,16 +166,21 @@ def download_ical(
     if_none_match: Optional[str] = Header(default=None, alias="If-None-Match"),
     if_modified_since: Optional[str] = Header(default=None, alias="If-Modified-Since"),
 ):
-    publication = _get_publication_by_token(token)
-    clinician_scope = None
-    if not publication:
-        publication = _get_clinician_publication_by_token(token)
+    # Resolve both kinds of bearer link and the calendar in one snapshot.
+    with closing(_get_connection()) as conn, conn:
+        conn.execute("BEGIN")
+        publication = _get_publication_by_token(token, connection=conn)
+        clinician_scope = None
         if not publication:
-            raise HTTPException(status_code=404, detail="Not found.")
-        clinician_scope = publication["clinician_id"]
+            publication = _get_clinician_publication_by_token(token, connection=conn)
+            if not publication:
+                raise HTTPException(status_code=404, detail="Not found.")
+            clinician_scope = publication["clinician_id"]
 
-    owner = publication["username"]
-    app_state, state_updated_at, state_updated_at_raw = _load_state_blob_and_updated_at(owner)
+        owner = publication["username"]
+        app_state, state_updated_at, state_updated_at_raw = _load_state_blob_and_updated_at(
+            owner, connection=conn
+        )
     publication_updated_at_raw = publication["updated_at"] or ""
     publication_updated_at = _parse_iso_datetime(publication_updated_at_raw)
     last_modified = max(state_updated_at, publication_updated_at)

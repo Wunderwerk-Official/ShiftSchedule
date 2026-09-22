@@ -2,9 +2,20 @@
 compares rounds across weeks of work, which only holds if e.g. 'crunch'
 always removes the same clinicians for the same range."""
 
+import pytest
+
 from backend.arena.run import apply_scenario, load_state
+from backend.validation import validate_assignments
 
 CARNIVAL_START, CARNIVAL_END = "2026-02-16", "2026-02-20"
+
+
+@pytest.mark.parametrize("start,end", [("2026-02-02", "2026-02-06"), (CARNIVAL_START, CARNIVAL_END)])
+@pytest.mark.parametrize("scenario", ["base", "vacation-wave", "understaffed", "crunch", "oncall", "pinned", "daynight", "fixed-patterns"])
+def test_synthetic_scenarios_do_not_introduce_unrepairable_fixed_conflicts(start, end, scenario):
+    state = load_state()
+    apply_scenario(state, scenario, start, end)
+    assert validate_assignments(state, state.assignments).is_valid
 
 
 def _on_vacation(c, start, end):
@@ -62,6 +73,8 @@ def test_oncall_scenario_requires_duty_and_clears_in_range_cover():
         for s in loc.slots:
             if s.id in slot_ids:
                 assert s.requiredSlots == 1
+    assert not any(key.rsplit("__", 1)[0] in slot_ids and CARNIVAL_START <= key.rsplit("__", 1)[-1] <= CARNIVAL_END
+                   for key in state.slotOverridesByKey)
     remaining = [a for a in state.assignments if a.rowId in slot_ids]
     assert not any(CARNIVAL_START <= a.dateISO <= CARNIVAL_END for a in remaining)
     # Out-of-range on-call cover (context for rest-day checks) is untouched.

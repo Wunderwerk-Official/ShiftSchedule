@@ -24,8 +24,8 @@ Only **hard** constraints are checked here:
                         whose requirement is ``mandatory``
 - Weekly hours        — per ISO week, total assigned hours must stay within
                         ``workingHoursPerWeek + workingHoursToleranceHours``
-                        (matches the heuristic solver; CP-SAT treats this as a
-                        soft penalty, so a CP-SAT plan may legitimately flag here)
+                        (shared by the heuristic, CP-SAT and plan application;
+                        existing fixed overload cannot be increased)
 - Split shifts        — max one contiguous work block per clinician/day when
                         ``preferContinuousShifts`` is enabled
 - Capacity            — per slot instance, assignment count must not exceed

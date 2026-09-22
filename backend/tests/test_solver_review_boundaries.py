@@ -42,12 +42,13 @@ def test_cpsat_respects_multiday_fixed_duty_before_range(offset):
     assert validate_assignments(state, state.assignments + added).is_valid
 
 
+@pytest.mark.parametrize("mode", ["heuristic", "cpsat"])
 @pytest.mark.parametrize("fixed_day,target_day,fixed_weekday,target_weekday", [
     ("2026-01-05", "2026-01-09", "mon", "fri"),
     ("2026-01-11", "2026-01-05", "sun", "mon"),
 ])
 def test_heuristic_counts_all_fixed_hours_in_target_iso_week(
-    fixed_day, target_day, fixed_weekday, target_weekday
+    fixed_day, target_day, fixed_weekday, target_weekday, mode
 ):
     clinician = make_clinician(working_hours_per_week=8)
     clinician.workingHoursToleranceHours = 0
@@ -59,11 +60,14 @@ def test_heuristic_counts_all_fixed_hours_in_target_iso_week(
         ],
         assignments=[make_assignment("fixed", "fixed-slot", fixed_day)],
     )
-    result = heuristic_solve_range_v2(
-        SolveRangeRequest(startISO=target_day, endISO=target_day, only_fill_required=True),
-        state, Event(), lambda *_: None, time.time(),
-    )
-    added = [Assignment.model_validate(a) for a in result["assignments"]]
+    if mode == "heuristic":
+        result = heuristic_solve_range_v2(
+            SolveRangeRequest(startISO=target_day, endISO=target_day, only_fill_required=True),
+            state, Event(), lambda *_: None, time.time(),
+        )
+        added = [Assignment.model_validate(a) for a in result["assignments"]]
+    else:
+        added = solve_cpsat(state, target_day)
     assert not validate_weekly_hours(state, state.assignments + added)
     assert added == []
 
@@ -196,3 +200,90 @@ def test_cpsat_week_fallback_keeps_previous_week_as_fixed_context(monkeypatch):
     assert response.assignments
     assert validate_assignments(state, response.assignments).is_valid
     assert state.assignments == []  # solving must not mutate saved input
+
+
+def test_stored_apply_accepts_partial_repair_but_rejects_more_split_blocks():
+    from backend.run_apply import _new_violations
+    state = make_app_state(
+        slots=[make_template_slot("a", start_time="08:00", end_time="09:00"),
+               make_template_slot("b", start_time="10:00", end_time="11:00"),
+               make_template_slot("c", start_time="12:00", end_time="13:00")],
+        assignments=[make_assignment(slot, slot, "2026-01-05") for slot in ("a", "b", "c")],
+        solver_settings={"preferContinuousShifts": True, "enforceSameLocationPerDay": False},
+    )
+    assert _new_violations(state, state.assignments, state.assignments[1:], True) == []
+    assert any(v["code"] == "SPLIT_SHIFT" for v in
+               _new_violations(state, state.assignments[1:], state.assignments, True))
+
+
+def test_expired_heuristic_budget_does_not_start_fallback_work():
+    result = heuristic_solve_range_v2(
+        SolveRangeRequest(startISO="2026-01-05", endISO="2026-01-05", timeout_seconds=1),
+        make_app_state(), Event(), lambda *_: None, time.time() - 100,
+    )
+    assert result["assignments"] == []
+    assert result["debugInfo"]["solver_status"] == "ABORTED"
+    assert "budget exhausted" in result["notes"][0]
+
+
+@pytest.mark.parametrize("interruption", ["deadline", "cancel"])
+def test_cpsat_interrupted_before_search_is_not_reported_finished(monkeypatch, interruption):
+    from ortools.sat.python import cp_model
+
+    def unexpected_search(*args):
+        pytest.fail("An interrupted run must not start CP-SAT search")
+
+    monkeypatch.setattr(cp_model.CpSolver, "SolveWithSolutionCallback", unexpected_search)
+    cancel = Event()
+    if interruption == "cancel":
+        cancel.set()
+    result = _solve_range_impl(
+        SolveRangeRequest(startISO="2026-01-05", endISO="2026-01-05", timeout_seconds=1),
+        UserPublic(username="review", role="admin", active=True),
+        cancel_event=cancel, start_time=time.time() - (100 if interruption == "deadline" else 0),
+        state_override=make_app_state(),
+    )
+    assert result.assignments == []
+    assert result.debugInfo is not None
+    assert result.debugInfo.solver_status == "ABORTED"
+
+
+def test_cpsat_exhausted_full_search_does_not_restart_week_budget(monkeypatch):
+    from ortools.sat.python import cp_model
+    import backend.solver as solver_module
+    started = time.time()
+    calls = []
+
+    def consume_budget(self, model, callback):
+        calls.append(self.parameters.max_time_in_seconds)
+        monkeypatch.setattr(solver_module.time, "time", lambda: started + 100)
+        return cp_model.UNKNOWN
+
+    monkeypatch.setattr(cp_model.CpSolver, "SolveWithSolutionCallback", consume_budget)
+    result = _solve_range_impl(
+        SolveRangeRequest(startISO="2026-01-05", endISO="2026-01-19", timeout_seconds=1),
+        UserPublic(username="review", role="admin", active=True),
+        start_time=started, state_override=make_app_state(),
+    )
+    assert len(calls) == 1
+    assert result.assignments == []
+    assert result.debugInfo is not None
+    assert result.debugInfo.solver_status == "ABORTED"
+
+
+def test_cpsat_timed_out_fallback_week_does_not_claim_infeasibility(monkeypatch):
+    from ortools.sat.python import cp_model
+    calls = []
+
+    def no_proof_within_subsolve_budget(self, model, callback):
+        calls.append(self.parameters.max_time_in_seconds)
+        return cp_model.UNKNOWN
+
+    monkeypatch.setattr(cp_model.CpSolver, "SolveWithSolutionCallback", no_proof_within_subsolve_budget)
+    result = _solve_range_impl(
+        SolveRangeRequest(startISO="2026-01-05", endISO="2026-01-19", timeout_seconds=5),
+        UserPublic(username="review", role="admin", active=True), state_override=make_app_state(),
+    )
+    assert len(calls) > 1  # Full range failed, then at least one bounded weekly attempt.
+    assert result.debugInfo is not None
+    assert result.debugInfo.solver_status == "ABORTED"

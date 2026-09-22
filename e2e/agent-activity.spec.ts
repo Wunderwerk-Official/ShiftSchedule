@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { mockProgressStream } from "./progress-stream";
 import type { AgentActivityData, SolverProgressEvent } from "../src/api/client";
 
 const state = JSON.parse(readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"));
@@ -9,16 +10,10 @@ const run = { id: "live-demo", status: "running", has_result: false, attempt: 1,
 // Exercise the real calendar subscription, bounded state and overlay. No model
 // call or shared calendar is modified by this replay.
 async function start(page: Page) {
+  await mockProgressStream(page);
   await page.clock.setFixedTime(new Date("2026-01-05T12:00:00Z"));
   await page.addInitScript(() => {
     localStorage.setItem("authToken", "test-token");
-    class TestSource {
-      onmessage: ((e: { data: string }) => void) | null = null;
-      onerror: ((e: Event) => void) | null = null;
-      close() {}
-      constructor() { Object.assign(window, { activitySource: this }); }
-    }
-    Object.assign(window, { EventSource: TestSource });
   });
   await page.route("**/auth/me", (route) => route.fulfill({ json: { username: "test", role: "user", active: true } }));
   await page.route("**/v1/**", (route) => {

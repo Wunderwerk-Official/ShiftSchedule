@@ -51,8 +51,8 @@ jobs:
         run: python -m pytest tests -q --ignore=tests/test_solver_benchmark.py
 
   # ---------------------------------------------------------------------------
-  # Frontend: TypeScript typecheck + Vitest. Playwright E2E is NOT run here
-  # (it needs a running app).
+  # Frontend: typecheck, unit tests, production build and critical mocked-API
+  # browser workflows against a real local Vite server.
   # ---------------------------------------------------------------------------
   frontend:
     name: Frontend (typecheck + vitest)
@@ -62,7 +62,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
 
       - name: Install dependencies
@@ -73,6 +73,26 @@ jobs:
 
       - name: Unit tests (Vitest)
         run: npm test
+
+      - name: Production build
+        run: npm run build
+
+      - name: Install browser for critical workflow regressions
+        run: npx playwright install --with-deps chromium
+
+      - name: Critical browser workflows
+        env:
+          CI: "true"
+        run: |
+          set -euo pipefail
+          npm run dev -- --host 127.0.0.1 --port 5173 > /tmp/shiftschedule-vite.log 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:5173/ >/dev/null; then break; fi
+            sleep 1
+          done
+          npx playwright test e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts e2e/model-settings.spec.ts
 
   # ---------------------------------------------------------------------------
   # Deploy: SSH into the Hetzner server, fast-forward the repo and rebuild the
@@ -115,22 +135,7 @@ jobs:
           # Deploy the commit that passed these jobs, even if main has moved.
           git fetch origin "$DEPLOY_SHA"
           git checkout --detach "$DEPLOY_SHA"
-          # Never replace the container mid-solve: hold the deploy (up to
-          # 90 min — runs have no wall-clock limit, only the iteration
-          # budget) while a solver subprocess (multiprocessing spawn_main)
-          # is alive in the backend container. Works regardless of the
-          # deployed app version; a container that is down passes through.
-          for i in \$(seq 1 540); do
-            if docker compose -f "$COMPOSE_FILE" exec -T backend \
-                 python -c "import glob;marker='spawn'+chr(95)+'main';print(sum(marker in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
-               | grep -q '^[1-9]'; then
-              echo "Solver run in flight - postponing deploy (\$i/540)..."
-              sleep 10
-            else
-              break
-            fi
-          done
-          docker compose -f "$COMPOSE_FILE" up -d --build
+          bash scripts/deploy-compose.sh "$COMPOSE_FILE"
           # The Caddyfile is bind-mounted as a single file, and git pull
           # replaces it with a NEW inode — the running container (and even
           # 'caddy reload' inside it) keeps seeing the stale pre-pull content.
@@ -199,7 +204,7 @@ jobs:
           proxy_key: ${{ secrets.SSH_KEY_FUER_SHIFTSCHEDULE_SERVER }}
           # First build compiles the Playwright-enabled backend image — allow
           # well beyond the action's 10m default.
-          command_timeout: 40m
+          command_timeout: 110m
           envs: DEPLOY_SHA
           script: |
             set -euo pipefail
@@ -265,23 +270,8 @@ jobs:
               fi
             fi
 
-            # Never replace the container mid-solve: hold the deploy (up to
-            # 90 min — runs have no wall-clock limit, only the iteration
-            # budget) while a solver subprocess (multiprocessing spawn_main)
-            # is alive in the backend container. Works regardless of the
-            # deployed app version; a container that is down passes through.
-            for i in $(seq 1 540); do
-              if docker compose -f docker-compose.proxied.yml exec -T backend \
-                   python -c "import glob;marker='spawn'+chr(95)+'main';print(sum(marker in open(f,'rb').read().decode('utf-8','ignore') for f in glob.glob('/proc/[0-9]*/cmdline')))" 2>/dev/null \
-                 | grep -q '^[1-9]'; then
-                echo "Solver run in flight - postponing deploy ($i/540)..."
-                sleep 10
-              else
-                break
-              fi
-            done
-
-            docker compose -f docker-compose.proxied.yml up -d --build
+            python3 scripts/configure_proxy_logging.py --domain shiftplanner.truhn.ai
+            bash scripts/deploy-compose.sh docker-compose.proxied.yml
 
             # Health check through the exact path the host nginx uses.
             for i in $(seq 1 30); do

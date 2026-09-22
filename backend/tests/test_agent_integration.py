@@ -15,7 +15,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.db as db
-from backend.auth import _get_current_user
+from backend.auth import _get_current_user, _create_user
 from backend.main import app
 from backend.models import SolveRangeRequest, UserPublic
 from backend.state import _save_state
@@ -48,9 +48,8 @@ def solve_client(tmp_path, monkeypatch):
     monkeypatch.setenv("AGENT_PROVIDER", "mock")
     monkeypatch.delenv("AGENT_MOCK_SCRIPT", raising=False)
 
-    app.dependency_overrides[_get_current_user] = lambda: UserPublic(
-        username=USER, role="admin", active=True
-    )
+    current_user = _create_user(USER, "integration-test-password", "admin")
+    app.dependency_overrides[_get_current_user] = lambda: current_user
     try:
         yield TestClient(app)
     finally:

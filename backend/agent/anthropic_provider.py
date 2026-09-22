@@ -146,7 +146,9 @@ class AnthropicProvider(LLMProvider):
             elif block.type == "tool_use":
                 # block.input is an already-parsed dict — never string-match it
                 tool_calls.append(
-                    ToolCall(id=block.id, name=block.name, arguments=dict(block.input))
+                    ToolCall(id=block.id, name=block.name,
+                             arguments=block.input if isinstance(block.input, dict) else {},
+                             argument_error=None if isinstance(block.input, dict) else "Tool arguments must be a JSON object.")
                 )
         usage = {
             "input_tokens": getattr(response.usage, "input_tokens", 0) or 0,

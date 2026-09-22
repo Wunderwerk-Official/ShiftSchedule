@@ -24,10 +24,9 @@ from backend.agent.provider import ChatMessage, ToolCall, ToolResult, ToolSpec
 def test_parse_arguments_is_defensive():
     assert _parse_arguments('{"a": 1}') == {"a": 1}
     assert _parse_arguments({"a": 1}) == {"a": 1}  # server pre-parsed
-    assert _parse_arguments("{broken json") == {}
-    assert _parse_arguments('["not", "a", "dict"]') == {}
-    assert _parse_arguments(None) == {}
-    assert _parse_arguments("") == {}
+    for raw in ("{broken json", '["not", "a", "dict"]', None, "", "null", "false"):
+        with pytest.raises(ValueError, match="valid JSON object"):
+            _parse_arguments(raw)
 
 
 def test_message_conversion_shapes():
@@ -138,9 +137,10 @@ def test_complete_maps_tool_calls_even_on_finish_stop():
     assert response.tool_calls[0].name == "list_open_slots"
     assert response.output_truncated is False
     assert response.tool_calls[0].arguments == {"limit": 5}
-    assert response.usage["input_tokens"] == 100
+    assert response.usage["input_tokens"] == 40
     assert response.usage["output_tokens"] == 20
     assert response.usage["cache_read_input_tokens"] == 60
+    assert sum(response.usage[key] for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")) == 100
     assert response.raw_content is None  # no replay requirement
 
 
@@ -156,9 +156,13 @@ def test_complete_maps_length_and_broken_arguments():
         system="s", messages=[ChatMessage(role="user", content="hi")],
         tools=[], timeout_seconds=10,
     )
-    # Broken JSON degrades to {} (the executor then reports a usable error);
-    # tool calls still win over the finish_reason.
+    # The placeholder cannot be executed: preserve the parse error and the
+    # exact original call so the model receives a correlated repair request.
     assert response.tool_calls[0].arguments == {}
+    assert response.tool_calls[0].argument_error
+    assert response.tool_calls[0].raw_arguments == "{oops"
+    replay = to_openai_messages("s", [ChatMessage(role="assistant", tool_calls=response.tool_calls)])
+    assert replay[1]["tool_calls"][0]["function"]["arguments"] == "{oops"
     assert response.stop_reason == "tool_use"
     assert response.output_truncated is True
     # Plain chat calls (tools=[]) omit the parameter — some servers reject
@@ -286,3 +290,44 @@ def test_connection_error_reports_cause_types_without_sensitive_messages():
     assert "ConnectError -> UnicodeEncodeError" in response.error
     for sensitive in ("private-credential", "private-host", "private reason", "api_key", "secret"):
         assert sensitive not in response.error
+
+
+def test_real_sdk_reuses_transport_across_repeated_tool_rounds():
+    """Exercise serialization + with_options lifecycle without a remote model."""
+    import gc
+    import httpx
+    import openai
+
+    requests = []
+
+    def respond(request):
+        body = json.loads(request.content)
+        requests.append(body)
+        index = len(requests)
+        # The preceding call and its result must survive the next request.
+        if index > 1:
+            assert body["messages"][-1]["tool_call_id"] == f"call_{index - 1}"
+            assert body["messages"][-2]["tool_calls"][0]["id"] == f"call_{index - 1}"
+        return httpx.Response(200, json={
+            "id": f"response_{index}", "object": "chat.completion", "created": 1, "model": "local-model",
+            "choices": [{"index": 0, "finish_reason": "tool_calls", "message": {
+                "role": "assistant", "content": "Ärztliche Planung", "tool_calls": [{
+                    "id": f"call_{index}", "type": "function", "function": {
+                        "name": "get_plan_overview", "arguments": "{}"}}]}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+        })
+
+    provider = _provider_with(_completion())
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        provider._client = openai.OpenAI(api_key="local-test", base_url="http://local.test/v1", http_client=client)
+        messages = [ChatMessage(role="user", content="Prüfe den Plan.")]
+        for _ in range(12):
+            response = provider.complete(system="Planung", messages=messages,
+                                         tools=[ToolSpec("get_plan_overview", "Overview", {"type": "object"})],
+                                         timeout_seconds=10)
+            assert response.stop_reason == "tool_use" and not response.error
+            messages.append(ChatMessage(role="assistant", content=response.replay_text, tool_calls=response.tool_calls))
+            messages.append(ChatMessage(role="tool", tool_results=[ToolResult(response.tool_calls[0].id, '{"note":"Geprüft"}')]))
+            gc.collect()  # disposed request-option copies must not close shared HTTP transport
+            assert not client.is_closed
+    assert len(requests) == 12

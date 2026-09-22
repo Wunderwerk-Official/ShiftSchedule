@@ -1,11 +1,13 @@
 import json
 import secrets
 import sqlite3
+from contextlib import closing
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 
 from .auth import _get_current_user
+from .account_lifecycle import authenticated_account_connection
 from .db import _get_connection, _utcnow_iso
 from .models import AppState, UserPublic, WebPublishStatus
 from .publication import (
@@ -29,98 +31,85 @@ router = APIRouter()
 
 @router.get("/v1/web/publish", response_model=WebPublishStatus)
 def get_web_publication_status(current_user: UserPublic = Depends(_get_current_user)):
-    publication = _get_web_publication_by_username(current_user.username)
-    if not publication:
-        return WebPublishStatus(published=False)
-    return WebPublishStatus(published=True, token=publication["token"])
+    with authenticated_account_connection(current_user, write=False) as conn:
+        publication = _get_web_publication_by_username(current_user.username, connection=conn)
+        if not publication:
+            return WebPublishStatus(published=False)
+        return WebPublishStatus(published=True, token=publication["token"])
 
 
 @router.post("/v1/web/publish", response_model=WebPublishStatus)
 def publish_web(current_user: UserPublic = Depends(_get_current_user)):
-    now = _utcnow_iso()
-    conn = _get_connection()
-    existing = conn.execute(
-        "SELECT token FROM web_publications WHERE username = ?",
-        (current_user.username,),
-    ).fetchone()
-    if existing:
-        token = existing["token"]
-        conn.execute(
-            "UPDATE web_publications SET updated_at = ? WHERE username = ?",
-            (now, current_user.username),
-        )
-        conn.commit()
-        conn.close()
-        return WebPublishStatus(published=True, token=token)
-
-    for _ in range(10):
-        token = secrets.token_urlsafe(32)
-        if _web_token_exists(conn, token):
-            continue
-        try:
+    with authenticated_account_connection(current_user) as conn:
+        now = _utcnow_iso()
+        existing = conn.execute(
+            "SELECT token FROM web_publications WHERE username = ?",
+            (current_user.username,),
+        ).fetchone()
+        if existing:
+            token = existing["token"]
             conn.execute(
-                """
-                INSERT INTO web_publications (username, token, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (current_user.username, token, now, now),
+                "UPDATE web_publications SET updated_at = ? WHERE username = ?",
+                (now, current_user.username),
             )
-            conn.commit()
-            conn.close()
             return WebPublishStatus(published=True, token=token)
-        except sqlite3.IntegrityError:
-            conn.rollback()
-            # The conflict may be on the username primary key (a concurrent
-            # publish won the race) rather than the token; return the
-            # existing publication instead of retrying until a 500.
-            raced = conn.execute(
-                "SELECT token FROM web_publications WHERE username = ?",
-                (current_user.username,),
-            ).fetchone()
-            if raced:
-                conn.close()
-                return WebPublishStatus(published=True, token=raced["token"])
-            continue
-    conn.close()
-    raise HTTPException(status_code=500, detail="Failed to generate token.")
+
+        for _ in range(10):
+            token = secrets.token_urlsafe(32)
+            if _web_token_exists(conn, token):
+                continue
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO web_publications (username, token, created_at, updated_at)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (current_user.username, token, now, now),
+                )
+                return WebPublishStatus(published=True, token=token)
+            except sqlite3.IntegrityError:
+                # The conflict may be on the username primary key (a concurrent
+                # publish won the race) rather than the token; return the
+                # existing publication instead of retrying until a 500.
+                raced = conn.execute(
+                    "SELECT token FROM web_publications WHERE username = ?",
+                    (current_user.username,),
+                ).fetchone()
+                if raced:
+                    return WebPublishStatus(published=True, token=raced["token"])
+                continue
+        raise HTTPException(status_code=500, detail="Failed to generate token.")
 
 
 @router.post("/v1/web/publish/rotate", response_model=WebPublishStatus)
 def rotate_web(current_user: UserPublic = Depends(_get_current_user)):
-    now = _utcnow_iso()
-    conn = _get_connection()
-    existing = conn.execute(
-        "SELECT token FROM web_publications WHERE username = ?",
-        (current_user.username,),
-    ).fetchone()
-    if not existing:
-        conn.close()
-        raise HTTPException(status_code=404, detail="No publication found.")
-    for _ in range(10):
-        token = secrets.token_urlsafe(32)
-        if _web_token_exists(conn, token):
-            continue
-        try:
-            conn.execute(
-                "UPDATE web_publications SET token = ?, updated_at = ? WHERE username = ?",
-                (token, now, current_user.username),
-            )
-            conn.commit()
-            conn.close()
-            return WebPublishStatus(published=True, token=token)
-        except sqlite3.IntegrityError:
-            conn.rollback()
-            continue
-    conn.close()
-    raise HTTPException(status_code=500, detail="Failed to generate token.")
+    with authenticated_account_connection(current_user) as conn:
+        now = _utcnow_iso()
+        existing = conn.execute(
+            "SELECT token FROM web_publications WHERE username = ?",
+            (current_user.username,),
+        ).fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="No publication found.")
+        for _ in range(10):
+            token = secrets.token_urlsafe(32)
+            if _web_token_exists(conn, token):
+                continue
+            try:
+                conn.execute(
+                    "UPDATE web_publications SET token = ?, updated_at = ? WHERE username = ?",
+                    (token, now, current_user.username),
+                )
+                return WebPublishStatus(published=True, token=token)
+            except sqlite3.IntegrityError:
+                continue
+        raise HTTPException(status_code=500, detail="Failed to generate token.")
 
 
 @router.delete("/v1/web/publish", status_code=204)
 def unpublish_web(current_user: UserPublic = Depends(_get_current_user)):
-    conn = _get_connection()
-    conn.execute("DELETE FROM web_publications WHERE username = ?", (current_user.username,))
-    conn.commit()
-    conn.close()
+    with authenticated_account_connection(current_user) as conn:
+        conn.execute("DELETE FROM web_publications WHERE username = ?", (current_user.username,))
 
 
 @router.get("/v1/web/{token}/week")
@@ -130,18 +119,21 @@ def get_public_web_week(
     if_none_match: Optional[str] = Header(default=None),
     if_modified_since: Optional[str] = Header(default=None),
 ):
-    publication = _get_web_publication_by_token(token)
-    if not publication:
-        raise HTTPException(status_code=404, detail="Link not found.")
-
     start_iso = _parse_date_input(start)
     if not start_iso:
         raise HTTPException(status_code=400, detail="Start date required.")
     week_start_iso, week_end_iso = _normalize_week_start(start_iso)
 
-    state_payload, state_updated_at, state_updated_at_raw = _load_state_blob_and_updated_at(
-        publication["username"]
-    )
+    # The token owner and their calendar must come from the same snapshot.
+    # Deletion/recreation under the same name cannot retarget an old link.
+    with closing(_get_connection()) as conn, conn:
+        conn.execute("BEGIN")
+        publication = _get_web_publication_by_token(token, connection=conn)
+        if not publication:
+            raise HTTPException(status_code=404, detail="Link not found.")
+        state_payload, state_updated_at, state_updated_at_raw = _load_state_blob_and_updated_at(
+            publication["username"], connection=conn
+        )
     publication_updated_at_raw = publication["updated_at"] or ""
     publication_updated_at = _parse_iso_datetime(publication_updated_at_raw)
     last_modified = max(state_updated_at, publication_updated_at)

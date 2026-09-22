@@ -1,8 +1,36 @@
 # Agent test arena
 
-Benchmarks the AI planning agent against a hard, realistic case: an
-anonymized export of a large radiology practice (24 clinicians, 35 sections,
-163 weekly template slots, 4 locations), stored in `fixture_complex.json`.
+Benchmarks the AI planning agent against a generated scheduling case in
+`fixture_complex.json`, version **synthetic-v2**. It contains 24 fictitious
+clinicians, 35 rows (33 sections and two pools), 163 weekly template slots and
+four generically named locations. The layout, capacities and shift times are
+retained from the earlier fixture; all identifiers, labels, personnel profiles,
+qualifications, preferences, vacations and assignment history are generated.
+The previous fixture was only pseudonymized and retained actual personnel IDs,
+workload history and absences. It must not be described as anonymous.
+
+Reproduce the current fixture with:
+
+```sh
+python -m backend.arena.generate_fixture
+```
+
+The generator reads only allowlisted structural fields from the fixture, never
+its clinicians, assignments or vacations. It writes deterministic output and
+validates every generated booking against the scheduling rules. Profiles vary
+from 20 to 40 hours/week, one required section has two specialists, nine
+synthetic clinicians are away on 2026-02-16 through 2026-02-20, and generated
+fixed duties cover January and February, including benchmark week boundaries.
+Generated dated +1 capacity overrides support those otherwise optional duties.
+January daytime history supplies unequal previous workloads for fairness tests.
+These are constructed test conditions, not measurements of an actual practice.
+
+**Comparability:** historical tables below used the legacy export and are not
+numerically comparable with synthetic-v2. New runs must record the fixture
+version/hash and use the same fixture for both sides of a comparison. No new
+model-quality or latency benchmark is claimed for synthetic-v2. Git history
+is unchanged; replacing this working fixture does not erase the earlier data
+from historical commits or previously exported artifacts.
 
 It runs the **real** agent solver in-process (same code path as production),
 so executing it inside the production backend container measures the actual
@@ -16,7 +44,7 @@ Use `prompt_eval` / the workflow with model
 The former `VnimanieAI/Qwen3.8-Flash-Next-W4A16` identifier returned HTTP 400.
 The older model comparisons below are historical, not validation of this
 NVFP4 deployment. Saved global model settings are not automatically changed.
-Select `implementation=checkout` to test the chosen branch in
+Select `implementation=checkout` to test the chosen branch and its fixture in
 a temporary directory with read-only saved provider settings. The workflow
 serializes GPU use. Wait for a pending run to start before queuing another:
 GitHub retains only one pending run per concurrency group.
@@ -25,6 +53,9 @@ The report includes source/prompt/fixture hashes, model calls, outcome quality,
 search limits, candidate-check cache hits/misses, model seconds and top-level
 tool seconds. Per-tool timings include nested calls and must NOT be summed
 as total wall time. A new hard violation or changed fixed context fails a run.
+Model errors and heuristic fallback also fail a prompt comparison, even if the fallback fills
+all slots. Metrics describe the returned plan; token usage includes failed
+model planning before fallback.
 
 For a separate deterministic tool-layer comparison:
 
@@ -52,24 +83,24 @@ printed for qualitative review.
 
 ## Scenarios (`--scenario`)
 
-- `base` — the practice data unchanged. NOTE: the fixture contains the
-  practice's REAL vacations — start `2026-02-16` hits the school-holiday
-  week with nine clinicians away at once, the hardest realistic case in the
-  data (heuristic seed: 27 of 146 required positions stay open).
+- `base` — synthetic-v2 unchanged. Start `2026-02-16` selects the
+  constructed scarcity week with nine synthetic clinicians away.
 - `vacation-wave` — 5 clinicians on vacation for the whole range (scarcity,
-  produces genuine open slots the agent must fill).
+  with their in-range bookings cleared so the gaps can be reassigned).
 - `understaffed` — the 4 most-flexible clinicians removed (sick calls); rare
   qualifications lose their usual cover.
 - `crunch` — the 2 most-flexible clinicians NOT on vacation call in sick for
   the whole range. Pointed at 2026-02-16 this stacks sick calls on top of
-  the real nine-person vacation wave.
-- `oncall` — the overnight on-call duty (kept at requiredSlots=0 and staffed
-  by hand in the real practice) becomes required: 1 person per on-call slot,
+  the generated nine-person vacation wave.
+- `oncall` — the overnight on-call duty (requiredSlots=0 with generated
+  fixed cover in the base fixture) becomes required: 1 person per on-call slot,
   in-range on-call assignments cleared. Hard because of the rest-day rule —
   each on-call consumes the clinician's neighbouring days too.
 - `pinned` — on each day the two most-flexible available clinicians are
   pre-booked (manual, immutable) on the day's lowest-priority slots: the
-  "boss has an evening meeting" anchors the agent must plan around.
+  "boss has an evening meeting" anchors the agent must plan around. Each
+  anchor passes the hard-rule validator before insertion; fewer than two are
+  inserted if no legal booking remains.
 - `daynight` — `oncall` plus the production trap: the weekend on-call
   becomes a day duty 08:00-20:00 AND a night duty 20:00-08:00(+1) on the
   same day. A naive solver put the SAME person on both (a 24h shift); two
@@ -111,7 +142,13 @@ cd <repo> && AGENT_PROVIDER=mock \
   python -m backend.arena.run --start 2026-02-02 --days 3 --scenario understaffed
 ```
 
-## Baseline findings (as of v1.29)
+## Historical baseline findings (v1.29, legacy fixture)
+
+All results and recommendations from this point refer to their recorded older
+code/model versions and the legacy fixture. They do not validate synthetic-v2
+or the current model deployment. Bounded searches and timed CP-SAT results do
+not prove global infeasibility; historical wording claiming such proofs should
+be read as the outcome of those particular searches.
 
 Seed quality from the heuristic before the agent runs (measured locally):
 
@@ -139,7 +176,7 @@ Head-to-head on the practice Wednesday (single day, clean seed, 5 short days):
 Recommendation: 35B as the everyday model (a solid result in minutes), 122B
 as a "quality mode" for important weeks with a 20–30 min budget.
 
-## Evaluation round 3 (v1.29 fix_options, multi-day, on the real endpoint)
+## Historical Evaluation round 3 (v1.29 fix_options, multi-day, on the real endpoint)
 
 Start 2026-02-02:
 
@@ -202,7 +239,7 @@ against the seed: S10 2026-02-05 has zero eligible candidates, so 1 open
 slot is the tier-2 optimum for this seed. (The v1.29 run's "2 → 0 open"
 came from a different heuristic seed; CP-SAT seeds vary slightly per run.)
 
-## Evaluation round 4 (day-by-day strategy v1.31, on the real endpoint)
+## Historical Evaluation round 4 (day-by-day strategy v1.31, on the real endpoint)
 
 First round of `--strategy day_by_day` (the LLM builds each day from
 scratch like a human planner: `get_day_priorities` lists the day's open
@@ -266,7 +303,7 @@ the cap at 1000 that is comfortable: 120/112 iterations, ~2M input tokens,
 no cap exhaustion, and both runs now END via day_complete + summary
 instead of being cut off mid-construction.
 
-## Evaluation round 5 (v1.33 priority order, the REAL hard week, 35B vs 122B)
+## Historical Evaluation round 5 (v1.33 priority order, the REAL hard week, 35B vs 122B)
 
 The fixture is the anonymized real February export — including the actual
 school-holiday week (start 2026-02-16, 5 days) with NINE clinicians on
@@ -318,7 +355,7 @@ the hours hesitation is gone from the reasoning — the model cites the
 take-the-first-candidate procedure instead of second-guessing legal
 above-contract hours.
 
-## Evaluation round 6 (v1.35 duty pre-pass + rescue + 24h guard, hard-test matrix)
+## Historical Evaluation round 6 (v1.35 duty pre-pass + rescue + 24h guard, hard-test matrix)
 
 Round 6 was driven by two PRODUCTION findings: a 7-day live run left the
 whole weekend (including its on-call) empty because chronological day
@@ -376,7 +413,7 @@ search); closing the remaining gap to CP-SAT (deeper rearrangement, or a
 coverage-first CP-SAT seed for crisis weeks) is the known next frontier.
 On ordinary weeks the gap is zero — base 2026-02-02 fills 87/87.
 
-## Evaluation round 7 (v1.40 fairness pass, from a real production week)
+## Historical Evaluation round 7 (v1.40 fairness pass, from a real production week)
 
 Source this time was not an arena run but the admin's live run log of the
 real week 2026-07-06 → 07-12 (v1.39, 182 iterations, 147 → 0 open, 3 short
@@ -476,7 +513,7 @@ three production incidents of 2026-07-11/12 are structurally impossible
 in this model: no long-lived HTTP request exists to cut, and the previous
 plan is never stripped before a run.
 
-## Model lineup change + evaluation round 5 (v1.50, 2026-08-30)
+## Historical Model lineup change + evaluation round 5 (v1.50, 2026-08-30)
 
 The self-hosted endpoint's `/models` listing changed. The `llm-diag`
 workflow now reports it serves (chat-capable): `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`,
@@ -514,7 +551,7 @@ returns the untouched seed. day_by_day sends one day's smaller context per
 call, keeping each turn short enough to make progress. Since the UI only
 uses day_by_day, this repair limitation is not a production concern.
 
-## Evaluation round 6: model re-roll + reasoning-effort sweep (v1.52, 2026-09-02)
+## Historical Evaluation round 6: model re-roll + reasoning-effort sweep (v1.52, 2026-09-02)
 
 The clinic re-rolled the Flash model: the endpoint now serves it as
 `VnimanieAI/Qwen3.8-Flash-Next-W4A16` (the old `unsloth/Qwen3.8-Flash-Next-GGUF`
@@ -563,7 +600,7 @@ strong alternative to revisit; the `medium` rows are still open pending the
 LiteLLM fix. (Single run per cell, base scenario — directional, not
 statistical.)
 
-## Evaluation round 7: isolated Qwen prompt comparisons (2026-09-06)
+## Historical Evaluation round 7: isolated Qwen prompt comparisons (2026-09-06)
 
 The [full evaluation and measured results](qwen-prompt-evaluation-2026-09-06.md)
 compare the production v1.53 prompts with a focused variant on the Luxembourg
@@ -591,7 +628,7 @@ guidance to the current production prompt. Source hashes distinguish these
 experiments. The final release combination has not been timed in a new model
 comparison; the historical speed measurements are not a release guarantee.
 
-## Harness experiments (v1.55)
+## Historical Harness experiments (v1.55)
 
 The `implementation` workflow input selects deployed code (default), this
 checkout, or this checkout with the optional balanced profile / neighborhood

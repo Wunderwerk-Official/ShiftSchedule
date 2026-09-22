@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from backend.agent.tools import PlanToolExecutor, _split_slot_key
 from backend.models import Assignment, TemplateBlock
@@ -44,6 +45,41 @@ def _run(executor, name, args):
 def test_split_slot_key_handles_double_underscore_slot_ids():
     assert _split_slot_key("slot-a__mon__2026-01-05") == ("slot-a__mon", "2026-01-05")
     assert _split_slot_key("simple__2026-01-05") == ("simple", "2026-01-05")
+
+
+@pytest.mark.parametrize("arguments", [
+    {}, {"moves": []}, {"moves": None}, [], None,
+    {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}"}]},
+    {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "clin-1"}],
+     "dry_run": "false"},
+    {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "clin-1", "unknown": True}]},
+])
+def test_invalid_move_arguments_are_repairable_errors_without_mutation(arguments):
+    executor = _make_executor(make_app_state())
+    before = (dict(executor.current), executor.workflow.revision, executor.best_quality)
+    result, is_error = _run(executor, "apply_moves", arguments)
+    assert is_error and result["code"] == "invalid_tool_arguments"
+    assert result["applied"] is False
+    assert (executor.current, executor.workflow.revision, executor.best_quality) == before
+    repaired, is_error = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "clin-1"},
+    ], "dry_run": False})
+    assert not is_error and repaired["applied"]
+
+
+@pytest.mark.parametrize("tool, arguments", [
+    ("get_plan_overview", {"unknown": True}),
+    ("get_violations", {"severity": "invalid"}),
+    ("list_open_slots", {"limit": True}),
+    ("list_open_slots", {"limit": 0}),
+    ("suggest_day_blocks", {"dateISO": MON, "single": "false"}),
+    ("list_candidates_for_slot", {"slot_keys": [f"slot-a__mon__{MON}"] * 9}),
+])
+def test_tool_schema_rejects_invalid_types_ranges_and_extra_fields(tool, arguments):
+    executor = _make_executor(make_app_state())
+    result, is_error = _run(executor, tool, arguments)
+    assert is_error and result["code"] == "invalid_tool_arguments"
+    assert executor.workflow.revision == 0
 
 
 def test_assign_fills_open_slot_and_updates_best_snapshot():

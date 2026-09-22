@@ -18,6 +18,9 @@ from .snapshots import router as snapshots_router
 from .solver import router as solver_router
 from .state_routes import router as state_router
 from .web import router as web_router
+from .request_logging import install_access_filter, safe_request_target
+
+install_access_filter()
 
 
 def _resolve_expected_port() -> int:
@@ -107,25 +110,24 @@ app.add_middleware(
 @app.middleware("http")
 async def _log_requests(request, call_next):
     start = time.time()
+    target = safe_request_target(request.url.path)
     try:
         response = await call_next(request)
     except Exception as exc:
         duration_ms = int((time.time() - start) * 1000)
         request_logger.error(
-            "ERROR %s %s?%s %sms %s",
+            "ERROR %s %s %sms %s",
             request.method,
-            request.url.path,
-            request.url.query,
+            target,
             duration_ms,
-            exc,
+            type(exc).__name__,
         )
         raise
     duration_ms = int((time.time() - start) * 1000)
     request_logger.info(
-        "%s %s?%s %s %sms",
+        "%s %s %s %sms",
         request.method,
-        request.url.path,
-        request.url.query,
+        target,
         response.status_code,
         duration_ms,
     )

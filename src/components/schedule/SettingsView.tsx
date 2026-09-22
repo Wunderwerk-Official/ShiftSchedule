@@ -1,4 +1,4 @@
-import { useEffect, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
   buttonAdd,
   buttonDanger,
@@ -124,6 +124,30 @@ export default function SettingsView({
   // always start empty — the stored values never come back from the server.
   const [openaiBaseUrlInput, setOpenaiBaseUrlInput] = useState("");
   const [openaiModelInput, setOpenaiModelInput] = useState("");
+  const settingsSaveTailRef = useRef<Promise<unknown>>(Promise.resolve());
+  const settingsSaveErrorRef = useRef<Error | null>(null);
+  const modelGenerationRef = useRef(0);
+  const modelCheckControllerRef = useRef<AbortController | null>(null);
+  const chatTestControllerRef = useRef<AbortController | null>(null);
+  const settingsMountedRef = useRef(true);
+  const invalidateModelChecks = () => {
+    modelGenerationRef.current += 1;
+    modelCheckControllerRef.current?.abort();
+    chatTestControllerRef.current?.abort();
+    setModelCheck(null);
+    setChatTestPending(false);
+    setChatTestEntries([]);
+    setChatTestError(null);
+  };
+  useEffect(() => {
+    settingsMountedRef.current = true;
+    return () => {
+      settingsMountedRef.current = false;
+      modelGenerationRef.current += 1;
+      modelCheckControllerRef.current?.abort();
+      chatTestControllerRef.current?.abort();
+    };
+  }, []);
   // Responsiveness check of a freshly selected self-hosted model: verifies
   // the endpoint serves it and answers a 1-token completion.
   const [modelCheck, setModelCheck] = useState<
@@ -131,20 +155,27 @@ export default function SettingsView({
   >(null);
   const applyOpenaiModel = async (model: string) => {
     setOpenaiModelInput(model);
-    await applyAgentSettings({ openai_model: model });
+    const save = applyAgentSettings({ openai_model: model });
+    const generation = modelGenerationRef.current;
+    const saved = await save;
+    if (!saved || generation !== modelGenerationRef.current || !settingsMountedRef.current) return;
     if (!model.trim()) {
       setModelCheck(null);
       return;
     }
     setModelCheck({ status: "checking" });
+    const controller = new AbortController();
+    modelCheckControllerRef.current = controller;
     try {
-      const result = await agentModelCheck(model.trim());
+      const result = await agentModelCheck(model.trim(), controller.signal);
+      if (generation !== modelGenerationRef.current || !settingsMountedRef.current) return;
       setModelCheck(
         result.ok
           ? { status: "ok", latency: result.latency_seconds }
           : { status: "error", message: result.error ?? "Model did not respond." },
       );
     } catch (err) {
+      if (controller.signal.aborted || generation !== modelGenerationRef.current) return;
       setModelCheck({
         status: "error",
         message: err instanceof Error ? err.message : "Model check failed.",
@@ -170,14 +201,22 @@ export default function SettingsView({
     };
   }, []);
   const applyAgentSettings = async (patch: AgentSettingsUpdate) => {
+    invalidateModelChecks();
+    const queued = settingsSaveTailRef.current.then(() => updateAgentSettings(patch));
+    settingsSaveTailRef.current = queued.then(() => undefined, () => undefined);
     try {
       setAgentSettingsError(null);
-      const updated = await updateAgentSettings(patch);
-      setAgentSettings((prev) =>
-        prev ? { ...prev, ...updated } : prev,
-      );
+      const updated = await queued;
+      settingsSaveErrorRef.current = null;
+      if (settingsMountedRef.current) {
+        setAgentSettingsError(null);
+        setAgentSettings((prev) => prev ? { ...prev, ...updated } : prev);
+      }
+      return updated;
     } catch {
-      setAgentSettingsError("Could not save AI agent settings.");
+      settingsSaveErrorRef.current = new Error("Could not save AI agent settings. Save them successfully before testing the model.");
+      if (settingsMountedRef.current) setAgentSettingsError(settingsSaveErrorRef.current.message);
+      return null;
     }
   };
   // Admin model test: a direct chat with the configured model, kept only in
@@ -208,10 +247,18 @@ export default function SettingsView({
     setChatTestInput("");
     setChatTestError(null);
     setChatTestPending(true);
+    const generation = modelGenerationRef.current;
+    const controller = new AbortController();
+    chatTestControllerRef.current = controller;
     try {
+      await settingsSaveTailRef.current;
+      if (generation !== modelGenerationRef.current || controller.signal.aborted) return;
+      if (settingsSaveErrorRef.current) throw settingsSaveErrorRef.current;
       const result = await agentChatTest(
         history.map((entry) => ({ role: entry.role, content: entry.content })),
+        controller.signal,
       );
+      if (generation !== modelGenerationRef.current || controller.signal.aborted) return;
       if (result.error) {
         setChatTestError(result.error);
       } else {
@@ -226,9 +273,11 @@ export default function SettingsView({
         ]);
       }
     } catch (err) {
-      setChatTestError(err instanceof Error ? err.message : "Model test failed.");
+      if (generation === modelGenerationRef.current && !controller.signal.aborted) {
+        setChatTestError(err instanceof Error ? err.message : "Model test failed.");
+      }
     } finally {
-      setChatTestPending(false);
+      if (generation === modelGenerationRef.current) setChatTestPending(false);
     }
   };
   const [newClinicianName, setNewClinicianName] = useState("");
@@ -686,7 +735,7 @@ export default function SettingsView({
                       <input
                         type="text"
                         value={openaiModelInput}
-                        onChange={(event) => setOpenaiModelInput(event.target.value)}
+                        onChange={(event) => { invalidateModelChecks(); setOpenaiModelInput(event.target.value); }}
                         onBlur={() => void applyOpenaiModel(openaiModelInput)}
                         placeholder="model name on your endpoint"
                         className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
@@ -731,8 +780,12 @@ export default function SettingsView({
                   <input
                     type="text"
                     value={openaiBaseUrlInput}
-                    onChange={(event) => setOpenaiBaseUrlInput(event.target.value)}
-                    onBlur={() => void applyAgentSettings({ openai_base_url: openaiBaseUrlInput })}
+                    onChange={(event) => { invalidateModelChecks(); setOpenaiBaseUrlInput(event.target.value); }}
+                    onBlur={() => {
+                      if (openaiBaseUrlInput !== (agentSettings?.openai_base_url ?? "")) {
+                        void applyAgentSettings({ openai_base_url: openaiBaseUrlInput });
+                      }
+                    }}
                     placeholder="http://host:8000/v1"
                     className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                   />
@@ -822,7 +875,8 @@ export default function SettingsView({
                       }
                       onClick={() => {
                         if (agentSettings?.provider === "openai") {
-                          void applyAgentSettings({ openai_api_key: openaiKeyInput }).then(() => {
+                          void applyAgentSettings({ openai_api_key: openaiKeyInput }).then((saved) => {
+                            if (!saved) return;
                             setOpenaiKeyInput("");
                             setAgentSettings((prev) =>
                               prev ? { ...prev, openai_api_key_set: true } : prev,
@@ -830,7 +884,8 @@ export default function SettingsView({
                           });
                         } else {
                           void applyAgentSettings({ anthropic_api_key: anthropicKeyInput }).then(
-                            () => {
+                            (saved) => {
+                              if (!saved) return;
                               setAnthropicKeyInput("");
                               setAgentSettings((prev) =>
                                 prev ? { ...prev, anthropic_api_key_set: true } : prev,

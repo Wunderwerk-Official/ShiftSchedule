@@ -18,7 +18,7 @@ from backend.agent.provider import LLMProvider, get_provider
 from backend.agent.tools import PlanToolExecutor
 from backend.agent_budget import resolve_agent_runtime_config
 from backend.arena.run import FIXTURE, apply_scenario, load_state
-from backend.models import SolveRangeRequest
+from backend.models import Assignment, SolveRangeRequest
 from backend.scoring import plan_stats
 
 
@@ -117,9 +117,10 @@ def main():
     hashes = {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
               for name, module in (("harness", harness), ("tools", agent_tools))}
     hashes["fixture"] = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
+    fixture_version = json.loads(FIXTURE.read_text()).get("fixtureVersion", "legacy-export-v1")
     hashes["day_prompt"] = hashlib.sha256(day.encode()).hexdigest()
     hashes["review_prompt"] = hashlib.sha256(review.encode()).hexdigest()
-    emit("META", {"variant": args.variant, "evaluation_ref": args.evaluation_ref,
+    emit("META", {"variant": args.variant, "evaluation_ref": args.evaluation_ref, "fixture_version": fixture_version,
                   "start": args.start, "days": args.days, "scenario": args.scenario,
                   "scenario_desc": scenario_desc, "model": config.model,
                   "reasoning": config.reasoning_effort or "endpoint-default/full",
@@ -142,12 +143,12 @@ def main():
             self.fixed_before = [a.model_dump() for a in self.fixed_assignments]
             executors.append(self)
 
-        def execute(self, name, arguments, call_id):
+        def execute(self, name, arguments, call_id, **kwargs):
             nonlocal inspection_streak, longest_inspection_streak, top_level_tool_seconds, tool_depth
             before = time.monotonic()
             tool_depth += 1
             try:
-                result = super().execute(name, arguments, call_id)
+                result = super().execute(name, arguments, call_id, **kwargs)
             finally:
                 elapsed = time.monotonic() - before
                 tool_depth -= 1
@@ -196,19 +197,23 @@ def main():
         harness.PlanToolExecutor, harness.DAY_SYSTEM_PROMPT, harness.REVIEW_SYSTEM_PROMPT = original
     agent = (result.get("debugInfo") or {}).get("agent") or {}
     executor = executors[-1] if executors else None
-    stats = plan_stats(executor.ctx, executor.best_assignments).model_dump() if executor else None
+    returned = [Assignment.model_validate(a) for a in result.get("assignments") or []]
+    stats = plan_stats(executor.ctx, returned).model_dump() if executor else None
+    fallback = agent.get("fallback") or (result.get("debugInfo") or {}).get("solver_status") == "AGENT_FALLBACK_SEED"
     report = {"variant": args.variant, "start": args.start, "days": args.days,
+              "fixture_version": fixture_version,
               "quality_version": agent.get("quality_version"), "completion": agent.get("completion"),
               "final_audit": agent.get("final_audit"),
               "quality_profile": args.quality_profile, "neighborhood": args.neighborhood,
               "scenario": args.scenario, "model": config.model, "duration_seconds": round(time.monotonic() - started, 1),
               "stop_reason": agent.get("stopReason"), "days_planned": agent.get("daysPlanned"),
+              "result_producer": agent.get("result_producer"), "fallback": fallback or None,
               "days_incomplete": agent.get("daysIncomplete"), "days_skipped": agent.get("daysSkipped"),
               "iterations": agent.get("iterations"), "moves_accepted": agent.get("moves_accepted"),
               "moves_rejected": agent.get("moves_rejected"), "input_tokens": agent.get("input_tokens"),
               "output_tokens": agent.get("output_tokens"), "tok_per_s": agent.get("output_tokens_per_second"),
-              "stats": stats, "best_quality": executor.quality_dict(executor.best_quality) if executor else None,
-              "new_hard_violations": sum(executor._is_new_hard(v) for v in executor._hard_violations(executor._full_plan(executor.best_assignments))) if executor else None,
+              "stats": stats, "best_quality": executor.quality_dict(executor._quality(returned)) if executor else None,
+              "new_hard_violations": sum(executor._is_new_hard(v) for v in executor._hard_violations(executor._full_plan(returned))) if executor else None,
               "unsolved": agent.get("unsolved"), "violations_summary": (agent.get("violations_final") or ["unavailable"])[0],
               "tool_counts": dict(tool_counts), "tool_seconds": {k: round(v, 2) for k, v in timings.items()},
               "multi_tool_calls": sum(len(c["tools"]) > 1 for c in calls),
@@ -225,7 +230,7 @@ def main():
         }
     emit("REPORT", report)
     emit("PLAN", {"assignments": result.get("assignments"), "start": args.start, "end": end})
-    if not agent or any(c["stop_reason"] == "error" for c in calls):
+    if not agent or fallback or any(c["stop_reason"] == "error" for c in calls):
         raise SystemExit("Model errors/fallback detected; do not count this as a successful prompt comparison")
     if report["new_hard_violations"] or not report["fixed_unchanged"]:
         raise SystemExit("Guardrail regression detected: new hard violations or modified fixed context")

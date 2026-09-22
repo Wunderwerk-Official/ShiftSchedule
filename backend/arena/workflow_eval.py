@@ -7,11 +7,12 @@ import argparse
 from collections import Counter
 from datetime import date, timedelta
 import json
+import hashlib
 import time
 
 from backend.assignment_policy import is_protected_assignment
 from backend.agent.tools import PlanToolExecutor
-from backend.arena.run import load_state, apply_scenario
+from backend.arena.run import FIXTURE, load_state, apply_scenario
 from backend.scoring import build_scoring_context, plan_stats
 
 
@@ -121,6 +122,8 @@ def evaluate(start, days, scenario="base", profile="classic", neighborhood=False
     best = ex.best_assignments
     hard = ex._hard_violations(ex._full_plan(best))
     result = {"start": start, "days": days, "scenario": scenario, "profile": profile,
+              "fixture_version": json.loads(FIXTURE.read_text()).get("fixtureVersion", "legacy-export-v1"),
+              "fixture_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(),
               "neighborhood": neighborhood, "seconds": round(time.monotonic()-begun, 3),
               "quality": ex.quality_dict(ex.best_quality), "stats": plan_stats(ctx, best).model_dump(),
               "new_hard_violations": sum(ex._is_new_hard(v) for v in hard),
@@ -136,7 +139,6 @@ def evaluate(start, days, scenario="base", profile="classic", neighborhood=False
             "hits": ex.workflow.direct_check_hits, "misses": ex.workflow.direct_check_misses,
         }
     # Hash identities, not generated assignment IDs, for exact outcome comparisons.
-    import hashlib
     identities = sorted((a.rowId, a.dateISO, a.clinicianId) for a in best)
     result["plan_identity_hash"] = hashlib.sha256(json.dumps(identities).encode()).hexdigest()
     return result

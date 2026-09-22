@@ -32,6 +32,7 @@ from ..models import (
     SolverSettings,
 )
 from ..solver import (
+    EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL,
     _build_date_context,
     _build_slot_interval,
     _collect_slot_contexts,
@@ -376,6 +377,17 @@ def heuristic_solve_range_v2(
     """
     timer = SolverTimer()
     config = HeuristicConfig()
+    from ..planning_deadline import DeadlineCancellation
+    cancel_event = DeadlineCancellation(cancel_event, payload.timeout_seconds, start_time)
+
+    def interrupted(assignments=None):
+        result = _build_abort_response(payload, timer, assignments)
+        if cancel_event.expired:
+            result["notes"] = ["Planning time budget exhausted; partial draft retained."]
+        return result
+
+    if cancel_event.is_set():
+        return interrupted()
 
     # Set random seed for reproducibility
     random.seed(config.RANDOM_SEED)
@@ -459,7 +471,7 @@ def heuristic_solve_range_v2(
 
     # Check for cancellation
     if cancel_event.is_set():
-        return _build_abort_response(payload, timer)
+        return interrupted()
 
     # Phase 0.5: Constrained Doctor Pre-assignment
     # Assign specialists (doctors with limited section options) first to prevent
@@ -489,7 +501,7 @@ def heuristic_solve_range_v2(
 
     # Check for cancellation
     if cancel_event.is_set():
-        return _build_abort_response(payload, timer, specialist_assignments)
+        return interrupted(specialist_assignments)
 
     # Phase 1: Day-by-day iteration
     all_assignments = specialist_assignments[:]
@@ -527,12 +539,23 @@ def heuristic_solve_range_v2(
 
         # Check for cancellation
         if cancel_event.is_set():
-            return _build_abort_response(payload, timer, all_assignments)
+            return interrupted(all_assignments)
 
         # Send progress update
         _send_solution_update(on_progress, timer, all_assignments)
 
     timer.checkpoint("solve")
+
+    if not payload.only_fill_required:
+        # Fill optional capacity only once the entire required draft exists,
+        # so an extra duty cannot take someone needed by a later required day.
+        on_progress("phase", {"phase": "distribute_extra", "label": "Distributing remaining eligible clinicians..."})
+        _fill_optional_capacity(state, slot_instances, clinician_states, solver_settings,
+                                all_assignments, cancel_event)
+        if cancel_event.is_set():
+            return interrupted(all_assignments)
+        _send_solution_update(on_progress, timer, all_assignments)
+        timer.checkpoint("optional_capacity")
 
     # Build result
     notes = _build_notes(timer, len(slot_instances), len(all_assignments), warnings)
@@ -553,6 +576,62 @@ def heuristic_solve_range_v2(
         "notes": notes,
         "debugInfo": debug_info,
     }
+
+
+def _fill_optional_capacity(state, slots, clinician_states, settings, assignments, cancel_event):
+    """Add bounded optional work, keeping every fixed and required placement."""
+    from ..constraint_policy import is_new_or_worsened, violation_key
+    from ..validation import validate_assignments
+
+    if cancel_event.is_set():
+        return
+    baseline = {violation_key(v): v.context for v in validate_assignments(
+        state, state.assignments + assignments, only_fill_required=False,
+    ).violations}
+    current_week = None
+    for slot in slots:
+        if cancel_event.is_set():
+            return
+        if slot.required_count <= 0:
+            continue
+        filled = sum(
+            sum(s.slot_id == slot.slot_id for s in cs.assigned_slots_by_date.get(slot.date_iso, []))
+            for cs in clinician_states.values()
+        )
+        capacity = slot.required_count + EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL
+        if filled < slot.required_count or filled >= capacity:
+            continue
+        week = date.fromisoformat(slot.date_iso).isocalendar()[:2]
+        if week != current_week:
+            for cs in clinician_states.values():
+                cs.current_week_hours = sum(
+                    s.duration_minutes / 60.0
+                    for day, assigned in cs.assigned_slots_by_date.items()
+                    if date.fromisoformat(day).isocalendar()[:2] == week
+                    for s in assigned
+                )
+            current_week = week
+        eligible = _filter_eligible_doctors(slot, clinician_states, settings)
+        ranked = _rank_doctors_by_deficit(eligible, slot, 0, clinician_states)
+        for clinician_id in ranked:
+            if cancel_event.is_set():
+                return
+            if filled >= capacity:
+                break
+            candidate = Assignment(
+                id=f"heur-{slot.date_iso}-{clinician_id}-{slot.slot_id}",
+                clinicianId=clinician_id, rowId=slot.slot_id,
+                dateISO=slot.date_iso, source="solver",
+            )
+            violations = validate_assignments(
+                state, state.assignments + assignments + [candidate], only_fill_required=False,
+            ).violations
+            if any(is_new_or_worsened(v, baseline) for v in violations):
+                continue
+            if cancel_event.is_set():
+                return
+            assignments.append(_assign_slot_to_doctor(slot, clinician_states[clinician_id]))
+            filled += 1
 
 
 def _expand_slots_to_instances(

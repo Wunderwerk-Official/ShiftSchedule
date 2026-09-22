@@ -6,13 +6,15 @@ import json
 
 from fastapi import HTTPException
 
-from . import solver_runs
+from . import solver_runs, schedule_changes
+from .account_lifecycle import account_lock, require_current_account
 from .assignment_policy import is_protected_assignment
 from .db import _get_connection, _utcnow_iso
 from .models import AppState, Assignment
 from .snapshots import _write_auto_backup
 from .state import _load_state, _normalize_state, _save_state
-from .validation import VIOLATION_CAPACITY, VIOLATION_WEEKLY_HOURS, validate_assignments
+from .validation import validate_assignments
+from .constraint_policy import violation_key, is_new_or_worsened
 
 
 def planning_fingerprint(state: AppState) -> str:
@@ -47,25 +49,9 @@ def _candidate(state, run):
 
 def _new_violations(state, baseline, combined, only_required):
     check = lambda plan: validate_assignments(state, plan, only_fill_required=only_required).violations
-    old = check(baseline)
-    exact = {json.dumps(asdict(v), sort_keys=True) for v in old}
-    introduced = []
-    for v in check(combined):
-        if json.dumps(asdict(v), sort_keys=True) in exact:
-            continue
-        # Existing manual overload may remain, but may never get worse.
-        if v.code in (VIOLATION_WEEKLY_HOURS, VIOLATION_CAPACITY):
-            metric = "assigned_minutes" if v.code == VIOLATION_WEEKLY_HOURS else "count"
-            def same_group(other):
-                if other.code != v.code or other.clinician_id != v.clinician_id:
-                    return False
-                if v.code == VIOLATION_WEEKLY_HOURS:
-                    return all(other.context.get(k) == v.context.get(k) for k in ("iso_year", "iso_week"))
-                return (other.date_iso, other.slot_id) == (v.date_iso, v.slot_id)
-            if any(same_group(o) and v.context.get(metric, 0) <= o.context.get(metric, 0) for o in old):
-                continue
-        introduced.append(asdict(v))
-    return introduced
+    baseline_context = {violation_key(v): v.context for v in check(baseline)}
+    return [asdict(v) for v in check(combined)
+            if is_new_or_worsened(v, baseline_context)]
 
 
 def result_safety(run):
@@ -83,9 +69,14 @@ def result_safety(run):
     return empty_abort, dates
 
 
-def apply_stored_run(username, run_id, *, force=False, allow_partial=False, expected_revision=None):
-    with closing(_get_connection()) as conn, conn:
+def apply_stored_run(username, run_id, *, force=False, allow_partial=False, expected_revision=None,
+                     account_user=None):
+    with account_lock(username), closing(_get_connection()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
+        if account_user is not None:
+            if account_user.username != username:
+                raise HTTPException(401, "Account session is no longer valid.")
+            require_current_account(conn, account_user)
         row = conn.execute("SELECT * FROM solver_runs WHERE id = ? AND username = ?",
                            (run_id, username)).fetchone()
         if row is None:
@@ -148,4 +139,7 @@ def apply_stored_run(username, run_id, *, force=False, allow_partial=False, expe
         conn.execute("UPDATE solver_runs SET status = 'applied', applied_at = ?, "
                      "notes = COALESCE(notes, '') || ? WHERE id = ?",
                      (_utcnow_iso(), f"Applied {added} assignments.\n", run_id))
+        schedule_changes.record_run_applied(
+            username, run_id, run["start_iso"], run["end_iso"], added, replaced, connection=conn,
+        )
         return run, added, replaced

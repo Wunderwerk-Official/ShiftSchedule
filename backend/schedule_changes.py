@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import secrets
 import time
+from contextlib import closing, nullcontext
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -270,6 +271,7 @@ def record_run_applied(
     end_iso: str,
     added: int,
     replaced: int,
+    *, connection=None,
 ) -> str:
     now = _utcnow_iso()
     payload = {
@@ -279,7 +281,7 @@ def record_run_applied(
         "assignments_replaced": replaced,
     }
     change_id = _new_change_id()
-    with _get_connection() as conn:
+    with (closing(_get_connection()) if connection is None else nullcontext(connection)) as conn:
         conn.execute(
             """
             INSERT INTO schedule_changes
@@ -289,7 +291,8 @@ def record_run_applied(
             (change_id, username, run_id, json.dumps(payload), now, now),
         )
         _prune(conn, username)
-        conn.commit()
+        if connection is None:
+            conn.commit()
     return change_id
 
 
@@ -297,6 +300,7 @@ def record_manual_edit(
     username: str,
     old_blob: Dict[str, Any],
     new_blob: Dict[str, Any],
+    *, connection=None,
 ) -> Optional[str]:
     """Diff two state blobs and log the result. Returns the change row id,
     or None when nothing relevant changed."""
@@ -304,7 +308,7 @@ def record_manual_edit(
     if not diff:
         return None
     now = _utcnow_iso()
-    with _get_connection() as conn:
+    with (closing(_get_connection()) if connection is None else nullcontext(connection)) as conn:
         after_run_id = last_applied_run_id(conn, username)
         latest = conn.execute(
             """
@@ -325,13 +329,15 @@ def record_manual_edit(
             if not merged:
                 # The user undid everything since the previous save.
                 conn.execute("DELETE FROM schedule_changes WHERE id = ?", (latest["id"],))
-                conn.commit()
+                if connection is None:
+                    conn.commit()
                 return None
             conn.execute(
                 "UPDATE schedule_changes SET diff = ?, updated_at = ? WHERE id = ?",
                 (json.dumps(merged), now, latest["id"]),
             )
-            conn.commit()
+            if connection is None:
+                conn.commit()
             return latest["id"]
         change_id = _new_change_id()
         conn.execute(
@@ -343,7 +349,8 @@ def record_manual_edit(
             (change_id, username, after_run_id, json.dumps(diff), now, now),
         )
         _prune(conn, username)
-        conn.commit()
+        if connection is None:
+            conn.commit()
     return change_id
 
 

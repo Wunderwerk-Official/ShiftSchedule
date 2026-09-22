@@ -1,7 +1,7 @@
 import json
 import hashlib
 import re
-from contextlib import closing
+from contextlib import closing, nullcontext
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -1329,15 +1329,18 @@ def _normalize_week_start(date_iso: str) -> tuple[str, str]:
     return week_start.isoformat(), week_end.isoformat()
 
 
-def _load_state_blob_and_updated_at(username: str) -> tuple[Dict[str, Any], datetime, str]:
-    conn = _get_connection()
-    row = conn.execute(
-        "SELECT data, updated_at FROM app_state WHERE id = ?", (username,)
-    ).fetchone()
-    conn.close()
+def _load_state_blob_and_updated_at(username: str, *, connection=None) -> tuple[Dict[str, Any], datetime, str]:
+    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
+    with resource as conn:
+        row = conn.execute(
+            "SELECT data, updated_at FROM app_state WHERE id = ?", (username,)
+        ).fetchone()
     if not row:
         state = _default_state()
-        _save_state(state, username)
+        # Public readers use a stable read snapshot and must never resurrect
+        # state for a deleted account as a side effect of an old link.
+        if connection is None:
+            _save_state(state, username)
         now = _utcnow_iso()
         return state.model_dump(), datetime.fromisoformat(now), now
     data = json.loads(row[0])

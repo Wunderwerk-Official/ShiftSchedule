@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
+import { mockProgressStream } from "./progress-stream";
 import type { AppState, SolverRunSummary } from "../src/api/client";
 
 const defaultState = JSON.parse(readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"));
@@ -8,7 +9,9 @@ const defaultState = JSON.parse(readFileSync(new URL("../backend/default_state.j
 async function calendar(page: Page, options: {
   holdFirstSave?: boolean; confirmations?: boolean; emptyAbort?: boolean; saveConflict?: boolean;
   backgroundRun?: boolean;
+  runError?: number; abortFails?: boolean; changeAfterPdf?: boolean;
 } = {}) {
+  await mockProgressStream(page);
   let state = { ...structuredClone(defaultState), assignments: [], revision: "r0" } as AppState;
   const assignment = {
     id: "applied-assignment", dateISO: "2026-01-05", source: "solver" as const,
@@ -23,6 +26,8 @@ async function calendar(page: Page, options: {
   };
   const saves: AppState[] = [];
   const applyCalls: URLSearchParams[] = [];
+  const detailCalls: string[] = [];
+  const pdfCalls: URLSearchParams[] = [];
   const pageErrors: string[] = [];
   page.on("pageerror", (error) => pageErrors.push(error.message));
   let releaseFirstSave!: () => void;
@@ -30,13 +35,6 @@ async function calendar(page: Page, options: {
   await page.clock.setFixedTime(new Date("2026-01-05T12:00:00Z"));
   await page.addInitScript(() => {
     localStorage.setItem("authToken", "test-token");
-    class TestSource {
-      onmessage: ((e: { data: string }) => void) | null = null;
-      onerror: ((e: Event) => void) | null = null;
-      close() {}
-      constructor() { Object.assign(window, { activitySource: this }); }
-    }
-    Object.assign(window, { EventSource: TestSource });
   });
   await page.route("**/auth/me", (route) => route.fulfill({ json: { username: "test", role: "user", active: true } }));
   await page.route("**/v1/**", async (route) => {
@@ -57,10 +55,22 @@ async function calendar(page: Page, options: {
       return route.fulfill({ json: state });
     }
     if (url.pathname.endsWith("/v1/solve/runs")) return route.fulfill({ json: { runs: [run] } });
-    if (url.pathname.endsWith("/v1/solve/runs/draft")) return route.fulfill({ json: run });
+    if (url.pathname.endsWith("/v1/solve/runs/draft")) {
+      detailCalls.push(url.pathname);
+      return route.fulfill({ status: options.runError ?? 200, json: run });
+    }
     if (url.pathname.endsWith("/v1/solve/abort")) {
+      if (options.abortFails) return route.fulfill({ status: 500, json: { detail: "Stop failed" } });
       run.status = "aborted";
       return route.fulfill({ json: { status: "aborting", message: "Stopping" } });
+    }
+    if (url.pathname.includes("/v1/pdf/")) {
+      pdfCalls.push(url.searchParams);
+      if (url.searchParams.get("expected_revision") !== state.revision) {
+        return route.fulfill({ status: 409, json: { detail: "The calendar changed during export. Reload and start a new export." } });
+      }
+      if (options.changeAfterPdf) state.revision = "external-edit";
+      return route.fulfill({ contentType: "application/pdf", body: "%PDF-test" });
     }
     if (url.pathname.endsWith("/draft/apply")) {
       applyCalls.push(url.searchParams);
@@ -87,7 +97,8 @@ async function calendar(page: Page, options: {
     await page.getByTitle("Solver history, weights & timeout").click();
     await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeVisible();
   }
-  return { saves, applyCalls, releaseFirstSave, pageErrors, state: () => state };
+  return { saves, applyCalls, detailCalls, pdfCalls, releaseFirstSave, pageErrors,
+    finishRun: () => { run.status = "finished"; }, state: () => state };
 }
 
 test("apply waits for pending saves and subsequent autosave preserves the applied plan", async ({ page }) => {
@@ -173,4 +184,76 @@ test("a save conflict stays visible and retry never forces stale state over the 
   await expect(alert).toBeVisible();
   expect(api.saves.map((s) => s.revision)).toEqual(["r0", "r0"]);
   expect(api.state().revision).toBe("r0");
+});
+
+for (const status of [401, 404]) {
+  test(`run polling stops on terminal ${status}`, async ({ page }) => {
+    const api = await calendar(page, { backgroundRun: true, runError: status });
+    await expect.poll(() => api.detailCalls.length, { timeout: 8000 }).toBe(1);
+    await expect(page.getByRole("button", { name: "Solver running..." })).toBeHidden();
+    await page.waitForTimeout(4500);
+    expect(api.detailCalls).toHaveLength(1);
+    if (status === 401) expect(await page.evaluate(() => localStorage.getItem("authToken"))).toBeNull();
+  });
+}
+
+test("signing out stops polling and the live stream", async ({ page }) => {
+  const api = await calendar(page, { backgroundRun: true });
+  await expect(page.getByRole("button", { name: "Solver running..." })).toBeVisible();
+  await page.getByRole("button", { name: "Account", exact: true }).click();
+  await page.getByRole("button", { name: "Sign out", exact: true }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { progressAborted?: boolean }).progressAborted)).toBe(true);
+  const count = api.detailCalls.length;
+  await page.waitForTimeout(4500);
+  expect(api.detailCalls).toHaveLength(count);
+});
+
+test("failed stop stays visible and never automatically applies the later result", async ({ page }) => {
+  const api = await calendar(page, { backgroundRun: true, abortFails: true });
+  await page.getByRole("button", { name: "Solver running..." }).click();
+  await page.evaluate(() => {
+    (window as unknown as { activitySource: { onmessage: (event: { data: string }) => void } }).activitySource.onmessage({
+      data: JSON.stringify({ event: "solution", data: { solution_num: 1, objective: 1, time_ms: 1, assignments: [], run_token: "draft" } }),
+    });
+  });
+  await page.getByRole("button", { name: "Apply best plan", exact: true }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Stopping failed" })).toBeVisible();
+  api.finishRun();
+  await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeVisible({ timeout: 8000 });
+  expect(api.applyCalls).toHaveLength(0);
+});
+
+test("PDF export waits for saves and requests their exact revision", async ({ page }) => {
+  const api = await calendar(page, { holdFirstSave: true });
+  await expect.poll(() => api.saves.length).toBe(1);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Open Export", exact: true }).click();
+  await page.getByRole("button", { name: "Export PDF", exact: true }).click();
+  await expect(page.getByText("Saving calendar for export…", { exact: true })).toBeVisible();
+  expect(api.pdfCalls).toHaveLength(0);
+  api.releaseFirstSave();
+  await expect.poll(() => api.pdfCalls.length).toBe(1);
+  expect(api.pdfCalls[0].get("expected_revision")).toBe("r2");
+});
+
+test("PDF export refuses unsaved conflicts", async ({ page }) => {
+  const api = await calendar(page, { saveConflict: true });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Open Export", exact: true }).click();
+  await page.getByRole("button", { name: "Export PDF", exact: true }).click();
+  await expect(page.getByText("The calendar changed in another window. Reload before saving.").last()).toBeVisible();
+  expect(api.pdfCalls).toHaveLength(0);
+});
+
+test("individual PDF batch keeps one revision and stops clearly after an external edit", async ({ page }) => {
+  const api = await calendar(page, { changeAfterPdf: true });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Open Export", exact: true }).click();
+  await page.getByRole("button", { name: "Export PDF as individual files", exact: true }).click();
+  await page.getByRole("button", { name: "1", exact: true }).click();
+  await page.getByRole("button", { name: "2", exact: true }).click();
+  await page.getByRole("button", { name: "Export PDF", exact: true }).click();
+  await expect(page.getByText(/1 of 2 weeks downloaded. Export stopped/)).toBeVisible();
+  expect(api.pdfCalls).toHaveLength(2);
+  expect(api.pdfCalls[0].get("expected_revision")).toBe(api.pdfCalls[1].get("expected_revision"));
 });

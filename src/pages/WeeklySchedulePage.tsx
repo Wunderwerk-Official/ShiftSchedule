@@ -2,6 +2,8 @@ import { isProtectedAssignment, type AssignmentIdentity } from "../lib/assignmen
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { appendAgentEvent } from "../lib/agentActivity";
+import { abortableDelay } from "../lib/abortableDelay";
+import { agentReviewNotice, heuristicFallbackNotice } from "../lib/solverOutcome";
 import ClinicianEditModal from "../components/schedule/ClinicianEditModal";
 import AutomatedPlanningPanel from "../components/schedule/AutomatedPlanningPanel";
 import SolverOverlay, { type LiveSolution, type StatsHistoryEntry } from "../components/schedule/SolverOverlay";
@@ -29,6 +31,7 @@ import {
   flushStateSaves,
   retryStateSaves,
   ApplyRunError,
+  HttpError,
   publishIcal,
   publishWeb,
   abortSolver,
@@ -442,6 +445,13 @@ export default function WeeklySchedulePage({
   // different token (a previous aborted run, or another user's run) are
   // ignored instead of polluting the live chart.
   const autoPlanRunTokenRef = useRef<string | null>(null);
+  const runWatchControllerRef = useRef<AbortController | null>(null);
+  const stopRequestPendingRef = useRef(false);
+  useEffect(() => () => {
+    runWatchControllerRef.current?.abort();
+    autoPlanRunTokenRef.current = null;
+    applyAfterAbortRef.current = false;
+  }, [currentUser.username]);
   const [liveSolutions, setLiveSolutions] = useState<LiveSolution[]>([]);
   const liveSolutionsRef = useRef<LiveSolution[]>([]);
   const [solverPhase, setSolverPhase] = useState<string | null>(null);
@@ -560,6 +570,7 @@ export default function WeeklySchedulePage({
           if (eventToken && ownToken && eventToken !== ownToken) return;
         }
         setSolverLiveConnected(true);
+        setAutoPlanError((previous) => previous?.startsWith("Live updates") ? null : previous);
         if (event.event === "phase") {
           // Store the human-readable label from the backend
           setSolverPhase(event.data.label);
@@ -578,13 +589,16 @@ export default function WeeklySchedulePage({
           liveSolutionsRef.current = [...liveSolutionsRef.current, newSolution];
         }
       },
-      () => {
+      (error) => {
         setSolverLiveConnected(false);
+        if (error instanceof HttpError || error.message.startsWith("Live updates stopped")) {
+          setAutoPlanError(error.message);
+        }
       },
     );
 
     return unsubscribe;
-  }, [autoPlanRunning]);
+  }, [autoPlanRunning, currentUser.username]);
 
   const weekStart = useMemo(() => startOfWeek(anchorDate, 1), [anchorDate]);
   const currentWeekStartISO = useMemo(() => toISODate(weekStart), [weekStart]);
@@ -1164,12 +1178,22 @@ export default function WeeklySchedulePage({
     weeks: number;
     mode: "combined" | "individual";
   }) => {
+    if (pdfExporting || calendarTransitionRef.current) return;
     setPdfError(null);
     setPdfExporting(true);
+    pauseCalendarSaving();
+    let exportedWeeks = 0;
     try {
+      if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
+        throw new Error(saveError ?? "Wait until the calendar has loaded before exporting.");
+      }
+      const current = buildCurrentStatePayload();
+      if (!current) throw new Error("The current calendar cannot be saved. Fix its template first.");
+      const saved = await saveState(current);
+      if (!saved.revision) throw new Error("The saved calendar has no revision. Reload before exporting.");
       if (args.mode === "combined") {
         setPdfProgress({ current: 0, total: args.weeks });
-        const pdfBlob = await exportWeeksPdf(args.startISO, args.weeks);
+        const pdfBlob = await exportWeeksPdf(args.startISO, args.weeks, saved.revision);
         const endISO = toISODate(addDays(addWeeks(new Date(`${args.startISO}T00:00:00`), args.weeks), -1));
         downloadBlob(`shift-planner-${args.startISO}-to-${endISO}.pdf`, pdfBlob);
       } else {
@@ -1178,14 +1202,18 @@ export default function WeeklySchedulePage({
           const weekStartDate = addWeeks(baseDate, i);
           const weekStartISO = toISODate(weekStartDate);
           setPdfProgress({ current: i + 1, total: args.weeks });
-          const pdfBlob = await exportWeekPdf(weekStartISO);
+          const pdfBlob = await exportWeekPdf(weekStartISO, saved.revision);
           downloadBlob(`shift-planner-${weekStartISO}.pdf`, pdfBlob);
+          exportedWeeks += 1;
           await new Promise((resolve) => setTimeout(resolve, 400));
         }
       }
-    } catch {
-      setPdfError("PDF export failed.");
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "PDF export failed.";
+      setPdfError(exportedWeeks > 0
+        ? `${exportedWeeks} of ${args.weeks} weeks downloaded. Export stopped: ${reason}` : reason);
     } finally {
+      resumeCalendarSaving();
       setPdfExporting(false);
       setPdfProgress(null);
     }
@@ -1410,14 +1438,24 @@ export default function WeeklySchedulePage({
     capturedExistingAssignments: Assignment[],
   ) => {
     let run: SolverRunDetail | null = null;
+    runWatchControllerRef.current?.abort();
+    const controller = new AbortController();
+    runWatchControllerRef.current = controller;
+    const { signal } = controller;
+    let failures = 0;
 
     try {
       for (;;) {
-        await new Promise((resolve) => setTimeout(resolve, 4000));
+        await abortableDelay(Math.min(4000 * 2 ** failures, 30_000), signal);
         try {
-          run = await getSolverRun(runId);
-        } catch {
-          continue; // transient network loss - the run continues server-side
+          run = await getSolverRun(runId, signal);
+          if (signal.aborted) return;
+          failures = 0;
+        } catch (error) {
+          if (signal.aborted) return;
+          if (error instanceof HttpError && [401, 403, 404].includes(error.status)) throw error;
+          if (++failures >= 6) throw new Error("The run status could not be reached. Reload to reconnect; planning may still be running on the server.");
+          continue;
         }
         if (run.status !== "running") break;
       }
@@ -1432,32 +1470,12 @@ export default function WeeklySchedulePage({
         );
       }
 
-      // Agent mode degrades to the heuristic draft when the LLM cannot
-      // start at all (missing API key, unknown provider) - surface it.
-      if (
-        args.solverMode === "agent" &&
-        result?.debugInfo?.solver_status === "AGENT_FALLBACK_SEED"
-      ) {
-        setAutoPlanError(
-          result.notes.find((n) => n.includes("Agent LLM unavailable")) ??
-            "The AI agent could not start; the heuristic draft is in the run inbox.",
-        );
-      }
-      // Partial runs (LLM errors or exhausted budgets skipped days) leave
-      // those days' slots OPEN - without a prominent notice the gap only
-      // shows up when someone scrolls to the end of the range.
-      const skippedDays = [...new Set([
-        ...(result?.debugInfo?.agent?.daysSkipped ?? []),
-        ...(result?.debugInfo?.agent?.daysIncomplete ?? []),
-      ])];
-      if (args.solverMode === "agent" && skippedDays.length > 0) {
-        showSolverNoticeBriefly(
-          `${skippedDays.length} day(s) could not be planned by the AI agent ` +
-            `(${skippedDays.join(", ")}) - the slots remain open; ` +
-            "review them in the run inbox.",
-          8000,
-        );
-      }
+      // A fallback can follow paid model attempts. Missing verification
+      // also does not imply missing assignments in the returned draft.
+      const fallbackNotice = heuristicFallbackNotice(result?.debugInfo);
+      const reviewNotice = agentReviewNotice(result?.debugInfo);
+      if (args.solverMode === "agent" && fallbackNotice) setAutoPlanError(fallbackNotice);
+      if (args.solverMode === "agent" && reviewNotice) showSolverNoticeBriefly(reviewNotice, 8000);
       const openSlots = result?.debugInfo?.agent?.unsolved?.open_slots ?? [];
       if (args.solverMode === "agent" && openSlots.length > 0) {
         setCoverageWarning({
@@ -1477,6 +1495,7 @@ export default function WeeklySchedulePage({
       }
 
       await refreshServerRuns();
+      if (signal.aborted) return;
       const applicable =
         run.has_result && !run.apply_blocked_reason && (run.status === "finished" || run.status === "aborted");
       if (applicable && applyAfterAbortRef.current) {
@@ -1494,7 +1513,13 @@ export default function WeeklySchedulePage({
         totalDays: dateRangeLength,
         durationMs: Date.now() - startedAt,
       });
+    } catch (error) {
+      if (!signal.aborted) {
+        setAutoPlanError(error instanceof Error ? error.message : "The run status could not be loaded.");
+      }
     } finally {
+      if (signal.aborted || runWatchControllerRef.current !== controller) return;
+      runWatchControllerRef.current = null;
       applyAfterAbortRef.current = false;
       // Keep the per-solution stats progression for this run so the run
       // detail view (opened from the inbox) can chart it.
@@ -1601,6 +1626,7 @@ export default function WeeklySchedulePage({
         });
         await saveState(normalized);
       }
+      if (autoPlanRunTokenRef.current !== runToken) return;
       await solveRange(args.startISO, {
         endISO: args.endISO,
         onlyFillRequired: args.onlyFillRequired,
@@ -1608,6 +1634,7 @@ export default function WeeklySchedulePage({
         runToken,
       });
     } catch (err) {
+      if (autoPlanRunTokenRef.current !== runToken) return;
       const message = err instanceof Error ? err.message : "The solver run could not be started.";
       setAutoPlanError(message);
       showSolverNoticeBriefly(message, 5000);
@@ -1618,6 +1645,7 @@ export default function WeeklySchedulePage({
       return;
     }
 
+    if (autoPlanRunTokenRef.current !== runToken) return;
     void watchRunToCompletion(
       runToken,
       args,
@@ -1630,27 +1658,34 @@ export default function WeeklySchedulePage({
   // Abort without applying: stop the backend run; the poll loop sees the
   // 'aborted' row, builds the history entry, and any salvaged result stays
   // in the inbox (nothing is applied).
-  const handleAbortWithoutApplying = () => {
+  const requestRunStop = async (applyBest: boolean) => {
+    const runId = autoPlanRunTokenRef.current;
+    if (!runId || stopRequestPendingRef.current) return;
+    stopRequestPendingRef.current = true;
     applyAfterAbortRef.current = false;
-    abortSolver(true, autoPlanRunTokenRef.current ?? undefined).catch(() => {
-      // Ignore errors - the abort request is best-effort
-    });
-    setLiveSolutions([]);
-    showSolverNoticeBriefly("Abort requested - the run is stopping.", 3000);
+    setAutoPlanError(null);
+    showSolverNoticeBriefly("Requesting stop…", 3000);
+    try {
+      await abortSolver(true, runId);
+      if (autoPlanRunTokenRef.current !== runId) return;
+      // Enable automatic apply only after the server acknowledges the stop.
+      // A run that already completed remains in the inbox for explicit review.
+      applyAfterAbortRef.current = applyBest && runWatchControllerRef.current !== null;
+      showSolverNoticeBriefly(applyBest
+        ? "Stop confirmed — the best plan will be applied when the run finishes."
+        : "Stop confirmed — any partial draft will remain in the run inbox.", 5000);
+    } catch (error) {
+      if (autoPlanRunTokenRef.current !== runId) return;
+      applyAfterAbortRef.current = false;
+      const message = `Stopping failed. The run may still be active. ${error instanceof Error ? error.message : "Try again."}`;
+      setAutoPlanError(message);
+      showSolverNoticeBriefly(message, 8000);
+    } finally {
+      stopRequestPendingRef.current = false;
+    }
   };
-
-  // Stop & apply best: stop the run; when its (salvaged) result lands in
-  // the inbox, the poll loop applies it automatically.
-  const handleApplySolution = () => {
-    applyAfterAbortRef.current = true;
-    abortSolver(true, autoPlanRunTokenRef.current ?? undefined).catch(() => {
-      // Ignore errors - the abort request is best-effort
-    });
-    showSolverNoticeBriefly(
-      "Stopping the run - its best plan will be applied automatically.",
-      4000,
-    );
-  };
+  const handleAbortWithoutApplying = () => { void requestRunStop(false); };
+  const handleApplySolution = () => { void requestRunStop(true); };
 
   // Reset only solver-generated assignments (keep manual ones)
   const handleToggleAssignmentLock = useCallback((assignment: AssignmentIdentity) => {
@@ -3613,7 +3648,7 @@ export default function WeeklySchedulePage({
 
       {calendarTransition && (
         <div role="status" aria-live="polite" className="fixed inset-0 z-[2000] flex items-center justify-center bg-white/70 text-sm font-medium text-slate-700 dark:bg-slate-950/70 dark:text-slate-200">
-          Updating calendar…
+          {pdfExporting ? pdfProgress ? `Exporting ${pdfProgress.current} of ${pdfProgress.total} weeks…` : "Saving calendar for export…" : "Updating calendar…"}
         </div>
       )}
       {saveError && (
@@ -4291,6 +4326,7 @@ export default function WeeklySchedulePage({
         solverMode={autoPlanRunConfig?.solverMode}
         agentEvents={agentEvents}
         liveConnected={solverLiveConnected}
+        error={autoPlanError}
       />
 
       {autoPlanRunning && autoPlanMinimized ? (

@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 import backend.db as db
 import backend.schedule_changes as schedule_changes
 from backend import solver_runs
-from backend.auth import _get_current_user
+from backend.auth import _get_current_user, _create_user
 from backend.main import app
 from backend.models import UserPublic, VacationRange
 from backend.schedule_changes import compute_diff, merge_diffs
@@ -138,9 +138,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "_SCHEMA_READY", False)
     monkeypatch.setenv("SCHEDULE_DB_PATH", db_path)
 
-    app.dependency_overrides[_get_current_user] = lambda: UserPublic(
-        username=USER, role="admin", active=True
-    )
+    current_user = _create_user(USER, "changes-test-password", "admin")
+    app.dependency_overrides[_get_current_user] = lambda: current_user
     try:
         yield TestClient(app)
     finally:

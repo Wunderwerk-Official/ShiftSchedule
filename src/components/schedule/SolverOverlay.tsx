@@ -40,6 +40,7 @@ type SolverOverlayProps = {
   solverMode?: SolverMode; // Which solver runs (drives the agent activity panel)
   agentEvents?: AgentActivityData[]; // Live agent activity (solver_mode "agent")
   liveConnected?: boolean;
+  error?: string | null;
 };
 
 const formatDuration = (valueMs: number) => {
@@ -703,6 +704,7 @@ export default function SolverOverlay({
   solverMode,
   agentEvents = [],
   liveConnected = true,
+  error,
 }: SolverOverlayProps) {
   const [dashboardOpen, setDashboardOpen] = useState(false);
   const [calendarContainer, setCalendarContainer] = useState<HTMLElement | null>(null);
@@ -896,6 +898,7 @@ export default function SolverOverlay({
             </button>
           )}
 
+          {error && <div role="alert" className="w-full rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-200">{error}</div>}
           {/* Abort button - always shown */}
           <button
             type="button"

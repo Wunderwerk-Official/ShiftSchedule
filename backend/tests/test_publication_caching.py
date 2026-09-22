@@ -22,17 +22,17 @@ def public_calendar(request, monkeypatch):
         "updated_at": timestamp.isoformat(),
     }
     module = web if request.param == "web" else ical_routes
-    monkeypatch.setattr(module, "_load_state_blob_and_updated_at", lambda _: (
+    monkeypatch.setattr(module, "_load_state_blob_and_updated_at", lambda _, **kwargs: (
         payload, timestamp, timestamp.isoformat(),
     ))
     if request.param == "web":
-        monkeypatch.setattr(web, "_get_web_publication_by_token", lambda _: publication)
+        monkeypatch.setattr(web, "_get_web_publication_by_token", lambda _, **kwargs: publication)
         url = "/v1/web/cache-token/week?start=2026-01-05"
     else:
-        monkeypatch.setattr(ical_routes, "_get_publication_by_token", lambda _: (
+        monkeypatch.setattr(ical_routes, "_get_publication_by_token", lambda _, **kwargs: (
             publication if request.param == "ical" else None
         ))
-        monkeypatch.setattr(ical_routes, "_get_clinician_publication_by_token", lambda _: publication)
+        monkeypatch.setattr(ical_routes, "_get_clinician_publication_by_token", lambda _, **kwargs: publication)
         url = "/v1/ical/cache-token.ics"
     return TestClient(app), url, payload
 

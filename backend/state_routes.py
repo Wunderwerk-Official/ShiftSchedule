@@ -1,4 +1,5 @@
 import sys
+import json
 from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, Query
@@ -6,8 +7,9 @@ from pydantic import BaseModel
 
 from . import schedule_changes
 from .auth import _get_current_user
+from .account_lifecycle import authenticated_account_connection
 from .models import AppState, UserPublic
-from .state import _load_raw_state_blob, _load_state, _normalize_state, _save_state
+from .state import _load_state, _normalize_state, _save_state
 
 router = APIRouter()
 
@@ -40,26 +42,25 @@ def health():
 
 @router.get("/v1/state", response_model=AppState)
 def get_state(current_user: UserPublic = Depends(_get_current_user)):
-    return _load_state(current_user.username)
+    # Loading can normalize or initialize a calendar, so it needs a write
+    # transaction even though this endpoint is a GET.
+    with authenticated_account_connection(current_user) as conn:
+        return _load_state(current_user.username, connection=conn)
 
 
 @router.post("/v1/state", response_model=AppState)
 def set_state(payload: AppState, current_user: UserPublic = Depends(_get_current_user)):
     normalized, _ = _normalize_state(payload)
-    # Change-log bookkeeping must never break the save path: the old blob is
-    # read best-effort before the overwrite, the diff is recorded after it.
-    old_blob = None
-    try:
-        old_blob = _load_raw_state_blob(current_user.username)
-    except Exception as exc:  # pragma: no cover - defensive
-        print(f"[schedule-changes] pre-save load failed: {exc}", file=sys.stderr)
-    _save_state(normalized, current_user.username,
-                check_revision=True, expected_revision=payload.revision)
-    if old_blob is not None:
+    with authenticated_account_connection(current_user) as conn:
+        row = conn.execute("SELECT data FROM app_state WHERE id = ?", (current_user.username,)).fetchone()
+        old_blob = json.loads(row["data"]) if row else None
+        _save_state(normalized, current_user.username, connection=conn,
+                    check_revision=True, expected_revision=payload.revision)
         try:
-            schedule_changes.record_manual_edit(
-                current_user.username, old_blob, normalized.model_dump()
-            )
+            if old_blob is not None:
+                schedule_changes.record_manual_edit(
+                    current_user.username, old_blob, normalized.model_dump(), connection=conn,
+                )
         except Exception as exc:  # pragma: no cover - defensive
             print(f"[schedule-changes] diff logging failed: {exc}", file=sys.stderr)
     return normalized
@@ -76,7 +77,7 @@ def check_database_health(current_user: UserPublic = Depends(_get_current_user))
     3. Duplicate assignments - same clinician assigned multiple times to same slot/date
     4. ColBand explosion - excessive colBands per day type
     """
-    state = _load_state(current_user.username)
+    state = get_state(current_user)
     issues: List[HealthCheckIssue] = []
 
     # Build valid slot IDs from template
@@ -315,7 +316,7 @@ def inspect_week(
     Inspect all slots for a given week directly from the database.
     Returns all slots with their assignment status (open or assigned).
     """
-    state = _load_state(current_user.username)
+    state = get_state(current_user)
     template = state.weeklyTemplate
 
     # Parse week start

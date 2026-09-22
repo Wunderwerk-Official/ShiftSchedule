@@ -263,20 +263,32 @@ def agent_solve_range(
             on_progress(event_type, data)
 
     def heuristic_fallback(extra_notes: List[str]) -> dict:
-        """Day-by-day has no draft to fall back on — whenever the run would
-        otherwise return an EMPTY range (LLM unavailable, first-call error,
-        no time for a single call), return a fresh heuristic plan instead:
-        applying an empty result would wipe the range's previous plan. The
-        status is AGENT_FALLBACK_SEED so the frontend surfaces it exactly
-        like the repair strategy's fallback."""
+        """Attempt a heuristic draft when day-by-day produced no changes.
+
+        The original run deadline also bounds fallback; if it has expired,
+        the heuristic returns its safe current snapshot without new work.
+        Keep the model outcome and usage even when another solver produces
+        the returned draft.
+        """
         result = heuristic_solve_range_v2(
             payload, state, cancel_event, muted_progress, start_time
         )
-        result["notes"] = list(result.get("notes") or []) + list(extra_notes)
-        debug = result.get("debugInfo")
-        if isinstance(debug, dict):
-            debug["solver_status"] = "AGENT_FALLBACK_SEED"
-        return result
+        best = [Assignment.model_validate(a) for a in result.get("assignments") or []]
+        run_meta["fallback"] = {
+            "producer": "heuristic_v2",
+            "model_stop_reason": run_meta["stop_reason"],
+            "solver_status": (result.get("debugInfo") or {}).get("solver_status"),
+        }
+        # Keep the model's usage and attempts, but compute every closing
+        # metric from the actual returned heuristic draft. Any earlier
+        # verification belongs to the model's snapshot and must expire.
+        executor.current = {(a.rowId, a.dateISO, a.clinicianId): a for a in best}
+        executor.best_assignments = best
+        executor.best_quality = executor._quality(best)
+        executor.best_score = executor.encode_quality(executor.best_quality)
+        executor.workflow.changed()
+        emit_solution(executor.best_score, best)
+        return finalize("AGENT_FALLBACK_SEED", list(result.get("notes") or []) + list(extra_notes))
 
     if strategy == "repair":
         on_progress(
@@ -704,12 +716,11 @@ def agent_solve_range(
             strategy == "day_by_day"
             and executor.moves_accepted == 0
             and not cancel_event.is_set()
+            and not run_meta.get("fallback")
         ):
-            # Nothing was placed (no time for a single call, first-call LLM
-            # error, refusal, ...): an empty result must never reach the
-            # client — applying it would wipe the range's previous solver
-            # plan. Return a heuristic draft instead, like the repair
-            # strategy's seed would be.
+            # Nothing was placed (first-call error, refusal, ...): attempt
+            # the same heuristic draft as repair mode within the remaining
+            # budget, retaining all model telemetry in the closing report.
             return heuristic_fallback(
                 list(extra_notes)
                 + [
@@ -719,16 +730,22 @@ def agent_solve_range(
             )
         emit_agent("stage", {"stage": "finalize"})
         best = executor.best_assignments
+        if status == "AGENT_FALLBACK_SEED" and not run_meta.get("fallback"):
+            run_meta["fallback"] = {"producer": "heuristic_v2", "model_stop_reason": run_meta["stop_reason"]}
         notes = [
             (
-                f"Agent solver (day-by-day): built from scratch, "
+                "Agent solver: heuristic fallback, "
+                if run_meta.get("fallback")
+                else f"Agent solver (day-by-day): built from scratch, "
                 if strategy == "day_by_day"
                 else "Agent solver: seed by heuristic v2, "
             )
             + f"{iterations_done} LLM iteration(s), "
             f"{executor.moves_accepted} move(s) accepted, {executor.moves_rejected} rejected.",
         ]
-        if executor.best_quality < executor.seed_quality:
+        if run_meta.get("fallback"):
+            notes.append("The returned draft was produced by heuristic v2.")
+        elif executor.best_quality < executor.seed_quality:
             notes.append(
                 "Plan improved over the seed: "
                 + _quality_improvement_note(executor.seed_quality, executor.best_quality, executor.quality_fields)
@@ -739,7 +756,7 @@ def agent_solve_range(
                 "Quality metrics unchanged; kept the agent's adjustments "
                 "(preference/fairness swaps at equal quality)."
             )
-        elif strategy == "day_by_day":
+        elif strategy == "day_by_day" and not run_meta.get("fallback"):
             notes.append(
                 "No assignments could be placed; returning an empty plan "
                 "for the range."
@@ -797,6 +814,11 @@ def agent_solve_range(
                 "num_assignments": len(best),
                 "agent": {
                     "model": config.model if config is not None else None,
+                    "provider": config.provider if config is not None else None,
+                    "result_producer": "heuristic_v2" if run_meta.get("fallback") else "agent",
+                    "fallback": run_meta.get("fallback"),
+                    "stats": plan_stats(ctx, best).model_dump(),
+                    "quality": executor.quality_dict(executor.best_quality),
                     "strategy": strategy,
                     "iterations": iterations_done,
                     "retriesUsed": retries_used,
@@ -868,6 +890,7 @@ def agent_solve_range(
         "Settings → Solver."
     )
     if payload.agent_budget_exhausted:
+        run_meta["stop_reason"] = "budget_exhausted"
         if strategy == "day_by_day":
             return heuristic_fallback([budget_note])
         return finalize("AGENT_FALLBACK_SEED", [budget_note])
@@ -875,6 +898,7 @@ def agent_solve_range(
         try:
             provider = get_provider(config)
         except Exception as exc:
+            run_meta["stop_reason"] = "provider_error"
             # Phrasing matters: the frontend surfaces notes containing
             # "could not" as a warning toast, and matches "Agent LLM
             # unavailable" to show a persistent error in the planning panel.
@@ -929,6 +953,12 @@ def agent_solve_range(
     if pattern_lines:
         wishes_block += "\nEXPLICIT SOFT WORK PATTERNS (daysPerWeek is an average workload pattern, not a hard quota):\n" + "\n".join(pattern_lines)
     wishes_block += "\nFree-text wishes still require interpretation; do not claim they were mechanically verified."
+
+    def execute_tool(call):
+        # Preserve compatibility with tracing executors for ordinary calls;
+        # malformed JSON carries an explicit error instead of executable {}.
+        kwargs = {"argument_error": call.argument_error} if call.argument_error else {}
+        return executor.execute(call.name, call.arguments, call.id, **kwargs)
 
     def absorb_response(response) -> None:
         """Token accounting + thought/summary feed emission — identical for
@@ -1130,7 +1160,7 @@ def agent_solve_range(
                                 ],
                             )
                         results.append(
-                            executor.execute(call.name, call.arguments, call.id)
+                            execute_tool(call)
                         )
                     emit_agent(
                         "tool_use", {"tools": [c.name for c in response.tool_calls]}
@@ -1158,7 +1188,7 @@ def agent_solve_range(
                                 ChatMessage(
                                     role="tool",
                                     tool_results=[
-                                        executor.execute(c.name, c.arguments, c.id)
+                                        execute_tool(c)
                                         for c in response.tool_calls
                                     ],
                                 )
@@ -1380,7 +1410,7 @@ def agent_solve_range(
                                 extra_notes
                                 + ["Agent run aborted by user; best plan so far returned."],
                             )
-                        results.append(executor.execute(call.name, call.arguments, call.id))
+                        results.append(execute_tool(call))
                     emit_agent("tool_use", {"tools": [c.name for c in response.tool_calls]})
                     messages.append(assistant)
                     messages.append(ChatMessage(role="tool", tool_results=results))
@@ -1414,7 +1444,7 @@ def agent_solve_range(
                                 ChatMessage(
                                     role="tool",
                                     tool_results=[
-                                        executor.execute(c.name, c.arguments, c.id)
+                                        execute_tool(c)
                                         for c in response.tool_calls
                                     ],
                                 )
@@ -1582,7 +1612,7 @@ def agent_solve_range(
                     for call in response.tool_calls:
                         if cancel_event.is_set():
                             return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
-                        results.append(executor.execute(call.name, call.arguments, call.id))
+                        results.append(execute_tool(call))
                     messages.append(
                         ChatMessage(
                             role="assistant",
@@ -1724,7 +1754,7 @@ def agent_solve_range(
                     return finalize(
                         "ABORTED", ["Agent run aborted by user; best plan so far returned."]
                     )
-                results.append(executor.execute(call.name, call.arguments, call.id))
+                results.append(execute_tool(call))
             # Inspection-only rounds were invisible in the live feed, which
             # made slow runs look hung — surface what the agent looked at.
             emit_agent("tool_use", {"tools": [c.name for c in response.tool_calls]})
@@ -1761,7 +1791,7 @@ def agent_solve_range(
                         ChatMessage(
                             role="tool",
                             tool_results=[
-                                executor.execute(c.name, c.arguments, c.id)
+                                execute_tool(c)
                                 for c in response.tool_calls
                             ],
                         )

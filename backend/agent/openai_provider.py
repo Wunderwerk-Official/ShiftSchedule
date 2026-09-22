@@ -7,8 +7,8 @@ Differences from the Anthropic adapter, handled here so the harness stays
 provider-agnostic:
 
 - Tool calls arrive with ``arguments`` as a JSON STRING (Anthropic: parsed
-  dict). Self-hosted models sometimes emit broken JSON — that degrades to an
-  empty-arguments call, and the tool executor's own validation produces a
+  dict). Self-hosted models sometimes emit broken JSON — that degrades to a
+  correlated tool error, and the tool executor's own validation produces a
   readable error the model can react to, instead of crashing the run.
 - Tool results are one ``role="tool"`` message PER result with a
   ``tool_call_id`` (Anthropic: one user message containing all results).
@@ -46,16 +46,19 @@ from .provider import (
 def _parse_arguments(raw: object) -> dict:
     """Tool-call arguments defensively parsed. The API contract says JSON
     string, but self-hosted models occasionally emit malformed JSON or the
-    server pre-parses it — accept both, degrade to {} instead of raising."""
+    server pre-parses it. Preserve parse failures as tool errors rather than
+    turning them into a successful empty operation."""
     if isinstance(raw, dict):
         return raw
     if isinstance(raw, str) and raw.strip():
         try:
             parsed = json.loads(raw)
-            return parsed if isinstance(parsed, dict) else {}
+            if isinstance(parsed, dict):
+                return parsed
+            raise ValueError("Tool arguments must be a JSON object.")
         except (ValueError, TypeError):
-            return {}
-    return {}
+            raise ValueError("Tool arguments must contain a valid JSON object.") from None
+    raise ValueError("Tool arguments must contain a valid JSON object.")
 
 
 def to_openai_tools(tools: List[ToolSpec]) -> List[dict]:
@@ -86,7 +89,7 @@ def to_openai_messages(system: str, messages: List[ChatMessage]) -> List[dict]:
                         "type": "function",
                         "function": {
                             "name": call.name,
-                            "arguments": json.dumps(call.arguments),
+                            "arguments": call.raw_arguments if call.raw_arguments is not None else json.dumps(call.arguments),
                         },
                     }
                     for call in msg.tool_calls
@@ -211,22 +214,33 @@ class OpenAICompatibleProvider(LLMProvider):
             function = getattr(call, "function", None)
             if function is None or not getattr(function, "name", None):
                 continue
+            raw_arguments = getattr(function, "arguments", None)
+            parse_error = None
+            try:
+                arguments = _parse_arguments(raw_arguments)
+            except ValueError as exc:
+                arguments, parse_error = {}, str(exc)
             tool_calls.append(
                 ToolCall(
                     id=call.id or f"call_{len(tool_calls)}",
                     name=function.name,
-                    arguments=_parse_arguments(getattr(function, "arguments", None)),
+                    arguments=arguments,
+                    argument_error=parse_error,
+                    raw_arguments=raw_arguments if isinstance(raw_arguments, str) else None,
                 )
             )
 
         usage = {"input_tokens": 0, "output_tokens": 0,
                  "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
         if response.usage is not None:
-            usage["input_tokens"] = getattr(response.usage, "prompt_tokens", 0) or 0
+            prompt_tokens = max(0, getattr(response.usage, "prompt_tokens", 0) or 0)
             usage["output_tokens"] = getattr(response.usage, "completion_tokens", 0) or 0
             details = getattr(response.usage, "prompt_tokens_details", None)
             cached = getattr(details, "cached_tokens", 0) if details is not None else 0
-            usage["cache_read_input_tokens"] = cached or 0
+            # OpenAI includes cache hits in prompt_tokens; our shared usage
+            # contract (and UI totals) keeps uncached input and cache separate.
+            usage["cache_read_input_tokens"] = min(prompt_tokens, max(0, cached or 0))
+            usage["input_tokens"] = prompt_tokens - usage["cache_read_input_tokens"]
 
         finish = (choice.finish_reason or "stop").lower()
         if tool_calls:

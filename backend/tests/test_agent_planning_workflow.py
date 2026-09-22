@@ -168,6 +168,30 @@ def test_proposal_retry_never_reapplies_changes_or_reuses_old_next_options():
     assert "next" not in again
 
 
+def test_final_audit_applies_checked_day_block_larger_than_model_move_limit():
+    from threading import Event
+
+    slots = []
+    for index in range(24):
+        start = 8 * 60 + index * 15
+        end = start + 15
+        slots.append(make_template_slot(f"quarter-{index:02}",
+                                       start_time=f"{start // 60:02}:{start % 60:02}",
+                                       end_time=f"{end // 60:02}:{end % 60:02}"))
+    ex = executor(make_app_state(clinicians=[make_clinician("a", "Alice")], slots=slots))
+    options = run(ex, "suggest_day_blocks", dateISO=MON)
+    proposal = ex.workflow.proposals[options["candidates"][0]["proposal_id"]]
+    assert len(proposal["moves"]) == 24
+    # Keep the public model payload bound, while accepting the internally
+    # checked proposal atomically through the normal proposal-ID contract.
+    reply = ex.execute("apply_moves", {"moves": proposal["moves"]}, "model-call")
+    assert reply.is_error and not ex.current
+    result = ex.workflow.final_audit([MON], Event())
+    assert result["repairs"] == 1
+    assert len(ex.current) == len(ex.best_assignments) == 24
+    assert result["checks"][MON]["complete"]
+
+
 def test_other_day_change_invalidates_proposal_and_negative_search_cache():
     state = make_app_state(slots=[
         make_template_slot("mon"), make_template_slot("tue", col_band_id="col-tue-1"),

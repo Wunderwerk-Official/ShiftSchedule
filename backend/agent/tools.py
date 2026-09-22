@@ -37,10 +37,12 @@ from ..validation import (
     validate_assignments,
     validate_solver_rules,
 )
+from ..constraint_policy import violation_key as _violation_key, is_new_or_worsened
 from .workflow import PlanningWorkflow, SEARCH_TOOLS, InspectionBudgetExhausted
 from .neighborhood import analyze_bottlenecks, explain_unfilled, repair_neighborhood
 from .quality import QUALITY_VERSION, BALANCED_FIELDS, CLASSIC_FIELDS, extra_metrics
 from .activity import tool_receipt
+from .tool_arguments import argument_error as validate_arguments
 from ..planning_preferences import daily_comfort_minutes, daily_min_minutes, daily_target_minutes
 
 AGENT_ASSIGNMENT_SOURCE = "solver"
@@ -410,25 +412,6 @@ def _dump(data: Any) -> str:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False)
 
 
-def _violation_key(v: Violation) -> Tuple:
-    if v.code == VIOLATION_WEEKLY_HOURS and v.context:
-        # Keyed by ISO week (not the first assignment date, which shifts when
-        # earlier-in-week assignments change) so the baseline diff is stable.
-        return (v.code, v.clinician_id, v.context.get("iso_year"), v.context.get("iso_week"))
-    if v.code in (VIOLATION_SPLIT_SHIFT, VIOLATION_SAME_LOCATION):
-        # These are clinician-day groups; the validator's sample slot can
-        # change when a repair removes the first assignment.
-        return (v.code, v.clinician_id, v.date_iso)
-    if v.code == VIOLATION_OVERLAP and v.context:
-        pair = sorted(((v.date_iso or "", v.slot_id or ""),
-                       (v.context.get("other_date_iso", ""), v.context.get("other_slot_id", ""))))
-        return (v.code, v.clinician_id, *pair)
-    if v.code == VIOLATION_ON_CALL_REST and v.context:
-        return (v.code, v.clinician_id, v.date_iso, v.slot_id,
-                v.context.get("on_call_date"), v.context.get("on_call_slot_id"))
-    return (v.code, v.clinician_id, v.date_iso, v.slot_id)
-
-
 def _split_slot_key(slot_key: str) -> Tuple[str, str]:
     """'<slotId>__<dateISO>' -> (slotId, dateISO). Slot ids may themselves
     contain '__', so split on the LAST separator (dates never contain it)."""
@@ -691,21 +674,7 @@ class PlanToolExecutor:
 
     def _is_new_hard(self, v: Violation) -> bool:
         """True when a violation is NEW (or worsened) relative to the seed baseline."""
-        key = _violation_key(v)
-        if key not in self.baseline_hard_keys:
-            return True
-        before = self.baseline_hard_context.get(key, {})
-        after = v.context or {}
-        if v.code == VIOLATION_SPLIT_SHIFT:
-            return after.get("blocks", 0) > before.get("blocks", 0)
-        if v.code == VIOLATION_SAME_LOCATION:
-            return not set(after.get("locations", [])).issubset(before.get("locations", []))
-        if v.code == VIOLATION_WEEKLY_HOURS:
-            baseline_minutes = self.baseline_week_minutes.get(key)
-            current_minutes = int((v.context or {}).get("assigned_minutes") or 0)
-            if baseline_minutes is not None and current_minutes > baseline_minutes:
-                return True  # same violating week, but worsened
-        return False
+        return is_new_or_worsened(v, self.baseline_hard_context)
 
     def _counts_by_instance(self, working: List[Assignment]) -> Dict[str, int]:
         counts: Dict[str, int] = dict(self.ctx.fixed_counts)
@@ -768,7 +737,7 @@ class PlanToolExecutor:
     # tool dispatch
     # ------------------------------------------------------------------
 
-    def execute(self, name: str, arguments: dict, tool_call_id: str):
+    def execute(self, name: str, arguments: dict, tool_call_id: str, *, argument_error=None):
         from .provider import ToolResult
 
         handlers = {
@@ -797,7 +766,7 @@ class PlanToolExecutor:
         self.activity_counter += 1
         activity = {"activity_id": self.activity_counter, "tool": name}
         # Keep only a validated date as context, never arbitrary tool arguments.
-        args = arguments or {}
+        args = arguments
         date_iso = args.get("dateISO") if isinstance(args, dict) else None
         if isinstance(date_iso, str) and date_iso in self.ctx.target_date_set:
             activity["dateISO"] = date_iso
@@ -809,7 +778,15 @@ class PlanToolExecutor:
                 result = {"error": f"Unknown tool: {name}"}
                 failed = True
             else:
-                result = self.workflow.search(name, args, handler) if name in SEARCH_TOOLS else handler(args)
+                schema = next(spec["input_schema"] for spec in TOOL_SPECS_RAW if spec["name"] == name)
+                error = argument_error or validate_arguments(args, schema)
+                if error:
+                    result = {"error": error, "code": "invalid_tool_arguments", "applied": False,
+                              "plan_revision": self.workflow.revision,
+                              "hint": "Correct the arguments to match this tool's schema and try again. Nothing was changed."}
+                    failed = True
+                else:
+                    result = self.workflow.search(name, args, handler) if name in SEARCH_TOOLS else handler(args)
         except InspectionBudgetExhausted as exc:
             result = exc.result
         except Exception as exc:  # tool bugs must not kill the solve

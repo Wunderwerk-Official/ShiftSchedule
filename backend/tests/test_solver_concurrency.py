@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.db as db
-from backend.auth import _get_current_user
+from backend.auth import _get_current_user, _create_user, _get_user_by_username, _user_row_to_public
 from backend.main import app
 from backend.models import UserPublic
 from backend.state import _save_state
@@ -50,11 +50,13 @@ def multi_user_client(tmp_path, monkeypatch):
     script_path.write_text(json.dumps(SLOW_SCRIPT))
     monkeypatch.setenv("AGENT_MOCK_SCRIPT", str(script_path))
 
-    current = {"user": UserPublic(username="user-a", role="user", active=True)}
+    current = {"user": _create_user("user-a", "concurrency-test-password", "user")}
     app.dependency_overrides[_get_current_user] = lambda: current["user"]
 
     def as_user(username: str, role: str = "user") -> None:
-        current["user"] = UserPublic(username=username, role=role, active=True)
+        row = _get_user_by_username(username)
+        current["user"] = (_user_row_to_public(row) if row else
+                           _create_user(username, "concurrency-test-password", role))
 
     client = TestClient(app)
     try:
@@ -76,6 +78,8 @@ def multi_user_client(tmp_path, monkeypatch):
 
 
 def _seed_user(username: str) -> None:
+    if not _get_user_by_username(username):
+        _create_user(username, "concurrency-test-password", "user")
     state = make_app_state(clinicians=[make_clinician(f"clin-{username}", f"Doc {username}")])
     _save_state(state, username)
 
@@ -334,19 +338,23 @@ def test_broadcast_is_owner_scoped():
 
     from backend import solver as solver_module
 
-    queue_a: asyncio.Queue = asyncio.Queue()
-    queue_b: asyncio.Queue = asyncio.Queue()
-    entry_a = ("user-a", queue_a)
-    entry_b = ("user-b", queue_b)
-    with solver_module._subscribers_lock:
-        solver_module._solver_progress_subscribers.extend([entry_a, entry_b])
-    try:
-        solver_module._broadcast_solver_progress("user-a", "tok-1", "phase", {"phase": "x"})
-        assert queue_b.empty()
-        event = queue_a.get_nowait()
-        assert event["event"] == "phase"
-        assert event["data"]["run_token"] == "tok-1"
-    finally:
+    async def receive():
+        queue_a: asyncio.Queue = asyncio.Queue()
+        queue_b: asyncio.Queue = asyncio.Queue()
+        entry_a = ("user-a", asyncio.get_running_loop(), queue_a)
+        entry_b = ("user-b", asyncio.get_running_loop(), queue_b)
         with solver_module._subscribers_lock:
-            solver_module._solver_progress_subscribers.remove(entry_a)
-            solver_module._solver_progress_subscribers.remove(entry_b)
+            solver_module._solver_progress_subscribers.extend([entry_a, entry_b])
+        try:
+            solver_module._broadcast_solver_progress("user-a", "tok-1", "phase", {"phase": "x"})
+            await asyncio.sleep(0)
+            assert queue_b.empty()
+            event = queue_a.get_nowait()
+            assert event["event"] == "phase"
+            assert event["data"]["run_token"] == "tok-1"
+        finally:
+            with solver_module._subscribers_lock:
+                solver_module._solver_progress_subscribers.remove(entry_a)
+                solver_module._solver_progress_subscribers.remove(entry_b)
+
+    asyncio.run(receive())

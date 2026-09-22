@@ -26,6 +26,9 @@ def build_job(root: Path, argv: list[str], implementation: str) -> str:
     return f'''import base64, gzip, json, os, pathlib, sqlite3, sys, tempfile
 from urllib.parse import quote
 sys.argv = {argv!r}
+db_path_for_drain = pathlib.Path(os.environ.get("SCHEDULE_DB_PATH", "schedule.db"))
+if db_path_for_drain.with_name(".planning-drain").exists():
+    raise SystemExit("Deployment in progress; start the arena again after deployment.")
 with tempfile.TemporaryDirectory(prefix="shift-arena-") as scratch:
     files = json.loads(gzip.decompress(base64.b64decode({packed!r})))
     for name, content in files.items():

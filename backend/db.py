@@ -1,9 +1,11 @@
 import os
 import sqlite3
+import threading
 from datetime import datetime, timezone
 
 DB_PATH = os.environ.get("SCHEDULE_DB_PATH", "schedule.db")
 _SCHEMA_READY = False
+_SCHEMA_LOCK = threading.Lock()
 
 
 def _utcnow() -> datetime:
@@ -15,6 +17,17 @@ def _utcnow_iso() -> str:
 
 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
+    # Migrations can be entered concurrently by request threads or spawned
+    # workers. Serialize locally and take the SQLite writer lock before
+    # inspecting columns so two processes cannot both ALTER the same table.
+    with _SCHEMA_LOCK:
+        if _SCHEMA_READY:
+            return
+        conn.execute("BEGIN IMMEDIATE")
+        _ensure_schema_locked(conn)
+
+
+def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
     global _SCHEMA_READY
     if _SCHEMA_READY:
         return
@@ -36,10 +49,24 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             password_hash TEXT NOT NULL,
             role TEXT NOT NULL,
             active INTEGER NOT NULL,
-            created_at TEXT NOT NULL
+            created_at TEXT NOT NULL,
+            account_generation TEXT NOT NULL,
+            token_version INTEGER NOT NULL DEFAULT 0
         )
         """
     )
+    user_columns = {row["name"] for row in conn.execute("PRAGMA table_info(users)")}
+    if "account_generation" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN account_generation TEXT")
+    if "token_version" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
+    # Existing accounts keep their data and password. Name-only legacy JWTs
+    # intentionally expire at migration: there is no safe way to prove which
+    # historical account generation issued such a token.
+    conn.execute("UPDATE users SET account_generation = lower(hex(randomblob(16))) "
+                 "WHERE account_generation IS NULL OR account_generation = ''")
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_account_generation "
+                 "ON users(account_generation)")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS ical_publications (
@@ -198,5 +225,9 @@ def _get_connection() -> sqlite3.Connection:
     # occasionally loses that race against a slow write.
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
-    _ensure_schema(conn)
+    try:
+        _ensure_schema(conn)
+    except Exception:
+        conn.close()
+        raise
     return conn

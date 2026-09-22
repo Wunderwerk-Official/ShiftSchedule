@@ -50,3 +50,22 @@ def test_provider_error_is_not_a_successful_comparison(monkeypatch, capsys):
         prompt_eval.main()
     assert prompt_eval.harness.PlanToolExecutor is original
     assert '"error": "test unavailable"' in capsys.readouterr().out
+
+
+def test_zero_move_fallback_reports_returned_coverage_and_is_not_model_success(monkeypatch, capsys):
+    # The model ends cleanly without placing anything. A successful heuristic
+    # draft must not be scored as successful model planning.
+    monkeypatch.setattr(prompt_eval, "load_state", lambda: make_app_state())
+    monkeypatch.setattr(prompt_eval, "get_provider", lambda _: MockProvider())
+    monkeypatch.setattr(sys, "argv", ["prompt_eval", "--mock", "--start", "2026-01-05"])
+    with pytest.raises(SystemExit, match="Model errors/fallback detected"):
+        prompt_eval.main()
+    lines = capsys.readouterr().out.splitlines()
+    report = next(json.loads(line.split(" ", 1)[1]) for line in lines if line.startswith("PROMPT_EVAL_REPORT "))
+    plan = next(json.loads(line.split(" ", 1)[1]) for line in lines if line.startswith("PROMPT_EVAL_PLAN "))
+    assert report["fallback"]
+    assert report["result_producer"] == "heuristic_v2"
+    assert len(plan["assignments"]) == report["stats"]["total_assignments"] == 1
+    assert report["stats"]["open_slots"] == report["best_quality"]["open_required_slots"] == 0
+    assert report["completion"]["coverage_complete"]
+    assert not report["completion"]["required_checks_complete"]

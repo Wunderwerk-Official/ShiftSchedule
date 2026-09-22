@@ -1,4 +1,5 @@
 import { StateSaveQueue } from "../lib/stateSaveQueue";
+import { abortableDelay } from "../lib/abortableDelay";
 
 export type RowKind = "class" | "pool";
 
@@ -393,11 +394,13 @@ export type AgentChatTestResult = {
  * latency and token-throughput measurements. */
 export async function agentChatTest(
   messages: AgentChatTestMessage[],
+  signal?: AbortSignal,
 ): Promise<AgentChatTestResult> {
   const res = await fetch(`${API_BASE}/v1/agent/chat-test`, {
     method: "POST",
     headers: buildHeaders(),
     body: JSON.stringify({ messages }),
+    signal,
   });
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {
@@ -422,11 +425,12 @@ export type AgentModelCheckResult = {
 };
 
 /** Admin-only: verify the self-hosted endpoint serves a model and answers. */
-export async function agentModelCheck(model: string): Promise<AgentModelCheckResult> {
+export async function agentModelCheck(model: string, signal?: AbortSignal): Promise<AgentModelCheckResult> {
   const res = await fetch(`${API_BASE}/v1/agent/model-check`, {
     method: "POST",
     headers: buildHeaders(),
     body: JSON.stringify({ model }),
+    signal,
   });
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) throw new Error(`Model check failed: ${res.status}`);
@@ -768,6 +772,9 @@ export type SolverUnsolvedOpenSlot = {
 
 export type SolverAgentDebug = {
   model?: string | null;
+  provider?: string | null;
+  result_producer?: "agent" | "heuristic_v2";
+  fallback?: { producer: string; model_stop_reason?: string; solver_status?: string | null } | null;
   iterations?: number;
   /** Transient LLM failures that were retried successfully or not. */
   retriesUsed?: number;
@@ -952,13 +959,18 @@ export async function listSolverRuns(): Promise<SolverRunSummary[]> {
   return body.runs;
 }
 
-export async function getSolverRun(runId: string): Promise<SolverRunDetail> {
+export class HttpError extends Error {
+  constructor(message: string, public status: number) { super(message); }
+}
+
+export async function getSolverRun(runId: string, signal?: AbortSignal): Promise<SolverRunDetail> {
   const res = await fetch(
     `${API_BASE}/v1/solve/runs/${encodeURIComponent(runId)}`,
-    { headers: buildHeaders() },
+    { headers: buildHeaders(), signal },
   );
+  if (signal?.aborted) throw new DOMException("Operation cancelled", "AbortError");
   if (res.status === 401) handleUnauthorized();
-  if (!res.ok) throw new Error(`Failed to fetch solver run: ${res.status}`);
+  if (!res.ok) throw new HttpError(`Failed to fetch solver run: ${res.status}`, res.status);
   return res.json();
 }
 
@@ -1154,31 +1166,77 @@ export type SolverProgressEvent =
 
 export function subscribeSolverProgress(
   onEvent: (event: SolverProgressEvent) => void,
-  onError?: (error: Event) => void,
+  onError?: (error: Error) => void,
 ): () => void {
-  const token = localStorage.getItem("authToken");
-  const url = `${API_BASE}/v1/solve/progress?token=${encodeURIComponent(token ?? "")}`;
-  const eventSource = new EventSource(url);
-
-  eventSource.onmessage = (e) => {
-    try {
-      const parsed = JSON.parse(e.data) as SolverProgressEvent;
-      onEvent(parsed);
-    } catch {
-      // Ignore parse errors
+  const controller = new AbortController();
+  const token = readToken();
+  const signal = controller.signal;
+  void (async () => {
+    let failures = 0;
+    while (!signal.aborted && readToken() === token) {
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      const cancelReader = () => { void reader?.cancel().catch(() => undefined); };
+      const connectedAt = Date.now();
+      try {
+        const response = await fetch(`${API_BASE}/v1/solve/progress`, {
+          headers: { ...buildHeaders(), Accept: "text/event-stream" }, signal,
+        });
+        if (signal.aborted) return;
+        if (response.status === 401) {
+          onError?.(new HttpError("Live updates authorization expired.", 401));
+          handleUnauthorized();
+          return;
+        }
+        if (!response.ok) throw new HttpError(`Live updates failed: ${response.status}`, response.status);
+        if (!response.body) throw new Error("Live updates returned no stream.");
+        reader = response.body.getReader();
+        signal.addEventListener("abort", cancelReader, { once: true });
+        const decoder = new TextDecoder();
+        let buffer = "";
+        let dataLines: string[] = [];
+        while (!signal.aborted) {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error("Live updates disconnected.");
+          buffer += decoder.decode(chunk.value, { stream: true });
+          let newline: number;
+          while ((newline = buffer.indexOf("\n")) >= 0) {
+            const line = buffer.slice(0, newline).replace(/\r$/, "");
+            buffer = buffer.slice(newline + 1);
+            if (line === "") {
+              if (dataLines.length) {
+                let event: SolverProgressEvent | undefined;
+                try { event = JSON.parse(dataLines.join("\n")) as SolverProgressEvent; } catch { /* Ignore malformed events. */ }
+                dataLines = [];
+                if (event?.event && event.data && !signal.aborted) {
+                  if (event.event !== "connected") failures = 0;
+                  onEvent(event);
+                }
+              }
+            } else if (line.startsWith("data:")) {
+              dataLines.push(line.slice(5).replace(/^ /, ""));
+            }
+          }
+        }
+      } catch (error) {
+        if (signal.aborted || readToken() !== token) return;
+        const failure = error instanceof Error ? error : new Error("Live updates disconnected.");
+        onError?.(failure);
+        if (failure instanceof HttpError && [401, 403, 404].includes(failure.status)) return;
+        if (Date.now() - connectedAt > 30_000) failures = 0;
+        if (++failures >= 6) {
+          onError?.(new Error("Live updates stopped after repeated connection failures. Reload to reconnect; planning continues on the server."));
+          return;
+        }
+      } finally {
+        signal.removeEventListener("abort", cancelReader);
+        await reader?.cancel().catch(() => undefined);
+        reader?.releaseLock();
+      }
+      try { await abortableDelay(Math.min(1000 * 2 ** (failures - 1), 30_000), signal); }
+      catch { return; }
     }
-  };
-
-  eventSource.onerror = (e) => {
-    // Let EventSource reconnect after transient network failures. Terminal
-    // failures (e.g. 401) are CLOSED by the browser; cleanup closes on unmount.
-    onError?.(e);
-  };
-
-  // Return cleanup function
-  return () => {
-    eventSource.close();
-  };
+  })();
+  return () => controller.abort();
 }
 
 export async function getIcalPublishStatus(): Promise<IcalPublishStatus> {
@@ -1229,16 +1287,16 @@ export async function unpublishIcal(): Promise<void> {
   }
 }
 
-export async function exportWeekPdf(startISO: string): Promise<Blob> {
+export async function exportWeekPdf(startISO: string, revision?: string): Promise<Blob> {
   const res = await fetch(
-    `${API_BASE}/v1/pdf/week?start=${encodeURIComponent(startISO)}`,
+    `${API_BASE}/v1/pdf/week?start=${encodeURIComponent(startISO)}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}`,
     {
       headers: buildHeaders(),
     },
   );
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {
-    throw new Error(`Failed to export PDF: ${res.status}`);
+    await throwWithDetail(res, `Failed to export PDF: ${res.status}`);
   }
   return res.blob();
 }
@@ -1309,18 +1367,18 @@ export async function getPublicWebWeek(
   return res.json();
 }
 
-export async function exportWeeksPdf(startISO: string, weeks: number): Promise<Blob> {
+export async function exportWeeksPdf(startISO: string, weeks: number, revision?: string): Promise<Blob> {
   const res = await fetch(
     `${API_BASE}/v1/pdf/weeks?start=${encodeURIComponent(startISO)}&weeks=${encodeURIComponent(
       String(weeks),
-    )}`,
+    )}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}`,
     {
       headers: buildHeaders(),
     },
   );
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {
-    throw new Error(`Failed to export PDF: ${res.status}`);
+    await throwWithDetail(res, `Failed to export PDF: ${res.status}`);
   }
   return res.blob();
 }

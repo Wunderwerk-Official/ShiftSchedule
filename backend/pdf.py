@@ -7,8 +7,9 @@ from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
 from .auth import _extract_bearer_token, _get_current_user
+from .account_lifecycle import authenticated_account_connection
 from .models import UserPublic
-from .state import _parse_date_input
+from .state import _load_state, _parse_date_input
 
 router = APIRouter()
 
@@ -29,19 +30,39 @@ def _launch_chromium(playwright):
     return playwright.chromium.launch()
 
 
+def _export_snapshot(current_user: UserPublic, expected_revision: Optional[str]):
+    with authenticated_account_connection(current_user) as conn:
+        state = _load_state(current_user.username, connection=conn)
+    if expected_revision is not None and state.revision != expected_revision:
+        raise HTTPException(status_code=409, detail=(
+            "The calendar changed during export. Already downloaded files use the previous "
+            "revision; reload and start a new export for the updated calendar."
+        ))
+    return state.model_dump_json(), state.revision
+
+
+def _bind_print_snapshot(page, snapshot: str):
+    # The print page must never read a newer calendar while Chromium starts
+    # or renders subsequent weeks. This snapshot belongs to this request only.
+    page.route("**/v1/state", lambda route: route.fulfill(
+        status=200, content_type="application/json", body=snapshot,
+    ))
+
+
 @router.get("/v1/pdf/week")
 def export_week_pdf(
     start: str = Query(..., min_length=8),
+    expected_revision: Optional[str] = Query(default=None),
     authorization: Optional[str] = Header(default=None),
     current_user: UserPublic = Depends(_get_current_user),
 ):
-    _ = current_user
     start_iso = _parse_date_input(start)
     if not start_iso:
         raise HTTPException(status_code=400, detail="Start date required.")
     token = _extract_bearer_token(authorization)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token.")
+    snapshot, revision = _export_snapshot(current_user, expected_revision)
     base_url = FRONTEND_BASE_URL.rstrip("/")
     print_url = f"{base_url}/print/week?start={start_iso}"
 
@@ -52,6 +73,7 @@ def export_week_pdf(
                 # Set viewport to A4 landscape dimensions at 96 DPI
                 # 297mm x 210mm = 1122 x 794 px at 96 DPI
                 page = browser.new_page(viewport={"width": 1122, "height": 794})
+                _bind_print_snapshot(page, snapshot)
                 page.add_init_script(
                     "localStorage.setItem('authToken', %s);" % json.dumps(token)
                 )
@@ -78,7 +100,8 @@ def export_week_pdf(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "X-Calendar-Revision": revision or ""},
     )
 
 
@@ -86,16 +109,17 @@ def export_week_pdf(
 def export_weeks_pdf(
     start: str = Query(..., min_length=8),
     weeks: int = Query(..., ge=1, le=55),
+    expected_revision: Optional[str] = Query(default=None),
     authorization: Optional[str] = Header(default=None),
     current_user: UserPublic = Depends(_get_current_user),
 ):
-    _ = current_user
     start_iso = _parse_date_input(start)
     if not start_iso:
         raise HTTPException(status_code=400, detail="Start date required.")
     token = _extract_bearer_token(authorization)
     if not token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token.")
+    snapshot, revision = _export_snapshot(current_user, expected_revision)
     base_url = FRONTEND_BASE_URL.rstrip("/")
     print_url = f"{base_url}/print/weeks?start={start_iso}&weeks={weeks}"
 
@@ -106,6 +130,7 @@ def export_weeks_pdf(
                 # Set viewport to A4 landscape dimensions at 96 DPI
                 # 297mm x 210mm = 1122 x 794 px at 96 DPI
                 page = browser.new_page(viewport={"width": 1122, "height": 794})
+                _bind_print_snapshot(page, snapshot)
                 page.add_init_script(
                     "localStorage.setItem('authToken', %s);" % json.dumps(token)
                 )
@@ -137,5 +162,6 @@ def export_weeks_pdf(
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"',
+                 "X-Calendar-Revision": revision or ""},
     )

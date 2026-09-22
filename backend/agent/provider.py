@@ -30,6 +30,12 @@ class ToolCall:
     id: str
     name: str
     arguments: dict
+    # Invalid provider arguments still need a correlated, repairable tool
+    # result. Never execute the placeholder arguments when this is set.
+    argument_error: Optional[str] = None
+    # OpenAI-compatible endpoints receive the original argument string when
+    # replaying the assistant call, including malformed/truncated JSON.
+    raw_arguments: Optional[str] = None
 
 
 @dataclass

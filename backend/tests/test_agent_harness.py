@@ -253,7 +253,7 @@ def test_missing_provider_falls_back_to_seed(monkeypatch):
     monkeypatch.setenv("AGENT_PROVIDER", "anthropic")
     state = _two_clinician_state()
     result = agent_solve_range(
-        _payload(), state, MockCancelEvent(), ProgressRecorder(), 0.0
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time()
     )
     assert result["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
     assert any("Agent LLM unavailable" in n for n in result["notes"])
@@ -810,10 +810,65 @@ def test_day_by_day_budget_exhausted_falls_back_to_heuristic():
     assert len(result["assignments"]) == 2
 
 
-def test_day_by_day_zero_moves_never_returns_an_empty_plan():
-    """An empty day-by-day result would WIPE the range's previous solver
-    plan when applied — every zero-progress exit (no time for a single
-    call, first-call LLM error) must return the heuristic draft instead."""
+def test_fallback_preserves_paid_usage_and_reports_the_returned_heuristic_plan():
+    from backend.agent_budget import estimate_cost_usd
+    from backend.models import Assignment
+    from backend.scoring import build_scoring_context, plan_stats
+
+    state = _two_day_state()
+    provider = ResponseProvider([
+        ProviderResponse(text="Still thinking.", replay_text="Still thinking.", tool_calls=[], stop_reason="end_turn",
+                         usage={"input_tokens": 500, "output_tokens": 50, "cache_read_input_tokens": 20}),
+        ProviderResponse(text=None, tool_calls=[], stop_reason="error", error="Invalid model", error_status=400),
+        ProviderResponse(text=None, tool_calls=[], stop_reason="error", error="Invalid model", error_status=400),
+    ])
+    result = agent_solve_range(_payload(endISO=TUE, agent_strategy="day_by_day"), state,
+                              MockCancelEvent(), ProgressRecorder(), time.time(), provider=provider,
+                              config=_config(model="claude-sonnet-5"))
+    agent = result["debugInfo"]["agent"]
+    assert result["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
+    assert agent["result_producer"] == "heuristic_v2"
+    assert agent["fallback"]["model_stop_reason"] == "provider_error"
+    assert agent["input_tokens"] == 500 and agent["output_tokens"] == 50
+    assert agent["cache_read_input_tokens"] == 20
+    assert estimate_cost_usd(agent["model"], agent) > 0
+    assignments = [Assignment.model_validate(a) for a in result["assignments"]]
+    expected = plan_stats(build_scoring_context(state, MON, TUE, only_fill_required=True), assignments).model_dump()
+    assert agent["stats"] == expected
+    assert agent["stats"]["open_slots"] == 0
+    assert agent["completion"]["coverage_complete"] is True
+    assert agent["completion"]["required_checks_complete"] is False
+    assert not any("returning an empty plan" in note for note in result["notes"])
+
+
+def test_invalid_parsed_tool_call_gets_error_and_can_be_corrected():
+    invalid = ToolCall("broken", "apply_moves", {}, argument_error="Tool arguments contain invalid JSON.",
+                       raw_arguments='{"moves":')
+    valid = ToolCall("fixed", "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"},
+    ]})
+
+    class RecoveringProvider(ResponseProvider):
+        def complete(self, **kwargs):
+            if len(kwargs["messages"]) > 1:
+                results = [r for message in kwargs["messages"] for r in message.tool_results]
+                if results and results[-1].tool_call_id == "broken":
+                    assert results[-1].is_error
+                    assert "invalid JSON" in results[-1].content
+            return super().complete(**kwargs)
+
+    result = agent_solve_range(_payload(agent_strategy="day_by_day"), _two_clinician_state(),
+                              MockCancelEvent(), ProgressRecorder(), time.time(), config=_config(),
+                              provider=RecoveringProvider([
+                                  ProviderResponse(text=None, tool_calls=[invalid], stop_reason="tool_use"),
+                                  ProviderResponse(text=None, tool_calls=[valid], stop_reason="tool_use"),
+                              ]))
+    assert [a["clinicianId"] for a in result["assignments"]] == ["clin-1"]
+    assert result["debugInfo"]["agent"]["moves_accepted"] == 1
+
+
+def test_day_by_day_fallback_respects_deadline_and_fills_when_time_remains():
+    """Fallback uses the run's remaining time, never a new time budget."""
 
     # (a) Time budget too short for any call.
     state = _two_day_state()
@@ -824,8 +879,10 @@ def test_day_by_day_zero_moves_never_returns_an_empty_plan():
         time.time() - 100.0,  # deadline already passed
         provider=MockProvider(), config=_config(),
     )
-    assert len(result["assignments"]) == 2  # heuristic filled both days
+    assert result["assignments"] == []
     assert result["debugInfo"]["solver_status"] == "AGENT_FALLBACK_SEED"
+    assert result["debugInfo"]["agent"]["stats"]["open_slots"] == 2
+    assert result["debugInfo"]["agent"]["fallback"]["model_stop_reason"] == "budget_exhausted"
     assert any("could not apply any changes" in n for n in result["notes"])
 
     # (b) Provider error on the very first call.

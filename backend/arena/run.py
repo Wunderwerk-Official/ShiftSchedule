@@ -1,9 +1,9 @@
 """Agent test arena: run the agent solver against a hard, realistic state
 and print comparable metrics.
 
-The fixture is an anonymized export of a large radiology practice (24
-clinicians, 35 sections, 163 weekly template slots, 4 locations) — the
-kind of case the agent must eventually handle well.
+Fixture synthetic-v2 generates 24 fictitious clinicians and calendars around
+a retained scheduling structure: 35 rows (33 sections and two pools), 163
+weekly template slots and four locations. No original personnel data is used.
 
 Runs IN-PROCESS against whatever provider the environment / admin settings
 resolve to (same path as the real solver), so executing it inside the
@@ -17,6 +17,7 @@ No HTTP, no writes: state comes from the fixture, results go to stdout.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import time
 from datetime import date, timedelta
@@ -49,7 +50,7 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
     """Deterministically transform the fixture into a harder case. Returns a
     human-readable description of what was changed."""
     if scenario == "base":
-        return "unchanged practice data"
+        return "synthetic-v2 roster, generated history and vacations; unchanged calendar structure"
 
     # Stable clinician order so the scenario is reproducible.
     ids = [c.id for c in state.clinicians]
@@ -79,6 +80,10 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
         hit = ids[::4][:5]
         for cid in hit:
             _add_vacation(state, cid, start_iso, end_iso)
+        # A scenario absence cancels that person's bookings in the range;
+        # leaving locked duties would inject an unrepairable contradiction.
+        state.assignments = [a for a in state.assignments
+                             if not (a.clinicianId in hit and start_iso <= a.dateISO <= end_iso)]
         return f"{len(hit)} clinicians on vacation for the whole range"
 
     if scenario == "understaffed":
@@ -97,9 +102,8 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
     if scenario == "crunch":
         # Sick calls on TOP of whatever vacations the range already has: the
         # two most-flexible clinicians who are NOT on vacation drop out for
-        # the whole range. Pointed at the fixture's real school-holiday week
-        # (start 2026-02-16: nine clinicians on vacation) this is the
-        # nightmare case every practice knows — holidays plus sick calls.
+        # the whole range. The generated scarcity week (start 2026-02-16)
+        # has nine synthetic clinicians on vacation before this transform.
         def on_vacation(c) -> bool:
             return any(
                 v.startISO <= end_iso and v.endISO >= start_iso
@@ -125,8 +129,8 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
         )
 
     if scenario == "oncall":
-        # The real practice keeps the overnight on-call at requiredSlots=0
-        # and staffs it by hand. This scenario makes it the agent's job:
+        # The base template keeps on-call at requiredSlots=0 with generated
+        # fixed duty cover. This scenario makes it the agent's job:
         # every on-call template slot requires 1 person, and the range's
         # existing on-call assignments are cleared so nothing is pre-covered.
         # Hard because of the rest-day rule: each on-call consumes the
@@ -148,6 +152,14 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
             for a in state.assignments
             if not (a.rowId in on_call_slot_ids and start_iso <= a.dateISO <= end_iso)
         ]
+        # Synthetic fixed duties use a dated +1 target while the base
+        # template stays optional. Do not double that target when the
+        # scenario makes the template itself require one clinician.
+        state.slotOverridesByKey = {
+            key: value for key, value in state.slotOverridesByKey.items()
+            if not (key.rsplit("__", 1)[0] in on_call_slot_ids
+                    and start_iso <= key.rsplit("__", 1)[-1] <= end_iso)
+        }
         return (
             f"on-call duty is required (1 person, {len(on_call_slot_ids)} "
             "template slots); in-range on-call assignments cleared"
@@ -161,6 +173,7 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
         # anchors and extend their days instead of colliding with them.
         from ..models import Assignment
         from ..scoring import build_scoring_context
+        from ..validation import validate_assignments
 
         ctx = build_scoring_context(state, start_iso, end_iso, only_fill_required=True)
 
@@ -197,17 +210,19 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
                 )
                 if not candidates:
                     continue
-                pins.append(
-                    Assignment(
+                for candidate in candidates:
+                    pin = Assignment(
                         id=f"arena-pin-{inst.slot_id}-{date_iso}",
                         rowId=inst.slot_id,
                         dateISO=date_iso,
-                        clinicianId=candidates[0].id,
+                        clinicianId=candidate.id,
                         source="manual",
                     )
-                )
-                used.add(candidates[0].id)
-                pinned_here += 1
+                    if validate_assignments(state, list(state.assignments) + pins + [pin]).is_valid:
+                        pins.append(pin)
+                        used.add(candidate.id)
+                        pinned_here += 1
+                        break
         state.assignments = list(state.assignments) + pins
         return (
             f"{len(pins)} immutable anchor bookings: most-flexible available "
@@ -329,11 +344,17 @@ def main() -> None:
         None,
     )
     report = {
-        "case": f"complex-practice {args.start} +{args.days}d",
+        "case": f"synthetic-complex {args.start} +{args.days}d",
+        "fixture_version": json.loads(FIXTURE.read_text()).get("fixtureVersion", "legacy-export-v1"),
+        "fixture_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(),
         "scenario": args.scenario,
         "scenario_desc": scenario_desc,
         "strategy": args.strategy,
         "model": agent.get("model"),
+        "result_producer": agent.get("result_producer"),
+        "fallback": agent.get("fallback"),
+        "stats": agent.get("stats"),
+        "quality": agent.get("quality"),
         "duration_seconds": round(duration, 1),
         "iterations": agent.get("iterations"),
         "moves_accepted": agent.get("moves_accepted"),

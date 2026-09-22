@@ -15,7 +15,7 @@ from backend import solver_runs
 from backend.agent.config import AgentConfig
 from backend.agent.harness import agent_solve_range
 from backend.agent.mock_provider import MockProvider
-from backend.auth import _get_current_user
+from backend.auth import _get_current_user, _create_user
 from backend.main import app
 from backend.models import Holiday, SolveRangeRequest, UserPublic, VacationRange
 from backend.state import _load_state, _save_state
@@ -30,9 +30,8 @@ USER = "isolated-workflow-review"
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "review.db"))
     monkeypatch.setattr(db, "_SCHEMA_READY", False)
-    app.dependency_overrides[_get_current_user] = lambda: UserPublic(
-        username=USER, role="admin", active=True
-    )
+    current_user = _create_user(USER, "workflow-test-password", "admin")
+    app.dependency_overrides[_get_current_user] = lambda: current_user
     yield TestClient(app)
     app.dependency_overrides.pop(_get_current_user, None)
 

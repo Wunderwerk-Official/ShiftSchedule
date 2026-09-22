@@ -1572,3 +1572,42 @@ Database Inspector
   by the endpoint on 2026-09-22. Saved model choices are not silently migrated.
   The old W4A16 identifier returned HTTP 400. A new-ID smoke run exercised tools
   but hit connection failures; historical W4A16 timings are not NVFP4 guarantees.
+
+## v1.61 — account boundaries and verified workflow fixes
+
+- Existing accounts receive a durable random generation and token version.
+  Legacy sessions must sign in again once after this upgrade. Calendars are
+  preserved; deletion atomically clears owned data and detaches the worker.
+  Old tokens/results cannot attach to a recreated username. State, snapshots,
+  draft application and publication management recheck identity in the same
+  database snapshot as their reads/writes. Public tokens and published state
+  are resolved together. The deployment remains a single API worker.
+- Solver progress uses Authorization-header fetch streaming, with bounded
+  reconnects and cancellation. Cross-thread events wake the owning event
+  loop; streams recheck token expiry/revocation. Request logs redact capability
+  paths and queries. App proxy raw URL logs are disabled, with checked host
+  nginx configuration and rollback on unsafe include overrides.
+- PDF export awaits persistence and pins each batch to one revision; rendering
+  uses its captured server snapshot. A changed revision stops remaining exports.
+  Settings checks await saves and ignore superseded model/endpoint responses.
+- CP-SAT now honors the same ISO-week upper limit as the apply gate, including
+  fixed work outside the requested range. Agent proposals and stored drafts
+  share conflict identity/magnitude comparison, permitting safe partial repairs.
+  Heuristic "Distribute all" now adds only the permitted optional capacity
+  after mandatory staffing, preserving fixed and already planned duties.
+  Heuristic/fallback work respects an explicit remaining time budget; incomplete
+  exits retain their interrupted status instead of reporting successful completion.
+- Invalid tool JSON/types receive correlated repairable errors. Internally
+  verified large proposals use their proposal IDs in final review. Fallbacks
+  retain model attempts, usage and provenance, and report the returned plan's
+  actual quality. OpenAI cache tokens are not counted twice.
+- Arena fixture `synthetic-v2` replaces exported personal records with generated
+  profiles, absences and duty history. Version/hash are part of each report;
+  historical results from the legacy fixture are not a new-fixture baseline.
+  Removing legacy Git history or published artifacts is a separate operation.
+- Build/test dependencies move to repaired Vite 6.4.3 and Vitest 4.1.11 on
+  Node 22 for container/CI. CI includes the production build and critical browser
+  workflows. Deployment builds first, closes planning admission, waits for app
+  workers and arena processes (including stdin checkout jobs), and refuses to
+  replace busy/uninspectable containers. Failure restores admission and is
+  reported; it does not silently kill a running plan after the wait limit.

@@ -15,7 +15,6 @@ unique index), so an accidental restore is always reversible.
 from __future__ import annotations
 
 import json
-from contextlib import closing
 from typing import Literal, Optional
 from uuid import uuid4
 
@@ -23,7 +22,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from .auth import _get_current_user
-from .db import _get_connection, _utcnow_iso
+from .account_lifecycle import authenticated_account_connection
+from .db import _utcnow_iso
 from .models import AppState, UserPublic
 from .state import _load_state, _normalize_state, _save_state
 
@@ -109,7 +109,7 @@ def _write_auto_backup(conn, username: str, state: AppState, *, name=AUTO_BACKUP
 
 @router.get("/v1/state/snapshots", response_model=list[SnapshotMeta])
 def list_snapshots(current_user: UserPublic = Depends(_get_current_user)):
-    with _get_connection() as conn:
+    with authenticated_account_connection(current_user, write=False) as conn:
         rows = conn.execute(
             f"""
             SELECT {_META_COLUMNS} FROM calendar_snapshots
@@ -131,7 +131,7 @@ def create_snapshot(
     blob = json.dumps(normalized.model_dump())
     now = _utcnow_iso()
     snapshot_id = uuid4().hex
-    with _get_connection() as conn:
+    with authenticated_account_connection(current_user) as conn:
         named_count = conn.execute(
             "SELECT COUNT(*) AS n FROM calendar_snapshots WHERE username = ? AND kind = 'named'",
             (current_user.username,),
@@ -151,7 +151,6 @@ def create_snapshot(
             """,
             (snapshot_id, current_user.username, name, blob, now, now),
         )
-        conn.commit()
         row = conn.execute(
             f"SELECT {_META_COLUMNS} FROM calendar_snapshots WHERE id = ?",
             (snapshot_id,),
@@ -166,9 +165,8 @@ def restore_snapshot(
     current_user: UserPublic = Depends(_get_current_user),
 ):
     username = current_user.username
-    with closing(_get_connection()) as conn, conn:
+    with authenticated_account_connection(current_user) as conn:
         # Hold one calendar snapshot through revision check, backup and restore.
-        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT data FROM calendar_snapshots WHERE id = ? AND username = ?",
             (snapshot_id, username),
@@ -199,7 +197,7 @@ def rename_snapshot(
     current_user: UserPublic = Depends(_get_current_user),
 ):
     name = _clean_name(payload.name)
-    with _get_connection() as conn:
+    with authenticated_account_connection(current_user) as conn:
         row = conn.execute(
             "SELECT kind FROM calendar_snapshots WHERE id = ? AND username = ?",
             (snapshot_id, current_user.username),
@@ -214,7 +212,6 @@ def rename_snapshot(
             "UPDATE calendar_snapshots SET name = ?, updated_at = ? WHERE id = ?",
             (name, _utcnow_iso(), snapshot_id),
         )
-        conn.commit()
         meta = conn.execute(
             f"SELECT {_META_COLUMNS} FROM calendar_snapshots WHERE id = ?",
             (snapshot_id,),
@@ -227,11 +224,10 @@ def delete_snapshot(
     snapshot_id: str,
     current_user: UserPublic = Depends(_get_current_user),
 ):
-    with _get_connection() as conn:
+    with authenticated_account_connection(current_user) as conn:
         cur = conn.execute(
             "DELETE FROM calendar_snapshots WHERE id = ? AND username = ?",
             (snapshot_id, current_user.username),
         )
-        conn.commit()
     if cur.rowcount == 0:
         raise HTTPException(status_code=404, detail="Snapshot not found.")

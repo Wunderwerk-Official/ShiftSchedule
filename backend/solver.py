@@ -69,13 +69,14 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from ortools.sat.python import cp_model
 
 from pydantic import BaseModel
 
-from .auth import _get_current_user, _require_admin, _verify_token_and_get_user
+from .auth import _extract_bearer_token, _get_current_user, _get_user_by_username, _require_admin, _verify_token_and_get_user
+from .account_lifecycle import account_lock, account_is_current
 from . import schedule_changes, solver_runs
 
 @dataclass
@@ -97,7 +98,9 @@ class _RunHandle:
     mp_cancel_event: Any  # mp Event handed into the subprocess
     heartbeat_value: Any  # mp Value the monitor bumps to keep the child alive
     started_at: float
+    account_generation: Optional[str] = None
     abort_requested: threading.Event = field(default_factory=threading.Event)
+    account_deleted: threading.Event = field(default_factory=threading.Event)
 
 
 # Registry of live runs, keyed by username (invariant: <=1 run per user).
@@ -143,12 +146,12 @@ def _admission_error(
         )
     return None
 
-# Global list of (username, queue) for SSE clients to receive solver progress.
+# Global list of (username, event loop, queue) for SSE progress subscribers.
 # Progress is delivered only to subscribers of the user who owns the emitting
 # run — the channel used to be a broadcast to everyone, which leaked one
 # user's draft assignments to all others and mixed foreign solution events
 # into the live score chart (visible as a full-height "jump" mid-run).
-_solver_progress_subscribers: List[Tuple[str, asyncio.Queue]] = []
+_solver_progress_subscribers: List[Tuple[str, asyncio.AbstractEventLoop, asyncio.Queue]] = []
 _subscribers_lock = threading.Lock()
 
 
@@ -470,16 +473,28 @@ def _broadcast_solver_progress(owner: str, run_token: str, event_type: str, data
     stragglers from a previous run (e.g. the drain after a force-abort)
     instead of mixing them into the current run's chart.
     """
-    data = {**data, "run_token": run_token}
+    message = {"event": event_type, "data": {**data, "run_token": run_token}}
+
+    def enqueue(queue):
+        # Queue and its waiting futures belong exclusively to this event loop.
+        try:
+            queue.put_nowait(message)
+        except asyncio.QueueFull:
+            pass  # Skip if queue is full (client too slow).
+
     with _subscribers_lock:
-        for username, queue in _solver_progress_subscribers:
-            if username != owner:
-                continue
-            try:
-                # Use put_nowait since we're in a sync context
-                queue.put_nowait({"event": event_type, "data": data})
-            except asyncio.QueueFull:
-                pass  # Skip if queue is full (client too slow)
+        subscribers = [entry for entry in _solver_progress_subscribers if entry[0] == owner]
+    for entry in subscribers:
+        _username, loop, queue = entry
+        try:
+            # The monitor runs in a separate thread. Besides safe queue access,
+            # this wakes an idle loop immediately instead of at the keepalive.
+            loop.call_soon_threadsafe(enqueue, queue)
+        except RuntimeError:
+            # The client/server loop may have closed since the snapshot.
+            with _subscribers_lock:
+                if entry in _solver_progress_subscribers:
+                    _solver_progress_subscribers.remove(entry)
 
 
 @router.post("/v1/solve/abort")
@@ -539,47 +554,37 @@ async def abort_solver(
 
 
 @router.get("/v1/solve/progress")
-async def solver_progress_stream(token: str = Query(...)):
-    """SSE endpoint for real-time solver progress updates.
-
-    Uses query param for token since EventSource doesn't support Authorization headers.
-    """
-    # Verify token (will raise HTTPException if invalid)
-    subscriber = _verify_token_and_get_user(token)
-
+async def solver_progress_stream(request: Request, subscriber: UserPublic = Depends(_get_current_user)):
+    """Authenticated fetch stream; bearer credentials never belong in URLs."""
+    token = _extract_bearer_token(request.headers.get("authorization"))
     queue: asyncio.Queue = asyncio.Queue(maxsize=100)
-    entry = (subscriber.username, queue)
-
+    entry = (subscriber.username, asyncio.get_running_loop(), queue)
     with _subscribers_lock:
         _solver_progress_subscribers.append(entry)
 
     async def event_generator():
         try:
-            # Send initial connection message
             yield f"data: {json.dumps({'event': 'connected', 'data': {}})}\n\n"
-
             while True:
                 try:
-                    # Wait for new events with timeout to keep connection alive
-                    msg = await asyncio.wait_for(queue.get(), timeout=30.0)
-                    yield f"data: {json.dumps(msg)}\n\n"
+                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
                 except asyncio.TimeoutError:
-                    # Send keepalive
-                    yield f": keepalive\n\n"
+                    msg = None
+                # Recheck expiry, deactivation and account replacement before
+                # every event/keepalive, not only when the stream connects.
+                try:
+                    _verify_token_and_get_user(token)
+                except HTTPException:
+                    return
+                yield f"data: {json.dumps(msg)}\n\n" if msg is not None else ": keepalive\n\n"
         finally:
             with _subscribers_lock:
                 if entry in _solver_progress_subscribers:
                     _solver_progress_subscribers.remove(entry)
 
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return StreamingResponse(event_generator(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no",
+    })
 
 
 # Default weights (used if not configured in solver_settings)
@@ -1365,6 +1370,36 @@ def _add_working_hours_constraints(
     return hours_penalty_terms
 
 
+def _add_weekly_hours_caps(model, state, vars_by_clinician_date, slot_intervals):
+    """Respect the apply gate's ISO-week cap, including all fixed boundary work.
+
+    Existing overload remains visible, but cannot be increased. Hours count
+    toward the assignment's starting date, matching the shared validator.
+    """
+    fixed_minutes = {}
+    for assignment in state.assignments:
+        interval = slot_intervals.get(assignment.rowId)
+        if interval is None or assignment.rowId.startswith("pool-"):
+            continue
+        week = date.fromisoformat(assignment.dateISO).isocalendar()[:2]
+        key = (assignment.clinicianId, week)
+        fixed_minutes[key] = fixed_minutes.get(key, 0) + max(0, interval[1] - interval[0])
+    for clinician in state.clinicians:
+        contract = clinician.workingHoursPerWeek
+        if not isinstance(contract, (int, float)) or contract <= 0:
+            continue
+        tolerance = clinician.workingHoursToleranceHours
+        cap = int((contract + max(0, tolerance if tolerance is not None else 5)) * 60)
+        by_week = {}
+        for day, variables in vars_by_clinician_date.get(clinician.id, {}).items():
+            week = date.fromisoformat(day).isocalendar()[:2]
+            for _slot, variable, start, end, _location in variables:
+                by_week.setdefault(week, []).append(variable * max(0, end - start))
+        for week, terms in by_week.items():
+            fixed = fixed_minutes.get((clinician.id, week), 0)
+            model.Add(sum(terms) <= max(0, cap - fixed))
+
+
 def _add_minimum_daily_minutes_penalty(
     model: cp_model.CpModel,
     state,
@@ -1656,8 +1691,39 @@ class SolveRangeStartResponse(BaseModel):
     endISO: Optional[str] = None
 
 
-def _start_solver_job(
-    username: str, payload: SolveRangeRequest, run_id: str, attempt: int = 1
+def stop_account_work(username: str) -> None:
+    """Detach a deleted account's worker. Never join its monitor under a lock."""
+    with _registry_lock:
+        handle = _active_runs.pop(username, None)
+    if handle is not None:
+        handle.account_deleted.set()
+        handle.abort_requested.set()
+        handle.mp_cancel_event.set()
+        if handle.process.is_alive():
+            handle.process.terminate()
+
+
+def _emit_run_progress(handle: _RunHandle, event: str, data: dict) -> None:
+    with account_lock(handle.username):
+        if not handle.account_deleted.is_set() and account_is_current(handle.username, handle.account_generation):
+            _broadcast_solver_progress(handle.username, handle.run_id, event, data)
+
+
+def _start_solver_job(username: str, payload: SolveRangeRequest, run_id: str, attempt: int = 1,
+                      *, account_generation=None, token_version=None) -> None:
+    # Serialize admission with deletion so a request authenticated just before
+    # account replacement cannot spawn work for the replacement account.
+    with account_lock(username):
+        row = _get_user_by_username(username)
+        if (row is None or not row["active"]
+                or (account_generation is not None and row["account_generation"] != account_generation)
+                or (token_version is not None and row["token_version"] != token_version)):
+            raise HTTPException(401, "Account session is no longer valid.")
+        _start_solver_job_locked(username, payload, run_id, attempt, row["account_generation"])
+
+
+def _start_solver_job_locked(
+    username: str, payload: SolveRangeRequest, run_id: str, attempt: int, account_generation: str
 ) -> None:
     """Admit the run into the registry, persist the run row, spawn the
     subprocess and the monitor thread. Raises 409 when admission fails."""
@@ -1714,6 +1780,13 @@ def _start_solver_job(
                     pass
                 del _active_runs[user]
 
+        # Deployment creates this marker before waiting for existing workers.
+        # Recheck immediately before admission, after calendar preparation.
+        from pathlib import Path
+        from .db import DB_PATH
+        if attempt == 1 and Path(DB_PATH).with_name(".planning-drain").exists():
+            raise HTTPException(503, "Deployment in progress. Please start planning again shortly.")
+
         detail = _admission_error(_active_runs, username, exclusive)
         if detail is not None:
             raise HTTPException(status_code=409, detail=detail)
@@ -1744,6 +1817,7 @@ def _start_solver_job(
             mp_cancel_event=cancel_event,
             heartbeat_value=heartbeat_value,
             started_at=request_start_time,
+            account_generation=account_generation,
         )
         _active_runs[username] = handle
         owned_process.start()
@@ -1810,6 +1884,8 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
 
     try:
         while True:
+            if handle.account_deleted.is_set():
+                return
             heartbeat_counter += 1
             heartbeat_value.value = heartbeat_counter
 
@@ -1830,7 +1906,7 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
                     try:
                         msg = progress_queue.get_nowait()
                         if msg["type"] == "progress":
-                            _broadcast_solver_progress(username, run_id, msg["event"], msg["data"])
+                            _emit_run_progress(handle, msg["event"], msg["data"])
                             if msg["event"] == "solution" and "assignments" in msg["data"]:
                                 last_solution_assignments = msg["data"]["assignments"]
                         elif msg["type"] == "result":
@@ -1844,7 +1920,7 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
             try:
                 msg = progress_queue.get(timeout=0.1)
                 if msg["type"] == "progress":
-                    _broadcast_solver_progress(username, run_id, msg["event"], msg["data"])
+                    _emit_run_progress(handle, msg["event"], msg["data"])
                     if msg["event"] == "solution" and "assignments" in msg["data"]:
                         last_solution_assignments = msg["data"]["assignments"]
                 elif msg["type"] == "result":
@@ -1885,44 +1961,52 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
                 else "Solver process terminated without result"
             )
 
-        # Charge this run's LLM cost against the user's AI budget.
-        try:
-            agent_debug = (result.get("debugInfo") or {}).get("agent")
-            if isinstance(agent_debug, dict):
-                run_cost = estimate_cost_usd(agent_debug.get("model"), agent_debug)
-                add_spend_usd(username, run_cost)
-        except Exception as spend_exc:
-            print(f"[solver] Failed to record agent spend: {spend_exc}", file=sys.stderr)
+        with account_lock(username):
+            if not account_is_current(username, handle.account_generation):
+                return
+            # Charge this run's LLM cost against the user's AI budget.
+            try:
+                agent_debug = (result.get("debugInfo") or {}).get("agent")
+                if isinstance(agent_debug, dict):
+                    run_cost = estimate_cost_usd(agent_debug.get("model"), agent_debug)
+                    add_spend_usd(username, run_cost)
+            except Exception as spend_exc:
+                print(f"[solver] Failed to record agent spend: {spend_exc}", file=sys.stderr)
 
-        status = "aborted" if (user_aborted or overshoot_killed) else "finished"
-        # Surface the closing report's summary line on the run row itself,
-        # so the inbox shows "Unresolved: ..." without loading the result.
-        summary_note = next(
-            (
-                n
-                for n in result.get("notes", [])
-                if n.startswith("Unresolved after this run:")
-                or n.startswith("No unresolved issues")
-            ),
-            None,
-        )
-        solver_runs.finish_run(run_id, status, result=result, note=summary_note)
-        _broadcast_solver_progress(username, run_id, "complete", {
-            "startISO": payload.startISO,
-            "endISO": payload.endISO,
-            "status": "success" if status == "finished" else "aborted",
-            "run_id": run_id,
-        })
+            result_aborted = (result.get("debugInfo") or {}).get("solver_status") == "ABORTED"
+            status = "aborted" if (user_aborted or overshoot_killed or result_aborted) else "finished"
+            # Surface the closing report's summary line on the run row itself,
+            # so the inbox shows "Unresolved: ..." without loading the result.
+            summary_note = next(
+                (
+                    n
+                    for n in result.get("notes", [])
+                    if n.startswith("Unresolved after this run:")
+                    or n.startswith("No unresolved issues")
+                ),
+                None,
+            )
+            solver_runs.finish_run(run_id, status, result=result, note=summary_note)
+            _emit_run_progress(handle, "complete", {
+                "startISO": payload.startISO,
+                "endISO": payload.endISO,
+                "status": "success" if status == "finished" else "aborted",
+                "run_id": run_id,
+            })
 
     except Exception as e:
-        solver_runs.finish_run(run_id, "failed", error=str(e))
-        _broadcast_solver_progress(username, run_id, "complete", {
-            "startISO": payload.startISO,
-            "endISO": payload.endISO,
-            "status": "error",
-            "error": str(e),
-            "run_id": run_id,
-        })
+        with account_lock(username):
+            if not account_is_current(username, handle.account_generation):
+                return
+            solver_runs.finish_run(run_id, "failed", error=str(e))
+            _emit_run_progress(handle, "complete", {
+                "startISO": payload.startISO,
+                "endISO": payload.endISO,
+                "status": "error",
+                "error": str(e),
+                "run_id": run_id,
+            })
+
     finally:
         try:
             if owned_process.is_alive():
@@ -1961,7 +2045,9 @@ def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_
 
     run_id = payload.run_token or f"run-{int(time.time() * 1000)}"
     payload.run_token = run_id
-    _start_solver_job(current_user.username, payload, run_id)
+    _start_solver_job(current_user.username, payload, run_id,
+                      account_generation=current_user._account_generation,
+                      token_version=current_user._token_version)
     return SolveRangeStartResponse(
         run_id=run_id,
         status="running",
@@ -1996,19 +2082,8 @@ def apply_solver_run(
 
     run, added, replaced = apply_stored_run(
         current_user.username, run_id, force=force, allow_partial=allow_partial,
-        expected_revision=expected_revision,
+        expected_revision=expected_revision, account_user=current_user,
     )
-    try:
-        schedule_changes.record_run_applied(
-            current_user.username,
-            run_id,
-            run["start_iso"],
-            run["end_iso"],
-            added,
-            replaced,
-        )
-    except Exception as exc:  # pragma: no cover - logging must not break apply
-        print(f"[schedule-changes] run_applied logging failed: {exc}", file=sys.stderr)
     return {"status": "applied", "assignments_applied": added}
 
 
@@ -2387,6 +2462,7 @@ def _solve_range_impl(
         vars_by_clinician_date,
         slot_intervals,
     )
+    _add_weekly_hours_caps(model, state, vars_by_clinician_date, all_slot_intervals)
     timer.checkpoint("working_hours_constraints")
 
     daily_deficit_terms = _add_minimum_daily_minutes_penalty(
@@ -2579,7 +2655,13 @@ def _solve_range_impl(
     # Calculate elapsed time since the request started (includes subprocess spawn + all preparation)
     elapsed_since_start = time.time() - actual_start_time
     # Subtract elapsed time from total budget to get remaining time for actual solving
-    remaining_timeout = max(1.0, total_timeout_seconds - elapsed_since_start)  # At least 1 second
+    remaining_timeout = total_timeout_seconds - elapsed_since_start
+    if remaining_timeout <= 0 or cancel_event.is_set():
+        return SolveRangeResponse(
+            startISO=range_start.isoformat(), endISO=range_end.isoformat(),
+            assignments=[], notes=["No solution", "Planning stopped before search: cancelled or time budget exhausted."],
+            debugInfo=SolverDebugInfo(timing=timer.to_dict(), solver_status="ABORTED"),
+        )
     solver.parameters.max_time_in_seconds = remaining_timeout
     solver.parameters.num_search_workers = SOLVER_NUM_WORKERS
     solver.parameters.relative_gap_limit = SOLVER_GAP_THRESHOLD
@@ -2646,17 +2728,23 @@ def _solve_range_impl(
             week_cursor = range_start
             week_num = 0
             week_success = True
+            week_failure_statuses = []
             total_weeks = (total_days + 6) // 7
             # Divide the remaining budget across the weeks instead of giving
             # every week the full original timeout.
-            week_timeout = max(10.0, float(payload.timeout_seconds or 60) / max(1, total_weeks))
             while week_cursor <= range_end:
+                remaining = total_timeout_seconds - (time.time() - actual_start_time)
+                if remaining <= 0:
+                    week_notes.append("Planning time budget exhausted; completed weeks retained.")
+                    week_success = False
+                    break
                 if cancel_event is not None and cancel_event.is_set():
                     week_notes.append("Week-by-week solving aborted by user.")
                     week_success = False
                     break
                 week_num += 1
                 week_end = min(week_cursor + timedelta(days=6), range_end)
+                week_timeout = remaining / max(1, total_weeks - week_num + 1)
 
                 # Create a sub-request for this week
                 week_payload = SolveRangeRequest(
@@ -2681,6 +2769,7 @@ def _solve_range_impl(
                     if any("No solution" in note for note in week_result.notes):
                         week_notes.append(f"Week {week_num} ({week_cursor} to {week_end}): No solution found.")
                         week_success = False
+                        week_failure_statuses.append(week_result.debugInfo.solver_status if week_result.debugInfo else "UNKNOWN")
                     else:
                         week_assignments.extend(week_result.assignments)
                         week_state.assignments.extend(week_result.assignments)
@@ -2690,6 +2779,7 @@ def _solve_range_impl(
                             week_notes.append(f"Week {week_num}: {timing_note}")
                 except Exception as e:
                     week_notes.append(f"Week {week_num} ({week_cursor} to {week_end}): Error - {str(e)}")
+                    week_failure_statuses.append("ERROR")
                     week_success = False
 
                 week_cursor = week_end + timedelta(days=1)
@@ -2710,6 +2800,13 @@ def _solve_range_impl(
                     endISO=range_end.isoformat(),
                     assignments=week_assignments,  # Return partial results if any
                     notes=["No solution"] + week_notes,
+                    debugInfo=SolverDebugInfo(timing=timer.to_dict(), solver_status=(
+                        "ABORTED" if (cancel_event.is_set() or time.time() - actual_start_time >= total_timeout_seconds
+                                      or any(status in {"ABORTED", "UNKNOWN"} for status in week_failure_statuses))
+                        else "ERROR" if "ERROR" in week_failure_statuses
+                        else "INFEASIBLE" if week_failure_statuses and all(status == "INFEASIBLE" for status in week_failure_statuses)
+                        else "UNKNOWN"
+                    )),
                 )
 
         return SolveRangeResponse(
@@ -2717,6 +2814,9 @@ def _solve_range_impl(
             endISO=range_end.isoformat(),
             assignments=[],
             notes=["No solution"] + diagnostics,
+            debugInfo=SolverDebugInfo(timing=timer.to_dict(), solver_status=(
+                "ABORTED" if cancel_event.is_set() or result == cp_model.UNKNOWN else solver.StatusName(result)
+            )),
         )
 
     new_assignments: List[Assignment] = []

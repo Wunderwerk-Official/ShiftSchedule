@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
 
 RowKind = Literal["class", "pool"]
 Role = Literal["admin", "user"]
@@ -15,6 +15,8 @@ class UserPublic(BaseModel):
     username: str
     role: Role
     active: bool
+    _account_generation: Optional[str] = PrivateAttr(default=None)
+    _token_version: Optional[int] = PrivateAttr(default=None)
 
 
 class UserCreateRequest(BaseModel):

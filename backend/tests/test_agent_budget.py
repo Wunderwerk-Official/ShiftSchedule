@@ -16,7 +16,8 @@ from backend.agent_budget import (
     get_agent_admin_settings,
     get_spend_usd,
 )
-from backend.auth import _get_current_user
+from backend.auth import _get_current_user, _create_user, _update_user
+from backend.models import UserUpdateRequest
 from backend.main import app
 from backend.models import UserPublic
 from backend.state import _save_state
@@ -32,13 +33,14 @@ def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", db_path)
     monkeypatch.setattr(db, "_SCHEMA_READY", False)
     monkeypatch.setenv("SCHEDULE_DB_PATH", db_path)
+    for username in ("budget-user", "over-budget-user", "self-hosted-user", "the-admin", "smuggler"):
+        _create_user(username, "budget-test-password", "user")
     return db_path
 
 
 def _client_as(role: str, username: str = "budget-user") -> TestClient:
-    app.dependency_overrides[_get_current_user] = lambda: UserPublic(
-        username=username, role=role, active=True
-    )
+    current_user = _update_user(username, UserUpdateRequest(role=role))
+    app.dependency_overrides[_get_current_user] = lambda: current_user
     return TestClient(app)
 
 

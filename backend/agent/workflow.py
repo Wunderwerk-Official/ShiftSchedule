@@ -287,7 +287,10 @@ class PlanningWorkflow:
                         preview = ex._tool_apply_moves({"moves": proposal["moves"], "dry_run": True})
                         if cancel_event.is_set() or ex._tool_seconds_left() <= 5 or not preview.get("valid") or not preview.get("improves_best"):
                             continue
-                        reply = ex.execute("apply_moves", {"moves": proposal["moves"]}, "final-checked-repair")
+                        # Checked proposals can contain a whole fine-grained
+                        # day block, larger than the model's 20-move payload
+                        # limit. Use the same proposal contract as the model.
+                        reply = ex.execute("apply_proposal", {"proposal_id": pid}, "final-checked-repair")
                         applied = json.loads(reply.content)
                         if applied.get("applied"):
                             proposal["applied"] = True

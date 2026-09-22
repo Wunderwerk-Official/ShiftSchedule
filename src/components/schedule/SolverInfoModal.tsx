@@ -4,6 +4,7 @@ import type { SolverRunDetail, SolverRunSummary, SolverSettings } from "../../ap
 import { cx } from "../../lib/classNames";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import { formatFeedDate } from "../../lib/agentActivity";
+import { heuristicFallbackNotice } from "../../lib/solverOutcome";
 import {
   buildRunLog,
   downloadTextFile,
@@ -867,9 +868,16 @@ export default function SolverInfoModal({
                   </span>
                 </div>
 
+                {!selectedEntry.debugInfo?.agent && heuristicFallbackNotice(selectedEntry.debugInfo) && (
+                  <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/20">
+                    <div className="mb-2 font-medium">Heuristic fallback</div>
+                    {heuristicFallbackNotice(selectedEntry.debugInfo)}
+                  </div>
+                )}
                 {/* AI agent run: model, tokens, and estimated cost */}
                 {selectedEntry.debugInfo?.agent && (() => {
                   const agent = selectedEntry.debugInfo.agent;
+                  const fallbackNotice = heuristicFallbackNotice(selectedEntry.debugInfo);
                   const modelLabel =
                     AGENT_MODEL_OPTIONS.find((o) => o.id === agent.model)?.label ??
                     agent.model ??
@@ -884,7 +892,7 @@ export default function SolverInfoModal({
                       value: `${agent.iterations ?? 0} · ${agent.moves_accepted ?? 0} changes`,
                     },
                     {
-                      label: "Tokens",
+                      label: "Model tokens",
                       value: `${fmtTokens(
                         (agent.input_tokens ?? 0) +
                           (agent.cache_read_input_tokens ?? 0) +
@@ -908,7 +916,7 @@ export default function SolverInfoModal({
                   // cost nothing per run, so no cost tile at all.
                   if (cost !== null) {
                     tiles.push({
-                      label: "Estimated cost",
+                      label: "Estimated model cost",
                       value: formatCostUSD(cost) ?? "",
                     });
                   }
@@ -916,7 +924,7 @@ export default function SolverInfoModal({
                   if (agent.daysSkipped !== undefined) {
                     tiles.push({
                       label: "Days",
-                      value: `${agent.daysPlanned ?? 0} planned · ${
+                      value: `${agent.daysPlanned ?? 0} checks complete · ${
                         agent.daysSkipped.length
                       } skipped · ${agent.daysIncomplete?.length ?? 0} checks open`,
                     });
@@ -924,8 +932,9 @@ export default function SolverInfoModal({
                   return (
                     <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900/50 dark:bg-violet-950/20">
                       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-violet-500 dark:text-violet-400">
-                        AI Agent
+                        {fallbackNotice ? "Heuristic fallback" : "AI Agent"}
                       </div>
+                      {fallbackNotice && <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">{fallbackNotice} Tokens and costs below belong to the model attempts.</p>}
                       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                         {tiles.map((tile) => (
                           <div key={tile.label}>
@@ -940,7 +949,7 @@ export default function SolverInfoModal({
                       </div>
                       {agent.completion && (
                         <div className="mt-3 rounded-lg bg-white/70 p-3 text-xs dark:bg-slate-900/50">
-                          <div className="font-medium">Verified result · plan {agent.completion.plan_revision}</div>
+                          <div className="font-medium">Result checks · plan {agent.completion.plan_revision}</div>
                           <ul className="mt-2 space-y-1">
                             <li>Run: {agent.completion.workflow_finished ? "finished" : "in progress"}</li>
                             <li>Required checks: {agent.completion.required_checks_complete ? "complete" : "still open"}</li>

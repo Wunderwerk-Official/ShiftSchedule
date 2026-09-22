@@ -5,6 +5,7 @@
 import type { SolverDebugInfo, SolverRunDetail } from "../api/client";
 import type { StatsHistoryEntry } from "../components/schedule/SolverOverlay";
 import { APP_BUILD, APP_VERSION } from "../version";
+import { heuristicFallbackNotice } from "./solverOutcome";
 
 export type SolverHistoryEntry = {
   id: string;
@@ -70,6 +71,8 @@ export const buildRunLog = (entry: SolverHistoryEntry): string => {
     lines.push(`Solver status: ${entry.debugInfo.solver_status}`);
   }
   if (agent) {
+    const fallbackNotice = heuristicFallbackNotice(entry.debugInfo);
+    if (fallbackNotice) lines.push(fallbackNotice, "The token usage below belongs to the model attempts.");
     lines.push(
       `Agent: model ${agent.model ?? "?"} | iterations ${agent.iterations ?? "?"} | ` +
         `moves accepted ${agent.moves_accepted ?? 0} / rejected ${agent.moves_rejected ?? 0}`,

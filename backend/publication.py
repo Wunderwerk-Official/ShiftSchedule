@@ -2,6 +2,7 @@ import json
 import os
 import secrets
 import sqlite3
+from contextlib import closing, nullcontext
 from email.utils import format_datetime, parsedate_to_datetime
 from hashlib import sha256
 from typing import Any, Dict, List, Optional
@@ -120,73 +121,73 @@ def _web_token_exists(conn: sqlite3.Connection, token: str) -> bool:
     return row is not None
 
 
-def _get_publication_by_username(username: str) -> Optional[sqlite3.Row]:
-    conn = _get_connection()
-    row = conn.execute(
-        """
-        SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
-        FROM ical_publications
-        WHERE username = ?
-        """,
-        (username,),
-    ).fetchone()
-    conn.close()
+def _get_publication_by_username(username: str, *, connection=None) -> Optional[sqlite3.Row]:
+    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
+    with resource as conn:
+        row = conn.execute(
+            """
+            SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
+            FROM ical_publications
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
     return row
 
 
-def _get_web_publication_by_username(username: str) -> Optional[sqlite3.Row]:
-    conn = _get_connection()
-    row = conn.execute(
-        """
-        SELECT username, token, created_at, updated_at
-        FROM web_publications
-        WHERE username = ?
-        """,
-        (username,),
-    ).fetchone()
-    conn.close()
+def _get_web_publication_by_username(username: str, *, connection=None) -> Optional[sqlite3.Row]:
+    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
+    with resource as conn:
+        row = conn.execute(
+            """
+            SELECT username, token, created_at, updated_at
+            FROM web_publications
+            WHERE username = ?
+            """,
+            (username,),
+        ).fetchone()
     return row
 
 
-def _get_web_publication_by_token(token: str) -> Optional[sqlite3.Row]:
-    conn = _get_connection()
-    row = conn.execute(
-        """
-        SELECT username, token, created_at, updated_at
-        FROM web_publications
-        WHERE token = ?
-        """,
-        (token,),
-    ).fetchone()
-    conn.close()
+def _get_web_publication_by_token(token: str, *, connection=None) -> Optional[sqlite3.Row]:
+    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
+    with resource as conn:
+        row = conn.execute(
+            """
+            SELECT username, token, created_at, updated_at
+            FROM web_publications
+            WHERE token = ?
+            """,
+            (token,),
+        ).fetchone()
     return row
 
 
-def _get_publication_by_token(token: str) -> Optional[sqlite3.Row]:
-    conn = _get_connection()
-    row = conn.execute(
-        """
-        SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
-        FROM ical_publications
-        WHERE token = ?
-        """,
-        (token,),
-    ).fetchone()
-    conn.close()
+def _get_publication_by_token(token: str, *, connection=None) -> Optional[sqlite3.Row]:
+    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
+    with resource as conn:
+        row = conn.execute(
+            """
+            SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
+            FROM ical_publications
+            WHERE token = ?
+            """,
+            (token,),
+        ).fetchone()
     return row
 
 
-def _get_clinician_publication_by_token(token: str) -> Optional[sqlite3.Row]:
-    conn = _get_connection()
-    row = conn.execute(
-        """
-        SELECT username, clinician_id, token, created_at, updated_at
-        FROM ical_clinician_publications
-        WHERE token = ?
-        """,
-        (token,),
-    ).fetchone()
-    conn.close()
+def _get_clinician_publication_by_token(token: str, *, connection=None) -> Optional[sqlite3.Row]:
+    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
+    with resource as conn:
+        row = conn.execute(
+            """
+            SELECT username, clinician_id, token, created_at, updated_at
+            FROM ical_clinician_publications
+            WHERE token = ?
+            """,
+            (token,),
+        ).fetchone()
     return row
 
 

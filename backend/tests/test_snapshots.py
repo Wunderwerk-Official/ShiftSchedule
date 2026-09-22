@@ -6,7 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import backend.db as db
-from backend.auth import _get_current_user
+from backend.auth import _get_current_user, _create_user, _get_user_by_username, _user_row_to_public
 from backend.main import app
 from backend.models import UserPublic
 from backend.snapshots import (
@@ -32,9 +32,9 @@ def temp_db(tmp_path, monkeypatch):
 
 
 def _client_as(username: str = USER, role: str = "admin") -> TestClient:
-    app.dependency_overrides[_get_current_user] = lambda: UserPublic(
-        username=username, role=role, active=True
-    )
+    row = _get_user_by_username(username)
+    user = _user_row_to_public(row) if row else _create_user(username, "snapshot-test-password", role)
+    app.dependency_overrides[_get_current_user] = lambda: user
     return TestClient(app)
 
 
