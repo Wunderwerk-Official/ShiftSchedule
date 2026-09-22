@@ -608,3 +608,45 @@ coverage, short days, other quality metrics, preserved fixed entries, new hard
 violations, unfinished days and controller calls. Calls are not model turns or
 latency measurements. Compare the same cases, time budgets and source versions;
 inspect separate quality fields rather than comparing scalar scores across profiles.
+
+## Evaluation round 7: Flash re-rolled again (NVFP4), verified stable (2026-09-22)
+
+The endpoint re-deployed the Qwen3.8 Flash model a second time: `/models`
+now serves **`nvidia/Qwen3.8-Flash-Next-NVFP4`** and the previous
+`VnimanieAI/Qwen3.8-Flash-Next-W4A16` id is gone (it 400s "invalid model
+name" — which is how a second agent noticed). Preset, arena workflow default
+and `prompt_eval` default were moved to the new id (v1.60). The live default
+at the time of writing is `Qwen/Qwen3.8-27B`; production was never affected.
+
+Context: the W4A16 build had passed a 1-day run but **collapsed under
+sustained planning load** the day before (75 → 8 → 0.5 tok/s, request
+timeouts, connection drops, days skipped) while the 35B on the identical
+case ran clean at 80 tok/s minutes later — a deployment-specific problem,
+not the endpoint. So the NVFP4 build was tested for exactly that:
+
+| model | days | duration | tok/s | moves acc/rej | coverage | errors |
+|---|---|---|---|---|---|---|
+| Flash NVFP4 | 1 | 532 s | 51.4 | 34/2 | 30→0 | none |
+| Flash NVFP4 | 3 | 772 s | 37.7 | 95/0 | 88→0 | none |
+| 27B (ref)   | 3 | 2635 s | 33.2 | 101/0 | 88→0 | transient review error |
+| 35B (ref)   | 1 | 91 s | 80.3 | 32/6 | 30→0 | none |
+
+**Verdict:** the NVFP4 Flash is stable under load — full coverage over three
+days, zero rejected moves, zero errors, steady throughput. Wall-clock is on
+par with the 35B (~13 min for 3 days) despite lower tok/s, because it needs
+fewer tokens per decision, and it is ~3.4× faster than the 27B at equal
+quality. Recommended as the production default (Qwen 3.8, the admin's
+preferred family), pending the admin's decision.
+
+**Incident + fix:** the first NVFP4 run died with exit code 137 (SIGKILL)
+seconds after the v1.60 push — the deploy replaced the backend container
+while the arena run was executing inside it. The pre-replace idle probe only
+counted the app's own solver subprocess (`spawn_main`); an arena/prompt_eval
+run (`docker compose exec … backend.arena…`) carried no such marker. The
+probe now also counts `backend.arena` processes (both markers assembled
+with `chr()` so the probe never matches its own command line).
+
+Housekeeping still open: the backend container's `OPENAI_MODEL` env var
+still names the dead W4A16 id. Production ignores it (the solve injects the
+DB `effective_model`), but the admin chat-test and arena runs without
+`--model` fall back to it — align it to whatever default is chosen.
