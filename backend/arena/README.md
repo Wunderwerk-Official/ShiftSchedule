@@ -9,11 +9,14 @@ so executing it inside the production backend container measures the actual
 self-hosted Qwen model on the real endpoint.
 
 
-## Current harness evaluation (v1.56)
+## Current harness evaluation (v1.60)
 
 Use `prompt_eval` / the workflow with model
-`VnimanieAI/Qwen3.8-Flash-Next-W4A16`; the older model comparisons below are
-historical. Select `implementation=checkout` to test the chosen branch in
+`nvidia/Qwen3.8-Flash-Next-NVFP4`, listed by the endpoint on 2026-09-22.
+The former `VnimanieAI/Qwen3.8-Flash-Next-W4A16` identifier returned HTTP 400.
+The older model comparisons below are historical, not validation of this
+NVFP4 deployment. Saved global model settings are not automatically changed.
+Select `implementation=checkout` to test the chosen branch in
 a temporary directory with read-only saved provider settings. The workflow
 serializes GPU use. Wait for a pending run to start before queuing another:
 GitHub retains only one pending run per concurrency group.
