@@ -7,6 +7,11 @@ name: LLM endpoint diagnostics (truhn.ai)
 
 on:
   workflow_dispatch:
+    inputs:
+      probe_fallback_models:
+        description: "Check the Qwen fallback candidates with a synthetic tool call"
+        type: boolean
+        default: false
 
 jobs:
   diag:
@@ -39,12 +44,14 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Probe the configured endpoint from the LXC
+        env:
+          PROBE_FALLBACK_MODELS: ${{ inputs.probe_fallback_models }}
         run: |
-          ssh truhn-target bash -s <<'EOF'
+          ssh truhn-target PROBE_FALLBACK_MODELS="$PROBE_FALLBACK_MODELS" bash -s <<'EOF'
           set -euo pipefail
           cd /opt/app
-          docker compose -f docker-compose.proxied.yml exec -T backend python - <<'PY'
-          import json, socket, sqlite3, time
+          docker compose -f docker-compose.proxied.yml exec -T -e PROBE_FALLBACK_MODELS backend python - <<'PY'
+          import json, os, socket, sqlite3, time
           from urllib.parse import urlparse
 
           rows = dict(
@@ -99,5 +106,39 @@ jobs:
                   print(f"reasoning_present={bool(msg.get('reasoning') or msg.get('reasoning_content'))}")
               else:
                   print(f"chat/completions: HTTP {r2.status_code} in {dt:.1f}s — {r2.text[:400]}")
+
+          if os.environ.get("PROBE_FALLBACK_MODELS") == "true":
+              candidates = [
+                  "nvidia/Qwen3.8-Flash-Next-NVFP4", "Qwen/Qwen3.8-27B",
+                  "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva",
+                  "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+              ]
+              for candidate in candidates:
+                  if candidate not in names:
+                      print(json.dumps({"tool_probe": candidate, "listed": False}), flush=True)
+                      continue
+                  started = time.monotonic()
+                  try:
+                      probe = client.post(f"{base}/chat/completions", json={
+                          "model": candidate, "max_tokens": 2048,
+                          "messages": [{"role": "user", "content":
+                              "This is a synthetic connection test. Call report_ready once with status ready. Do not return prose."}],
+                          "tools": [{"type": "function", "function": {
+                              "name": "report_ready", "description": "Report tool support for this synthetic test.",
+                              "parameters": {"type": "object", "properties": {
+                                  "status": {"type": "string", "enum": ["ready"]}},
+                                  "required": ["status"], "additionalProperties": False}}}],
+                      }, timeout=90)
+                      calls = []
+                      if probe.status_code == 200:
+                          calls = (probe.json().get("choices") or [{}])[0].get("message", {}).get("tool_calls") or []
+                      valid = len(calls) == 1 and calls[0].get("function", {}).get("name") == "report_ready"
+                      if valid:
+                          valid = json.loads(calls[0]["function"]["arguments"]) == {"status": "ready"}
+                      print(json.dumps({"tool_probe": candidate, "http_status": probe.status_code,
+                          "valid_tool_call": valid, "seconds": round(time.monotonic()-started, 2)}), flush=True)
+                  except Exception as exc:
+                      print(json.dumps({"tool_probe": candidate, "error_type": type(exc).__name__,
+                          "seconds": round(time.monotonic()-started, 2)}), flush=True)
           PY
           EOF
