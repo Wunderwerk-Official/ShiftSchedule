@@ -9,6 +9,7 @@ import {
   buildRunLog,
   downloadTextFile,
   formatRunDuration,
+  modelSelectionNotice,
   serverRunToHistoryEntry,
   type SolverHistoryEntry,
 } from "../../lib/runLog";
@@ -878,10 +879,11 @@ export default function SolverInfoModal({
                 {selectedEntry.debugInfo?.agent && (() => {
                   const agent = selectedEntry.debugInfo.agent;
                   const fallbackNotice = heuristicFallbackNotice(selectedEntry.debugInfo);
+                  const selectionNotice = modelSelectionNotice(agent.model_selection);
                   const modelLabel =
                     AGENT_MODEL_OPTIONS.find((o) => o.id === agent.model)?.label ??
                     agent.model ??
-                    "server default";
+                    (agent.model_selection?.selected_model === null ? "No model answered" : "server default");
                   const cost = estimateAgentCostUSD(agent.model, agent);
                   const fmtTokens = (n?: number) =>
                     (n ?? 0) >= 1000 ? `${((n ?? 0) / 1000).toFixed(1)}k` : `${n ?? 0}`;
@@ -935,6 +937,7 @@ export default function SolverInfoModal({
                         {fallbackNotice ? "Heuristic fallback" : "AI Agent"}
                       </div>
                       {fallbackNotice && <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">{fallbackNotice} Tokens and costs below belong to the model attempts.</p>}
+                      {selectionNotice && <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">{selectionNotice}</p>}
                       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                         {tiles.map((tile) => (
                           <div key={tile.label}>

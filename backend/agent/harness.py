@@ -14,6 +14,8 @@ the seed), with an explanatory note.
 
 from __future__ import annotations
 
+from copy import deepcopy
+
 import time
 import json
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -121,6 +123,7 @@ def _complete_with_retry(
     response: Optional[ProviderResponse] = None
     for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
         _call_started = time.time()
+        provider.cancel_event = cancel_event
         response = provider.complete(
             system=system,
             messages=messages,
@@ -131,7 +134,11 @@ def _complete_with_retry(
         # endpoint's average tokens/second (see absorb_response). Only the
         # returned (last) attempt's time is kept — failed attempts and backoff
         # sleeps must not distort the generation-speed figure.
-        response.generation_seconds = time.time() - _call_started
+        # A provider may have tried unavailable models before the successful
+        # request. Preserve its measurement of the actual generation rather
+        # than counting selection/discovery time as token generation.
+        if response.generation_seconds <= 0:
+            response.generation_seconds = time.time() - _call_started
         if not (response.stop_reason == "error" and response.retryable):
             return response
         if attempt >= RETRY_MAX_ATTEMPTS or cancel_event.is_set():
@@ -356,6 +363,8 @@ def agent_solve_range(
     # Summed wall-clock of the successful LLM generation calls; used to report
     # the endpoint's average output tokens/second.
     total_generation_seconds = 0.0
+    model_usage: Dict[str, dict] = {}
+    model_switch_notes: List[str] = []
 
     activity_context: Dict[str, Any] = {"stage": "seed"}
     activity_sequence = 0
@@ -393,6 +402,7 @@ def agent_solve_range(
         frontend's deriveAgentStatus, so this is backward-safe)."""
         nonlocal retries_used
         retries_used += 1
+        record_model_selection(response)
         emit_agent(
             "retry",
             {
@@ -763,6 +773,7 @@ def agent_solve_range(
             )
         else:
             notes.append("No improvement over the heuristic seed; returning the seed plan.")
+        notes.extend(model_switch_notes)
         notes.extend(extra_notes)
         notes.extend(n for n in seed_notes if "WARNING" in n or "warning" in n)
         # Closing report (admin request): what stays unsolved — open slots,
@@ -813,7 +824,10 @@ def agent_solve_range(
                 "num_slots": len(ctx.instances),
                 "num_assignments": len(best),
                 "agent": {
-                    "model": config.model if config is not None else None,
+                    "model": run_meta.get("model", config.model if config is not None else None),
+                    "requested_model": config.model if config is not None else None,
+                    "model_selection": run_meta.get("model_selection"),
+                    "model_usage": deepcopy(model_usage),
                     "provider": config.provider if config is not None else None,
                     "result_producer": "heuristic_v2" if run_meta.get("fallback") else "agent",
                     "fallback": run_meta.get("fallback"),
@@ -960,17 +974,49 @@ def agent_solve_range(
         kwargs = {"argument_error": call.argument_error} if call.argument_error else {}
         return executor.execute(call.name, call.arguments, call.id, **kwargs)
 
+    def record_model_selection(response) -> None:
+        selection = getattr(response, "model_selection", None)
+        if isinstance(selection, dict):
+            # Snapshot the provider's cumulative history: later selection
+            # attempts must not mutate a previously emitted result.
+            run_meta["model_selection"] = deepcopy(selection)
+            run_meta.setdefault("model", None)
+        selected = getattr(response, "model", None)
+        if not selected or response.stop_reason == "error":
+            return
+        previous = run_meta.get("model") or config.model
+        run_meta["model"] = selected
+        if previous != selected:
+            note = f"Planning model changed from {previous} to {selected}; the current plan and tool history were retained."
+            model_switch_notes.append(note)
+            thought_log.append(f"[iteration {iterations_done}] {note}")
+            emit_agent("thought", {"text": note, "model_change": {"from": previous, "to": selected}})
+
     def absorb_response(response) -> None:
         """Token accounting + thought/summary feed emission — identical for
         the repair loop and the day-by-day loop."""
         nonlocal total_input_tokens, total_output_tokens
         nonlocal total_cache_read_tokens, total_cache_creation_tokens, final_summary
         nonlocal total_generation_seconds
+        record_model_selection(response)
         total_input_tokens += response.usage.get("input_tokens", 0)
         total_output_tokens += response.usage.get("output_tokens", 0)
         total_cache_read_tokens += response.usage.get("cache_read_input_tokens", 0)
         total_cache_creation_tokens += response.usage.get("cache_creation_input_tokens", 0)
         total_generation_seconds += getattr(response, "generation_seconds", 0.0) or 0.0
+        response_model = getattr(response, "model", None) or (
+            config.model if response.stop_reason != "error" else None
+        )
+        if response_model and (response.stop_reason != "error" or response.usage):
+            usage = model_usage.setdefault(response_model, {
+                "input_tokens": 0, "output_tokens": 0,
+                "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0,
+                "generation_seconds": 0.0, "responses": 0,
+            })
+            for key in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+                usage[key] += response.usage.get(key, 0)
+            usage["generation_seconds"] += getattr(response, "generation_seconds", 0.0) or 0.0
+            usage["responses"] += 1
         output_truncated = response.output_truncated or response.stop_reason == "max_tokens"
         if output_truncated:
             thought_log.append(

@@ -69,3 +69,44 @@ def test_zero_move_fallback_reports_returned_coverage_and_is_not_model_success(m
     assert report["stats"]["open_slots"] == report["best_quality"]["open_required_slots"] == 0
     assert report["completion"]["coverage_complete"]
     assert not report["completion"]["required_checks_complete"]
+
+
+def test_named_model_evaluation_disables_switching_and_reports_injected_replacement(monkeypatch, capsys):
+    requested, actual = "requested-flash", "unexpected-replacement"
+    monkeypatch.setattr(prompt_eval, "load_state", lambda: make_app_state())
+
+    class UnexpectedReplacement(MockProvider):
+        def complete(self, **kwargs):
+            # The tracing wrapper must forward cancellation to its delegate.
+            assert self.cancel_event is not None
+            response = super().complete(**kwargs)
+            response.model = actual
+            response.model_selection = {
+                "requested_model": requested, "selected_model": actual,
+                "attempts": [{"model": requested, "status": "unavailable"},
+                             {"model": actual, "status": "selected"}],
+            }
+            return response
+
+    def get_provider(config):
+        assert config.model == requested
+        assert config.allow_model_fallback is False
+        return UnexpectedReplacement([
+            {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+                {"action": "assign", "slot_key": "slot-a__mon__2026-01-05", "clinicianId": "clin-1"},
+            ]}}]},
+            {"text": "Complete."},
+        ])
+
+    monkeypatch.setattr(prompt_eval, "get_provider", get_provider)
+    monkeypatch.setattr(sys, "argv", ["prompt_eval", "--mock", "--start", "2026-01-05", "--model", requested])
+    with pytest.raises(SystemExit, match="Model selection changed"):
+        prompt_eval.main()
+    lines = capsys.readouterr().out.splitlines()
+    report = next(json.loads(line.split(" ", 1)[1]) for line in lines if line.startswith("PROMPT_EVAL_REPORT "))
+    calls = [json.loads(line.split(" ", 1)[1]) for line in lines if line.startswith("PROMPT_EVAL_CALL ")]
+    assert report["requested_model"] == requested and report["model"] == actual
+    assert report["model_selection"]["selected_model"] == actual
+    assert report["fallback"] is None
+    assert report["stats"]["filled_slots"] == 1
+    assert all(call["model"] == actual for call in calls)

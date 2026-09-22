@@ -63,6 +63,8 @@ def get_agent_admin_settings() -> Dict[str, Any]:
     if provider not in VALID_PROVIDERS:
         provider = DEFAULT_PROVIDER
     openai_model = values.get(_SETTING_OPENAI_MODEL) or ""
+    from .agent.model_fallback import model_fallback_order
+    fallback_order = model_fallback_order(openai_model) if provider == "openai" else []
     try:
         budget = float(values.get(_SETTING_BUDGET, DEFAULT_BUDGET_USD))
     except (TypeError, ValueError):
@@ -76,6 +78,7 @@ def get_agent_admin_settings() -> Dict[str, Any]:
         "openai_verify_tls": values.get(_SETTING_OPENAI_VERIFY_TLS) != "false",
         # What actually runs: the Anthropic pick, or the self-hosted model.
         "effective_model": openai_model if provider == "openai" else model,
+        "model_fallback_order": fallback_order if len(fallback_order) > 1 else [],
         "anthropic_api_key_set": bool(values.get(_SETTING_ANTHROPIC_KEY)),
         "openai_api_key_set": bool(values.get(_SETTING_OPENAI_KEY)),
     }
@@ -212,6 +215,7 @@ def read_agent_settings(current_user: UserPublic = Depends(_get_current_user)) -
         "model": settings["model"],
         "provider": settings["provider"],
         "effective_model": settings["effective_model"],
+        "model_fallback_order": settings["model_fallback_order"],
         "budget_usd": settings["budget_usd"],
         "spent_usd": round(spent, 4),
         "remaining_usd": round(max(0.0, settings["budget_usd"] - spent), 4),
@@ -359,7 +363,8 @@ def agent_chat_test(
         cost_usd = round(cost, 4)
     return {
         "provider": config.provider,
-        "model": config.model,
+        "model": response.model or config.model,
+        "model_selection": response.model_selection,
         "text": response.text,
         "reasoning": response.reasoning,
         "error": response.error if response.stop_reason == "error" else None,

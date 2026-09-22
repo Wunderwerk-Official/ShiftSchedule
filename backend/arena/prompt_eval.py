@@ -97,6 +97,8 @@ def main():
 
     config = AgentConfig(provider="mock") if args.mock else resolve_agent_runtime_config(AgentConfig.from_env())
     config.model = args.model
+    # A named-model comparison must never silently measure a replacement.
+    config.allow_model_fallback = False
     config.reasoning_effort = args.reasoning_effort  # None is the full/default control.
     if not args.mock and config.provider != "openai":
         raise SystemExit("The experiment requires the configured self-hosted provider")
@@ -123,6 +125,7 @@ def main():
     emit("META", {"variant": args.variant, "evaluation_ref": args.evaluation_ref, "fixture_version": fixture_version,
                   "start": args.start, "days": args.days, "scenario": args.scenario,
                   "scenario_desc": scenario_desc, "model": config.model,
+                  "allow_model_fallback": config.allow_model_fallback,
                   "reasoning": config.reasoning_effort or "endpoint-default/full",
                   "timeout": args.timeout, "hashes": hashes})
 
@@ -175,11 +178,14 @@ def main():
 
         def complete(self, **kwargs):
             before = time.monotonic()
+            self.delegate.cancel_event = self.cancel_event
             response = self.delegate.complete(**kwargs)
             row = {"call": len(calls) + 1, "phase": "day" if kwargs["system"] == day else "review" if kwargs["system"] == review else "duty_or_repair",
                    "seconds": round(time.monotonic() - before, 3),
                    "tools": [c.name for c in response.tool_calls], "stop_reason": response.stop_reason,
-                   "usage": response.usage, "reply": response.replay_text, "error": response.error}
+                   "usage": response.usage, "reply": response.replay_text, "error": response.error,
+                   "model": getattr(response, "model", None),
+                   "model_selection": getattr(response, "model_selection", None)}
             calls.append(row)
             emit("CALL", row)
             return response
@@ -205,7 +211,9 @@ def main():
               "quality_version": agent.get("quality_version"), "completion": agent.get("completion"),
               "final_audit": agent.get("final_audit"),
               "quality_profile": args.quality_profile, "neighborhood": args.neighborhood,
-              "scenario": args.scenario, "model": config.model, "duration_seconds": round(time.monotonic() - started, 1),
+              "scenario": args.scenario, "model": agent.get("model"), "requested_model": config.model,
+              "model_selection": agent.get("model_selection"), "model_usage": agent.get("model_usage"),
+              "duration_seconds": round(time.monotonic() - started, 1),
               "stop_reason": agent.get("stopReason"), "days_planned": agent.get("daysPlanned"),
               "result_producer": agent.get("result_producer"), "fallback": fallback or None,
               "days_incomplete": agent.get("daysIncomplete"), "days_skipped": agent.get("daysSkipped"),
@@ -232,6 +240,9 @@ def main():
     emit("PLAN", {"assignments": result.get("assignments"), "start": args.start, "end": end})
     if not agent or fallback or any(c["stop_reason"] == "error" for c in calls):
         raise SystemExit("Model errors/fallback detected; do not count this as a successful prompt comparison")
+    if (report["model"] != config.model
+            or any(model != config.model for model in (report["model_usage"] or {}))):
+        raise SystemExit("Model selection changed; do not count this as a comparison of the requested model")
     if report["new_hard_violations"] or not report["fixed_unchanged"]:
         raise SystemExit("Guardrail regression detected: new hard violations or modified fixed context")
 

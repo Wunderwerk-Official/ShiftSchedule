@@ -96,6 +96,28 @@ def test_chat_test_validates_messages(temp_db, mock_provider_env):
     )
 
 
+def test_chat_test_reports_actual_fallback_model(temp_db, monkeypatch):
+    from backend.agent.provider import ProviderResponse
+    from backend.agent.model_fallback import QWEN_MODEL_ORDER
+
+    selection = {"requested_model": QWEN_MODEL_ORDER[0], "selected_model": QWEN_MODEL_ORDER[1],
+                 "attempts": [{"model": QWEN_MODEL_ORDER[0], "status": "unavailable", "reason": "model_unavailable"},
+                              {"model": QWEN_MODEL_ORDER[1], "status": "selected"}]}
+
+    class Provider:
+        def complete(self, **kwargs):
+            return ProviderResponse(text="ready", tool_calls=[], stop_reason="end_turn",
+                                    model=QWEN_MODEL_ORDER[1], model_selection=selection)
+
+    monkeypatch.setattr("backend.agent.provider.get_provider", lambda config: Provider())
+    client = _client_as("admin")
+    client.put("/v1/agent/settings", json={"provider": "openai", "openai_model": QWEN_MODEL_ORDER[0]})
+    data = client.post("/v1/agent/chat-test", json={"messages": [{"role": "user", "content": "test"}]}).json()
+    assert data["model"] == QWEN_MODEL_ORDER[1]
+    assert data["model_selection"] == selection
+    assert client.get("/v1/agent/settings").json()["effective_model"] == QWEN_MODEL_ORDER[0]
+
+
 def test_chat_test_meters_anthropic_spend(temp_db, monkeypatch):
     # A stub provider standing in for Anthropic: fixed usage numbers so the
     # cost math and the spend recording can be asserted deterministically.

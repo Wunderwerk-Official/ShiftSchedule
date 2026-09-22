@@ -311,6 +311,7 @@ def main() -> None:
         agent_strategy=args.strategy,
     )
     config = resolve_agent_runtime_config(AgentConfig.from_env())
+    config.allow_model_fallback = False
     if args.model:
         config.model = args.model
     if args.max_iterations:
@@ -351,6 +352,9 @@ def main() -> None:
         "scenario_desc": scenario_desc,
         "strategy": args.strategy,
         "model": agent.get("model"),
+        "requested_model": config.model,
+        "model_selection": agent.get("model_selection"),
+        "model_usage": agent.get("model_usage"),
         "result_producer": agent.get("result_producer"),
         "fallback": agent.get("fallback"),
         "stats": agent.get("stats"),
@@ -376,6 +380,9 @@ def main() -> None:
     for t in (agent.get("thoughts") or [])[-3:]:
         print("--- thought ---")
         print(t[:1500])
+    if (agent.get("model") not in (None, config.model)
+            or any(model != config.model for model in (agent.get("model_usage") or {}))):
+        raise SystemExit("Model selection changed; do not count this as a comparison of the requested model")
 
 
 if __name__ == "__main__":

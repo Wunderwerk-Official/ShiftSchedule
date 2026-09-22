@@ -2,7 +2,7 @@
 // and the admin's feedback review (AdminUsersPanel): one entry shape, one
 // plain-text log format, one download helper.
 
-import type { SolverDebugInfo, SolverRunDetail } from "../api/client";
+import type { AgentModelSelection, SolverDebugInfo, SolverRunDetail } from "../api/client";
 import type { StatsHistoryEntry } from "../components/schedule/SolverOverlay";
 import { APP_BUILD, APP_VERSION } from "../version";
 import { heuristicFallbackNotice } from "./solverOutcome";
@@ -26,6 +26,21 @@ export const formatRunDuration = (ms: number) => {
   const minutes = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${minutes}m ${secs}s`;
+};
+
+/** Explain availability-based model selection separately from a heuristic fallback. */
+export const modelSelectionNotice = (selection?: AgentModelSelection | null): string | null => {
+  if (!selection) return null;
+  const unavailable = selection.attempts.filter((attempt) => attempt.status === "unavailable");
+  if (selection.selected_model === selection.requested_model && !unavailable.length) return null;
+  const outcome = selection.selected_model
+    ? selection.selected_model === selection.requested_model
+      ? `Last successful model: ${selection.selected_model}.`
+      : `Automatically switched from ${selection.requested_model} to ${selection.selected_model}.`
+    : `No model answered successfully (requested ${selection.requested_model}).`;
+  return unavailable.length
+    ? `${outcome} Unavailable: ${unavailable.map((attempt) => `${attempt.model}${attempt.reason ? ` (${attempt.reason})` : ""}`).join("; ")}.`
+    : outcome;
 };
 
 // The server run row carries everything the local history entry does —
@@ -71,6 +86,12 @@ export const buildRunLog = (entry: SolverHistoryEntry): string => {
     lines.push(`Solver status: ${entry.debugInfo.solver_status}`);
   }
   if (agent) {
+    if (agent.model_selection) {
+      const selection = agent.model_selection;
+      lines.push(`Requested model: ${selection.requested_model}`,
+        `Last successful model: ${selection.selected_model ?? "none"}`,
+        ...selection.attempts.map((attempt) => `Model attempt: ${attempt.model} — ${attempt.status}${attempt.reason ? `: ${attempt.reason}` : ""}`));
+    }
     const fallbackNotice = heuristicFallbackNotice(entry.debugInfo);
     if (fallbackNotice) lines.push(fallbackNotice, "The token usage below belongs to the model attempts.");
     lines.push(

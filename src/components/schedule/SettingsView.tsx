@@ -23,16 +23,14 @@ import {
   updateAgentSettings,
 } from "../../api/client";
 import { AGENT_MODEL_OPTIONS, formatCostUSD } from "../../lib/llmPricing";
+import { modelSelectionNotice } from "../../lib/runLog";
 
-// Self-hosted models offered as one-click presets (all served by the
-// clinic's LiteLLM endpoint); anything else via "Custom model name".
+// Known self-hosted model choices; availability and fallback order are
+// resolved by the backend. Other IDs remain available as custom choices.
 const SELF_HOSTED_MODEL_PRESETS = [
-  // The two self-hosted planning models we support. Names verified against
-  // the endpoint's /models listing on 2026-09-22; the previous W4A16
-  // deployment now rejects its old model id. Anything else via
-  // "Custom model name".
   "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
   "nvidia/Qwen3.8-Flash-Next-NVFP4",
+  "Qwen/Qwen3.8-27B",
 ];
 
 // Drop the "org/" prefix (Qwen/, unsloth/, …) for a compact picker label.
@@ -260,7 +258,7 @@ export default function SettingsView({
       );
       if (generation !== modelGenerationRef.current || controller.signal.aborted) return;
       if (result.error) {
-        setChatTestError(result.error);
+        setChatTestError([result.error, modelSelectionNotice(result.model_selection)].filter(Boolean).join(" "));
       } else {
         setChatTestEntries((prev) => [
           ...prev,
@@ -766,6 +764,11 @@ export default function SettingsView({
                   </div>
                 )}
               </div>
+              {agentSettings?.provider === "openai" && (agentSettings.model_fallback_order?.length ?? 0) > 1 && (
+                <p className="text-xs text-slate-500 dark:text-slate-400" title={agentSettings.model_fallback_order!.join(" → ")}>
+                  If a model is unavailable, planning and chat tests use: {agentSettings.model_fallback_order!.map(presetLabel).join(" → ")}. The responsiveness check tests only the selected model.
+                </p>
+              )}
               {isAdmin && agentSettings?.provider === "openai" ? (
                 <div className="flex flex-wrap items-center justify-between gap-4">
                   <div>
@@ -938,6 +941,7 @@ export default function SettingsView({
                               <span className="whitespace-pre-wrap">{entry.content}</span>
                             </div>
                             <div className="mt-0.5 px-1 text-[11px] tabular-nums text-slate-400 dark:text-slate-500">
+                              Model: {entry.result.model}{" · "}
                               {entry.result.duration_seconds}s
                               {" · "}
                               {entry.result.input_tokens} in / {entry.result.output_tokens} out
@@ -949,6 +953,9 @@ export default function SettingsView({
                                 entry.result.cost_usd > 0 &&
                                 ` · ${formatCostUSD(entry.result.cost_usd) ?? ""}`}
                             </div>
+                            {modelSelectionNotice(entry.result.model_selection) && (
+                              <p className="mt-1 px-1 text-xs text-slate-500 dark:text-slate-400">{modelSelectionNotice(entry.result.model_selection)}</p>
+                            )}
                           </div>
                         ),
                       )}

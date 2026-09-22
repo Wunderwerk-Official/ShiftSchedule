@@ -30,9 +30,12 @@ provider-agnostic:
 from __future__ import annotations
 
 import json
+import time
+from copy import deepcopy
 from typing import List, Optional
 
 from .config import AgentConfig
+from .model_fallback import model_fallback_order, model_is_unavailable
 from .provider import (
     ChatMessage,
     LLMProvider,
@@ -136,6 +139,10 @@ class OpenAICompatibleProvider(LLMProvider):
             client_kwargs["http_client"] = httpx.Client(verify=False)
         self._client = openai.OpenAI(**client_kwargs)
         self._config = config
+        self._models = model_fallback_order(config.model) if config.allow_model_fallback else [config.model]
+        self._model_index = 0
+        self._selection = {"requested_model": config.model, "selected_model": None, "attempts": []}
+        self._exhausted_response = None
 
     def complete(
         self,
@@ -145,12 +152,56 @@ class OpenAICompatibleProvider(LLMProvider):
         tools: List[ToolSpec],
         timeout_seconds: float,
     ) -> ProviderResponse:
+        # One original timeout covers the whole exchange, including missing
+        # model attempts. Keep the same messages/tools and executor state.
+        deadline = time.monotonic() + max(0.0, timeout_seconds)
+        if self._exhausted_response is not None:
+            cached = deepcopy(self._exhausted_response)
+            cached.generation_seconds = 0.0  # No second network request.
+            return cached
+        response = ProviderResponse(text=None, tool_calls=[], stop_reason="error",
+                                    error="Model request cancelled or its time budget exhausted.")
+        while self._model_index < len(self._models):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or (self.cancel_event is not None and self.cancel_event.is_set()):
+                break
+            model = self._models[self._model_index]
+            started = time.monotonic()
+            response = self._complete_once(model=model, system=system, messages=messages,
+                                           tools=tools, timeout_seconds=remaining)
+            response.generation_seconds = time.monotonic() - started
+            response.model = model
+            if response.model_unavailable and self._config.allow_model_fallback and len(self._models) > 1:
+                self._selection["attempts"].append({"model": model, "status": "unavailable",
+                                                     "reason": "model_unavailable"})
+                self._model_index += 1
+                # Exhaustion is terminal for this run, not a generic 503 retry
+                # that would restart the same unavailable candidate chain.
+                response.retryable = False
+                if self._model_index == len(self._models):
+                    response.model_selection = deepcopy(self._selection)
+                    self._exhausted_response = deepcopy(response)
+                    return response
+                continue
+            if response.stop_reason != "error":
+                if self._selection["selected_model"] != model:
+                    self._selection["attempts"].append({"model": model, "status": "selected"})
+                self._selection["selected_model"] = model
+            break
+        if len(self._models) > 1:
+            response.model_selection = deepcopy(self._selection)
+        return response
+
+    def _complete_once(
+        self, *, model: str, system: str, messages: List[ChatMessage],
+        tools: List[ToolSpec], timeout_seconds: float,
+    ) -> ProviderResponse:
         openai = self._openai
         try:
             # max_retries=0 for the same reason as the Anthropic adapter: the
             # harness sizes timeout_seconds to the remaining wall clock.
             request_kwargs: dict = {
-                "model": self._config.model,
+                "model": model,
                 "max_tokens": self._config.max_tokens,
                 "messages": to_openai_messages(system, messages),
             }
@@ -174,6 +225,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 error=f"OpenAI-compatible API error {exc.status_code}: {exc.message}",
                 error_status=exc.status_code,
                 retryable=is_retryable_status(exc.status_code),
+                model_unavailable=model_is_unavailable(exc.status_code, exc.body, exc.message),
             )
         except openai.APIConnectionError as exc:
             # Subclass of OpenAIError — must be caught before the broad
