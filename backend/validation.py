@@ -326,13 +326,17 @@ def validate_references(
     state: AppState,
     assignments: List[Assignment],
 ) -> List[Violation]:
-    """Clinician and slot IDs must exist in the state.
+    """Clinician and active slot references must resolve in the state.
 
     Pool rows (``pool-*``) are allowed without a matching template slot: they
     are virtual rows for Rest Day / Vacation tracking, not schedulable slots.
     """
     clinician_ids = {c.id for c in state.clinicians}
     slot_lookup = _build_slot_lookup(state)
+    slot_sections = _build_slot_section_map(state)
+    section_ids = {row.id for row in state.rows if row.kind == "class"}
+    slot_day_types = _build_slot_day_type_map(state)
+    day_types: Dict[str, str] = {}
     out: List[Violation] = []
     for a in assignments:
         if a.clinicianId not in clinician_ids:
@@ -347,14 +351,27 @@ def validate_references(
             )
         if a.rowId.startswith("pool-"):
             continue
+        reason = None
         if a.rowId not in slot_lookup:
+            reason = "unknown_or_invalid_slot"
+        elif slot_sections.get(a.rowId) not in section_ids:
+            reason = "unresolved_section"
+        elif a.rowId not in slot_day_types:
+            reason = "unresolved_column"
+        else:
+            if a.dateISO not in day_types:
+                day_types[a.dateISO] = _day_type(a.dateISO, state)
+            if slot_day_types[a.rowId] != day_types[a.dateISO]:
+                reason = "inactive_day_type"
+        if reason is not None:
             out.append(
                 Violation(
                     code=VIOLATION_UNKNOWN_SLOT,
-                    message=f"Unknown slot id: {a.rowId}",
+                    message=f"Invalid slot reference: {a.rowId} on {a.dateISO} ({reason})",
                     clinician_id=a.clinicianId,
                     date_iso=a.dateISO,
                     slot_id=a.rowId,
+                    context={"reason": reason},
                 )
             )
     return out

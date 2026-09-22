@@ -22,6 +22,7 @@ from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..assignment_policy import is_protected_assignment
+from ..planning_preferences import vacation_dates_in_range
 from ..models import (
     AppState,
     Assignment,
@@ -127,17 +128,7 @@ class ClinicianState:
 
         year_start = date(current_date.year, 1, 1)
         weeks_elapsed = (current_date - year_start).days / 7.0
-        vacation_days = 0
-        for vac in self.vacations or []:
-            try:
-                v_start = date.fromisoformat(vac.startISO)
-                v_end = date.fromisoformat(vac.endISO)
-            except (ValueError, TypeError, AttributeError):
-                continue
-            overlap_start = max(v_start, year_start)
-            overlap_end = min(v_end, current_date - timedelta(days=1))
-            if overlap_end >= overlap_start:
-                vacation_days += (overlap_end - overlap_start).days + 1
+        vacation_days = len(vacation_dates_in_range(self, year_start, current_date))
         effective_weeks = max(0.0, weeks_elapsed - vacation_days / 7.0)
         return effective_weeks * self.contract_hours
 
@@ -417,13 +408,23 @@ def heuristic_solve_range_v2(
             solver_settings.onCallRestDaysAfter or 0,
         )
     context_pad = max(rest_pad, 3)  # 3 = overnight lookback in has_time_overlap
-    context_day_isos = [
-        (range_start - timedelta(days=offset)).isoformat()
-        for offset in range(1, context_pad + 1)
-    ] + [
-        (range_end + timedelta(days=offset)).isoformat()
-        for offset in range(1, context_pad + 1)
-    ]
+    # Weekly hard caps need all fixed work in each target ISO week, including
+    # dates farther away than the overnight/rest lookaround (e.g. Monday when
+    # solving Friday, or a future Sunday when solving Monday).
+    context_start = min(
+        range_start - timedelta(days=context_pad),
+        range_start - timedelta(days=range_start.weekday()),
+    )
+    context_end = max(
+        range_end + timedelta(days=context_pad),
+        range_end + timedelta(days=6 - range_end.weekday()),
+    )
+    context_day_isos = []
+    cursor = context_start
+    while cursor <= context_end:
+        if cursor < range_start or cursor > range_end:
+            context_day_isos.append(cursor.isoformat())
+        cursor += timedelta(days=1)
     context_instances = _expand_slots_to_instances(state, context_day_isos, holidays)
     context_keys = {(s.slot_id, s.date_iso) for s in context_instances}
 

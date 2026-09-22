@@ -52,7 +52,7 @@ from typing import Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 
 from .models import AppState, Assignment, SolverSettings
-from .planning_preferences import daily_min_minutes
+from .planning_preferences import daily_min_minutes, vacation_dates_in_range
 from .solver import (
     EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL,
     _build_slot_contexts_and_intervals,
@@ -520,23 +520,13 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
         wk = datetime.fromisoformat(f"{date_iso}T00:00:00").date().isocalendar()[:2]
         week_days[wk] = week_days.get(wk, 0) + 1
 
-    target_day_set = set(ctx.target_day_isos)
     vacation_days: Dict[Tuple[str, Tuple[int, int]], int] = {}
+    vacation_start = datetime.fromisoformat(ctx.start_iso).date()
+    vacation_end = datetime.fromisoformat(ctx.end_iso).date() + timedelta(days=1)
     for clinician in ctx.state.clinicians:
-        for vacation in clinician.vacations or []:
-            try:
-                v_start = datetime.fromisoformat(f"{vacation.startISO}T00:00:00").date()
-                v_end = datetime.fromisoformat(f"{vacation.endISO}T00:00:00").date()
-            except (ValueError, TypeError):
-                continue
-            cursor = v_start
-            while cursor <= v_end:
-                iso = cursor.isoformat()
-                if iso in target_day_set:
-                    wk = cursor.isocalendar()[:2]
-                    key = (clinician.id, wk)
-                    vacation_days[key] = vacation_days.get(key, 0) + 1
-                cursor += timedelta(days=1)
+        for vacation_day in vacation_dates_in_range(clinician, vacation_start, vacation_end):
+            key = (clinician.id, vacation_day.isocalendar()[:2])
+            vacation_days[key] = vacation_days.get(key, 0) + 1
 
     minutes_by_clinician_week: Dict[Tuple[str, Tuple[int, int]], int] = {}
 

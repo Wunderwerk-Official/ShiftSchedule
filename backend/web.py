@@ -150,6 +150,8 @@ def get_public_web_week(
         week_start_iso,
         state_updated_at_raw,
         publication_updated_at_raw,
+        state_payload,
+        dict(publication),
     )
     headers = {
         "Cache-Control": "private, max-age=0, must-revalidate",
@@ -158,8 +160,10 @@ def get_public_web_week(
         "Referrer-Policy": "no-referrer",
     }
 
-    if _etag_matches(if_none_match, etag) or _if_modified_since_matches(
-        if_modified_since, last_modified
+    # RFC 9110: If-None-Match takes precedence over If-Modified-Since.
+    if _etag_matches(if_none_match, etag) or (
+        if_none_match is None
+        and _if_modified_since_matches(if_modified_since, last_modified)
     ):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
 
@@ -214,7 +218,23 @@ def get_public_web_week(
         "locations": [loc.model_dump() for loc in state.locations],
         "locationsEnabled": state.locationsEnabled,
         "rows": [row.model_dump() for row in state.rows],
-        "clinicians": [clinician.model_dump() for clinician in state.clinicians],
+        # Public links expose a rendered week, not personnel planning records.
+        # Keep only fields used by the public grid and clip absences to this week.
+        "clinicians": [
+            {
+                "id": clinician.id,
+                "name": clinician.name,
+                "qualifiedClassIds": clinician.qualifiedClassIds,
+                "vacations": [
+                    {"id": vacation.id,
+                     "startISO": max(vacation.startISO, week_start_iso),
+                     "endISO": min(vacation.endISO, week_end_iso)}
+                    for vacation in clinician.vacations
+                    if vacation.startISO <= week_end_iso and vacation.endISO >= week_start_iso
+                ],
+            }
+            for clinician in state.clinicians
+        ],
         "assignments": assignments,
         "minSlotsByRowId": {
             row_id: min_slots.model_dump()
@@ -232,8 +252,12 @@ def get_public_web_week(
         if state.weeklyTemplate
         else None,
         "holidays": holidays,
-        "solverSettings": state.solverSettings,
-        "solverRules": state.solverRules,
+        "solverSettings": {
+            key: value for key, value in state.solverSettings.items()
+            if key in {"scheduleLayout", "onCallRestEnabled", "onCallRestClassId",
+                       "onCallRestDaysBefore", "onCallRestDaysAfter"}
+        },
+        "solverRules": [],
     }
     return Response(
         content=json.dumps(payload),

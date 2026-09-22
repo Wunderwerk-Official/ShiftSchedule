@@ -28,11 +28,11 @@ import { AGENT_MODEL_OPTIONS, formatCostUSD } from "../../lib/llmPricing";
 // clinic's LiteLLM endpoint); anything else via "Custom model name".
 const SELF_HOSTED_MODEL_PRESETS = [
   // The two self-hosted planning models we support. Names verified against
-  // the endpoint's /models listing; the Flash model was re-rolled 2026-09-02
-  // under a new id (was unsloth/Qwen3.8-Flash-Next-GGUF). Anything else via
+  // the endpoint's /models listing on 2026-09-22; the previous W4A16
+  // deployment now rejects its old model id. Anything else via
   // "Custom model name".
   "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
-  "VnimanieAI/Qwen3.8-Flash-Next-W4A16",
+  "nvidia/Qwen3.8-Flash-Next-NVFP4",
 ];
 
 // Drop the "org/" prefix (Qwen/, unsloth/, …) for a compact picker label.

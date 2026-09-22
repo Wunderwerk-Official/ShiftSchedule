@@ -350,6 +350,8 @@ from .models import (
     UserPublic,
 )
 from .state import _load_state
+from .assignment_policy import is_protected_assignment
+from .planning_preferences import vacation_dates_in_range
 
 router = APIRouter()
 
@@ -835,8 +837,9 @@ def _collect_manual_assignments(
     for assignment in state.assignments:
         if assignment.dateISO not in day_isos:
             continue
-        if is_on_vac(assignment.clinicianId, assignment.dateISO):
-            continue
+        # Existing assignments remain occupied even if the input already
+        # conflicts with vacation. Ignoring them permits a new overlapping
+        # duty on the next day of an overnight assignment.
         # Skip pool assignments - they are not slot assignments.
         if assignment.rowId.startswith("pool-"):
             continue
@@ -1008,22 +1011,33 @@ def _add_overlap_constraints(
                 )
                 all_intervals.append(interval)
 
-        # Fixed (always-present) intervals for manual assignments
+        # Fixed assignments are allowed to contain existing manual overrides.
+        # Occupy their union: feeding overlapping fixed intervals directly to
+        # NoOverlap makes the ENTIRE model infeasible, even for other people.
+        # The union blocks every new overlap without requiring existing data
+        # to become valid before any unrelated planning can proceed.
+        fixed_intervals: List[Tuple[int, int]] = []
         for date_iso, manual_slots in clinician_manual.items():
             day_idx = day_index_by_iso.get(date_iso)
             if day_idx is None:
                 continue
             day_offset = day_idx * 24 * 60
-            for m_idx, (start, end, loc) in enumerate(manual_slots):
+            for start, end, loc in manual_slots:
                 duration = end - start
                 if duration <= 0:
                     continue
                 abs_start = start + day_offset
-                interval = model.NewFixedSizeIntervalVar(
-                    abs_start, duration,
-                    f"miv_{cid}_{date_iso}_{m_idx}",
-                )
-                all_intervals.append(interval)
+                fixed_intervals.append((abs_start, abs_start + duration))
+        merged_fixed: List[Tuple[int, int]] = []
+        for start, end in sorted(fixed_intervals):
+            if merged_fixed and start <= merged_fixed[-1][1]:
+                merged_fixed[-1] = (merged_fixed[-1][0], max(merged_fixed[-1][1], end))
+            else:
+                merged_fixed.append((start, end))
+        for m_idx, (start, end) in enumerate(merged_fixed):
+            all_intervals.append(model.NewFixedSizeIntervalVar(
+                start, end - start, f"miv_{cid}_{m_idx}",
+            ))
 
         if len(all_intervals) > 1:
             model.AddNoOverlap(all_intervals)
@@ -1262,8 +1276,8 @@ def _add_on_call_rest_constraints(
                         manual_assignments.get((clinician_id, target_date), [])
                     )
                     if manual_on_call:
-                        if manual_target > 0:
-                            return
+                        # Existing manual work can already violate this rest
+                        # day; it does not authorize additional solver work.
                         if in_target_range and vars_target:
                             model.Add(sum(vars_target) == 0)
                         return
@@ -1471,21 +1485,6 @@ def _compute_ytd_deficit_hours(
     if weeks_elapsed < 1.0:
         return {}
 
-    def _vacation_days_in_window(clinician, window_start: date, window_end: date) -> int:
-        """Vacation days in [window_start, window_end) — inclusive vacation ranges."""
-        days = 0
-        for vacation in clinician.vacations or []:
-            try:
-                v_start = date.fromisoformat(vacation.startISO)
-                v_end = date.fromisoformat(vacation.endISO)
-            except (ValueError, TypeError, AttributeError):
-                continue
-            overlap_start = max(v_start, window_start)
-            overlap_end = min(v_end, window_end - timedelta(days=1))
-            if overlap_end >= overlap_start:
-                days += (overlap_end - overlap_start).days + 1
-        return days
-
     range_start_iso = range_start.isoformat()
     year_start_iso = year_start.isoformat()
 
@@ -1515,7 +1514,7 @@ def _compute_ytd_deficit_hours(
         # Credit vacation days: expecting contract hours for weeks the
         # clinician was on vacation would otherwise mark returnees as far
         # behind target and systematically over-assign them.
-        vacation_days = _vacation_days_in_window(clinician, year_start, range_start)
+        vacation_days = len(vacation_dates_in_range(clinician, year_start, range_start))
         effective_weeks = max(0.0, weeks_elapsed - vacation_days / 7.0)
         expected_minutes = clinician.workingHoursPerWeek * 60 * effective_weeks
         if expected_minutes <= 0:
@@ -1668,6 +1667,25 @@ def _start_solver_job(
     from .run_apply import planning_fingerprint
     state = _load_state(username)
     fingerprint = planning_fingerprint(state)
+    if mode != "agent":
+        # Stored-run application replaces unlocked solver entries in-range.
+        # Do not feed those entries back as fixed coverage: CP-SAT otherwise
+        # returns only additions, and applying that incomplete draft deletes
+        # the previous solver schedule. Keep all protected/boundary context.
+        _start, _end, *_ = _build_date_context(payload)
+        # Legacy solvers default to seven days. Persist that resolved range;
+        # storing just startISO made apply discard days 2–7 of the result.
+        payload.endISO = _end.isoformat()
+        _start_iso, _end_iso = _start.isoformat(), _end.isoformat()
+        vacations = {c.id: c.vacations for c in state.clinicians}
+        state = state.model_copy(update={"assignments": [
+            a for a in state.assignments
+            if is_protected_assignment(a)
+            or a.rowId.startswith("pool-")
+            or not _start_iso <= a.dateISO <= _end_iso
+            or any(v.startISO <= a.dateISO <= v.endISO
+                   for v in vacations.get(a.clinicianId, []))
+        ]})
 
     # Cross-user run_token collision guard (DB read BEFORE taking the lock
     # and before any process is spawned): run ids are stored with INSERT OR
@@ -2189,10 +2207,12 @@ def _solve_range_impl(
     # missed rest violations against manual on-call shifts 2+ days outside the
     # range when onCallRestDaysBefore/After >= 2.
     _settings = SolverSettings.model_validate(state.solverSettings or {})
-    _context_pad = 1
+    # endDayOffset supports duties extending up to three calendar days, so
+    # an assignment that started three days earlier can still overlap today.
+    _context_pad = 3
     if _settings.onCallRestEnabled:
         _context_pad = max(
-            1, _settings.onCallRestDaysBefore or 0, _settings.onCallRestDaysAfter or 0
+            _context_pad, _settings.onCallRestDaysBefore or 0, _settings.onCallRestDaysAfter or 0
         )
     range_start, range_end, day_isos, target_day_isos, target_date_set, day_index_by_iso = (
         _build_date_context(payload, context_pad_days=_context_pad)
@@ -2617,6 +2637,10 @@ def _solve_range_impl(
         if total_days > 14:
             # Attempt week-by-week solving as fallback
             week_assignments: List[Assignment] = []
+            # Each solved chunk becomes fixed context for subsequent chunks,
+            # so overnight duties and on-call rest cross chunk boundaries.
+            # Keep the caller's saved state immutable.
+            week_state = state.model_copy(deep=True)
             week_notes: List[str] = [f"Full-range solver failed after {timer.total_ms():.0f}ms. Trying week-by-week..."]
 
             week_cursor = range_start
@@ -2652,13 +2676,14 @@ def _solve_range_impl(
                         cancel_event=cancel_event,
                         on_progress=on_progress,
                         start_time=time.time(),
-                        state_override=state,
+                        state_override=week_state,
                     )
                     if any("No solution" in note for note in week_result.notes):
                         week_notes.append(f"Week {week_num} ({week_cursor} to {week_end}): No solution found.")
                         week_success = False
                     else:
                         week_assignments.extend(week_result.assignments)
+                        week_state.assignments.extend(week_result.assignments)
                         # Extract timing from notes if present
                         timing_note = next((n for n in week_result.notes if "completed in" in n), None)
                         if timing_note:

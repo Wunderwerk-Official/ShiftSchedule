@@ -244,15 +244,27 @@ def _ensure_test_user() -> None:
     # The E2E test user has a hardcoded password. Keep it enabled by default for
     # local development and CI, but NEVER provision it when ENVIRONMENT=production
     # even if someone forgets to set ENABLE_E2E_TEST_USER=0.
-    env = os.environ.get("ENVIRONMENT", "").strip().lower()
-    if env in {"production", "prod"}:
-        return
-    if os.environ.get("ENABLE_E2E_TEST_USER", "1") != "1":
-        return
     username = "testuser"
     password = "sdjhfl34-wfsdfwsd2"
     normalized = username.strip().lower()
-    if not normalized or not password:
+    env = os.environ.get("ENVIRONMENT", "").strip().lower()
+    if env in {"production", "prod"}:
+        # Older deployments provisioned this publicly known development
+        # login. Preserve its data, but revoke access on the first corrected
+        # startup. A same-named account with a custom password stays intact.
+        existing = _get_user_by_username(normalized)
+        if existing and existing["active"] and _verify_password(password, existing["password_hash"]):
+            conn = _get_connection()
+            try:
+                conn.execute(
+                    "UPDATE users SET active = 0 WHERE username = ? AND password_hash = ?",
+                    (normalized, existing["password_hash"]),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+        return
+    if os.environ.get("ENABLE_E2E_TEST_USER", "1") != "1":
         return
     existing = _get_user_by_username(normalized)
     if existing:

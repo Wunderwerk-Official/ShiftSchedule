@@ -15,6 +15,7 @@ unique index), so an accidental restore is always reversible.
 from __future__ import annotations
 
 import json
+from contextlib import closing
 from typing import Literal, Optional
 from uuid import uuid4
 
@@ -165,23 +166,29 @@ def restore_snapshot(
     current_user: UserPublic = Depends(_get_current_user),
 ):
     username = current_user.username
-    with _get_connection() as conn:
+    with closing(_get_connection()) as conn, conn:
+        # Hold one calendar snapshot through revision check, backup and restore.
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT data FROM calendar_snapshots WHERE id = ? AND username = ?",
             (snapshot_id, username),
         ).fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Snapshot not found.")
-        backup_basis = (
-            payload.currentState if payload.currentState is not None else _load_state(username)
-        )
+        live_state = _load_state(username, connection=conn)
+        if payload.currentState is not None and payload.currentState.revision != live_state.revision:
+            raise HTTPException(status_code=409, detail={
+                "code": "state_changed",
+                "message": "The calendar changed before this restore. Reload the current calendar "
+                           "and review the snapshot again. Nothing was restored.",
+            })
+        backup_basis = payload.currentState if payload.currentState is not None else live_state
+        # Validate before replacing the one reserved backup; any write failure
+        # rolls back both writes, preserving the previous calendar and backup.
+        restored = AppState.model_validate(json.loads(row["data"]))
+        normalized, _ = _normalize_state(restored)
         _write_auto_backup(conn, username, backup_basis)
-        conn.commit()
-    # Same validation path old app_state rows take on load: unknown future
-    # fields are ignored, missing ones get defaults — no migration needed.
-    restored = AppState.model_validate(json.loads(row["data"]))
-    normalized, _ = _normalize_state(restored)
-    _save_state(normalized, username)
+        _save_state(normalized, username, connection=conn)
     return normalized
 
 

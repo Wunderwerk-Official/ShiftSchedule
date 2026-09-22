@@ -150,6 +150,8 @@ def _complete_with_retry(
             step = min(0.5, backoff - slept)
             time.sleep(step)
             slept += step
+        if cancel_event.is_set():
+            return response
     return response
 
 # Repair strategy: the pre-strategy tool set, byte-identical (comparability
@@ -676,8 +678,14 @@ def agent_solve_range(
         run_meta["days_skipped"] = [d for d in run_meta["days_skipped"] if d not in run_meta["days_planned"]]
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
+        # An abort can arrive during the final response or audit, without
+        # another iteration reaching the loop's usual cancellation check.
+        if cancel_event.is_set():
+            status = "ABORTED"
         if status == "AGENT_COMPLETE" and "final_audit" not in run_meta:
             run_final_checks()
+        if cancel_event.is_set():
+            status = "ABORTED"
         returned = {(a.rowId, a.dateISO, a.clinicianId): a for a in executor.best_assignments}
         if executor.current != returned:
             executor.current = returned
@@ -1089,6 +1097,8 @@ def agent_solve_range(
                 )
                 iterations_done += 1
                 absorb_response(response)
+                if cancel_event.is_set():
+                    return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
                 if response.stop_reason in ("error", "refusal"):
                     # A failed pre-pass must not abandon the days: duties can
                     # still be placed by the per-day conversations. It counts
@@ -1330,6 +1340,8 @@ def agent_solve_range(
                 )
                 iterations_done += 1
                 absorb_response(response)
+                if cancel_event.is_set():
+                    return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
                 if response.stop_reason in ("error", "refusal"):
                     # Post-retry failure: skip THIS day only and keep
                     # planning — one bad exchange used to abandon every
@@ -1557,6 +1569,8 @@ def agent_solve_range(
                 )
                 iterations_done += 1
                 absorb_response(response)
+                if cancel_event.is_set():
+                    return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
                 if response.stop_reason in ("error", "refusal"):
                     extra_notes.append(
                         "LLM error during the final range review; best plan "
@@ -1564,6 +1578,11 @@ def agent_solve_range(
                     )
                     break
                 if response.stop_reason == "tool_use" and response.tool_calls:
+                    results = []
+                    for call in response.tool_calls:
+                        if cancel_event.is_set():
+                            return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
+                        results.append(executor.execute(call.name, call.arguments, call.id))
                     messages.append(
                         ChatMessage(
                             role="assistant",
@@ -1575,10 +1594,7 @@ def agent_solve_range(
                     messages.append(
                         ChatMessage(
                             role="tool",
-                            tool_results=[
-                                executor.execute(c.name, c.arguments, c.id)
-                                for c in response.tool_calls
-                            ],
+                            tool_results=results,
                         )
                     )
                     best_key = tuple(sorted((a.rowId, a.dateISO, a.clinicianId)
@@ -1680,6 +1696,8 @@ def agent_solve_range(
         )
         iterations_done += 1
         absorb_response(response)
+        if cancel_event.is_set():
+            return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
 
         if response.stop_reason == "error":
             extra_notes.append(

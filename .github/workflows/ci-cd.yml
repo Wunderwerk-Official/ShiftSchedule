@@ -105,13 +105,16 @@ jobs:
           # Production runs the domain/Caddy stack (docker-compose.yml). Override
           # with a repo variable COMPOSE_FILE if the server ever switches stacks.
           COMPOSE_FILE: ${{ vars.COMPOSE_FILE || 'docker-compose.yml' }}
+          DEPLOY_SHA: ${{ github.sha }}
         run: |
           ssh -o StrictHostKeyChecking=yes -o BatchMode=yes \
               -i ~/.ssh/id_deploy -p "$SSH_PORT" \
               "$SSH_USER@$SSH_HOST" bash -s <<EOF
           set -euo pipefail
           cd "$DEPLOY_PATH"
-          git pull --ff-only
+          # Deploy the commit that passed these jobs, even if main has moved.
+          git fetch origin "$DEPLOY_SHA"
+          git checkout --detach "$DEPLOY_SHA"
           # Never replace the container mid-solve: hold the deploy (up to
           # 90 min — runs have no wall-clock limit, only the iteration
           # budget) while a solver subprocess (multiprocessing spawn_main)
@@ -184,6 +187,8 @@ jobs:
     steps:
       - name: Bootstrap + deploy on the LXC container
         uses: appleboy/ssh-action@v1
+        env:
+          DEPLOY_SHA: ${{ github.sha }}
         with:
           host: 10.10.10.6
           username: root
@@ -195,6 +200,7 @@ jobs:
           # First build compiles the Playwright-enabled backend image — allow
           # well beyond the action's 10m default.
           command_timeout: 40m
+          envs: DEPLOY_SHA
           script: |
             set -euo pipefail
 
@@ -204,8 +210,9 @@ jobs:
               git clone https://github.com/Wunderwerk-Official/ShiftSchedule.git /opt/app
             fi
             cd /opt/app
-            git fetch origin main
-            git reset --hard origin/main
+            # A newer untested push may already be on main while CI finishes.
+            git fetch origin "$DEPLOY_SHA"
+            git reset --hard "$DEPLOY_SHA"
 
             # One-time .env bootstrap with locally generated secrets. Nothing
             # is echoed to the workflow log; read the admin password later via

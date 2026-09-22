@@ -1547,3 +1547,28 @@ Database Inspector
   identify an incomplete generation without shortening the received text or
   changing tool execution. Existing already-truncated historical logs cannot
   recover text that was never stored.
+
+## v1.60 — reviewed planning and persistence boundaries
+
+- Background draft application uses the current browser state. Snapshot restore
+  checks the supplied current state's revision and writes backup + restore in
+  one transaction. A stale browser snapshot returns `409 state_changed`.
+- CP-SAT/heuristic stored drafts replace only unlocked solver entries in range;
+  protected, pool, vacation and boundary context remain fixed. A missing legacy
+  end date is stored as the actual seven-day range. CP-SAT sees multi-day duties
+  before the range and carries successful fallback weeks into later weeks.
+- Hard checks cover active template references and complete boundary-week hours.
+  Existing manual conflicts cannot justify additional conflicts. Vacation dates
+  count once in scoring/YTD even when ranges overlap. Clinician aliases stay
+  unique when duplicate names already contain numeric suffixes.
+- Cancellation is checked after model responses, retry waits and between final
+  review tools. Provider connection diagnostics include cause types only.
+- Public weeks expose only rendering fields and week-clipped absences. Web/iCal
+  ETags include state/publication content and take precedence over date validators.
+- Production Compose stacks explicitly disable the development test login;
+  startup revokes an existing unchanged development credential. Deployment uses
+  the CI-verified commit. These protections take effect after rollout/restart.
+- The Flash preset and arena default use `nvidia/Qwen3.8-Flash-Next-NVFP4`, listed
+  by the endpoint on 2026-09-22. Saved model choices are not silently migrated.
+  The old W4A16 identifier returned HTTP 400. A new-ID smoke run exercised tools
+  but hit connection failures; historical W4A16 timings are not NVFP4 guarantees.

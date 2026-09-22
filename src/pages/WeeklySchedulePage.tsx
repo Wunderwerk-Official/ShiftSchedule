@@ -1383,6 +1383,12 @@ export default function WeeklySchedulePage({
     }
   };
 
+  // The completion watcher outlives the render that started it. Applying
+  // after a background run must save the current screen, including edits
+  // made while it was running, rather than that render's old state.
+  const applyRunRef = useRef(handleApplyRun);
+  applyRunRef.current = handleApplyRun;
+
   const handleDiscardRun = async (runId: string) => {
     try {
       await discardSolverRun(runId);
@@ -1475,7 +1481,7 @@ export default function WeeklySchedulePage({
         run.has_result && !run.apply_blocked_reason && (run.status === "finished" || run.status === "aborted");
       if (applicable && applyAfterAbortRef.current) {
         applyAfterAbortRef.current = false;
-        await handleApplyRun(runId);
+        await applyRunRef.current(runId);
       } else if (applicable) {
         setSolverInfoOpen(true);
         showSolverNoticeBriefly(

@@ -109,7 +109,7 @@ def test_restore_round_trip_and_auto_backup(temp_db):
 
     res = client.post(
         f"/v1/state/snapshots/{meta['id']}/restore",
-        json={"currentState": state_b.model_dump()},
+        json={"currentState": client.get("/v1/state").json()},
     )
     assert res.status_code == 200, res.text
     restored = res.json()
@@ -139,7 +139,7 @@ def test_second_restore_overwrites_auto_backup(temp_db):
     for _ in range(2):
         res = client.post(
             f"/v1/state/snapshots/{meta['id']}/restore",
-            json={"currentState": state.model_dump()},
+            json={"currentState": client.get("/v1/state").json()},
         )
         assert res.status_code == 200
     listed = client.get("/v1/state/snapshots").json()
@@ -158,7 +158,7 @@ def test_rename_and_auto_backup_rename_rejected(temp_db):
 
     client.post(
         f"/v1/state/snapshots/{meta['id']}/restore",
-        json={"currentState": state.model_dump()},
+        json={"currentState": client.get("/v1/state").json()},
     )
     backup = [
         s for s in client.get("/v1/state/snapshots").json() if s["kind"] == "auto_backup"
@@ -216,9 +216,44 @@ def test_restore_survives_template_change(temp_db):
 
     res = client.post(
         f"/v1/state/snapshots/{meta['id']}/restore",
-        json={"currentState": state_t2.model_dump()},
+        json={"currentState": live},
     )
     assert res.status_code == 200
     restored = res.json()
     assert [a["id"] for a in restored["assignments"]] == ["a1"]
     assert [a["rowId"] for a in restored["assignments"]] == ["slot-a__mon"]
+
+
+def test_restore_rejects_stale_browser_state_without_changing_backup(temp_db):
+    client = _client_as()
+    original = _state_with_assignment()
+    meta = _create(client, "original", original)
+    _save_state(original, USER)
+    stale = client.get("/v1/state").json()
+    newer = make_app_state(clinicians=[make_clinician("clin-2", "Bob")])
+    _save_state(newer, USER)
+
+    response = client.post(f"/v1/state/snapshots/{meta['id']}/restore",
+                           json={"currentState": stale})
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "state_changed"
+    assert client.get("/v1/state").json()["clinicians"][0]["name"] == "Bob"
+    assert not any(s["kind"] == "auto_backup" for s in client.get("/v1/state/snapshots").json())
+
+
+def test_restore_rolls_back_backup_when_state_write_fails(temp_db, monkeypatch):
+    import backend.snapshots as snapshots
+
+    client = _client_as()
+    meta = _create(client, "original", _state_with_assignment())
+    current = make_app_state(clinicians=[make_clinician("clin-2", "Bob")])
+    _save_state(current, USER)
+
+    def fail_save(*args, **kwargs):
+        raise RuntimeError("simulated write failure")
+
+    monkeypatch.setattr(snapshots, "_save_state", fail_save)
+    with pytest.raises(RuntimeError, match="simulated write failure"):
+        client.post(f"/v1/state/snapshots/{meta['id']}/restore", json={})
+    assert client.get("/v1/state").json()["clinicians"][0]["name"] == "Bob"
+    assert not any(s["kind"] == "auto_backup" for s in client.get("/v1/state/snapshots").json())

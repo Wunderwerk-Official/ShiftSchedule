@@ -903,7 +903,7 @@ export default function SolverOverlay({
             title="Stop the run — the calendar stays untouched; any partial result lands in the run inbox."
             className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-1.5 text-sm font-medium text-rose-600 transition-colors hover:border-rose-300 hover:bg-rose-100 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-300 dark:hover:border-rose-700 dark:hover:bg-rose-900"
           >
-            Cancel &amp; discard
+            Stop run
           </button>
 
           {/* Apply Solution button - only shown when solutions exist */}

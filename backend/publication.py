@@ -1,3 +1,4 @@
+import json
 import os
 import secrets
 import sqlite3
@@ -49,13 +50,21 @@ def _compute_public_etag(
     token: str,
     state_updated_at: str,
     publication_updated_at: str,
+    state_payload: Dict[str, Any],
+    publication_payload: Dict[str, Any],
 ) -> str:
-    payload = "|".join(
+    # Timestamps have second precision; separate edits within one second
+    # still represent different calendars and must invalidate the cache.
+    payload = json.dumps(
         [
             token,
             state_updated_at or "",
             publication_updated_at or "",
-        ]
+            state_payload,
+            publication_payload,
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
     )
     digest = sha256(payload.encode("utf-8")).hexdigest()
     return f"\"{digest}\""
@@ -66,14 +75,20 @@ def _compute_public_week_etag(
     week_start_iso: str,
     state_updated_at: str,
     publication_updated_at: str,
+    state_payload: Dict[str, Any],
+    publication_payload: Dict[str, Any],
 ) -> str:
-    payload = "|".join(
+    payload = json.dumps(
         [
             token,
             week_start_iso,
             state_updated_at or "",
             publication_updated_at or "",
-        ]
+            state_payload,
+            publication_payload,
+        ],
+        sort_keys=True,
+        separators=(",", ":"),
     )
     digest = sha256(payload.encode("utf-8")).hexdigest()
     return f"\"{digest}\""

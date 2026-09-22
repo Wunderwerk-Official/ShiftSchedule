@@ -28,6 +28,10 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 from ..models import AppState, Assignment, Clinician
 from ..scoring import ScoringContext, open_slots, plan_stats
 from ..validation import (
+    VIOLATION_ON_CALL_REST,
+    VIOLATION_OVERLAP,
+    VIOLATION_SAME_LOCATION,
+    VIOLATION_SPLIT_SHIFT,
     VIOLATION_WEEKLY_HOURS,
     Violation,
     validate_assignments,
@@ -411,6 +415,17 @@ def _violation_key(v: Violation) -> Tuple:
         # Keyed by ISO week (not the first assignment date, which shifts when
         # earlier-in-week assignments change) so the baseline diff is stable.
         return (v.code, v.clinician_id, v.context.get("iso_year"), v.context.get("iso_week"))
+    if v.code in (VIOLATION_SPLIT_SHIFT, VIOLATION_SAME_LOCATION):
+        # These are clinician-day groups; the validator's sample slot can
+        # change when a repair removes the first assignment.
+        return (v.code, v.clinician_id, v.date_iso)
+    if v.code == VIOLATION_OVERLAP and v.context:
+        pair = sorted(((v.date_iso or "", v.slot_id or ""),
+                       (v.context.get("other_date_iso", ""), v.context.get("other_slot_id", ""))))
+        return (v.code, v.clinician_id, *pair)
+    if v.code == VIOLATION_ON_CALL_REST and v.context:
+        return (v.code, v.clinician_id, v.date_iso, v.slot_id,
+                v.context.get("on_call_date"), v.context.get("on_call_slot_id"))
     return (v.code, v.clinician_id, v.date_iso, v.slot_id)
 
 
@@ -432,11 +447,19 @@ def build_clinician_aliases(state: AppState) -> Dict[str, str]:
     Duplicate names get a numeric suffix so every identifier stays unique.
     """
     aliases: Dict[str, str] = {}
-    seen: Dict[str, int] = {}
+    names = {(c.name or "").strip() or c.id for c in state.clinicians}
+    used: Set[str] = set()
     for c in state.clinicians:
-        name = (c.name or c.id).strip()
-        seen[name] = seen.get(name, 0) + 1
-        aliases[c.id] = name if seen[name] == 1 else f"{name} ({seen[name]})"
+        name = (c.name or "").strip() or c.id
+        alias = name
+        suffix = 2
+        # Reserve real roster names too: a second "Alice" must not steal
+        # the identifier of a clinician literally named "Alice (2)".
+        while alias in used or (alias != name and alias in names):
+            alias = f"{name} ({suffix})"
+            suffix += 1
+        aliases[c.id] = alias
+        used.add(alias)
     return aliases
 
 
@@ -526,6 +549,7 @@ class PlanToolExecutor:
         # otherwise be masked by the set diff.
         baseline = self._hard_violations(self._full_plan())
         self.baseline_hard_keys: Set[Tuple] = {_violation_key(v) for v in baseline}
+        self.baseline_hard_context = {_violation_key(v): v.context or {} for v in baseline}
         # Violations that exist among the FIXED assignments alone are not
         # repairable by the agent (it may only move drafts) — they are
         # excluded from the quality tier and flagged in get_violations so
@@ -670,6 +694,12 @@ class PlanToolExecutor:
         key = _violation_key(v)
         if key not in self.baseline_hard_keys:
             return True
+        before = self.baseline_hard_context.get(key, {})
+        after = v.context or {}
+        if v.code == VIOLATION_SPLIT_SHIFT:
+            return after.get("blocks", 0) > before.get("blocks", 0)
+        if v.code == VIOLATION_SAME_LOCATION:
+            return not set(after.get("locations", [])).issubset(before.get("locations", []))
         if v.code == VIOLATION_WEEKLY_HOURS:
             baseline_minutes = self.baseline_week_minutes.get(key)
             current_minutes = int((v.context or {}).get("assigned_minutes") or 0)

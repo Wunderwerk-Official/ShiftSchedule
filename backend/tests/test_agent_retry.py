@@ -180,6 +180,18 @@ def test_cancel_stops_retrying():
     assert provider.turn == 1
 
 
+def test_cancel_during_backoff_does_not_start_another_generation(monkeypatch):
+    cancel = MockCancelEvent()
+    provider = MockProvider([
+        {"error": "overloaded", "status": 529},
+        {"text": "must never be consumed"},
+    ])
+    monkeypatch.setattr(harness.time, "sleep", lambda _seconds: cancel.set())
+    response = _retry(provider, cancel_event=cancel)
+    assert response.stop_reason == "error"
+    assert provider.turn == 1
+
+
 def test_day_by_day_run_recovers_from_transient_error(monkeypatch):
     """End-to-end through agent_solve_range: a 529 on the first call of the
     day is retried and the run completes normally - no error note, no

@@ -1,5 +1,26 @@
 """Shared interpretation of personal work patterns for scoring and tools."""
 
+from datetime import date, timedelta
+
+
+def vacation_dates_in_range(clinician, start: date, end: date) -> set[date]:
+    """Distinct vacation dates in the half-open interval [start, end).
+
+    Vacation entries are inclusive and may overlap. Clip before expanding so
+    an old or long absence cannot slow down a short planning-range score.
+    """
+    days: set[date] = set()
+    for vacation in clinician.vacations or []:
+        try:
+            first = max(start, date.fromisoformat(vacation.startISO))
+            last = min(end - timedelta(days=1), date.fromisoformat(vacation.endISO))
+        except (ValueError, TypeError, AttributeError):
+            continue
+        while first <= last:
+            days.add(first)
+            first += timedelta(days=1)
+    return days
+
 
 def daily_target_minutes(clinician, window=None):
     pattern = clinician.workPattern

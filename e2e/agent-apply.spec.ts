@@ -7,6 +7,7 @@ const defaultState = JSON.parse(readFileSync(new URL("../backend/default_state.j
 // Real UI, deterministic API responses. No model calls or shared database.
 async function calendar(page: Page, options: {
   holdFirstSave?: boolean; confirmations?: boolean; emptyAbort?: boolean; saveConflict?: boolean;
+  backgroundRun?: boolean;
 } = {}) {
   let state = { ...structuredClone(defaultState), assignments: [], revision: "r0" } as AppState;
   const assignment = {
@@ -14,7 +15,7 @@ async function calendar(page: Page, options: {
     rowId: state.weeklyTemplate!.locations[0].slots[0].id, clinicianId: state.clinicians[0].id,
   };
   const run: SolverRunSummary = {
-    id: "draft", status: options.emptyAbort ? "aborted" : "finished", has_result: true,
+    id: "draft", status: options.backgroundRun ? "running" : options.emptyAbort ? "aborted" : "finished", has_result: true,
     start_iso: "2026-01-05", end_iso: "2026-01-05", attempt: 1,
     created_at: "2026-01-05T10:00:00", finished_at: "2026-01-05T10:01:00",
     apply_blocked_reason: options.emptyAbort ? "Stopped before producing a plan. Your calendar has been kept." : null,
@@ -27,7 +28,16 @@ async function calendar(page: Page, options: {
   let releaseFirstSave!: () => void;
   const firstSave = new Promise<void>((resolve) => { releaseFirstSave = resolve; });
   await page.clock.setFixedTime(new Date("2026-01-05T12:00:00Z"));
-  await page.addInitScript(() => localStorage.setItem("authToken", "test-token"));
+  await page.addInitScript(() => {
+    localStorage.setItem("authToken", "test-token");
+    class TestSource {
+      onmessage: ((e: { data: string }) => void) | null = null;
+      onerror: ((e: Event) => void) | null = null;
+      close() {}
+      constructor() { Object.assign(window, { activitySource: this }); }
+    }
+    Object.assign(window, { EventSource: TestSource });
+  });
   await page.route("**/auth/me", (route) => route.fulfill({ json: { username: "test", role: "user", active: true } }));
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
@@ -47,6 +57,11 @@ async function calendar(page: Page, options: {
       return route.fulfill({ json: state });
     }
     if (url.pathname.endsWith("/v1/solve/runs")) return route.fulfill({ json: { runs: [run] } });
+    if (url.pathname.endsWith("/v1/solve/runs/draft")) return route.fulfill({ json: run });
+    if (url.pathname.endsWith("/v1/solve/abort")) {
+      run.status = "aborted";
+      return route.fulfill({ json: { status: "aborting", message: "Stopping" } });
+    }
     if (url.pathname.endsWith("/draft/apply")) {
       applyCalls.push(url.searchParams);
       if (options.confirmations && applyCalls.length <= 2) {
@@ -68,8 +83,10 @@ async function calendar(page: Page, options: {
   });
   await page.goto("/");
   await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
-  await page.getByTitle("Solver history, weights & timeout").click();
-  await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeVisible();
+  if (!options.backgroundRun) {
+    await page.getByTitle("Solver history, weights & timeout").click();
+    await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeVisible();
+  }
   return { saves, applyCalls, releaseFirstSave, pageErrors, state: () => state };
 }
 
@@ -85,6 +102,30 @@ test("apply waits for pending saves and subsequent autosave preserves the applie
   expect(api.saves[1].revision).toBe("r1");
   expect(api.state().assignments.map((a) => a.id)).toEqual(["applied-assignment"]);
   await expect(page.getByText("Updating calendar…", { exact: true })).toBeHidden();
+  expect(api.pageErrors).toEqual([]);
+});
+
+test("applying the best background draft preserves edits made while the run was active", async ({ page }) => {
+  const api = await calendar(page, { backgroundRun: true });
+  await expect(page.getByRole("button", { name: "Solver running..." })).toBeVisible();
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.locator('input[value="Rest Day"]').fill("Protected rest pool");
+  await expect.poll(() => api.state().rows.find((row) => row.id === "pool-rest-day")?.name)
+    .toBe("Protected rest pool");
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await page.getByRole("button", { name: "Solver running..." }).click();
+  await page.evaluate(() => {
+    (window as unknown as { activitySource: { onmessage: (e: { data: string }) => void } })
+      .activitySource.onmessage({ data: JSON.stringify({ event: "solution", data: {
+        run_token: "draft", solution_num: 1, objective: 1, time_ms: 1000, assignments: [],
+      } }) });
+  });
+  await page.getByRole("button", { name: "Apply best plan", exact: true }).click();
+  await expect.poll(() => api.applyCalls.length).toBe(1);
+  await expect(page.getByText("Updating calendar…", { exact: true })).toBeHidden();
+  await expect.poll(() => api.state().rows.find((row) => row.id === "pool-rest-day")?.name)
+    .toBe("Protected rest pool");
+  expect(api.state().assignments.map((a) => a.id)).toEqual(["applied-assignment"]);
   expect(api.pageErrors).toEqual([]);
 });
 

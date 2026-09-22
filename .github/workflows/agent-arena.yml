@@ -19,7 +19,7 @@ on:
         default: "600"
       model:
         description: "Self-hosted model ID"
-        default: "VnimanieAI/Qwen3.8-Flash-Next-W4A16"
+        default: "nvidia/Qwen3.8-Flash-Next-NVFP4"
       variant:
         description: "Prompt experiment"
         type: choice

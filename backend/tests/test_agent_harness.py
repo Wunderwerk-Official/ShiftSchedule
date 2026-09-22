@@ -1183,6 +1183,81 @@ def test_final_review_bounds_fresh_searches_without_changing_the_retained_plan()
     assert any("unsearched improvements may remain" in n for n in result["notes"])
 
 
+def test_cancel_during_final_review_generation_keeps_pre_abort_plan():
+    from backend.agent.prompts import REVIEW_SYSTEM_PROMPT
+
+    cancel = MockCancelEvent()
+    slot_key = f"slot-a__mon__{MON}"
+
+    class CancelInReview(MockProvider):
+        def complete(self, **kwargs):
+            if kwargs["system"] == REVIEW_SYSTEM_PROMPT:
+                cancel.set()
+                return ProviderResponse(text=None, stop_reason="tool_use", tool_calls=[
+                    ToolCall("swap", "apply_moves", {"moves": [
+                        {"action": "unassign", "slot_key": slot_key, "clinicianId": "Alice"},
+                        {"action": "assign", "slot_key": slot_key, "clinicianId": "Bob"},
+                    ]}),
+                ])
+            return super().complete(**kwargs)
+
+    provider = CancelInReview([
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": slot_key, "clinicianId": "Alice"},
+        ]}}]}, {"text": "Day complete."},
+    ])
+    result = agent_solve_range(_payload(agent_strategy="day_by_day"), _two_clinician_state(),
+                              cancel, ProgressRecorder(), time.time(), provider=provider, config=_config())
+    assert result["debugInfo"]["solver_status"] == "ABORTED"
+    assert result["debugInfo"]["agent"]["stopReason"] == "aborted"
+    assert [a["clinicianId"] for a in result["assignments"]] == ["clin-1"]
+
+
+def test_cancel_during_final_review_tool_batch_stops_before_next_tool():
+    cancel = MockCancelEvent()
+    slot_key = f"slot-a__mon__{MON}"
+    progress = ProgressRecorder()
+
+    def cancel_after_inspection(event_type, data):
+        progress(event_type, data)
+        if event_type == "agent" and data.get("kind") == "tool_result" and data.get("tool") == "get_plan_overview":
+            cancel.set()
+
+    provider = MockProvider([
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": slot_key, "clinicianId": "Alice"},
+        ]}}]}, {"text": "Day complete."},
+        {"tool_calls": [
+            {"name": "get_plan_overview", "arguments": {}},
+            {"name": "apply_moves", "arguments": {"moves": [
+                {"action": "unassign", "slot_key": slot_key, "clinicianId": "Alice"},
+                {"action": "assign", "slot_key": slot_key, "clinicianId": "Bob"},
+            ]}},
+        ]},
+    ])
+    result = agent_solve_range(_payload(agent_strategy="day_by_day"), _two_clinician_state(),
+                              cancel, cancel_after_inspection, time.time(), provider=provider, config=_config())
+    assert result["debugInfo"]["solver_status"] == "ABORTED"
+    assert result["debugInfo"]["agent"]["moves_accepted"] == 1
+    assert [a["clinicianId"] for a in result["assignments"]] == ["clin-1"]
+
+
+def test_cancel_during_text_only_response_is_reported_as_aborted():
+    cancel = MockCancelEvent()
+
+    class CancelOnCompletion(MockProvider):
+        def complete(self, **kwargs):
+            response = super().complete(**kwargs)
+            cancel.set()
+            return response
+
+    result = agent_solve_range(_payload(), _two_clinician_state(), cancel,
+                              ProgressRecorder(), time.time(),
+                              provider=CancelOnCompletion([{"text": "Done."}]), config=_config())
+    assert result["debugInfo"]["solver_status"] == "ABORTED"
+    assert result["debugInfo"]["agent"]["stopReason"] == "aborted"
+
+
 def test_final_review_last_chance_can_apply_a_useful_joint_change():
     from .conftest import make_template_slot
     state = make_app_state(clinicians=[make_clinician("a", "Alice"), make_clinician("b", "Bob")], slots=[

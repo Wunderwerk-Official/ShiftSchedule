@@ -302,6 +302,23 @@ def test_llm_facing_outputs_use_names_but_never_raw_ids():
     assert "Dr. Bernd Vertraulich" in candidates.content
 
 
+def test_duplicate_name_suffixes_remain_unique_and_resolve_to_correct_clinicians():
+    state = make_app_state(clinicians=[
+        make_clinician("clin-1", "Alice"),
+        make_clinician("clin-2", "Alice"),
+        make_clinician("clin-3", "Alice (2)"),
+    ])
+    executor = _make_executor(state)
+    assert len(set(executor.alias_by_id.values())) == len(state.clinicians)
+    for clinician in state.clinicians:
+        alias = executor.alias_by_id[clinician.id]
+        assert executor._resolve_clinician(alias) == clinician.id
+        preview, error = _run(executor, "apply_moves", {"dry_run": True, "moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": alias},
+        ]})
+        assert not error and preview["valid"]
+
+
 def test_apply_moves_accepts_names_and_returns_real_ids():
     state = make_app_state(
         clinicians=[make_clinician("clin-real-id", "Dr. Alice")],
@@ -809,6 +826,85 @@ def test_unrepairable_fixed_violations_leave_the_quality_tier():
     payload, _ = _run(executor, "get_violations", {"severity": "hard"})
     overlap = [v for v in payload["violations"] if v["code"] == "OVERLAP"]
     assert overlap and all(v["repairable"] is False for v in overlap)
+
+
+def test_agent_cannot_add_a_third_block_to_fixed_split_shifts():
+    state = make_app_state(slots=[
+        make_template_slot("early", start_time="08:00", end_time="09:00"),
+        make_template_slot("mid", start_time="11:00", end_time="12:00"),
+        make_template_slot("late", start_time="14:00", end_time="15:00"),
+    ], assignments=[make_assignment("fixed-early", "early", MON), make_assignment("fixed-mid", "mid", MON)])
+    executor = _make_executor(state)
+    response, error = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"late__{MON}", "clinicianId": "clin-1"},
+    ]})
+    assert not error and not response["applied"]
+    assert "SPLIT_SHIFT" in {v["code"] for v in response["new_hard_violations"]}
+    assert executor.current == {}
+
+
+def test_agent_cannot_add_a_new_location_to_fixed_location_conflict():
+    from .conftest import make_location
+
+    state = make_app_state(slots=[
+        make_template_slot("early", location_id="loc-a", start_time="08:00", end_time="09:00"),
+        make_template_slot("mid", location_id="loc-b", start_time="09:00", end_time="10:00"),
+        make_template_slot("late", location_id="loc-c", start_time="10:00", end_time="11:00"),
+    ], assignments=[make_assignment("fixed-early", "early", MON), make_assignment("fixed-mid", "mid", MON)],
+        solver_settings={"enforceSameLocationPerDay": True, "preferContinuousShifts": False})
+    template_location = state.weeklyTemplate.locations[0]
+    state.locations = [make_location(location_id) for location_id in ("loc-a", "loc-b", "loc-c")]
+    state.weeklyTemplate.locations = [template_location.model_copy(update={
+        "locationId": location.id,
+        "slots": [slot for slot in template_location.slots if slot.locationId == location.id],
+    }) for location in state.locations]
+    executor = _make_executor(state)
+    assert any(key[0] == "SAME_LOCATION_PER_DAY" for key in executor.baseline_hard_keys)
+    response, error = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"late__{MON}", "clinicianId": "clin-1"},
+    ]})
+    assert not error and not response["applied"]
+    assert "SAME_LOCATION_PER_DAY" in {v["code"] for v in response["new_hard_violations"]}
+
+
+def test_agent_cannot_replace_a_baseline_overlap_with_a_different_pair():
+    state = make_app_state(slots=[
+        make_template_slot("early", start_time="08:00", end_time="09:00"),
+        make_template_slot("mid", start_time="08:30", end_time="10:00"),
+        make_template_slot("long", start_time="07:00", end_time="10:00"),
+    ], assignments=[make_assignment("fixed-mid", "mid", MON)])
+    executor = _make_executor(state, [_seed("early", MON, "clin-1")])
+    response, error = _run(executor, "apply_moves", {"moves": [
+        {"action": "unassign", "slot_key": f"early__{MON}", "clinicianId": "clin-1"},
+        {"action": "assign", "slot_key": f"long__{MON}", "clinicianId": "clin-1"},
+    ]})
+    assert not error and not response["applied"]
+    assert "OVERLAP" in {v["code"] for v in response["new_hard_violations"]}
+    assert ("early", MON, "clin-1") in executor.current
+
+
+def test_baseline_rest_violation_does_not_cover_a_different_on_call_duty():
+    from backend.agent.tools import _violation_key
+    from backend.validation import Violation
+
+    first = Violation(code="ON_CALL_REST", message="rest", clinician_id="clin-1",
+                      date_iso=MON, slot_id="day", context={"on_call_date": TUE, "on_call_slot_id": "duty-a"})
+    second = Violation(code="ON_CALL_REST", message="rest", clinician_id="clin-1",
+                       date_iso=MON, slot_id="day", context={"on_call_date": TUE, "on_call_slot_id": "duty-b"})
+    assert _violation_key(first) != _violation_key(second)
+
+
+def test_agent_can_reduce_existing_split_blocks_without_fully_repairing_them():
+    state = make_app_state(slots=[
+        make_template_slot("early", start_time="08:00", end_time="09:00"),
+        make_template_slot("mid", start_time="11:00", end_time="12:00"),
+        make_template_slot("late", start_time="14:00", end_time="15:00"),
+    ])
+    executor = _make_executor(state, [_seed(slot, MON, "clin-1") for slot in ("early", "mid", "late")])
+    response, error = _run(executor, "apply_moves", {"moves": [
+        {"action": "unassign", "slot_key": f"late__{MON}", "clinicianId": "clin-1"},
+    ]})
+    assert not error and response["applied"]
 
 
 def test_short_days_precompute_fix_options():

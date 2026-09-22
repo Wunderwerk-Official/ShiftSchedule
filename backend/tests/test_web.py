@@ -70,6 +70,31 @@ class TestWebWeekEndpoint:
         assert response.status_code == 404
         assert "not found" in response.json()["detail"].lower()
 
+    def test_public_roster_excludes_private_planning_data(self, client, setup_web_publication):
+        from backend.models import VacationRange
+
+        state = setup_web_publication["state"]
+        clinician = state.clinicians[0]
+        clinician.planningWishes = "Private personal circumstances"
+        clinician.workingHoursPerWeek = 32
+        clinician.vacations = [
+            VacationRange(id="overlap", startISO="2026-01-01", endISO="2026-01-07"),
+            VacationRange(id="future", startISO="2026-08-01", endISO="2026-08-15"),
+        ]
+        state.solverSettings["agentUserInstructions"] = "Private planning instructions"
+        state.solverRules = [{"id": "private-rule", "type": "note", "text": "Private rule"}]
+        _save_state(state, setup_web_publication["username"])
+
+        response = client.get(f"/v1/web/{setup_web_publication['token']}/week?start=2026-01-05")
+        assert response.status_code == 200
+        payload = response.json()
+        public = payload["clinicians"][0]
+        assert set(public) == {"id", "name", "qualifiedClassIds", "vacations"}
+        assert public["vacations"] == [{"id": "overlap", "startISO": "2026-01-05", "endISO": "2026-01-07"}]
+        assert "agentUserInstructions" not in payload["solverSettings"]
+        assert payload.get("solverRules", []) == []
+        assert "Private" not in response.text
+
     def test_unpublished_week_returns_not_published(
         self, client: TestClient, setup_web_publication
     ) -> None:

@@ -202,6 +202,8 @@ def download_ical(
         token=token,
         state_updated_at=state_updated_at_raw,
         publication_updated_at=publication_updated_at_raw,
+        state_payload=app_state,
+        publication_payload=dict(publication),
     )
     headers = {
         "Cache-Control": "private, max-age=0, must-revalidate",
@@ -210,8 +212,10 @@ def download_ical(
         "Referrer-Policy": "no-referrer",
     }
 
-    if _etag_matches(if_none_match, etag) or _if_modified_since_matches(
-        if_modified_since, last_modified
+    # RFC 9110: If-None-Match takes precedence over If-Modified-Since.
+    if _etag_matches(if_none_match, etag) or (
+        if_none_match is None
+        and _if_modified_since_matches(if_modified_since, last_modified)
     ):
         return Response(status_code=304, headers=headers)
 

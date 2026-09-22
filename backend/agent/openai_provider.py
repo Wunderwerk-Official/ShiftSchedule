@@ -175,9 +175,20 @@ class OpenAICompatibleProvider(LLMProvider):
         except openai.APIConnectionError as exc:
             # Subclass of OpenAIError — must be caught before the broad
             # handler below. Includes timeouts; both are transient.
+            # The SDK wraps transport/local send failures in the same generic
+            # "Connection error". Types distinguish the failure layer without
+            # copying cause messages (which can include URLs or credentials).
+            cause_types = []
+            cause = exc.__cause__
+            seen = {id(exc)}
+            while cause is not None and id(cause) not in seen and len(cause_types) < 8:
+                seen.add(id(cause))
+                cause_types.append(type(cause).__name__)
+                cause = cause.__cause__
+            detail = f" (cause types: {' -> '.join(cause_types)})" if cause_types else ""
             return ProviderResponse(
                 text=None, tool_calls=[], stop_reason="error",
-                error=f"OpenAI-compatible endpoint unreachable: {exc}",
+                error=f"OpenAI-compatible endpoint unreachable: {exc}{detail}",
                 retryable=True,
             )
         except openai.OpenAIError as exc:

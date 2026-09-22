@@ -258,3 +258,31 @@ def test_reasoning_effort_passed_via_extra_body():
         tools=[], timeout_seconds=30,
     )
     assert "extra_body" not in plain._client.last_kwargs
+
+
+def test_connection_error_reports_cause_types_without_sensitive_messages():
+    import httpx
+    import openai
+
+    provider = _provider_with(_completion())
+
+    def fail(**kwargs):
+        try:
+            try:
+                raise UnicodeEncodeError("ascii", "private-credential-ü", 19, 20, "private reason")
+            except UnicodeEncodeError as cause:
+                raise httpx.ConnectError("https://private-host/?api_key=secret") from cause
+        except httpx.ConnectError as cause:
+            raise openai.APIConnectionError(request=httpx.Request("POST", "https://private-host")) from cause
+
+    class FailingClient(_StubClient):
+        @property
+        def chat(self):
+            return SimpleNamespace(completions=SimpleNamespace(create=fail))
+
+    provider._client = FailingClient(None)
+    response = provider.complete(system="s", messages=[], tools=[], timeout_seconds=10)
+    assert response.stop_reason == "error" and response.retryable
+    assert "ConnectError -> UnicodeEncodeError" in response.error
+    for sensitive in ("private-credential", "private-host", "private reason", "api_key", "secret"):
+        assert sensitive not in response.error

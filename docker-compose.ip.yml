@@ -4,6 +4,8 @@ services:
       context: .
       dockerfile: backend/Dockerfile
     environment:
+      ENVIRONMENT: production
+      ENABLE_E2E_TEST_USER: "0"
       SCHEDULE_DB_PATH: /data/schedule.db
       CORS_ALLOW_ORIGINS: ${APP_ORIGIN}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
