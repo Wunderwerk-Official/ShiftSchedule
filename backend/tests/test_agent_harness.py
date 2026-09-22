@@ -5,13 +5,15 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from backend.agent.config import AgentConfig
 from backend.agent.harness import agent_solve_range
 from backend.agent.mock_provider import MockProvider
 from backend.agent.provider import LLMProvider, ProviderResponse, ToolCall
 from backend.models import SolveRangeRequest
 
-from .conftest import make_app_state, make_clinician
+from .conftest import make_app_state, make_assignment, make_clinician
 
 
 class ResponseProvider(LLMProvider):
@@ -71,6 +73,25 @@ def _two_clinician_state():
             make_clinician("clin-2", "Bob"),
         ]
     )
+
+
+@pytest.fixture
+def seed_with_optional_capacity(monkeypatch):
+    """Exercise the repair loop with an intentionally improvable valid seed.
+
+    The real heuristic now fills optional capacity itself; repair-loop/event
+    tests should not depend on an earlier heuristic's underfilling bug.
+    """
+    def controlled_seed(payload, state, cancel_event, on_progress, start_time):
+        assert payload.only_fill_required is False
+        return {
+            "startISO": payload.startISO, "endISO": payload.endISO,
+            "assignments": [make_assignment("seed-alice", "slot-a__mon", MON,
+                                             "clin-1", source="solver").model_dump()],
+            "notes": [],
+        }
+
+    monkeypatch.setattr("backend.agent.harness.heuristic_solve_range_v2", controlled_seed)
 
 
 def test_long_model_text_is_complete_in_live_events_and_saved_log():
@@ -146,17 +167,15 @@ def test_inspection_only_script_keeps_seed_and_reports_iterations():
     assert solutions and solutions[0]["solution_num"] == 1
 
 
-def test_agent_move_improves_plan_and_emits_solution():
-    # Distribute-all mode gives the slot +1 capacity headroom; the heuristic
-    # fills only the required position, the agent adds a second assignment
-    # for the free clinician -> a real improvement. One of the two scripted
-    # assigns targets the clinician the heuristic already used and must be
-    # rejected; the other succeeds.
+def test_agent_move_improves_plan_and_emits_solution(seed_with_optional_capacity):
+    # Distribute-all gives the controlled seed +1 capacity. Alice is already
+    # assigned; assigning her again is rejected, while adding Bob must improve
+    # the actual quality score and emit a fresh solution.
     state = _two_clinician_state()
     slot_key = f"slot-a__mon__{MON}"
     script = [
         {"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]},
-        # Try to add whichever clinician is free (heuristic took one of them)
+        # The controlled seed already assigned Alice, while Bob remains free.
         {"tool_calls": [{"name": "apply_moves", "arguments": {
             "moves": [{"action": "assign", "slot_key": slot_key, "clinicianId": "clin-1"}]}}]},
         {"tool_calls": [{"name": "apply_moves", "arguments": {
@@ -357,7 +376,7 @@ def test_determinism_same_script_same_output():
     assert a["notes"] == b["notes"]
 
 
-def test_agent_activity_events_flow_through_progress():
+def test_agent_activity_events_flow_through_progress(seed_with_optional_capacity):
     state = _two_clinician_state()
     slot_key = f"slot-a__mon__{MON}"
     script = [

@@ -9,7 +9,7 @@ const defaultState = JSON.parse(readFileSync(new URL("../backend/default_state.j
 async function calendar(page: Page, options: {
   holdFirstSave?: boolean; confirmations?: boolean; emptyAbort?: boolean; saveConflict?: boolean;
   backgroundRun?: boolean;
-  runError?: number; abortFails?: boolean; changeAfterPdf?: boolean;
+  runError?: number; abortFails?: "http" | "force_kill_error"; changeAfterPdf?: boolean;
 } = {}) {
   await mockProgressStream(page);
   let state = { ...structuredClone(defaultState), assignments: [], revision: "r0" } as AppState;
@@ -60,7 +60,8 @@ async function calendar(page: Page, options: {
       return route.fulfill({ status: options.runError ?? 200, json: run });
     }
     if (url.pathname.endsWith("/v1/solve/abort")) {
-      if (options.abortFails) return route.fulfill({ status: 500, json: { detail: "Stop failed" } });
+      if (options.abortFails === "http") return route.fulfill({ status: 500, json: { detail: "Stop failed" } });
+      if (options.abortFails === "force_kill_error") return route.fulfill({ json: { status: "force_kill_error", message: "Process termination failed" } });
       run.status = "aborted";
       return route.fulfill({ json: { status: "aborting", message: "Stopping" } });
     }
@@ -208,8 +209,9 @@ test("signing out stops polling and the live stream", async ({ page }) => {
   expect(api.detailCalls).toHaveLength(count);
 });
 
-test("failed stop stays visible and never automatically applies the later result", async ({ page }) => {
-  const api = await calendar(page, { backgroundRun: true, abortFails: true });
+for (const abortFails of ["http", "force_kill_error"] as const) {
+test(`failed stop (${abortFails}) stays visible and never automatically applies the later result`, async ({ page }) => {
+  const api = await calendar(page, { backgroundRun: true, abortFails });
   await page.getByRole("button", { name: "Solver running..." }).click();
   await page.evaluate(() => {
     (window as unknown as { activitySource: { onmessage: (event: { data: string }) => void } }).activitySource.onmessage({
@@ -222,6 +224,7 @@ test("failed stop stays visible and never automatically applies the later result
   await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeVisible({ timeout: 8000 });
   expect(api.applyCalls).toHaveLength(0);
 });
+}
 
 test("PDF export waits for saves and requests their exact revision", async ({ page }) => {
   const api = await calendar(page, { holdFirstSave: true });

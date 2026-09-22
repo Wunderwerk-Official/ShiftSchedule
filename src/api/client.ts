@@ -1104,7 +1104,11 @@ export async function abortSolver(
   if (!res.ok) {
     throw new Error(`Failed to abort solver: ${res.status}`);
   }
-  return res.json();
+  const result: { status: string; message: string } = await res.json();
+  if (result.status === "force_kill_error") {
+    throw new Error(result.message || "The solver process could not be stopped.");
+  }
+  return result;
 }
 
 // One humanized assignment change from the agent solver's live feed.
