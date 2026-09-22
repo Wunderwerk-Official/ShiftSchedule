@@ -82,7 +82,7 @@ def main():
     parser.add_argument("--start", default="2026-02-02")
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=1200)
-    parser.add_argument("--model", default="VnimanieAI/Qwen3.8-Flash-Next-W4A16")
+    parser.add_argument("--model", default="nvidia/Qwen3.8-Flash-Next-NVFP4")
     parser.add_argument("--scenario", choices=["base", "vacation-wave", "understaffed", "crunch", "oncall", "pinned", "daynight", "fixed-patterns"], default="base")
     parser.add_argument("--strategy", choices=["day_by_day", "repair"], default="day_by_day")
     parser.add_argument("--variant", choices=["baseline", "focused"], default="baseline")

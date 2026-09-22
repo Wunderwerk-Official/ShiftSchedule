@@ -83,7 +83,7 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | start | `2026-02-02` |
 | days | `3` or `7` |
 | timeout | `900` (35B) / `1800` (122B, it is ~40× slower) |
-| model | `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` or `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4` |
+| model | `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`, `nvidia/Qwen3.8-Flash-Next-NVFP4` or `Qwen/Qwen3.8-27B` |
 | scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` |
 | strategy | `repair` (heuristic seed + LLM repair) / `day_by_day` (LLM builds each day from scratch) |
 
