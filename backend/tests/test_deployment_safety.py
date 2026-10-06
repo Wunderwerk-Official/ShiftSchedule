@@ -6,9 +6,16 @@ import sys
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
+import backend.db as db
+import backend.solver as solver
+from backend import main as backend_main
+from backend.main import app
 from scripts.configure_proxy_logging import redact_server_logs
 from scripts import configure_proxy_logging
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_proxy_logging_policy_is_scoped_and_covers_nested_locations():
@@ -132,6 +139,109 @@ def test_symlinked_main_config_keeps_its_original_include_prefix(tmp_path, monke
     assert target.read_text() == "server { server_name app.example; include logging.conf; }"
 
 
+def test_proxy_logging_rewrite_is_idempotent_and_reloads_only_on_change(tmp_path, monkeypatch, capsys):
+    main = tmp_path / "nginx.conf"
+    main.write_text("server {\n  server_name app.example;\n  access_log /var/log/app.log;\n"
+                    "  location /api/ { error_log /var/log/api.log; proxy_pass http://backend; }\n}\n")
+    calls = []
+
+    def nginx(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(stdout=f"# configuration file {main}:\n")
+
+    monkeypatch.setattr(configure_proxy_logging.subprocess, "run", nginx)
+    assert configure_proxy_logging.run(["--domain", "app.example"]) == 0
+    first = main.read_text()
+    assert calls == [["nginx", "-T"], ["nginx", "-t"], ["nginx", "-s", "reload"]]
+    assert first.count("access_log off;") == 1 and first.count("error_log /dev/null crit;") == 1
+    assert "location /api/ { proxy_pass http://backend; }" in first
+    assert "\n\n" not in first
+    # Every deploy runs this again: an already configured server must neither
+    # be rewritten (no whitespace growth) nor trigger an nginx reload.
+    calls.clear()
+    assert configure_proxy_logging.run(["--domain", "app.example"]) == 0
+    assert main.read_text() == first
+    assert calls == [["nginx", "-T"]]
+    assert "already disabled" in capsys.readouterr().out
+    # Hand-made whitespace changes are not a reason to rewrite either.
+    spaced = first.replace("\n    error_log", "\n\n    error_log")
+    main.write_text(spaced)
+    calls.clear()
+    assert configure_proxy_logging.run(["--domain", "app.example"]) == 0
+    assert main.read_text() == spaced and calls == [["nginx", "-T"]]
+
+
+@pytest.mark.parametrize("problem", ["no-server-block", "nginx-missing", "nginx-T-fails"])
+def test_proxy_logging_problems_warn_instead_of_failing_the_deploy(tmp_path, monkeypatch, capsys, problem):
+    main = tmp_path / "nginx.conf"
+    main.write_text("server { server_name other.example; access_log /var/log/other.log; }")
+
+    def nginx(command, **kwargs):
+        if problem == "nginx-missing":
+            raise FileNotFoundError(2, "No such file or directory", "nginx")
+        if problem == "nginx-T-fails":
+            raise subprocess.CalledProcessError(1, command, stderr="nginx: [emerg] bad config")
+        return SimpleNamespace(stdout=f"# configuration file {main}:\n")
+
+    monkeypatch.setattr(configure_proxy_logging.subprocess, "run", nginx)
+    assert configure_proxy_logging.run(["--domain", "app.example"]) == 0
+    captured = capsys.readouterr()
+    assert captured.err.startswith("WARNING: proxy logging not configured: ")
+    expected = {"no-server-block": "Application virtual server not found",
+                "nginx-missing": "nginx", "nginx-T-fails": "[emerg] bad config"}[problem]
+    assert expected in captured.err
+    assert main.read_text() == "server { server_name other.example; access_log /var/log/other.log; }"
+    with pytest.raises(Exception):
+        configure_proxy_logging.run(["--domain", "app.example", "--strict"])
+
+
+def test_proxy_logging_script_exits_zero_without_nginx_on_the_host(tmp_path):
+    # The deploy workflow calls the script unconditionally under set -e with
+    # whatever python3 the host has; it must import and warn, not abort.
+    empty_path = tmp_path / "bin"
+    empty_path.mkdir()
+    result = subprocess.run([sys.executable, "-I", str(REPO_ROOT / "scripts/configure_proxy_logging.py"),
+                             "--domain", "app.example"],
+                            env={"PATH": str(empty_path)}, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stderr.startswith("WARNING: proxy logging not configured: ")
+    strict = subprocess.run([sys.executable, "-I", str(REPO_ROOT / "scripts/configure_proxy_logging.py"),
+                             "--domain", "app.example", "--strict"],
+                            env={"PATH": str(empty_path)}, capture_output=True, text=True, timeout=30)
+    assert strict.returncode != 0
+
+
+def test_proxy_logging_script_uses_python38_compatible_syntax():
+    import ast
+    source = (REPO_ROOT / "scripts/configure_proxy_logging.py").read_text()
+    ast.parse(source, feature_version=(3, 8))
+    # PEP 604 unions in signatures need postponed evaluation on 3.8/3.9.
+    assert "from __future__ import annotations" in source.splitlines()[:20]
+
+
+def test_startup_clears_stale_planning_drain_marker_before_recovery(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "schedule.db"))
+    monkeypatch.setattr(db, "_SCHEMA_READY", False)
+    marker = tmp_path / ".planning-drain"
+    marker.touch()
+    monkeypatch.setattr(backend_main, "_check_port_available", lambda *_args: None)
+    monkeypatch.setattr(backend_main, "_ensure_admin_user", lambda: None)
+    monkeypatch.setattr(backend_main, "_ensure_test_user", lambda: None)
+    marker_seen_by_recovery = []
+    monkeypatch.setattr(solver, "recover_interrupted_runs",
+                        lambda: marker_seen_by_recovery.append(marker.exists()))
+    with TestClient(app) as running_client:
+        assert running_client.get("/health").status_code == 200
+        assert not marker.exists()
+    # Restarted runs are admitted like first attempts: the marker must be
+    # gone before recovery, or every recovered run would be refused (503).
+    assert marker_seen_by_recovery == [False]
+    # A second start without a marker is a no-op.
+    with TestClient(app):
+        pass
+    assert not marker.exists()
+
+
 @pytest.mark.parametrize("worker_state,success,replaces", [("0", True, True), ("1", False, False), ("unknown", False, False), ("inspect-error", False, False), ("cleanup-error", False, True)])
 def test_deployment_never_replaces_busy_or_uninspectable_workers(tmp_path, worker_state, success, replaces):
     fake = tmp_path / "docker"
@@ -166,6 +276,47 @@ elif "unlink(missing_ok=True)" in args and os.environ["WORKER_STATE"] == "cleanu
         assert "Could not reopen planning admissions" in result.stderr
     if success:
         assert sum(args[-2:] == ["python", "-"] for args in recorded) == 2
+
+
+@pytest.mark.parametrize("frontend_running", [True, False])
+def test_deployment_heals_previous_drain_and_gates_frontend_only_when_running(tmp_path, frontend_running):
+    fake = tmp_path / "docker"
+    fake.write_text('''#!/usr/bin/env python3
+import json, os, sys
+with open(os.environ["DOCKER_CALLS"], "a") as output:
+    output.write(json.dumps(sys.argv[1:]) + "\\n")
+args = " ".join(sys.argv)
+if "ps --status running --services" in args:
+    print(os.environ["RUNNING_SERVICES"])
+elif sys.argv[-2:] == ["python", "-"]:
+    print("0")
+''')
+    fake.chmod(0o755)
+    calls = tmp_path / "calls.jsonl"
+    env = dict(os.environ, PATH=f"{tmp_path}:{os.environ['PATH']}", DOCKER_CALLS=str(calls),
+               RUNNING_SERVICES="backend\nfrontend" if frontend_running else "backend",
+               DEPLOY_DRAIN_POLLS="2", DEPLOY_DRAIN_INTERVAL="0")
+    result = subprocess.run(["bash", str(REPO_ROOT / "scripts/deploy-compose.sh"), "test-compose.yml"],
+                            env=env, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    recorded = [json.loads(line) for line in calls.read_text().splitlines()]
+    build_at = recorded.index(["compose", "-f", "test-compose.yml", "build"])
+    before_build = [" ".join(args) for args in recorded[:build_at]]
+    gate = [args for args in recorded if "frontend" in args and "nginx-before-planning-drain.conf" in " ".join(args)]
+    restores = [args for args in gate if "if [ -f /tmp/nginx-before-planning-drain.conf ]" in args[-1]]
+    patches = [args for args in gate if "return 503" in args[-1]]
+    # Leftovers of a run killed before its EXIT trap are removed before anything else.
+    assert any("unlink(missing_ok=True)" in call for call in before_build)
+    assert sum("frontend" in call and "nginx-before-planning-drain.conf" in call for call in before_build) == int(frontend_running)
+    if frontend_running:
+        assert len(patches) == 1 and patches[0][-2] == "-ec"
+        assert len(restores) == 2  # self-heal and EXIT cleanup
+        assert "skipping the nginx planning gate" not in result.stderr
+    else:
+        assert patches == []
+        assert len(restores) == 1  # EXIT cleanup only
+        assert "skipping the nginx planning gate" in result.stderr
+    assert any("up" in args for args in recorded)
 
 
 def test_idle_probe_recognizes_checkout_arena_jobs_and_ignores_itself(tmp_path):

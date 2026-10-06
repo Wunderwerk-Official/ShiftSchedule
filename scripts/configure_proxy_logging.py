@@ -3,14 +3,26 @@
 The API keeps redacted route/status/error-class logs. Nginx does not reliably
 redact capability tokens in error messages, so these virtual servers must not
 write raw access/error request URLs. Other virtual servers remain unchanged.
+
+Runs with the deployment host's own Python (3.8+). The command exits 0 with a
+warning when the policy cannot be applied, unless ``--strict`` is given: a
+host-nginx surprise must not abort the application deployment.
 """
+from __future__ import annotations
+
 import argparse
 import glob
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 TOKEN = re.compile(r'''\#[^\n]*|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|[{};]|[^\s{};]+''')
+MANAGED_DIRECTIVES = "\n    access_log off;\n    error_log /dev/null crit;"
+
+
+def _tokens(text: str):
+    return [m for m in TOKEN.finditer(text) if not m.group().startswith("#")]
 
 
 def _directives(tokens):
@@ -63,7 +75,7 @@ def _check_includes(tokens, config_root: Path | None, *, stack=(), checked=None)
                 raise ValueError(f"Cannot verify cyclic nginx include: {path}")
             if path in checked:
                 continue
-            nested = [m for m in TOKEN.finditer(path.read_text()) if not m.group().startswith("#")]
+            nested = _tokens(path.read_text())
             for name, args, _ in _directives(nested):
                 values = [_literal(arg) for arg in args]
                 safe = bool(values) and values[0] == "/dev/null"
@@ -76,7 +88,14 @@ def _check_includes(tokens, config_root: Path | None, *, stack=(), checked=None)
 
 
 def redact_server_logs(text: str, domain: str, *, config_root: Path | None = None) -> tuple[str, int]:
-    tokens = [m for m in TOKEN.finditer(text) if not m.group().startswith("#")]
+    """Return the rewritten text and the number of matching server blocks.
+
+    Applying the result to itself yields the same text: the managed
+    directives of a previous run are removed together with the whitespace in
+    front of them and re-inserted at the same place, so an already configured
+    server block does not change from run to run.
+    """
+    tokens = _tokens(text)
     edits = []
     matched = 0
     for i, token in enumerate(tokens[:-1]):
@@ -102,18 +121,24 @@ def redact_server_logs(text: str, domain: str, *, config_root: Path | None = Non
                 continue
             # Existing same-level directives would duplicate the ones added
             # below. Remove them at all levels and inherit the server policy.
-            edits.append((item.start(), terminator.end(), ""))
+            start = item.start()
+            while start > 0 and text[start - 1].isspace():
+                start -= 1
+            edits.append((start, terminator.end(), ""))
         at = tokens[i + 1].end()
-        edits.append((at, at, "\n    access_log off;\n    error_log /dev/null crit;"))
+        edits.append((at, at, MANAGED_DIRECTIVES))
     for start, end, replacement in sorted(edits, reverse=True):
         text = text[:start] + replacement + text[end:]
     return text, matched
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--domain", required=True)
-    args = parser.parse_args()
+def _same_configuration(before: str, after: str) -> bool:
+    """True when both texts carry the same directives (whitespace aside)."""
+    return [m.group() for m in _tokens(before)] == [m.group() for m in _tokens(after)]
+
+
+def configure(domain: str) -> str:
+    """Apply the policy; raise on any problem, leaving every file as found."""
     result = subprocess.run(["nginx", "-T"], check=True, capture_output=True, text=True)
     # nginx -T prints the main configuration first, followed by its includes.
     # Preserve that order: relative paths use the main file's directory.
@@ -129,21 +154,57 @@ def main():
     try:
         for path in paths:
             before = path.read_text()
-            after, count = redact_server_logs(before, args.domain, config_root=config_root)
+            after, count = redact_server_logs(before, domain, config_root=config_root)
             matched += count
-            if after != before:
+            if not _same_configuration(before, after):
                 backups[path] = before
                 path.write_text(after)
         if not matched:
             raise RuntimeError("Application virtual server not found; logging policy was not changed.")
+        if not backups:
+            return f"Private URL logging already disabled in {matched} application virtual server(s)."
         subprocess.run(["nginx", "-t"], check=True, capture_output=True)
         subprocess.run(["nginx", "-s", "reload"], check=True, capture_output=True)
     except Exception:
         for path, before in backups.items():
             path.write_text(before)
         raise
-    print(f"Private URL logging disabled in {matched} application virtual server(s).")
+    return f"Private URL logging disabled in {matched} application virtual server(s)."
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--domain", required=True)
+    parser.add_argument("--strict", action="store_true",
+                        help="exit non-zero when the policy cannot be applied (default: warn and exit 0)")
+    return parser.parse_args(argv)
+
+
+def main(argv=None):
+    """Strict entry point: raises when the policy cannot be applied."""
+    args = _parse_args(argv)
+    print(configure(args.domain))
+
+
+def _describe(exc: BaseException) -> str:
+    detail = getattr(exc, "stderr", None)
+    if isinstance(detail, bytes):
+        detail = detail.decode(errors="replace")
+    detail = (detail or "").strip()
+    return f"{exc}: {detail}" if detail else str(exc)
+
+
+def run(argv=None) -> int:
+    """Deployment entry point: a host-nginx problem must not abort the deploy."""
+    args = _parse_args(argv)
+    try:
+        print(configure(args.domain))
+    except Exception as exc:
+        if args.strict:
+            raise
+        print(f"WARNING: proxy logging not configured: {_describe(exc)}", file=sys.stderr)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(run())

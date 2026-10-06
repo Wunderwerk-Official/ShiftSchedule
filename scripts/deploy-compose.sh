@@ -7,11 +7,17 @@ poll_seconds=${DEPLOY_DRAIN_INTERVAL:-10}
 compose=(docker compose -f "$compose_file")
 draining=0
 
+# Both halves of the drain, shared by the EXIT cleanup and the self-heal of a
+# previous run that never reached its cleanup (SIGKILL, host reboot, exec into
+# a restarting container). The backend also clears its own marker on startup.
+remove_marker='import os,pathlib; pathlib.Path(os.environ.get("SCHEDULE_DB_PATH","schedule.db")).with_name(".planning-drain").unlink(missing_ok=True)'
+restore_frontend='if [ -f /tmp/nginx-before-planning-drain.conf ]; then cp /tmp/nginx-before-planning-drain.conf /etc/nginx/conf.d/default.conf; nginx -t; nginx -s reload; rm /tmp/nginx-before-planning-drain.conf; fi'
+
 cleanup() {
   if [ "$draining" -eq 0 ]; then return 0; fi
   local failed=0
-  "${compose[@]}" exec -T backend python -c 'import os,pathlib; pathlib.Path(os.environ.get("SCHEDULE_DB_PATH","schedule.db")).with_name(".planning-drain").unlink(missing_ok=True)' >/dev/null 2>&1 || failed=1
-  "${compose[@]}" exec -T frontend sh -ec 'if [ -f /tmp/nginx-before-planning-drain.conf ]; then cp /tmp/nginx-before-planning-drain.conf /etc/nginx/conf.d/default.conf; nginx -t; nginx -s reload; rm /tmp/nginx-before-planning-drain.conf; fi' >/dev/null 2>&1 || failed=1
+  "${compose[@]}" exec -T backend python -c "$remove_marker" >/dev/null 2>&1 || failed=1
+  "${compose[@]}" exec -T frontend sh -ec "$restore_frontend" >/dev/null 2>&1 || failed=1
   return "$failed"
 }
 on_exit() {
@@ -25,20 +31,41 @@ on_exit() {
 trap on_exit EXIT
 trap 'exit 1' INT TERM HUP
 
+# Self-heal: a previous deployment killed before its EXIT trap leaves planning
+# closed (503) until the drain marker and the nginx gate are removed. Best
+# effort; the EXIT cleanup of this run retries whatever fails here.
+running_services=$("${compose[@]}" ps --status running --services 2>/dev/null || true)
+if printf '%s\n' "$running_services" | grep -qx frontend; then
+  "${compose[@]}" exec -T frontend sh -ec "$restore_frontend" >/dev/null 2>&1 \
+    || echo 'Warning: could not restore the frontend configuration left by a previous deployment.' >&2
+fi
+if printf '%s\n' "$running_services" | grep -qx backend; then
+  "${compose[@]}" exec -T backend python -c "$remove_marker" >/dev/null 2>&1 \
+    || echo 'Warning: could not remove a drain marker left by a previous deployment.' >&2
+fi
+
 "${compose[@]}" build
 
 # The marker protects new backends and direct API access. The frontend gate
 # also protects the first rollout, whose old backend cannot read the marker.
-backend_running=$("${compose[@]}" ps --status running --services | sed -n '/^backend$/p')
+running_services=$("${compose[@]}" ps --status running --services)
+backend_running=$(printf '%s\n' "$running_services" | sed -n '/^backend$/p')
+frontend_running=$(printf '%s\n' "$running_services" | sed -n '/^frontend$/p')
 if [ -n "$backend_running" ]; then
   draining=1
   "${compose[@]}" exec -T backend python -c 'import os,pathlib; pathlib.Path(os.environ.get("SCHEDULE_DB_PATH","schedule.db")).with_name(".planning-drain").touch()'
-  "${compose[@]}" exec -T frontend sh -c '
-    cp /etc/nginx/conf.d/default.conf /tmp/nginx-before-planning-drain.conf
-    sed "/server {/a\\  location = /api/v1/solve/range { return 503; }" /tmp/nginx-before-planning-drain.conf > /etc/nginx/conf.d/default.conf
-    nginx -t
-    nginx -s reload
-  '
+  if [ -n "$frontend_running" ]; then
+    # -e: a failing nginx -t must abort before nginx -s reload, so the EXIT
+    # cleanup restores the backup instead of leaving a broken gate behind.
+    "${compose[@]}" exec -T frontend sh -ec '
+      cp /etc/nginx/conf.d/default.conf /tmp/nginx-before-planning-drain.conf
+      sed "/server {/a\\  location = /api/v1/solve/range { return 503; }" /tmp/nginx-before-planning-drain.conf > /etc/nginx/conf.d/default.conf
+      nginx -t
+      nginx -s reload
+    '
+  else
+    echo 'Warning: frontend is not running; skipping the nginx planning gate (the backend drain marker still protects).' >&2
+  fi
   idle_polls=0
   for ((i=1; i<=poll_limit; i++)); do
     # Failure to inspect is NOT evidence of an idle worker. Fail closed.

@@ -4,6 +4,7 @@ import socket
 import sys
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -64,6 +65,38 @@ def _check_port_available(port: int = 8000) -> None:
         sock.close()
 
 
+def _clear_stale_planning_drain() -> None:
+    """Remove a leftover deployment drain marker.
+
+    scripts/deploy-compose.sh creates ``.planning-drain`` next to the database
+    so that no new planning run is admitted while containers are replaced, and
+    removes it again from its EXIT trap. If that shell is killed, the host
+    reboots mid-deploy, or the cleanup cannot exec into the restarting
+    backend, the marker survives on the data volume and planning stays 503
+    until someone deletes it by hand. A freshly started backend is by
+    definition past the deploy drain, so it clears the marker itself. This
+    must run before recover_interrupted_runs(), whose restarts are admitted
+    like any other first attempt.
+    """
+    # Read the module attribute at call time (like solver does) so a test
+    # database set via backend.db.DB_PATH is honored.
+    from .db import DB_PATH
+
+    marker = Path(DB_PATH).with_name(".planning-drain")
+    try:
+        marker.unlink()
+    except FileNotFoundError:
+        return
+    except OSError as exc:  # e.g. ":memory:" databases; never block startup
+        logging.getLogger(__name__).warning(
+            "Could not remove deployment drain marker %s: %s", marker, exc
+        )
+        return
+    logging.getLogger(__name__).info(
+        "Removed stale deployment drain marker %s; planning admissions reopen.", marker
+    )
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     _check_port_available(_resolve_expected_port())
@@ -71,6 +104,7 @@ async def lifespan(_app: FastAPI):
     conn.close()
     _ensure_admin_user()
     _ensure_test_user()
+    _clear_stale_planning_drain()
     from .solver import recover_interrupted_runs
 
     recover_interrupted_runs()
