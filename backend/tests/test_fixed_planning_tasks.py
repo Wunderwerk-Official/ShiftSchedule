@@ -278,3 +278,98 @@ def test_final_repair_budget_prioritizes_missing_coverage_before_an_earlier_long
     assert audit['repairs'] == 1
     assert ex.best_quality[1] == 0
     assert any(a.dateISO == '2026-01-06' for a in ex.best_assignments)
+
+
+# --- final audit budget, incremental re-checks and the "unverified" verdict (2026-10-06) ---
+
+def test_audit_time_budget_scales_with_the_range():
+    from backend.agent.workflow import audit_time_budget
+    assert audit_time_budget(1) == 60
+    assert audit_time_budget(7) == 70
+    assert audit_time_budget(28) == 280
+
+
+def test_final_audit_uses_scaled_budget_by_default():
+    ex = executor(week_state(5), assignments([0]), end='2026-01-11')
+    audit = ex.workflow.final_audit(ex.ctx.target_day_isos, Event())
+    assert audit['time_limit_seconds'] == 70
+    assert audit['checks'] and all(check['complete'] for check in audit['checks'].values())
+
+
+def test_final_audit_keeps_completed_checks_outside_the_repaired_week(monkeypatch):
+    """A repair in week 1 must not re-run the bounded searches of week 2."""
+    from backend.agent.workflow import PlanningWorkflow
+    state = week_state(5)
+    state.clinicians[0].workingHoursPerWeek = 56
+    ex = executor(state, assignments([0]), end='2026-01-18')  # two ISO weeks
+    week2 = [d for d in ex.ctx.target_day_isos if d >= '2026-01-12']
+    assert week2
+    reviewed = []
+    actual = PlanningWorkflow.review_day
+    def review_day(workflow, day):
+        reviewed.append(day)
+        return actual(workflow, day)
+    monkeypatch.setattr(PlanningWorkflow, 'review_day', review_day)
+    audit = ex.workflow.final_audit(ex.ctx.target_day_isos, Event())
+    assert audit['repairs'] >= 1
+    assert all(check['complete'] for check in audit['checks'].values())
+    assert all(check['plan_revision'] == ex.workflow.revision for check in audit['checks'].values())
+    assert ex.workflow.tasks()['required_checks_complete']
+    # Week-2 days were repaired too (week 2 is equally understaffed), but any
+    # day is reviewed at most once per repair that touched its own week.
+    counts = {d: reviewed.count(d) for d in ex.ctx.target_day_isos}
+    assert max(counts.values()) <= audit['repairs'] + 1
+    assert audit['rechecked_days'] < audit['repairs'] * len(ex.ctx.target_day_isos)
+
+
+def test_days_affected_by_repair_covers_iso_week_and_neighbours():
+    ex = executor(week_state(5), assignments([0]), end='2026-01-25')
+    days = ex.ctx.target_day_isos  # 2026-01-05 .. 2026-01-25, three ISO weeks
+    before = set()
+    after = {('a1', '2026-01-14', 'a')}  # Wednesday of week 2
+    stale = ex.workflow._days_affected_by_repair(days, before, after)
+    assert stale == {d for d in days if '2026-01-12' <= d <= '2026-01-18'}  # the ISO week
+    # A Monday change also drags in the Sunday before it (rest/overnight rules).
+    stale = ex.workflow._days_affected_by_repair(days, before, {('a1', '2026-01-12', 'a')})
+    assert stale == {d for d in days if '2026-01-11' <= d <= '2026-01-18'}
+    # Unlocatable change or balanced profile: everything is stale.
+    assert ex.workflow._days_affected_by_repair(days, set(), set()) == set(days)
+    ex.ctx.settings.agentQualityProfile = 'balanced'
+    assert ex.workflow._days_affected_by_repair(days, before, after) == set(days)
+
+
+def test_exhausted_audit_reports_unverified_not_pending():
+    from backend.run_apply import result_safety
+    ex = paginated_rescue_fixture()
+    audit = ex.workflow.final_audit([MON], Event(), max_seconds=0)
+    assert audit['repairs'] == 0
+    assert not audit['checks'][MON]['complete'] and audit['checks'][MON]['unverified']
+    tasks = ex.workflow.tasks()
+    assert not tasks['required_checks_complete']
+    assert tasks['required_checks_unverified'] == [MON]
+    row = next(t for t in tasks['tasks'] if t['kind'] == 'required_check')
+    assert row['status'] == 'unverified'
+    run_record = {'status': 'finished', 'start_iso': MON, 'end_iso': MON,
+                  'result': {'assignments': [make_assignment().model_dump()],
+                             'debugInfo': {'agent': {'daysSkipped': [], 'daysIncomplete': [], 'tasks': tasks}}}}
+    empty, incomplete = result_safety(run_record)
+    assert not empty and incomplete == []
+
+
+def test_harness_keeps_completed_when_only_the_final_audit_ran_out_of_time(monkeypatch):
+    from backend.agent.workflow import PlanningWorkflow
+    actual = PlanningWorkflow.final_audit
+    monkeypatch.setattr(PlanningWorkflow, 'final_audit',
+                        lambda workflow, days, cancel, **kw: actual(workflow, days, cancel, max_seconds=0))
+    result = agent_solve_range(_payload(), make_app_state(), MockCancelEvent(), ProgressRecorder(), time.time(),
+                              provider=MockProvider([
+                                  {'tool_calls': [{'name': 'apply_moves', 'arguments': {'moves': [
+                                      {'action': 'assign', 'slot_key': 'slot-a__mon', 'clinicianId': 'clin-1'}]}}]},
+                                  {'text': 'Done.'}]), config=_config())
+    agent = result['debugInfo']['agent']
+    assert agent['stopReason'] == 'completed'
+    assert agent['daysUnverified'] == [MON]
+    assert agent['daysIncomplete'] == [] and agent['daysSkipped'] == []
+    assert agent['completion']['required_checks_unverified'] == 1
+    assert not agent['completion']['required_checks_complete']
+    assert any('ran out of time' in n for n in result['notes'])

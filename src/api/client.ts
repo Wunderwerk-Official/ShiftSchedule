@@ -805,11 +805,15 @@ export type SolverAgentDebug = {
   daysSkipped?: string[];
   modelDaysSkipped?: string[];
   daysIncomplete?: string[];
+  /** Days whose final bounded checks ran out of time at the final revision:
+   * nothing was found and nothing was ruled out (not incomplete days). */
+  daysUnverified?: string[];
   quality_version?: number;
   completion?: {
     plan_revision: number;
     workflow_finished: boolean;
     required_checks_complete: boolean;
+    required_checks_unverified?: number;
     coverage_complete: boolean;
     soft_wishes_fulfilled: boolean | null;
     free_text_wishes_verified: boolean;

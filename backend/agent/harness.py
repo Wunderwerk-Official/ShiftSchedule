@@ -217,9 +217,14 @@ def agent_solve_range(
     timeout = payload.timeout_seconds
     run_deadline = start_time + timeout if timeout else float("inf")
     # Required verification needs usable search time after model planning.
-    # Reserve 10% (at most a minute); the original caller limit still bounds
+    # Reserve 10%, capped at the audit's own range-scaled budget (a minute
+    # for a week, more for a month); the original caller limit still bounds
     # everything, and unlimited interactive runs remain unlimited.
-    audit_reserve = min(60.0, timeout * 0.1) if timeout else 0.0
+    from datetime import date as _date
+    from .workflow import audit_time_budget
+    _range_days = (_date.fromisoformat(payload.endISO or payload.startISO)
+                   - _date.fromisoformat(payload.startISO)).days + 1
+    audit_reserve = min(timeout * 0.1, audit_time_budget(_range_days)) if timeout else 0.0
     deadline = run_deadline - audit_reserve
 
     # Replan semantics: assignments a previous SOLVER run left inside the
@@ -355,6 +360,7 @@ def agent_solve_range(
         "days_planned": [],  # ISO dates the day loop finished (or found full)
         "days_skipped": [],  # ISO dates that failed or were never reached
         "days_incomplete": [],  # attempted, but completion was not verified
+        "days_unverified": [],  # final checks ran out of time at the final revision
     }
     total_input_tokens = 0
     total_output_tokens = 0
@@ -696,7 +702,10 @@ def agent_solve_range(
         run_meta["final_audit"] = audit
         run_meta["final_day_checks"] = audit["checks"]
         run_meta["days_planned"] = [d for d, check in audit["checks"].items() if check["complete"]]
-        run_meta["days_incomplete"] = [d for d, check in audit["checks"].items() if not check["complete"]]
+        run_meta["days_unverified"] = [d for d, check in audit["checks"].items()
+                                       if not check["complete"] and check.get("unverified")]
+        run_meta["days_incomplete"] = [d for d, check in audit["checks"].items()
+                                       if not check["complete"] and not check.get("unverified")]
         run_meta["days_skipped"] = [d for d in run_meta["days_skipped"] if d not in run_meta["days_planned"]]
 
     def finalize(status: str, extra_notes: List[str]) -> dict:
@@ -785,13 +794,21 @@ def agent_solve_range(
         tasks = executor.workflow.tasks()
         # Every exit reports the returned snapshot, including abort/provider
         # failure paths that cannot afford another audit.
-        verified_days = {t["dateISO"] for t in tasks["tasks"]
-                         if t["kind"] == "required_check" and t["status"] == "complete"}
+        check_rows = [t for t in tasks["tasks"] if t["kind"] == "required_check"]
+        verified_days = {t["dateISO"] for t in check_rows if t["status"] == "complete"}
+        # "unverified": the bounded check ran out of time or was cancelled at
+        # the final revision — nothing found, nothing ruled out. That is not
+        # an incomplete day and must not block applying a fully staffed draft.
+        unverified_days = {t["dateISO"] for t in check_rows if t["status"] == "unverified"}
+        pending_days = [t["dateISO"] for t in check_rows if t["status"] == "pending"]
         run_meta["days_planned"] = [d for d in ctx.target_day_isos if d in verified_days]
         run_meta["days_skipped"] = [d for d in run_meta["days_skipped"] if d not in verified_days]
+        run_meta["days_unverified"] = [d for d in ctx.target_day_isos
+                                       if d in unverified_days and d not in run_meta["days_skipped"]]
         run_meta["days_incomplete"] = [d for d in ctx.target_day_isos
-                                       if d not in verified_days and d not in run_meta["days_skipped"]]
-        if run_meta["stop_reason"] == "completed" and not tasks["required_checks_complete"]:
+                                       if d not in verified_days and d not in unverified_days
+                                       and d not in run_meta["days_skipped"]]
+        if run_meta["stop_reason"] == "completed" and pending_days:
             run_meta["stop_reason"] = "partial"
         measured_wishes_unmet = bool(metrics["structured_wish_violations"] or metrics["workday_deviation_days"]
                                     or metrics["uncomfortable_days"] or unsolved["outside_preferred_times"])
@@ -799,11 +816,21 @@ def agent_solve_range(
             p["assessment"] != "complete_week" for p in metrics["workday_patterns"]))
         completion = {"plan_revision": executor.workflow.revision,
                       "workflow_finished": True, "required_checks_complete": tasks["required_checks_complete"],
+                      "required_checks_unverified": len(run_meta["days_unverified"]),
                       "coverage_complete": tasks["coverage_complete"],
                       "soft_wishes_fulfilled": False if measured_wishes_unmet else (None if wishes_unknown else True),
                       "free_text_wishes_verified": not bool(metrics["free_text_wishes_require_review"])}
-        if not tasks["required_checks_complete"]:
+        if pending_days:
             notes.append("Required checks remain open for the returned plan; completion is not verified.")
+        if run_meta["days_unverified"]:
+            shown = ", ".join(run_meta["days_unverified"][:6])
+            if len(run_meta["days_unverified"]) > 6:
+                shown += f", and {len(run_meta['days_unverified']) - 6} more"
+            notes.append(
+                f"Final verification ran out of time for {len(run_meta['days_unverified'])} day(s) ({shown}); "
+                + ("required positions are all filled, " if tasks["coverage_complete"] else "coverage gaps are listed separately, ")
+                + "but the balance checks for these days were not finished."
+            )
         if metrics["workday_deviation_days"]:
             notes.append(f"Workday targets: {metrics['workday_deviation_days']} day(s) deviation; {metrics['workday_fixed_excess_days']} excess day(s) already fixed.")
         if run_meta.get("final_audit", {}).get("repairs"):
@@ -841,6 +868,9 @@ def agent_solve_range(
                     "daysSkipped": sorted(set(run_meta["days_skipped"])),
                     "modelDaysSkipped": run_meta.get("model_days_skipped", sorted(set(run_meta["days_skipped"]))),
                     "daysIncomplete": sorted(set(run_meta["days_incomplete"])),
+                    # Checks that ran out of time at the final revision (not
+                    # incomplete days): see completion.required_checks_unverified.
+                    "daysUnverified": sorted(set(run_meta.get("days_unverified", []))),
                     "moves_accepted": executor.moves_accepted,
                     "moves_rejected": executor.moves_rejected,
                     "input_tokens": total_input_tokens,

@@ -928,7 +928,9 @@ export default function SolverInfoModal({
                       label: "Days",
                       value: `${agent.daysPlanned ?? 0} checks complete · ${
                         agent.daysSkipped.length
-                      } skipped · ${agent.daysIncomplete?.length ?? 0} checks open`,
+                      } skipped · ${agent.daysIncomplete?.length ?? 0} checks open${
+                        agent.daysUnverified?.length ? ` · ${agent.daysUnverified.length} not finished in time` : ""
+                      }`,
                     });
                   }
                   return (
@@ -955,7 +957,11 @@ export default function SolverInfoModal({
                           <div className="font-medium">Result checks · plan {agent.completion.plan_revision}</div>
                           <ul className="mt-2 space-y-1">
                             <li>Run: {agent.completion.workflow_finished ? "finished" : "in progress"}</li>
-                            <li>Required checks: {agent.completion.required_checks_complete ? "complete" : "still open"}</li>
+                            <li>Required checks: {agent.completion.required_checks_complete
+                              ? "complete"
+                              : agent.completion.required_checks_unverified && agent.completion.required_checks_unverified === (agent.tasks?.tasks.filter(task => task.kind === "required_check" && task.status !== "complete").length ?? -1)
+                                ? `not finished in time for ${agent.completion.required_checks_unverified} day(s)`
+                                : "still open"}</li>
                             <li>Required positions: {agent.completion.coverage_complete ? "all filled" : "gaps remain"}</li>
                             <li>Work preferences: {agent.completion.soft_wishes_fulfilled === true ? "measured wishes met" : agent.completion.soft_wishes_fulfilled === false ? "deviations remain" : "not fully assessable"}</li>
                           </ul>
