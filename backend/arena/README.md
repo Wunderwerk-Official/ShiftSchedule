@@ -719,3 +719,36 @@ Housekeeping still open: the backend container's `OPENAI_MODEL` env var
 still names the dead W4A16 id. Production ignores it (the solve injects the
 DB `effective_model`), but the admin chat-test and arena runs without
 `--model` fall back to it — align it to whatever default is chosen.
+
+## Fixture synthetic-v3 (2026-10-06)
+
+`synthetic-v2` (introduced 2026-09-22) assigned clinician qualifications
+per *location*, but all ordinary sections of the retained structure live
+at one site. Result: 8 of the 24 synthetic clinicians had **no**
+qualification and 5 had exactly one (duty or the rare section only), so
+only 11 people could take ordinary slots. The "calm" base week became a
+scarcity week and `vacation-wave` removed no usable capacity at all. Every
+v2 number from 2026-09-22 (rounds on that day, the 1-/3-/7-day NVFP4 runs)
+carries that artefact.
+
+`synthetic-v3` (`backend/arena/generate_fixture.py`, sha256
+`7ba4ba18bde9bcc45525d2a8bb99765032a91f978aff411e09722b301cbc9a68`) splits
+the ordinary sections into four deterministic round-robin groups: four
+all-rounders, specialists covering one group (every third clinician two
+overlapping groups), one rare required section with exactly two
+specialists, duty section as before. Qualification counts are now
+`[32,32,32,32,8,8,16,7,8,17,8,7,17,8,8,16,9,8,16,7,9,17,8,7]`; every
+required slot except the rare section's has at least three eligible,
+non-vacationing clinicians in both benchmark weeks (asserted in
+`test_arena_fixture.py`). Generated history is additionally validated
+under the `daynight` reading of weekend duties.
+
+| Measure (model-free controller, 5 days, 120 s) | synthetic-v2 | synthetic-v3 |
+|---|---|---|
+| Base week 2026-02-02, open required slots | 29 | **0** |
+| Carnival week 2026-02-16, open required slots | 85 | **32** |
+| `vacation-wave`, eligible clinician-slots lost vs base (02-02 / 02-16) | 0 / 0 | **349 / 119** |
+
+Reports carry `fixture_version` and `fixture_sha256`; compare v3 runs only
+with v3 runs. The 2026-10-06 smoke run (Flash NVFP4, 1 day, 153 s,
+102.8 tok/s, 29/31 required slots, 0 errors) was still on v2.
