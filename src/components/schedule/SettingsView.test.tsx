@@ -13,11 +13,11 @@ vi.mock("../../api/client", async (importOriginal) => ({
 }));
 
 const flash = "nvidia/Qwen3.8-Flash-Next-NVFP4";
-const small = "Qwen/Qwen3.8-27B";
+const small = "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4";
 const third = "server/third-model";
 const settings: AgentSettings = { provider: "openai", model: "claude-sonnet-5", effective_model: flash,
   openai_model: flash, model_fallback_order: [flash, small, third], budget_usd: 5, spent_usd: 0, remaining_usd: 5 };
-const reply: AgentChatTestResult = { provider: "openai", model: small, text: "Hello from 27B", reasoning: null,
+const reply: AgentChatTestResult = { provider: "openai", model: small, text: "Hello from 35B", reasoning: null,
   error: null, duration_seconds: 1, input_tokens: 40, output_tokens: 20, cache_read_input_tokens: 60,
   tokens_per_second: 20, cost_usd: null,
   model_selection: { requested_model: flash, selected_model: small,
@@ -46,11 +46,11 @@ function setup() {
   render(<ConfirmDialogProvider><SettingsView {...props} /></ConfirmDialogProvider>);
 }
 
-it("shows the backend fallback order and checks the explicitly selected 27B model", async () => {
+it("shows the backend fallback order and checks the explicitly selected 35B model", async () => {
   setup();
-  expect(await screen.findByText(/planning and chat tests use:/)).toHaveTextContent("Qwen3.8-Flash-Next-NVFP4 → Qwen3.8-27B → third-model");
+  expect(await screen.findByText(/planning and chat tests use:/)).toHaveTextContent("Qwen3.8-Flash-Next-NVFP4 → Qwen3.5-35B-A3B-GPTQ-Int4 → third-model");
   fireEvent.click(screen.getByRole("button", { name: "Qwen3.8-Flash-Next-NVFP4" }));
-  fireEvent.click(screen.getByRole("button", { name: "Qwen3.8-27B" }));
+  fireEvent.click(screen.getByRole("button", { name: "Qwen3.5-35B-A3B-GPTQ-Int4" }));
   await waitFor(() => expect(updateAgentSettings).toHaveBeenCalledWith({ openai_model: small }));
   await waitFor(() => expect(agentModelCheck).toHaveBeenCalledWith(small, expect.any(AbortSignal)));
 });
@@ -69,8 +69,8 @@ it("shows the answering model and why the chat test switched", async () => {
   await screen.findByText(/planning and chat tests use:/);
   fireEvent.change(screen.getByPlaceholderText("Type a test message…"), { target: { value: "Hello" } });
   fireEvent.click(screen.getByRole("button", { name: "Send" }));
-  expect(await screen.findByText("Hello from 27B")).toBeVisible();
-  expect(screen.getByText(/Model: Qwen\/Qwen3.8-27B/)).toBeVisible();
+  expect(await screen.findByText("Hello from 35B")).toBeVisible();
+  expect(screen.getByText(/Model: Qwen\/Qwen3.5-35B-A3B-GPTQ-Int4/)).toBeVisible();
   expect(screen.getByText(/Automatically switched from/)).toHaveTextContent("Model not found");
 });
 

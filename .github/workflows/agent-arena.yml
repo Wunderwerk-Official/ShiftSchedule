@@ -12,7 +12,7 @@ on:
         description: "First day to solve (ISO)"
         default: "2026-02-02"
       days:
-        description: "Number of days"
+        description: "Number of days (max 7)"
         default: "1"
       timeout:
         description: "Wall-clock budget in seconds"

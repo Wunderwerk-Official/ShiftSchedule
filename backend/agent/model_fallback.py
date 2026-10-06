@@ -7,9 +7,12 @@ Keep the preferred model in settings; each new run starts at that preference.
 import re
 
 
+# Availability chain as served by the endpoint on 2026-10-06 (Flash NVFP4 is
+# the production default). `Qwen/Qwen3.8-27B` was dropped: the endpoint no
+# longer lists it.
 QWEN_MODEL_ORDER = (
     "nvidia/Qwen3.8-Flash-Next-NVFP4",
-    "Qwen/Qwen3.8-27B",
+    "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
     "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva",
 )
 

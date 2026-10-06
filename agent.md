@@ -1221,7 +1221,7 @@ Endpoints
 ## 9) Running Locally (Step-by-step)
 Prereqs
 - Python 3.9+
-- Node 18+
+- Node 20+ (22 used in CI and the frontend image)
 
 **Quick start (Claude Code agent)**
 To start fresh with a clean database:
@@ -1570,8 +1570,13 @@ Database Inspector
   the CI-verified commit. These protections take effect after rollout/restart.
 - The Flash preset and arena default use `nvidia/Qwen3.8-Flash-Next-NVFP4`, listed
   by the endpoint on 2026-09-22. Saved model choices are not silently migrated.
-  The old W4A16 identifier returned HTTP 400. A new-ID smoke run exercised tools
-  but hit connection failures; historical W4A16 timings are not NVFP4 guarantees.
+  The old W4A16 identifier returned HTTP 400. The first new-ID smoke run ended
+  with exit code 137 (SIGKILL): a concurrent deploy replaced the backend
+  container while the run executed inside it; this was not an endpoint
+  connection failure. Follow-up 1-day and 3-day runs verified NVFP4 stable
+  (full coverage, zero rejected moves, no errors; see `backend/arena/README.md`,
+  round 7 "Flash re-rolled again (NVFP4)"). Historical W4A16 timings are not
+  NVFP4 guarantees.
 
 ## v1.61 — account boundaries and verified workflow fixes
 
@@ -1615,16 +1620,19 @@ Database Inspector
 ## v1.62 — Qwen model availability fallback
 
 - The configured Qwen priority is `nvidia/Qwen3.8-Flash-Next-NVFP4`, then
-  `Qwen/Qwen3.8-27B`, then `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva`.
-  All three IDs were listed and returned valid synthetic tool calls on the
-  configured server on 2026-09-22. This policy selects only these known
-  planners, never arbitrary embedding/OCR/reranking models from `/models`.
+  `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`, then `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva`
+  (chain since v1.63; v1.62 shipped with `Qwen/Qwen3.8-27B` in second place,
+  which the endpoint stopped serving by 2026-10-06). All three current IDs
+  were listed and returned valid synthetic tool calls on the configured
+  server on 2026-10-06. This policy selects only these known planners, never
+  arbitrary embedding/OCR/reranking models from `/models`.
 - On an explicit missing-model / unavailable-deployment response, the same
   endpoint is retried with the next model and the remaining request budget.
   Existing plan, conversation and tool results stay intact. The successful
   replacement remains selected for that provider/run; the global preference
-  is unchanged, so new runs try the preferred model again. Selecting 27B
-  explicitly starts at 27B; unrelated model selections are left alone.
+  is unchanged, so new runs try the preferred model again. Selecting a later
+  chain member (for example 35B) explicitly starts there; unrelated model
+  selections are left alone.
 - Authentication, context, malformed-tool, generic transport/timeout and
   rate-limit errors do not trigger model switching. Existing bounded retries
   remain in force. Cancellation is checked between model requests; exhausting
@@ -1638,3 +1646,44 @@ Database Inspector
   claim of optimal planner quality; the upstream model card reports stronger
   BFCL-V4/DeepPlanning scores than 35B, and the deployed quantization passed
   the server tool check: https://huggingface.co/Qwen/Qwen3.5-122B-A10B.
+
+## v1.63 — endpoint lineup, audit budget and deploy hygiene (2026-10-06)
+
+- `Qwen/Qwen3.8-27B` is no longer listed by the self-hosted endpoint (LLM
+  endpoint diagnostic run from production on 2026-10-06). It is removed from
+  the self-hosted presets and from the availability fallback chain, which is
+  now `nvidia/Qwen3.8-Flash-Next-NVFP4` → `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` →
+  `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva`. All three answered synthetic
+  tool calls; Flash NVFP4 remains the production default (65–103 tok/s).
+  A saved 27B selection is not migrated automatically: it has no fallback
+  chain and fails like any other unlisted model until a served model is
+  selected in Settings. The `llm-diag` workflow probes only the three
+  current candidates.
+- Arena fixture `synthetic-v3` replaces `synthetic-v2`, which left 8 of 24
+  clinicians without any qualification. Reports carry the fixture
+  version/hash; v2 results are not a v3 baseline.
+- The code-side final audit (`PlanningWorkflow.final_audit`) scales with the
+  planned range: budget `max(60 s, 10 s × days)` (`audit_time_budget`, also
+  the cap of the 10 % reserve carved out of timed runs), repair ceiling two
+  per day up to 48, and a repair now re-checks only the days it can
+  influence (its ISO week plus the adjacent days; the balanced profile
+  still re-checks everything because it scores range-wide averages) while
+  completed checks elsewhere are carried to the new revision. Measured on
+  the arena fixture, 28 days: before 55 s and 0 of 28 days verified (every
+  check "budget exhausted"), after 93 s and 25 of 28 verified with only
+  genuine findings left open. A check that ran out of time or was cancelled
+  at the final revision is now reported as `unverified` (task status,
+  `completion.required_checks_unverified`, `daysUnverified`) instead of
+  `pending`: it does not make the run `partial`, does not count as an
+  incomplete day, and the apply gate ignores it (coverage gaps are still
+  computed by the gate itself). Run notes say "Final verification ran out
+  of time for N day(s)".
+- Backend startup clears the deploy drain marker, so a deploy that closed
+  planning admission and then failed cannot leave a restarted backend
+  refusing new plans. The proxy logging setup script is non-fatal: a failure
+  there is reported and does not abort the deploy.
+- Documentation: Node 20+ (22 in CI and containers) replaces the stale
+  "Node 18+" requirement; the arena README names `PROMPT_EVAL_REPORT` as the
+  workflow's report line, lists all workflow inputs and the 7-day cap, and
+  corrects the account of the 2026-09-22 NVFP4 smoke run (exit 137 from a
+  concurrent deploy, verified stable afterwards).

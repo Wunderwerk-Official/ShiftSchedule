@@ -594,10 +594,10 @@ test.describe.serial("app flows", () => {
     await expect(shiftCell.getByText("Dr. Test")).toBeVisible();
     await attachStepScreenshot(page, testInfo, "reset-before");
     await page.getByRole("button", { name: "Current week" }).click();
-    // "Reset" now opens a panel with "Reset Solver Only" / "Reset All"
+    // "Reset" now opens a panel with "Reset Solver Only" / "Reset Unfixed"
     // instead of resetting directly behind a confirm dialog.
     await page.getByRole("button", { name: "Reset", exact: true }).click();
-    await page.getByRole("button", { name: /Reset All/ }).click();
+    await page.getByRole("button", { name: /Reset Unfixed/ }).click();
     // Verify assignment was removed
     await expect(shiftCell.getByText("Dr. Test")).toHaveCount(0);
     await attachStepScreenshot(page, testInfo, "reset-after");

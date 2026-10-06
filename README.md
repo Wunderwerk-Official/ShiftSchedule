@@ -20,7 +20,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 ## Local Development (Step-by-step)
 Prereqs:
 - Python 3.11 (matches CI and the production image)
-- Node 18+
+- Node 20+ (22 recommended; CI and the frontend image use Node 22)
 
 Auth setup (required for login):
 ```bash

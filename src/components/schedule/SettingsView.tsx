@@ -27,10 +27,10 @@ import { modelSelectionNotice } from "../../lib/runLog";
 
 // Known self-hosted model choices; availability and fallback order are
 // resolved by the backend. Other IDs remain available as custom choices.
+// Qwen/Qwen3.8-27B was removed on 2026-10-06: the endpoint no longer serves it.
 const SELF_HOSTED_MODEL_PRESETS = [
-  "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
   "nvidia/Qwen3.8-Flash-Next-NVFP4",
-  "Qwen/Qwen3.8-27B",
+  "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
 ];
 
 // Drop the "org/" prefix (Qwen/, unsloth/, …) for a compact picker label.

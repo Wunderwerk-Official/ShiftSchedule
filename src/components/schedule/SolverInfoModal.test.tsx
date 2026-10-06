@@ -48,12 +48,12 @@ it("reports budget fallback and unverified days separately from coverage", () =>
 });
 
 it.each([true, false])("reports actual model selection and preserves every attempt in the log (available: %s)", async (available) => {
-  const selected = available ? "Qwen/Qwen3.8-27B" : null;
+  const selected = available ? "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4" : null;
   const requested = "nvidia/Qwen3.8-Flash-Next-NVFP4";
   const debugInfo = debug({ model: selected, result_producer: available ? "agent" : "heuristic_v2",
     model_selection: { requested_model: requested, selected_model: selected,
       attempts: [{ model: requested, status: "unavailable", reason: "Model not found" },
-        { model: "Qwen/Qwen3.8-27B", status: available ? "selected" : "unavailable" }] },
+        { model: "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4", status: available ? "selected" : "unavailable" }] },
   });
   debugInfo.solver_status = available ? "AGENT_COMPLETE" : "AGENT_FALLBACK_SEED";
   const run: SolverRunDetail = { id: "selection", status: "finished", has_result: true,
@@ -95,9 +95,9 @@ it("retains the last successful first-choice model after later unavailability wi
   const notice = modelSelectionNotice({ requested_model: "Flash", selected_model: "Flash", attempts: [
     { model: "Flash", status: "selected" },
     { model: "Flash", status: "unavailable", reason: "model_unavailable" },
-    { model: "27B", status: "unavailable", reason: "model_unavailable" },
+    { model: "35B", status: "unavailable", reason: "model_unavailable" },
   ] });
   expect(notice).toContain("Last successful model: Flash.");
-  expect(notice).toContain("27B (model_unavailable)");
+  expect(notice).toContain("35B (model_unavailable)");
   expect(notice).not.toContain("Automatically switched");
 });

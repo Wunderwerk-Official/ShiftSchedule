@@ -15,7 +15,7 @@ from backend.agent.model_fallback import QWEN_MODEL_ORDER, model_fallback_order
 from backend.agent.provider import ChatMessage, ToolCall, ToolResult, ToolSpec
 
 
-FLASH, QWEN_27B, LAST_MODEL = QWEN_MODEL_ORDER
+FLASH, QWEN_35B, LAST_MODEL = QWEN_MODEL_ORDER
 
 
 def _api_error(status, message, *, code=None):
@@ -98,27 +98,27 @@ def _models(client):
 
 
 def test_model_order_is_known_suffix_only():
-    assert QWEN_MODEL_ORDER[:2] == ("nvidia/Qwen3.8-Flash-Next-NVFP4", "Qwen/Qwen3.8-27B")
+    assert QWEN_MODEL_ORDER[:2] == ("nvidia/Qwen3.8-Flash-Next-NVFP4", "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4")
     assert len(set(QWEN_MODEL_ORDER)) == 3
     assert model_fallback_order(FLASH) == list(QWEN_MODEL_ORDER)
-    assert model_fallback_order(QWEN_27B) == [QWEN_27B, LAST_MODEL]
+    assert model_fallback_order(QWEN_35B) == [QWEN_35B, LAST_MODEL]
     assert model_fallback_order(LAST_MODEL) == [LAST_MODEL]
     assert model_fallback_order("custom-clinic-model") == ["custom-clinic-model"]
 
 
-def test_unavailable_flash_selects_27b_and_reports_model(monkeypatch):
+def test_unavailable_flash_selects_35b_and_reports_model(monkeypatch):
     provider, client = _provider(monkeypatch, [_unavailable(FLASH), _completion()])
 
     response = _complete(provider)
 
     assert response.stop_reason == "end_turn"
-    assert response.model == QWEN_27B
-    assert _models(client) == [FLASH, QWEN_27B]
+    assert response.model == QWEN_35B
+    assert _models(client) == [FLASH, QWEN_35B]
     selection = response.model_selection
     assert selection["requested_model"] == FLASH
-    assert selection["selected_model"] == QWEN_27B
+    assert selection["selected_model"] == QWEN_35B
     assert [(a["model"], a["status"]) for a in selection["attempts"]] == [
-        (FLASH, "unavailable"), (QWEN_27B, "selected")]
+        (FLASH, "unavailable"), (QWEN_35B, "selected")]
     assert selection["attempts"][0]["reason"] in {"model_unavailable", "requested_model_unavailable"}
     assert "Invalid model name" not in str(selection)
     assert response.usage["input_tokens"] == 12
@@ -134,8 +134,8 @@ def test_vllm_missing_model_with_backticks_and_no_error_code_uses_fallback(monke
     response = _complete(provider)
 
     assert response.stop_reason == "end_turn"
-    assert response.model == QWEN_27B
-    assert _models(client) == [FLASH, QWEN_27B]
+    assert response.model == QWEN_35B
+    assert _models(client) == [FLASH, QWEN_35B]
 
 
 @pytest.mark.parametrize("deployment_message", [
@@ -144,7 +144,7 @@ def test_vllm_missing_model_with_backticks_and_no_error_code_uses_fallback(monke
 def test_two_unavailable_models_reach_last_candidate(monkeypatch, deployment_message):
     provider, client = _provider(monkeypatch, [
         _api_error(503, f"{deployment_message} for model={FLASH}"),
-        _unavailable(QWEN_27B, 404), _completion(),
+        _unavailable(QWEN_35B, 404), _completion(),
     ])
 
     response = _complete(provider)
@@ -153,17 +153,17 @@ def test_two_unavailable_models_reach_last_candidate(monkeypatch, deployment_mes
     assert response.model == LAST_MODEL
     assert _models(client) == list(QWEN_MODEL_ORDER)
     assert [(a["model"], a["status"]) for a in response.model_selection["attempts"]] == [
-        (FLASH, "unavailable"), (QWEN_27B, "unavailable"), (LAST_MODEL, "selected")]
+        (FLASH, "unavailable"), (QWEN_35B, "unavailable"), (LAST_MODEL, "selected")]
 
 
-def test_starting_at_27b_never_retries_flash(monkeypatch):
-    provider, client = _provider(monkeypatch, [_unavailable(QWEN_27B), _completion()], model=QWEN_27B)
+def test_starting_at_35b_never_retries_flash(monkeypatch):
+    provider, client = _provider(monkeypatch, [_unavailable(QWEN_35B), _completion()], model=QWEN_35B)
 
     response = _complete(provider)
 
-    assert _models(client) == [QWEN_27B, LAST_MODEL]
+    assert _models(client) == [QWEN_35B, LAST_MODEL]
     assert response.model == LAST_MODEL
-    assert response.model_selection["requested_model"] == QWEN_27B
+    assert response.model_selection["requested_model"] == QWEN_35B
 
 
 def test_all_models_unavailable_stop_after_one_attempt_each(monkeypatch):
@@ -185,9 +185,9 @@ def test_all_models_unavailable_stop_after_one_attempt_each(monkeypatch):
 
 def test_selected_fallback_is_sticky_only_for_this_provider(monkeypatch):
     provider, client = _provider(monkeypatch, [_unavailable(FLASH), _completion(), _completion()])
-    assert _complete(provider).model == QWEN_27B
-    assert _complete(provider).model == QWEN_27B
-    assert _models(client) == [FLASH, QWEN_27B, QWEN_27B]
+    assert _complete(provider).model == QWEN_35B
+    assert _complete(provider).model == QWEN_35B
+    assert _models(client) == [FLASH, QWEN_35B, QWEN_35B]
     assert provider._config.model == FLASH
 
     fresh_provider, fresh_client = _provider(monkeypatch, [_completion()])
@@ -197,19 +197,19 @@ def test_selected_fallback_is_sticky_only_for_this_provider(monkeypatch):
 
 def test_later_loss_of_selected_model_continues_forward_and_preserves_prior_report(monkeypatch):
     provider, client = _provider(monkeypatch, [
-        _unavailable(FLASH), _completion(), _unavailable(QWEN_27B), _completion(),
+        _unavailable(FLASH), _completion(), _unavailable(QWEN_35B), _completion(),
     ])
     first = _complete(provider)
     first_selection = deepcopy(first.model_selection)
 
     second = _complete(provider)
 
-    assert _models(client) == [FLASH, QWEN_27B, QWEN_27B, LAST_MODEL]
+    assert _models(client) == [FLASH, QWEN_35B, QWEN_35B, LAST_MODEL]
     assert second.model == LAST_MODEL
     assert second.model_selection["requested_model"] == FLASH
     assert second.model_selection["selected_model"] == LAST_MODEL
     assert first.model_selection == first_selection
-    assert first.model == QWEN_27B
+    assert first.model == QWEN_35B
 
 
 def test_disable_flag_keeps_requested_model(monkeypatch):
@@ -313,7 +313,7 @@ def test_fallback_uses_only_remaining_request_budget(monkeypatch):
 
     provider, client = _provider(monkeypatch, [unavailable_after_work, _completion()])
 
-    assert _complete(provider, timeout=10).model == QWEN_27B
+    assert _complete(provider, timeout=10).model == QWEN_35B
     assert [call["options"]["timeout"] for call in client.calls] == pytest.approx([10, 6])
 
 

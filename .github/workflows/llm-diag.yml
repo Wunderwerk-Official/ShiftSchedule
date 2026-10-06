@@ -116,9 +116,9 @@ jobs:
 
           if os.environ.get("PROBE_FALLBACK_MODELS") == "true":
               candidates = [
-                  "nvidia/Qwen3.8-Flash-Next-NVFP4", "Qwen/Qwen3.8-27B",
-                  "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva",
+                  "nvidia/Qwen3.8-Flash-Next-NVFP4",
                   "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
+                  "Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva",
               ]
               for candidate in candidates:
                   if candidate not in names:

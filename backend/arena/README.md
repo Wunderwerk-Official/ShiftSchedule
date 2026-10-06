@@ -37,10 +37,15 @@ so executing it inside the production backend container measures the actual
 self-hosted Qwen model on the real endpoint.
 
 
-## Current harness evaluation (v1.60)
+## Current harness evaluation (v1.61, updated 2026-10-06)
 
 Use `prompt_eval` / the workflow with model
-`nvidia/Qwen3.8-Flash-Next-NVFP4`, listed by the endpoint on 2026-09-22.
+`nvidia/Qwen3.8-Flash-Next-NVFP4`, listed by the endpoint on 2026-09-22 and
+the live production default since that date. On 2026-10-06 the endpoint
+served exactly three chat models with working tool calling: Flash NVFP4,
+`Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` and `Qwen/Qwen3.5-122B-A10B-GPTQ-Int4-cliniva`
+(also the availability fallback chain, in that order). `Qwen/Qwen3.8-27B` is
+no longer served; every 27B row below is historical.
 The former `VnimanieAI/Qwen3.8-Flash-Next-W4A16` identifier returned HTTP 400.
 The older model comparisons below are historical, not validation of this
 NVFP4 deployment. Saved global model settings are not automatically changed.
@@ -75,11 +80,22 @@ are not a claim of general quality improvement.
 
 ## What it measures
 
-Each run prints one `ARENA_REPORT {…}` JSON line with: model, duration,
-iterations, moves accepted/rejected, input/output tokens, open slots
-seed→final, the improvement note (which quality tiers got better), and the
-final violation summary. After it, the model's last few reasoning texts are
-printed for qualitative review.
+A manual `python -m backend.arena.run` (paths B and C below) prints one
+`ARENA_REPORT {…}` JSON line with: model, duration, iterations, moves
+accepted/rejected, input/output tokens, open slots seed→final, the
+improvement note (which quality tiers got better), and the final violation
+summary. After it, the model's last few reasoning texts are printed as
+`--- thought ---` blocks for qualitative review.
+
+The GitHub Actions workflow (path A) does not run `backend.arena.run`: it
+runs `backend/arena/prompt_eval.py` through `backend/arena/build_job.py` and
+prints `PROMPT_EVAL_META`, one `PROMPT_EVAL_TOOL` line per tool call, one
+`PROMPT_EVAL_CALL {…}` line per model call, the final `PROMPT_EVAL_REPORT {…}`
+line (the fields listed under "Current harness evaluation") and a
+`PROMPT_EVAL_PLAN` line. A workflow log has no `ARENA_REPORT` line and no
+`--- thought ---` blocks; the model's text is the `reply` field of each
+`PROMPT_EVAL_CALL`. The whole trace is also uploaded as the run artifact
+`prompt-evaluation-<run id>` (`arena-trace.log`).
 
 ## Scenarios (`--scenario`)
 
@@ -105,6 +121,11 @@ printed for qualitative review.
   becomes a day duty 08:00-20:00 AND a night duty 20:00-08:00(+1) on the
   same day. A naive solver put the SAME person on both (a 24h shift); two
   different people is the only humane answer.
+- `fixed-patterns` — the fixture's saved on-call duties are marked explicitly
+  fixed (solver provenance, locked) and every clinician with weekly hours
+  gets a synthetic work pattern (2.5 days/week up to 24 h, otherwise 5
+  days/week, ±1 h daily tolerance): checks that fixed inputs and
+  work-pattern preferences are honoured.
 
 ## Two ways to run it
 
@@ -115,15 +136,21 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | field | example |
 |---|---|
 | start | `2026-02-02` |
-| days | `3` or `7` |
-| timeout | `900` (35B) / `1800` (122B, it is ~40× slower) |
-| model | `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`, `nvidia/Qwen3.8-Flash-Next-NVFP4` or `Qwen/Qwen3.8-27B` |
-| scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` |
-| strategy | `repair` (heuristic seed + LLM repair) / `day_by_day` (LLM builds each day from scratch) |
+| days | `1` (default), `3` or `7` — `prompt_eval` caps the range at 7 days |
+| timeout | `600` (default) / `900` for 3-day runs; 1–3600 seconds |
+| model | `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`; `Qwen/Qwen3.8-27B` is no longer served |
+| variant | `baseline` (production prompts) / `focused` (prompt experiment) |
+| scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` / `fixed-patterns` |
+| strategy | `day_by_day` (production; LLM builds each day from scratch) / `repair` (benchmark reference: heuristic seed + LLM repair) |
+| reasoning | empty (endpoint default / full) / `low` / `medium` / `high` |
+| implementation | `deployed` (container's code and fixture) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 
 Run **one at a time** (the endpoint shares a GPU). Open the finished run →
-job `arena` → step "Run the arena case on the LXC" → copy the `ARENA_REPORT`
-line (and the `--- thought ---` blocks under it).
+job `arena` → step "Run the arena case on the LXC" → copy the
+`PROMPT_EVAL_REPORT` line. The workflow runs `prompt_eval.py`, so there is no
+`ARENA_REPORT` line and there are no `--- thought ---` blocks; the model's
+replies are the `reply` field of the `PROMPT_EVAL_CALL` lines above the
+report (`ARENA_REPORT` and the thought blocks belong to paths B and C).
 
 ### B. Directly on the server
 
@@ -413,7 +440,7 @@ search); closing the remaining gap to CP-SAT (deeper rearrangement, or a
 coverage-first CP-SAT seed for crisis weeks) is the known next frontier.
 On ordinary weeks the gap is zero — base 2026-02-02 fills 87/87.
 
-## Historical Evaluation round 7 (v1.40 fairness pass, from a real production week)
+## Historical Evaluation round 6b (v1.40 fairness pass, from a real production week)
 
 Source this time was not an arena run but the admin's live run log of the
 real week 2026-07-06 → 07-12 (v1.39, 182 iterations, 147 → 0 open, 3 short
@@ -600,7 +627,7 @@ strong alternative to revisit; the `medium` rows are still open pending the
 LiteLLM fix. (Single run per cell, base scenario — directional, not
 statistical.)
 
-## Historical Evaluation round 7: isolated Qwen prompt comparisons (2026-09-06)
+## Historical Evaluation round 7a: isolated Qwen prompt comparisons (legacy fixture, 2026-09-06)
 
 The [full evaluation and measured results](qwen-prompt-evaluation-2026-09-06.md)
 compare the production v1.53 prompts with a focused variant on the Luxembourg
@@ -656,7 +683,9 @@ now serves **`nvidia/Qwen3.8-Flash-Next-NVFP4`** and the previous
 `VnimanieAI/Qwen3.8-Flash-Next-W4A16` id is gone (it 400s "invalid model
 name" — which is how a second agent noticed). Preset, arena workflow default
 and `prompt_eval` default were moved to the new id (v1.60). The live default
-at the time of writing is `Qwen/Qwen3.8-27B`; production was never affected.
+at the time of writing was `Qwen/Qwen3.8-27B`; production was never affected.
+On 2026-09-22 the admin then set `nvidia/Qwen3.8-Flash-Next-NVFP4` as the
+production default; by 2026-10-06 the endpoint no longer served 27B.
 
 Context: the W4A16 build had passed a 1-day run but **collapsed under
 sustained planning load** the day before (75 → 8 → 0.5 tok/s, request
@@ -676,7 +705,7 @@ days, zero rejected moves, zero errors, steady throughput. Wall-clock is on
 par with the 35B (~13 min for 3 days) despite lower tok/s, because it needs
 fewer tokens per decision, and it is ~3.4× faster than the 27B at equal
 quality. Recommended as the production default (Qwen 3.8, the admin's
-preferred family), pending the admin's decision.
+preferred family); adopted as the production default on 2026-09-22.
 
 **Incident + fix:** the first NVFP4 run died with exit code 137 (SIGKILL)
 seconds after the v1.60 push — the deploy replaced the backend container
