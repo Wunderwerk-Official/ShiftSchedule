@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fixtureVersion": "synthetic-v2",
+  "fixtureVersion": "synthetic-v3",
   "synthetic": true,
   "generator": "backend.arena.generate_fixture",
   "state": {
@@ -672,8 +672,20 @@
       {
         "id": "clinician-05",
         "name": "Clinician 05",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-01",
+          "section-05",
+          "section-09",
+          "section-13",
+          "section-17",
+          "section-21",
+          "section-26",
+          "section-30"
+        ],
+        "preferredClassIds": [
+          "section-01",
+          "section-05"
+        ],
         "vacations": [
           {
             "id": "vacation-05-crunch",
@@ -719,8 +731,20 @@
       {
         "id": "clinician-06",
         "name": "Clinician 06",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-02",
+          "section-06",
+          "section-10",
+          "section-14",
+          "section-18",
+          "section-22",
+          "section-27",
+          "section-31"
+        ],
+        "preferredClassIds": [
+          "section-02",
+          "section-06"
+        ],
         "vacations": [
           {
             "id": "vacation-06-crunch",
@@ -767,42 +791,26 @@
         "id": "clinician-07",
         "name": "Clinician 07",
         "qualifiedClassIds": [
-          "section-01",
-          "section-02",
           "section-03",
-          "section-04",
-          "section-05",
-          "section-06",
           "section-07",
-          "section-08",
-          "section-09",
-          "section-10",
           "section-11",
-          "section-12",
-          "section-13",
-          "section-14",
           "section-15",
-          "section-16",
-          "section-17",
-          "section-18",
           "section-19",
-          "section-20",
-          "section-21",
-          "section-22",
           "section-23",
-          "section-24",
-          "section-26",
-          "section-27",
           "section-28",
-          "section-29",
-          "section-30",
-          "section-31",
           "section-32",
+          "section-04",
+          "section-08",
+          "section-12",
+          "section-16",
+          "section-20",
+          "section-24",
+          "section-29",
           "section-25"
         ],
         "preferredClassIds": [
-          "section-01",
-          "section-02"
+          "section-03",
+          "section-07"
         ],
         "vacations": [
           {
@@ -850,41 +858,17 @@
         "id": "clinician-08",
         "name": "Clinician 08",
         "qualifiedClassIds": [
-          "section-01",
-          "section-02",
-          "section-03",
           "section-04",
-          "section-05",
-          "section-06",
-          "section-07",
           "section-08",
-          "section-09",
-          "section-10",
-          "section-11",
           "section-12",
-          "section-13",
-          "section-14",
-          "section-15",
           "section-16",
-          "section-17",
-          "section-18",
-          "section-19",
           "section-20",
-          "section-21",
-          "section-22",
-          "section-23",
           "section-24",
-          "section-26",
-          "section-27",
-          "section-28",
-          "section-29",
-          "section-30",
-          "section-31",
-          "section-32"
+          "section-29"
         ],
         "preferredClassIds": [
-          "section-01",
-          "section-02"
+          "section-04",
+          "section-08"
         ],
         "vacations": [
           {
@@ -931,8 +915,20 @@
       {
         "id": "clinician-09",
         "name": "Clinician 09",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-01",
+          "section-05",
+          "section-09",
+          "section-13",
+          "section-17",
+          "section-21",
+          "section-26",
+          "section-30"
+        ],
+        "preferredClassIds": [
+          "section-01",
+          "section-05"
+        ],
         "vacations": [
           {
             "id": "vacation-09-crunch",
@@ -979,10 +975,27 @@
         "id": "clinician-10",
         "name": "Clinician 10",
         "qualifiedClassIds": [
+          "section-02",
+          "section-06",
+          "section-10",
+          "section-14",
+          "section-18",
+          "section-22",
+          "section-27",
+          "section-31",
+          "section-03",
+          "section-07",
+          "section-11",
+          "section-15",
+          "section-19",
+          "section-23",
+          "section-28",
+          "section-32",
           "section-25"
         ],
         "preferredClassIds": [
-          "section-25"
+          "section-02",
+          "section-06"
         ],
         "vacations": [
           {
@@ -1024,8 +1037,20 @@
       {
         "id": "clinician-11",
         "name": "Clinician 11",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-03",
+          "section-07",
+          "section-11",
+          "section-15",
+          "section-19",
+          "section-23",
+          "section-28",
+          "section-32"
+        ],
+        "preferredClassIds": [
+          "section-03",
+          "section-07"
+        ],
         "vacations": [
           {
             "id": "vacation-11-summer",
@@ -1067,41 +1092,17 @@
         "id": "clinician-12",
         "name": "Clinician 12",
         "qualifiedClassIds": [
-          "section-01",
-          "section-02",
-          "section-03",
           "section-04",
-          "section-05",
-          "section-06",
-          "section-07",
           "section-08",
-          "section-09",
-          "section-10",
-          "section-11",
           "section-12",
-          "section-13",
-          "section-14",
-          "section-15",
           "section-16",
-          "section-17",
-          "section-18",
-          "section-19",
           "section-20",
-          "section-21",
-          "section-22",
-          "section-23",
           "section-24",
-          "section-26",
-          "section-27",
-          "section-28",
-          "section-29",
-          "section-30",
-          "section-31",
-          "section-32"
+          "section-29"
         ],
         "preferredClassIds": [
-          "section-01",
-          "section-02"
+          "section-04",
+          "section-08"
         ],
         "vacations": [
           {
@@ -1144,10 +1145,27 @@
         "id": "clinician-13",
         "name": "Clinician 13",
         "qualifiedClassIds": [
+          "section-01",
+          "section-05",
+          "section-09",
+          "section-13",
+          "section-17",
+          "section-21",
+          "section-26",
+          "section-30",
+          "section-02",
+          "section-06",
+          "section-10",
+          "section-14",
+          "section-18",
+          "section-22",
+          "section-27",
+          "section-31",
           "section-25"
         ],
         "preferredClassIds": [
-          "section-25"
+          "section-01",
+          "section-05"
         ],
         "vacations": [
           {
@@ -1189,8 +1207,20 @@
       {
         "id": "clinician-14",
         "name": "Clinician 14",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-02",
+          "section-06",
+          "section-10",
+          "section-14",
+          "section-18",
+          "section-22",
+          "section-27",
+          "section-31"
+        ],
+        "preferredClassIds": [
+          "section-02",
+          "section-06"
+        ],
         "vacations": [
           {
             "id": "vacation-14-summer",
@@ -1231,8 +1261,20 @@
       {
         "id": "clinician-15",
         "name": "Clinician 15",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-03",
+          "section-07",
+          "section-11",
+          "section-15",
+          "section-19",
+          "section-23",
+          "section-28",
+          "section-32"
+        ],
+        "preferredClassIds": [
+          "section-03",
+          "section-07"
+        ],
         "vacations": [
           {
             "id": "vacation-15-summer",
@@ -1274,42 +1316,26 @@
         "id": "clinician-16",
         "name": "Clinician 16",
         "qualifiedClassIds": [
-          "section-01",
-          "section-02",
-          "section-03",
           "section-04",
-          "section-05",
-          "section-06",
-          "section-07",
           "section-08",
-          "section-09",
-          "section-10",
-          "section-11",
           "section-12",
-          "section-13",
-          "section-14",
-          "section-15",
           "section-16",
-          "section-17",
-          "section-18",
-          "section-19",
           "section-20",
-          "section-21",
-          "section-22",
-          "section-23",
           "section-24",
-          "section-26",
-          "section-27",
-          "section-28",
           "section-29",
+          "section-01",
+          "section-05",
+          "section-09",
+          "section-13",
+          "section-17",
+          "section-21",
+          "section-26",
           "section-30",
-          "section-31",
-          "section-32",
           "section-25"
         ],
         "preferredClassIds": [
-          "section-01",
-          "section-02"
+          "section-04",
+          "section-08"
         ],
         "vacations": [
           {
@@ -1352,10 +1378,19 @@
         "id": "clinician-17",
         "name": "Clinician 17",
         "qualifiedClassIds": [
+          "section-01",
+          "section-05",
+          "section-09",
+          "section-13",
+          "section-17",
+          "section-21",
+          "section-26",
+          "section-30",
           "section-33"
         ],
         "preferredClassIds": [
-          "section-33"
+          "section-01",
+          "section-05"
         ],
         "vacations": [
           {
@@ -1397,8 +1432,20 @@
       {
         "id": "clinician-18",
         "name": "Clinician 18",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-02",
+          "section-06",
+          "section-10",
+          "section-14",
+          "section-18",
+          "section-22",
+          "section-27",
+          "section-31"
+        ],
+        "preferredClassIds": [
+          "section-02",
+          "section-06"
+        ],
         "vacations": [
           {
             "id": "vacation-18-summer",
@@ -1440,42 +1487,26 @@
         "id": "clinician-19",
         "name": "Clinician 19",
         "qualifiedClassIds": [
-          "section-01",
-          "section-02",
           "section-03",
-          "section-04",
-          "section-05",
-          "section-06",
           "section-07",
-          "section-08",
-          "section-09",
-          "section-10",
           "section-11",
-          "section-12",
-          "section-13",
-          "section-14",
           "section-15",
-          "section-16",
-          "section-17",
-          "section-18",
           "section-19",
-          "section-20",
-          "section-21",
-          "section-22",
           "section-23",
-          "section-24",
-          "section-26",
-          "section-27",
           "section-28",
-          "section-29",
-          "section-30",
-          "section-31",
           "section-32",
+          "section-04",
+          "section-08",
+          "section-12",
+          "section-16",
+          "section-20",
+          "section-24",
+          "section-29",
           "section-25"
         ],
         "preferredClassIds": [
-          "section-01",
-          "section-02"
+          "section-03",
+          "section-07"
         ],
         "vacations": [
           {
@@ -1518,41 +1549,17 @@
         "id": "clinician-20",
         "name": "Clinician 20",
         "qualifiedClassIds": [
-          "section-01",
-          "section-02",
-          "section-03",
           "section-04",
-          "section-05",
-          "section-06",
-          "section-07",
           "section-08",
-          "section-09",
-          "section-10",
-          "section-11",
           "section-12",
-          "section-13",
-          "section-14",
-          "section-15",
           "section-16",
-          "section-17",
-          "section-18",
-          "section-19",
           "section-20",
-          "section-21",
-          "section-22",
-          "section-23",
           "section-24",
-          "section-26",
-          "section-27",
-          "section-28",
-          "section-29",
-          "section-30",
-          "section-31",
-          "section-32"
+          "section-29"
         ],
         "preferredClassIds": [
-          "section-01",
-          "section-02"
+          "section-04",
+          "section-08"
         ],
         "vacations": [
           {
@@ -1595,10 +1602,19 @@
         "id": "clinician-21",
         "name": "Clinician 21",
         "qualifiedClassIds": [
+          "section-01",
+          "section-05",
+          "section-09",
+          "section-13",
+          "section-17",
+          "section-21",
+          "section-26",
+          "section-30",
           "section-33"
         ],
         "preferredClassIds": [
-          "section-33"
+          "section-01",
+          "section-05"
         ],
         "vacations": [
           {
@@ -1641,10 +1657,27 @@
         "id": "clinician-22",
         "name": "Clinician 22",
         "qualifiedClassIds": [
+          "section-02",
+          "section-06",
+          "section-10",
+          "section-14",
+          "section-18",
+          "section-22",
+          "section-27",
+          "section-31",
+          "section-03",
+          "section-07",
+          "section-11",
+          "section-15",
+          "section-19",
+          "section-23",
+          "section-28",
+          "section-32",
           "section-25"
         ],
         "preferredClassIds": [
-          "section-25"
+          "section-02",
+          "section-06"
         ],
         "vacations": [
           {
@@ -1686,8 +1719,20 @@
       {
         "id": "clinician-23",
         "name": "Clinician 23",
-        "qualifiedClassIds": [],
-        "preferredClassIds": [],
+        "qualifiedClassIds": [
+          "section-03",
+          "section-07",
+          "section-11",
+          "section-15",
+          "section-19",
+          "section-23",
+          "section-28",
+          "section-32"
+        ],
+        "preferredClassIds": [
+          "section-03",
+          "section-07"
+        ],
         "vacations": [
           {
             "id": "vacation-23-summer",
@@ -1729,41 +1774,17 @@
         "id": "clinician-24",
         "name": "Clinician 24",
         "qualifiedClassIds": [
-          "section-01",
-          "section-02",
-          "section-03",
           "section-04",
-          "section-05",
-          "section-06",
-          "section-07",
           "section-08",
-          "section-09",
-          "section-10",
-          "section-11",
           "section-12",
-          "section-13",
-          "section-14",
-          "section-15",
           "section-16",
-          "section-17",
-          "section-18",
-          "section-19",
           "section-20",
-          "section-21",
-          "section-22",
-          "section-23",
           "section-24",
-          "section-26",
-          "section-27",
-          "section-28",
-          "section-29",
-          "section-30",
-          "section-31",
-          "section-32"
+          "section-29"
         ],
         "preferredClassIds": [
-          "section-01",
-          "section-02"
+          "section-04",
+          "section-08"
         ],
         "vacations": [
           {
@@ -2309,18 +2330,66 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-002-2026-01-05-clinician-08",
-        "rowId": "site-02-slot-002",
+        "id": "synthetic-site-02-slot-004-2026-01-05-clinician-05",
+        "rowId": "site-02-slot-004",
+        "dateISO": "2026-01-05",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-005-2026-01-05-clinician-06",
+        "rowId": "site-02-slot-005",
+        "dateISO": "2026-01-05",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-009-2026-01-05-clinician-08",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-05",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-003-2026-01-05-clinician-12",
-        "rowId": "site-02-slot-003",
+        "id": "synthetic-site-02-slot-004-2026-01-05-clinician-09",
+        "rowId": "site-02-slot-004",
+        "dateISO": "2026-01-05",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-002-2026-01-05-clinician-11",
+        "rowId": "site-02-slot-002",
+        "dateISO": "2026-01-05",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-009-2026-01-05-clinician-12",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-05",
         "clinicianId": "clinician-12",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-005-2026-01-05-clinician-13",
+        "rowId": "site-02-slot-005",
+        "dateISO": "2026-01-05",
+        "clinicianId": "clinician-13",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-006-2026-01-05-clinician-14",
+        "rowId": "site-02-slot-006",
+        "dateISO": "2026-01-05",
+        "clinicianId": "clinician-14",
         "source": "solver",
         "locked": false
       },
@@ -2349,18 +2418,74 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-012-2026-01-06-clinician-08",
-        "rowId": "site-02-slot-012",
+        "id": "synthetic-site-02-slot-014-2026-01-06-clinician-05",
+        "rowId": "site-02-slot-014",
+        "dateISO": "2026-01-06",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-015-2026-01-06-clinician-06",
+        "rowId": "site-02-slot-015",
+        "dateISO": "2026-01-06",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-060-2026-01-06-clinician-08",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-06",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-013-2026-01-06-clinician-12",
-        "rowId": "site-02-slot-013",
+        "id": "synthetic-site-02-slot-014-2026-01-06-clinician-09",
+        "rowId": "site-02-slot-014",
+        "dateISO": "2026-01-06",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-012-2026-01-06-clinician-11",
+        "rowId": "site-02-slot-012",
+        "dateISO": "2026-01-06",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-060-2026-01-06-clinician-12",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-06",
         "clinicianId": "clinician-12",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-015-2026-01-06-clinician-13",
+        "rowId": "site-02-slot-015",
+        "dateISO": "2026-01-06",
+        "clinicianId": "clinician-13",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-016-2026-01-06-clinician-14",
+        "rowId": "site-02-slot-016",
+        "dateISO": "2026-01-06",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-013-2026-01-06-clinician-15",
+        "rowId": "site-02-slot-013",
+        "dateISO": "2026-01-06",
+        "clinicianId": "clinician-15",
         "source": "solver",
         "locked": false
       },
@@ -2381,24 +2506,80 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-025-2026-01-07-clinician-08",
-        "rowId": "site-02-slot-025",
+        "id": "synthetic-site-02-slot-027-2026-01-07-clinician-05",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-07",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-028-2026-01-07-clinician-06",
+        "rowId": "site-02-slot-028",
+        "dateISO": "2026-01-07",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-061-2026-01-07-clinician-08",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-07",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-025-2026-01-07-clinician-12",
+        "id": "synthetic-site-02-slot-027-2026-01-07-clinician-09",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-07",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-025-2026-01-07-clinician-11",
         "rowId": "site-02-slot-025",
+        "dateISO": "2026-01-07",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-061-2026-01-07-clinician-12",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-07",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-026-2026-01-07-clinician-16",
-        "rowId": "site-02-slot-026",
+        "id": "synthetic-site-02-slot-028-2026-01-07-clinician-13",
+        "rowId": "site-02-slot-028",
+        "dateISO": "2026-01-07",
+        "clinicianId": "clinician-13",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-029-2026-01-07-clinician-14",
+        "rowId": "site-02-slot-029",
+        "dateISO": "2026-01-07",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-025-2026-01-07-clinician-15",
+        "rowId": "site-02-slot-025",
+        "dateISO": "2026-01-07",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-032-2026-01-07-clinician-16",
+        "rowId": "site-02-slot-032",
         "dateISO": "2026-01-07",
         "clinicianId": "clinician-16",
         "source": "solver",
@@ -2413,192 +2594,616 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-035-2026-01-08-clinician-08",
+        "id": "synthetic-site-02-slot-038-2026-01-08-clinician-05",
+        "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-08",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-035-2026-01-08-clinician-06",
         "rowId": "site-02-slot-035",
+        "dateISO": "2026-01-08",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-063-2026-01-08-clinician-08",
+        "rowId": "site-02-slot-063",
         "dateISO": "2026-01-08",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-036-2026-01-08-clinician-12",
+        "id": "synthetic-site-02-slot-038-2026-01-08-clinician-09",
+        "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-08",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-036-2026-01-08-clinician-11",
         "rowId": "site-02-slot-036",
+        "dateISO": "2026-01-08",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-063-2026-01-08-clinician-12",
+        "rowId": "site-02-slot-063",
         "dateISO": "2026-01-08",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-036-2026-01-08-clinician-16",
+        "id": "synthetic-site-02-slot-039-2026-01-08-clinician-14",
+        "rowId": "site-02-slot-039",
+        "dateISO": "2026-01-08",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-036-2026-01-08-clinician-15",
         "rowId": "site-02-slot-036",
+        "dateISO": "2026-01-08",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-043-2026-01-08-clinician-16",
+        "rowId": "site-02-slot-043",
         "dateISO": "2026-01-08",
         "clinicianId": "clinician-16",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-046-2026-01-09-clinician-07",
+        "id": "synthetic-site-02-slot-043-2026-01-08-clinician-17",
+        "rowId": "site-02-slot-043",
+        "dateISO": "2026-01-08",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-054-2026-01-09-clinician-05",
+        "rowId": "site-02-slot-054",
+        "dateISO": "2026-01-09",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-046-2026-01-09-clinician-06",
         "rowId": "site-02-slot-046",
+        "dateISO": "2026-01-09",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-047-2026-01-09-clinician-07",
+        "rowId": "site-02-slot-047",
         "dateISO": "2026-01-09",
         "clinicianId": "clinician-07",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-046-2026-01-09-clinician-08",
-        "rowId": "site-02-slot-046",
+        "id": "synthetic-site-02-slot-066-2026-01-09-clinician-08",
+        "rowId": "site-02-slot-066",
         "dateISO": "2026-01-09",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-047-2026-01-09-clinician-12",
+        "id": "synthetic-site-02-slot-049-2026-01-09-clinician-09",
+        "rowId": "site-02-slot-049",
+        "dateISO": "2026-01-09",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-047-2026-01-09-clinician-11",
         "rowId": "site-02-slot-047",
         "dateISO": "2026-01-09",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-066-2026-01-09-clinician-12",
+        "rowId": "site-02-slot-066",
+        "dateISO": "2026-01-09",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-001-2026-01-12-clinician-08",
-        "rowId": "site-02-slot-001",
+        "id": "synthetic-site-02-slot-046-2026-01-09-clinician-14",
+        "rowId": "site-02-slot-046",
+        "dateISO": "2026-01-09",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-048-2026-01-09-clinician-15",
+        "rowId": "site-02-slot-048",
+        "dateISO": "2026-01-09",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-049-2026-01-09-clinician-17",
+        "rowId": "site-02-slot-049",
+        "dateISO": "2026-01-09",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-050-2026-01-09-clinician-18",
+        "rowId": "site-02-slot-050",
+        "dateISO": "2026-01-09",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-009-2026-01-12-clinician-08",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-12",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-001-2026-01-12-clinician-12",
+        "id": "synthetic-site-02-slot-004-2026-01-12-clinician-09",
+        "rowId": "site-02-slot-004",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-001-2026-01-12-clinician-10",
         "rowId": "site-02-slot-001",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-10",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-002-2026-01-12-clinician-11",
+        "rowId": "site-02-slot-002",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-009-2026-01-12-clinician-12",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-12",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-002-2026-01-12-clinician-19",
+        "id": "synthetic-site-02-slot-001-2026-01-12-clinician-14",
+        "rowId": "site-02-slot-001",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-002-2026-01-12-clinician-15",
         "rowId": "site-02-slot-002",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-004-2026-01-12-clinician-17",
+        "rowId": "site-02-slot-004",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-005-2026-01-12-clinician-18",
+        "rowId": "site-02-slot-005",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-003-2026-01-12-clinician-19",
+        "rowId": "site-02-slot-003",
         "dateISO": "2026-01-12",
         "clinicianId": "clinician-19",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-002-2026-01-12-clinician-20",
-        "rowId": "site-02-slot-002",
+        "id": "synthetic-site-02-slot-057-2026-01-12-clinician-20",
+        "rowId": "site-02-slot-057",
         "dateISO": "2026-01-12",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-011-2026-01-13-clinician-12",
+        "id": "synthetic-site-02-slot-010-2026-01-12-clinician-21",
+        "rowId": "site-02-slot-010",
+        "dateISO": "2026-01-12",
+        "clinicianId": "clinician-21",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-014-2026-01-13-clinician-09",
+        "rowId": "site-02-slot-014",
+        "dateISO": "2026-01-13",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-011-2026-01-13-clinician-10",
         "rowId": "site-02-slot-011",
+        "dateISO": "2026-01-13",
+        "clinicianId": "clinician-10",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-012-2026-01-13-clinician-11",
+        "rowId": "site-02-slot-012",
+        "dateISO": "2026-01-13",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-060-2026-01-13-clinician-12",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-13",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-081-2026-01-13-clinician-17",
-        "rowId": "site-02-slot-081",
+        "id": "synthetic-site-02-slot-011-2026-01-13-clinician-14",
+        "rowId": "site-02-slot-011",
+        "dateISO": "2026-01-13",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-012-2026-01-13-clinician-15",
+        "rowId": "site-02-slot-012",
+        "dateISO": "2026-01-13",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-014-2026-01-13-clinician-17",
+        "rowId": "site-02-slot-014",
         "dateISO": "2026-01-13",
         "clinicianId": "clinician-17",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-011-2026-01-13-clinician-19",
-        "rowId": "site-02-slot-011",
+        "id": "synthetic-site-02-slot-015-2026-01-13-clinician-18",
+        "rowId": "site-02-slot-015",
+        "dateISO": "2026-01-13",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-013-2026-01-13-clinician-19",
+        "rowId": "site-02-slot-013",
         "dateISO": "2026-01-13",
         "clinicianId": "clinician-19",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-012-2026-01-13-clinician-20",
-        "rowId": "site-02-slot-012",
+        "id": "synthetic-site-02-slot-060-2026-01-13-clinician-20",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-13",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-081-2026-01-13-clinician-21",
-        "rowId": "site-02-slot-081",
+        "id": "synthetic-site-02-slot-019-2026-01-13-clinician-21",
+        "rowId": "site-02-slot-019",
         "dateISO": "2026-01-13",
         "clinicianId": "clinician-21",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-024-2026-01-14-clinician-12",
+        "id": "synthetic-site-02-slot-013-2026-01-13-clinician-22",
+        "rowId": "site-02-slot-013",
+        "dateISO": "2026-01-13",
+        "clinicianId": "clinician-22",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-024-2026-01-14-clinician-10",
         "rowId": "site-02-slot-024",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-10",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-025-2026-01-14-clinician-11",
+        "rowId": "site-02-slot-025",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-061-2026-01-14-clinician-12",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-14",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-024-2026-01-14-clinician-20",
+        "id": "synthetic-site-02-slot-024-2026-01-14-clinician-14",
         "rowId": "site-02-slot-024",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-025-2026-01-14-clinician-15",
+        "rowId": "site-02-slot-025",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-027-2026-01-14-clinician-17",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-028-2026-01-14-clinician-18",
+        "rowId": "site-02-slot-028",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-061-2026-01-14-clinician-20",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-14",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-035-2026-01-15-clinician-12",
-        "rowId": "site-02-slot-035",
-        "dateISO": "2026-01-15",
-        "clinicianId": "clinician-12",
+        "id": "synthetic-site-02-slot-027-2026-01-14-clinician-21",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-21",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-035-2026-01-15-clinician-20",
-        "rowId": "site-02-slot-035",
-        "dateISO": "2026-01-15",
-        "clinicianId": "clinician-20",
+        "id": "synthetic-site-02-slot-026-2026-01-14-clinician-23",
+        "rowId": "site-02-slot-026",
+        "dateISO": "2026-01-14",
+        "clinicianId": "clinician-23",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-036-2026-01-15-clinician-24",
+        "id": "synthetic-site-02-slot-036-2026-01-15-clinician-11",
         "rowId": "site-02-slot-036",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-063-2026-01-15-clinician-12",
+        "rowId": "site-02-slot-063",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-12",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-035-2026-01-15-clinician-13",
+        "rowId": "site-02-slot-035",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-13",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-035-2026-01-15-clinician-14",
+        "rowId": "site-02-slot-035",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-036-2026-01-15-clinician-15",
+        "rowId": "site-02-slot-036",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-038-2026-01-15-clinician-17",
+        "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-039-2026-01-15-clinician-18",
+        "rowId": "site-02-slot-039",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-063-2026-01-15-clinician-20",
+        "rowId": "site-02-slot-063",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-20",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-038-2026-01-15-clinician-21",
+        "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-21",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-037-2026-01-15-clinician-23",
+        "rowId": "site-02-slot-037",
+        "dateISO": "2026-01-15",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-03-slot-032-2026-01-15-clinician-24",
+        "rowId": "site-03-slot-032",
         "dateISO": "2026-01-15",
         "clinicianId": "clinician-24",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-046-2026-01-16-clinician-12",
-        "rowId": "site-02-slot-046",
+        "id": "synthetic-site-02-slot-066-2026-01-16-clinician-12",
+        "rowId": "site-02-slot-066",
         "dateISO": "2026-01-16",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-047-2026-01-16-clinician-16",
+        "id": "synthetic-site-02-slot-046-2026-01-16-clinician-13",
+        "rowId": "site-02-slot-046",
+        "dateISO": "2026-01-16",
+        "clinicianId": "clinician-13",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-046-2026-01-16-clinician-14",
+        "rowId": "site-02-slot-046",
+        "dateISO": "2026-01-16",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-047-2026-01-16-clinician-15",
         "rowId": "site-02-slot-047",
+        "dateISO": "2026-01-16",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-054-2026-01-16-clinician-16",
+        "rowId": "site-02-slot-054",
         "dateISO": "2026-01-16",
         "clinicianId": "clinician-16",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-046-2026-01-16-clinician-20",
-        "rowId": "site-02-slot-046",
+        "id": "synthetic-site-02-slot-054-2026-01-16-clinician-17",
+        "rowId": "site-02-slot-054",
+        "dateISO": "2026-01-16",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-050-2026-01-16-clinician-18",
+        "rowId": "site-02-slot-050",
+        "dateISO": "2026-01-16",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-066-2026-01-16-clinician-20",
+        "rowId": "site-02-slot-066",
         "dateISO": "2026-01-16",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-047-2026-01-16-clinician-24",
+        "id": "synthetic-site-02-slot-049-2026-01-16-clinician-21",
+        "rowId": "site-02-slot-049",
+        "dateISO": "2026-01-16",
+        "clinicianId": "clinician-21",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-047-2026-01-16-clinician-23",
         "rowId": "site-02-slot-047",
+        "dateISO": "2026-01-16",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-03-slot-042-2026-01-16-clinician-24",
+        "rowId": "site-03-slot-042",
         "dateISO": "2026-01-16",
         "clinicianId": "clinician-24",
         "source": "solver",
@@ -2613,32 +3218,72 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-001-2026-01-19-clinician-16",
-        "rowId": "site-02-slot-001",
+        "id": "synthetic-site-02-slot-002-2026-01-19-clinician-15",
+        "rowId": "site-02-slot-002",
+        "dateISO": "2026-01-19",
+        "clinicianId": "clinician-15",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-004-2026-01-19-clinician-16",
+        "rowId": "site-02-slot-004",
         "dateISO": "2026-01-19",
         "clinicianId": "clinician-16",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-001-2026-01-19-clinician-20",
+        "id": "synthetic-site-02-slot-004-2026-01-19-clinician-17",
+        "rowId": "site-02-slot-004",
+        "dateISO": "2026-01-19",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-001-2026-01-19-clinician-18",
         "rowId": "site-02-slot-001",
+        "dateISO": "2026-01-19",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-009-2026-01-19-clinician-20",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-19",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-002-2026-01-19-clinician-24",
+        "id": "synthetic-site-02-slot-010-2026-01-19-clinician-21",
+        "rowId": "site-02-slot-010",
+        "dateISO": "2026-01-19",
+        "clinicianId": "clinician-21",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-002-2026-01-19-clinician-23",
         "rowId": "site-02-slot-002",
+        "dateISO": "2026-01-19",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-009-2026-01-19-clinician-24",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-19",
         "clinicianId": "clinician-24",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-002-2026-01-19-clinician-01",
-        "rowId": "site-02-slot-002",
+        "id": "synthetic-site-02-slot-001-2026-01-19-clinician-01",
+        "rowId": "site-02-slot-001",
         "dateISO": "2026-01-19",
         "clinicianId": "clinician-01",
         "source": "solver",
@@ -2661,64 +3306,80 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-004-2026-01-19-clinician-04",
-        "rowId": "site-02-slot-004",
+        "id": "synthetic-site-02-slot-005-2026-01-19-clinician-04",
+        "rowId": "site-02-slot-005",
         "dateISO": "2026-01-19",
         "clinicianId": "clinician-04",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-011-2026-01-20-clinician-16",
-        "rowId": "site-02-slot-011",
+        "id": "synthetic-site-02-slot-014-2026-01-20-clinician-16",
+        "rowId": "site-02-slot-014",
         "dateISO": "2026-01-20",
         "clinicianId": "clinician-16",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-081-2026-01-20-clinician-17",
-        "rowId": "site-02-slot-081",
+        "id": "synthetic-site-02-slot-014-2026-01-20-clinician-17",
+        "rowId": "site-02-slot-014",
         "dateISO": "2026-01-20",
         "clinicianId": "clinician-17",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-011-2026-01-20-clinician-20",
+        "id": "synthetic-site-02-slot-011-2026-01-20-clinician-18",
         "rowId": "site-02-slot-011",
+        "dateISO": "2026-01-20",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-060-2026-01-20-clinician-20",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-20",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-081-2026-01-20-clinician-21",
-        "rowId": "site-02-slot-081",
+        "id": "synthetic-site-02-slot-019-2026-01-20-clinician-21",
+        "rowId": "site-02-slot-019",
         "dateISO": "2026-01-20",
         "clinicianId": "clinician-21",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-012-2026-01-20-clinician-24",
+        "id": "synthetic-site-02-slot-012-2026-01-20-clinician-23",
         "rowId": "site-02-slot-012",
+        "dateISO": "2026-01-20",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-060-2026-01-20-clinician-24",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-20",
         "clinicianId": "clinician-24",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-012-2026-01-20-clinician-02",
-        "rowId": "site-02-slot-012",
+        "id": "synthetic-site-02-slot-011-2026-01-20-clinician-02",
+        "rowId": "site-02-slot-011",
         "dateISO": "2026-01-20",
         "clinicianId": "clinician-02",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-013-2026-01-20-clinician-03",
-        "rowId": "site-02-slot-013",
+        "id": "synthetic-site-02-slot-012-2026-01-20-clinician-03",
+        "rowId": "site-02-slot-012",
         "dateISO": "2026-01-20",
         "clinicianId": "clinician-03",
         "source": "solver",
@@ -2733,32 +3394,72 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-024-2026-01-21-clinician-19",
+        "id": "synthetic-site-02-slot-019-2026-01-20-clinician-05",
+        "rowId": "site-02-slot-019",
+        "dateISO": "2026-01-20",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-027-2026-01-21-clinician-17",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-21",
+        "clinicianId": "clinician-17",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-024-2026-01-21-clinician-18",
         "rowId": "site-02-slot-024",
+        "dateISO": "2026-01-21",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-025-2026-01-21-clinician-19",
+        "rowId": "site-02-slot-025",
         "dateISO": "2026-01-21",
         "clinicianId": "clinician-19",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-024-2026-01-21-clinician-20",
-        "rowId": "site-02-slot-024",
+        "id": "synthetic-site-02-slot-061-2026-01-21-clinician-20",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-21",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-025-2026-01-21-clinician-24",
+        "id": "synthetic-site-02-slot-027-2026-01-21-clinician-21",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-21",
+        "clinicianId": "clinician-21",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-025-2026-01-21-clinician-23",
         "rowId": "site-02-slot-025",
+        "dateISO": "2026-01-21",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-061-2026-01-21-clinician-24",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-21",
         "clinicianId": "clinician-24",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-025-2026-01-21-clinician-02",
-        "rowId": "site-02-slot-025",
+        "id": "synthetic-site-02-slot-024-2026-01-21-clinician-02",
+        "rowId": "site-02-slot-024",
         "dateISO": "2026-01-21",
         "clinicianId": "clinician-02",
         "source": "solver",
@@ -2781,32 +3482,72 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-035-2026-01-22-clinician-19",
+        "id": "synthetic-site-02-slot-032-2026-01-21-clinician-05",
+        "rowId": "site-02-slot-032",
+        "dateISO": "2026-01-21",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-028-2026-01-21-clinician-06",
+        "rowId": "site-02-slot-028",
+        "dateISO": "2026-01-21",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-035-2026-01-22-clinician-18",
         "rowId": "site-02-slot-035",
+        "dateISO": "2026-01-22",
+        "clinicianId": "clinician-18",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-036-2026-01-22-clinician-19",
+        "rowId": "site-02-slot-036",
         "dateISO": "2026-01-22",
         "clinicianId": "clinician-19",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-035-2026-01-22-clinician-20",
-        "rowId": "site-02-slot-035",
+        "id": "synthetic-site-02-slot-063-2026-01-22-clinician-20",
+        "rowId": "site-02-slot-063",
         "dateISO": "2026-01-22",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-036-2026-01-22-clinician-24",
+        "id": "synthetic-site-02-slot-038-2026-01-22-clinician-21",
+        "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-22",
+        "clinicianId": "clinician-21",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-036-2026-01-22-clinician-23",
         "rowId": "site-02-slot-036",
+        "dateISO": "2026-01-22",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-063-2026-01-22-clinician-24",
+        "rowId": "site-02-slot-063",
         "dateISO": "2026-01-22",
         "clinicianId": "clinician-24",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-036-2026-01-22-clinician-02",
-        "rowId": "site-02-slot-036",
+        "id": "synthetic-site-02-slot-035-2026-01-22-clinician-02",
+        "rowId": "site-02-slot-035",
         "dateISO": "2026-01-22",
         "clinicianId": "clinician-02",
         "source": "solver",
@@ -2829,50 +3570,98 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-038-2026-01-22-clinician-07",
+        "id": "synthetic-site-02-slot-038-2026-01-22-clinician-05",
         "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-22",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-039-2026-01-22-clinician-06",
+        "rowId": "site-02-slot-039",
+        "dateISO": "2026-01-22",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-041-2026-01-22-clinician-07",
+        "rowId": "site-02-slot-041",
         "dateISO": "2026-01-22",
         "clinicianId": "clinician-07",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-046-2026-01-23-clinician-19",
-        "rowId": "site-02-slot-046",
+        "id": "synthetic-site-02-slot-047-2026-01-23-clinician-19",
+        "rowId": "site-02-slot-047",
         "dateISO": "2026-01-23",
         "clinicianId": "clinician-19",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-046-2026-01-23-clinician-20",
-        "rowId": "site-02-slot-046",
+        "id": "synthetic-site-02-slot-066-2026-01-23-clinician-20",
+        "rowId": "site-02-slot-066",
         "dateISO": "2026-01-23",
         "clinicianId": "clinician-20",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-047-2026-01-23-clinician-24",
+        "id": "synthetic-site-02-slot-049-2026-01-23-clinician-21",
+        "rowId": "site-02-slot-049",
+        "dateISO": "2026-01-23",
+        "clinicianId": "clinician-21",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-047-2026-01-23-clinician-23",
         "rowId": "site-02-slot-047",
+        "dateISO": "2026-01-23",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-066-2026-01-23-clinician-24",
+        "rowId": "site-02-slot-066",
         "dateISO": "2026-01-23",
         "clinicianId": "clinician-24",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-047-2026-01-23-clinician-03",
-        "rowId": "site-02-slot-047",
+        "id": "synthetic-site-02-slot-046-2026-01-23-clinician-03",
+        "rowId": "site-02-slot-046",
         "dateISO": "2026-01-23",
         "clinicianId": "clinician-03",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-048-2026-01-23-clinician-04",
-        "rowId": "site-02-slot-048",
+        "id": "synthetic-site-02-slot-046-2026-01-23-clinician-04",
+        "rowId": "site-02-slot-046",
         "dateISO": "2026-01-23",
         "clinicianId": "clinician-04",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-049-2026-01-23-clinician-05",
+        "rowId": "site-02-slot-049",
+        "dateISO": "2026-01-23",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-050-2026-01-23-clinician-06",
+        "rowId": "site-02-slot-050",
+        "dateISO": "2026-01-23",
+        "clinicianId": "clinician-06",
         "source": "solver",
         "locked": false
       },
@@ -2885,16 +3674,32 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-049-2026-01-23-clinician-08",
-        "rowId": "site-02-slot-049",
+        "id": "synthetic-site-03-slot-042-2026-01-23-clinician-08",
+        "rowId": "site-03-slot-042",
         "dateISO": "2026-01-23",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-001-2026-01-26-clinician-24",
+        "id": "synthetic-site-02-slot-001-2026-01-26-clinician-22",
         "rowId": "site-02-slot-001",
+        "dateISO": "2026-01-26",
+        "clinicianId": "clinician-22",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-002-2026-01-26-clinician-23",
+        "rowId": "site-02-slot-002",
+        "dateISO": "2026-01-26",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-009-2026-01-26-clinician-24",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-26",
         "clinicianId": "clinician-24",
         "source": "solver",
@@ -2909,6 +3714,22 @@
         "locked": false
       },
       {
+        "id": "synthetic-site-02-slot-004-2026-01-26-clinician-05",
+        "rowId": "site-02-slot-004",
+        "dateISO": "2026-01-26",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-005-2026-01-26-clinician-06",
+        "rowId": "site-02-slot-005",
+        "dateISO": "2026-01-26",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
         "id": "synthetic-site-02-slot-002-2026-01-26-clinician-07",
         "rowId": "site-02-slot-002",
         "dateISO": "2026-01-26",
@@ -2917,16 +3738,48 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-002-2026-01-26-clinician-08",
-        "rowId": "site-02-slot-002",
+        "id": "synthetic-site-02-slot-009-2026-01-26-clinician-08",
+        "rowId": "site-02-slot-009",
         "dateISO": "2026-01-26",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-011-2026-01-27-clinician-24",
-        "rowId": "site-02-slot-011",
+        "id": "synthetic-site-02-slot-004-2026-01-26-clinician-09",
+        "rowId": "site-02-slot-004",
+        "dateISO": "2026-01-26",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-003-2026-01-26-clinician-10",
+        "rowId": "site-02-slot-003",
+        "dateISO": "2026-01-26",
+        "clinicianId": "clinician-10",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-003-2026-01-26-clinician-11",
+        "rowId": "site-02-slot-003",
+        "dateISO": "2026-01-26",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-012-2026-01-27-clinician-23",
+        "rowId": "site-02-slot-012",
+        "dateISO": "2026-01-27",
+        "clinicianId": "clinician-23",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-060-2026-01-27-clinician-24",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-27",
         "clinicianId": "clinician-24",
         "source": "solver",
@@ -2941,6 +3794,22 @@
         "locked": false
       },
       {
+        "id": "synthetic-site-02-slot-014-2026-01-27-clinician-05",
+        "rowId": "site-02-slot-014",
+        "dateISO": "2026-01-27",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-011-2026-01-27-clinician-06",
+        "rowId": "site-02-slot-011",
+        "dateISO": "2026-01-27",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
         "id": "synthetic-site-02-slot-012-2026-01-27-clinician-07",
         "rowId": "site-02-slot-012",
         "dateISO": "2026-01-27",
@@ -2949,24 +3818,40 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-012-2026-01-27-clinician-08",
-        "rowId": "site-02-slot-012",
+        "id": "synthetic-site-02-slot-060-2026-01-27-clinician-08",
+        "rowId": "site-02-slot-060",
         "dateISO": "2026-01-27",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-013-2026-01-27-clinician-12",
+        "id": "synthetic-site-02-slot-014-2026-01-27-clinician-09",
+        "rowId": "site-02-slot-014",
+        "dateISO": "2026-01-27",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-013-2026-01-27-clinician-11",
         "rowId": "site-02-slot-013",
+        "dateISO": "2026-01-27",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-03-slot-012-2026-01-27-clinician-12",
+        "rowId": "site-03-slot-012",
         "dateISO": "2026-01-27",
         "clinicianId": "clinician-12",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-024-2026-01-28-clinician-24",
-        "rowId": "site-02-slot-024",
+        "id": "synthetic-site-02-slot-061-2026-01-28-clinician-24",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-28",
         "clinicianId": "clinician-24",
         "source": "solver",
@@ -2981,26 +3866,66 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-025-2026-01-28-clinician-02",
-        "rowId": "site-02-slot-025",
+        "id": "synthetic-site-02-slot-024-2026-01-28-clinician-02",
+        "rowId": "site-02-slot-024",
         "dateISO": "2026-01-28",
         "clinicianId": "clinician-02",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-025-2026-01-28-clinician-08",
-        "rowId": "site-02-slot-025",
+        "id": "synthetic-site-02-slot-027-2026-01-28-clinician-05",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-28",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-028-2026-01-28-clinician-06",
+        "rowId": "site-02-slot-028",
+        "dateISO": "2026-01-28",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-061-2026-01-28-clinician-08",
+        "rowId": "site-02-slot-061",
         "dateISO": "2026-01-28",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-026-2026-01-28-clinician-12",
-        "rowId": "site-02-slot-026",
+        "id": "synthetic-site-02-slot-027-2026-01-28-clinician-09",
+        "rowId": "site-02-slot-027",
+        "dateISO": "2026-01-28",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-025-2026-01-28-clinician-11",
+        "rowId": "site-02-slot-025",
+        "dateISO": "2026-01-28",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-03-slot-022-2026-01-28-clinician-12",
+        "rowId": "site-03-slot-022",
         "dateISO": "2026-01-28",
         "clinicianId": "clinician-12",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-028-2026-01-28-clinician-13",
+        "rowId": "site-02-slot-028",
+        "dateISO": "2026-01-28",
+        "clinicianId": "clinician-13",
         "source": "solver",
         "locked": false
       },
@@ -3029,18 +3954,66 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-036-2026-01-29-clinician-08",
-        "rowId": "site-02-slot-036",
+        "id": "synthetic-site-02-slot-038-2026-01-29-clinician-05",
+        "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-29",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-039-2026-01-29-clinician-06",
+        "rowId": "site-02-slot-039",
+        "dateISO": "2026-01-29",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-063-2026-01-29-clinician-08",
+        "rowId": "site-02-slot-063",
         "dateISO": "2026-01-29",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-037-2026-01-29-clinician-12",
-        "rowId": "site-02-slot-037",
+        "id": "synthetic-site-02-slot-038-2026-01-29-clinician-09",
+        "rowId": "site-02-slot-038",
+        "dateISO": "2026-01-29",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-036-2026-01-29-clinician-11",
+        "rowId": "site-02-slot-036",
+        "dateISO": "2026-01-29",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-063-2026-01-29-clinician-12",
+        "rowId": "site-02-slot-063",
         "dateISO": "2026-01-29",
         "clinicianId": "clinician-12",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-039-2026-01-29-clinician-13",
+        "rowId": "site-02-slot-039",
+        "dateISO": "2026-01-29",
+        "clinicianId": "clinician-13",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-040-2026-01-29-clinician-14",
+        "rowId": "site-02-slot-040",
+        "dateISO": "2026-01-29",
+        "clinicianId": "clinician-14",
         "source": "solver",
         "locked": false
       },
@@ -3069,18 +4042,74 @@
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-047-2026-01-30-clinician-08",
-        "rowId": "site-02-slot-047",
+        "id": "synthetic-site-02-slot-054-2026-01-30-clinician-05",
+        "rowId": "site-02-slot-054",
+        "dateISO": "2026-01-30",
+        "clinicianId": "clinician-05",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-050-2026-01-30-clinician-06",
+        "rowId": "site-02-slot-050",
+        "dateISO": "2026-01-30",
+        "clinicianId": "clinician-06",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-066-2026-01-30-clinician-08",
+        "rowId": "site-02-slot-066",
         "dateISO": "2026-01-30",
         "clinicianId": "clinician-08",
         "source": "solver",
         "locked": false
       },
       {
-        "id": "synthetic-site-02-slot-048-2026-01-30-clinician-12",
-        "rowId": "site-02-slot-048",
+        "id": "synthetic-site-02-slot-049-2026-01-30-clinician-09",
+        "rowId": "site-02-slot-049",
+        "dateISO": "2026-01-30",
+        "clinicianId": "clinician-09",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-047-2026-01-30-clinician-11",
+        "rowId": "site-02-slot-047",
+        "dateISO": "2026-01-30",
+        "clinicianId": "clinician-11",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-066-2026-01-30-clinician-12",
+        "rowId": "site-02-slot-066",
         "dateISO": "2026-01-30",
         "clinicianId": "clinician-12",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-049-2026-01-30-clinician-13",
+        "rowId": "site-02-slot-049",
+        "dateISO": "2026-01-30",
+        "clinicianId": "clinician-13",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-050-2026-01-30-clinician-14",
+        "rowId": "site-02-slot-050",
+        "dateISO": "2026-01-30",
+        "clinicianId": "clinician-14",
+        "source": "solver",
+        "locked": false
+      },
+      {
+        "id": "synthetic-site-02-slot-048-2026-01-30-clinician-15",
+        "rowId": "site-02-slot-048",
+        "dateISO": "2026-01-30",
+        "clinicianId": "clinician-15",
         "source": "solver",
         "locked": false
       }

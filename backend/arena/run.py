@@ -1,7 +1,7 @@
 """Agent test arena: run the agent solver against a hard, realistic state
 and print comparable metrics.
 
-Fixture synthetic-v2 generates 24 fictitious clinicians and calendars around
+Fixture synthetic-v3 generates 24 fictitious clinicians and calendars around
 a retained scheduling structure: 35 rows (33 sections and two pools), 163
 weekly template slots and four locations. No original personnel data is used.
 
@@ -50,7 +50,7 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
     """Deterministically transform the fixture into a harder case. Returns a
     human-readable description of what was changed."""
     if scenario == "base":
-        return "synthetic-v2 roster, generated history and vacations; unchanged calendar structure"
+        return "synthetic-v3 roster, generated history and vacations; unchanged calendar structure"
 
     # Stable clinician order so the scenario is reproducible.
     ids = [c.id for c in state.clinicians]

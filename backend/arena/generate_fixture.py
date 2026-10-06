@@ -3,9 +3,8 @@
 No clinician, assignment, vacation, preference, holiday, or free-text value is
 read from the input. The allowlisted template layout/times/capacities retain a
 large scheduling problem; all identifiers and labels are regenerated too.
-Run ``python -m backend.arena.generate_fixture`` to reproduce fixture version 2.
+Run ``python -m backend.arena.generate_fixture`` to reproduce fixture version 3.
 """
-from collections import defaultdict
 from datetime import date, timedelta
 import json
 from pathlib import Path
@@ -13,7 +12,7 @@ from pathlib import Path
 from backend.models import AppState, Assignment
 from backend.validation import validate_assignments
 
-FIXTURE_VERSION = "synthetic-v2"
+FIXTURE_VERSION = "synthetic-v3"
 FIXTURE = Path(__file__).with_name("fixture_complex.json")
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
@@ -51,24 +50,27 @@ def generate(structure):
                            ("requiredSlots", "startTime", "endTime", "endDayOffset")}}
                       for i, s in enumerate(loc["slots"], 1)]})
 
-    by_site = defaultdict(list)
-    for row in rows:
-        if row["kind"] == "class" and row["id"] != duty_section:
-            by_site[row["locationId"]].append(row["id"])
     all_sections = [r["id"] for r in rows if r["kind"] == "class" and r["id"] != duty_section]
     # One required section has only two specialists: scarcity is intentional.
     sections_by_block = {b["id"]: b["sectionId"] for b in blocks}
     required_sections = {sections_by_block[s["blockId"]] for loc in locations for s in loc["slots"] if s["requiredSlots"] > 0}
     rare_section = next(b["sectionId"] for b in reversed(blocks)
                         if b["sectionId"] != duty_section and b["sectionId"] in required_sections)
+    # Ordinary sections are split round-robin into four deterministic groups,
+    # independent of how many locations exist. (synthetic-v2 keyed the groups
+    # by the section's location; with every section at one site that left
+    # 8 of 24 clinicians without any qualification and 5 with a single one.)
+    ordinary_sections = [s for s in all_sections if s != rare_section]
+    groups = [ordinary_sections[k::4] for k in range(4)]
     clinicians = []
     sites = list(location_ids.values())
     for i in range(24):
         cid = f"clinician-{i + 1:02d}"
-        qualified = list(all_sections) if i < 4 else list(by_site[sites[i % len(sites)]])
+        # Four all-rounders; everyone else covers one group, and every third
+        # clinician additionally the next group, so the groups overlap partially.
+        qualified = list(ordinary_sections) if i < 4 else list(groups[i % 4])
         if i >= 4 and i % 3 == 0:
-            qualified += by_site[sites[(i + 1) % len(sites)]]
-        qualified = [s for s in qualified if s != rare_section]
+            qualified += groups[(i + 1) % 4]
         if i in (16, 20):
             qualified.append(rare_section)
         if i < 4 or i % 3 == 0:
@@ -99,11 +101,28 @@ def generate(structure):
             "generator": "backend.arena.generate_fixture", "state": state.model_dump(exclude_none=True)}
 
 
+def _daynight_variant(state, duty_section):
+    """Weekend/holiday duties are all-day in the template; the arena's
+    ``daynight`` scenario reads them as 08:00-20:00 shifts. Generated history
+    must respect weekly hours under that reading too, otherwise the scenario
+    would start from an unrepairable contradiction outside the planning range.
+    The variant shares the override map so dated +1 targets stay in sync."""
+    variant = state.model_copy(deep=True)
+    variant.slotOverridesByKey = state.slotOverridesByKey
+    blocks = {b.id: b.sectionId for b in variant.weeklyTemplate.blocks}
+    for location in variant.weeklyTemplate.locations:
+        for slot in location.slots:
+            if blocks[slot.blockId] == duty_section and not slot.startTime:
+                slot.startTime, slot.endTime, slot.endDayOffset = "08:00", "20:00", 0
+    return variant
+
+
 def _synthetic_history(state, duty_section):
     blocks = {b.id: b.sectionId for b in state.weeklyTemplate.blocks}
     cols = {c.id: c.dayType for loc in state.weeklyTemplate.locations for c in loc.colBands}
     slots = [s for loc in state.weeklyTemplate.locations for s in loc.slots]
     holidays = {h.dateISO for h in state.holidays}
+    readings = (state, _daynight_variant(state, duty_section))
 
     def candidates(day, duty):
         day_type = "holiday" if day.isoformat() in holidays else WEEKDAYS[day.weekday()]
@@ -121,7 +140,8 @@ def _synthetic_history(state, duty_section):
         override_key = f"{slot.id}__{day.isoformat()}"
         if fixed:
             state.slotOverridesByKey[override_key] = 1
-        if not validate_assignments(state, state.assignments + [assignment]).is_valid:
+        candidate = state.assignments + [assignment]
+        if not all(validate_assignments(reading, candidate).is_valid for reading in readings):
             if fixed:
                 state.slotOverridesByKey.pop(override_key, None)
             return False

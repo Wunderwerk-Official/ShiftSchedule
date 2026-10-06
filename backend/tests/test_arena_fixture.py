@@ -26,7 +26,35 @@ def test_fixture_is_reproducible_and_all_assignments_are_valid():
     assert {20, 24, 32, 36, 40} <= {c.workingHoursPerWeek for c in state.clinicians}
     sections = {b.id: b.sectionId for b in state.weeklyTemplate.blocks}
     required = {sections[s.blockId] for s in slots if s.requiredSlots > 0}
-    assert min(sum(section in c.qualifiedClassIds for c in state.clinicians) for section in required) == 2
+    qualified_count = {section: sum(section in c.qualifiedClassIds for c in state.clinicians) for section in required}
+    assert min(qualified_count.values()) == 2
+    # synthetic-v3: exactly one rare required section with two specialists;
+    # every other required section can be staffed by at least 10 of the 24.
+    rare = {section for section, count in qualified_count.items() if count == 2}
+    assert len(rare) == 1
+    assert min(count for section, count in qualified_count.items() if section not in rare) >= 10
+    # Every clinician is employable: no empty lists, and at least six ordinary
+    # (non-duty, non-rare) qualifications each. synthetic-v2 keyed the groups by
+    # the section's location and left 8 clinicians with none and 5 with one.
+    duty = state.solverSettings["onCallRestClassId"]
+    ordinary = {r.id for r in state.rows if r.kind == "class" and r.id != duty} - rare
+    assert all(c.qualifiedClassIds for c in state.clinicians)
+    ordinary_counts = [len(set(c.qualifiedClassIds) & ordinary) for c in state.clinicians]
+    assert min(ordinary_counts) >= 6
+    assert ordinary_counts[:4] == [len(ordinary)] * 4  # four all-rounders
+    assert all(len(c.qualifiedClassIds) == len(set(c.qualifiedClassIds)) for c in state.clinicians)
+    # Benchmark weeks: every required slot except the rare section's has at
+    # least three clinicians who are both qualified and not on vacation.
+    from backend.scoring import build_scoring_context
+    for start, end in (("2026-02-02", "2026-02-06"), ("2026-02-16", "2026-02-20")):
+        ctx = build_scoring_context(state, start, end, only_fill_required=True)
+        for instance in ctx.instances.values():
+            if instance.target <= 0 or instance.section_id in rare:
+                continue
+            eligible = sum(instance.section_id in c.qualifiedClassIds
+                           and not any(v.startISO <= instance.date_iso <= v.endISO for v in c.vacations)
+                           for c in state.clinicians)
+            assert eligible >= 3, (instance.slot_key, instance.date_iso, eligible)
 
 
 def test_generator_ignores_personnel_calendars_and_untrusted_free_text():
