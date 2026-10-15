@@ -25,13 +25,12 @@ def _iso_to_yyyymmdd(date_iso: str) -> str:
 
 
 def _add_days_iso(date_iso: str, days: int) -> str:
-    year, month, day_ = (int(part) for part in date_iso.split("-"))
-    next_date = date(year, month, day_)  # noqa: DTZ011
-    next_date = next_date.fromordinal(next_date.toordinal() + days)
-    return next_date.isoformat()
+    return (date.fromisoformat(date_iso) + timedelta(days=days)).isoformat()
 
 
 def _fold_ical_line(line: str) -> str:
+    if len(line.encode("utf-8")) <= 75:
+        return line
     first_limit = 75
     next_limit = 74  # continuation lines start with a single space
 
@@ -119,6 +118,9 @@ def generate_ics(
         "METHOD:PUBLISH",
         f"X-WR-CALNAME:{_escape_text(cal_name)}",
     ]
+    if not published_weeks:
+        lines.append("END:VCALENDAR")
+        return _fold_lines(lines)
 
     for assignment in assignments:
         row_id = assignment.get("rowId")
@@ -138,15 +140,12 @@ def generate_ics(
         if not isinstance(date_iso, str):
             continue
 
-        if published_weeks:
-            try:
-                date_value = date.fromisoformat(date_iso)
-            except ValueError:
-                continue
-            week_start = (date_value - timedelta(days=date_value.weekday())).isoformat()
-            if week_start not in published_weeks:
-                continue
-        else:
+        try:
+            date_value = date.fromisoformat(date_iso)
+        except ValueError:
+            continue
+        week_start = (date_value - timedelta(days=date_value.weekday())).isoformat()
+        if week_start not in published_weeks:
             continue
 
         assignment_clinician_id = assignment.get("clinicianId")

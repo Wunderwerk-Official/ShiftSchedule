@@ -9,15 +9,19 @@ inherited from ``solver.py``.
 Failure philosophy: once the heuristic seed exists, nothing the LLM does (or
 fails to do) can surface as an error — API failures, refusals, missing keys,
 and budget exhaustion all degrade to returning the best plan so far (at worst
-the seed), with an explanatory note.
+the seed), with an explanatory note. An unexpected exception raised by a
+provider adapter is converted into a non-retryable error response and takes
+the same path.
 """
 
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import date, timedelta
 
 import time
 import json
+import traceback
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from ..heuristic.solver_v2 import heuristic_solve_range_v2
@@ -47,7 +51,8 @@ from .provider import (
     ToolSpec,
     get_provider,
 )
-from .tools import DAY_ONLY_TOOL_NAMES, TOOL_SPECS_RAW, PlanToolExecutor
+from .tools import DAY_ONLY_TOOL_NAMES, TOOL_SPECS_RAW, PlanToolExecutor, _fmt_span
+from .workflow import audit_time_budget
 
 # History compaction: once the tool results in the conversation exceed this
 # budget, everything but the most recent exchanges is replaced by a stub in
@@ -98,6 +103,8 @@ MAX_CONSECUTIVE_FAILED_DAYS = 2
 # run's own wall-clock deadline still bounds the total via min() (and UI
 # runs carry no wall-clock deadline at all).
 MAX_PER_CALL_TIMEOUT_SECONDS = 1200.0
+# Run note when the user aborts; the best plan so far is still returned.
+ABORT_NOTE = "Agent run aborted by user; best plan so far returned."
 
 
 def _complete_with_retry(
@@ -124,12 +131,24 @@ def _complete_with_retry(
     for attempt in range(1, RETRY_MAX_ATTEMPTS + 1):
         _call_started = time.time()
         provider.cancel_event = cancel_event
-        response = provider.complete(
-            system=system,
-            messages=messages,
-            tools=tools,
-            timeout_seconds=compute_timeout(),
-        )
+        try:
+            response = provider.complete(
+                system=system,
+                messages=messages,
+                tools=tools,
+                timeout_seconds=compute_timeout(),
+            )
+        except Exception as exc:
+            # Adapters must not raise, but a stray SDK/parsing exception must
+            # not discard a long run's best plan. Only the type name goes into
+            # the note (the message may contain endpoint URLs); the full
+            # traceback goes to the server log.
+            traceback.print_exc()
+            response = ProviderResponse(
+                text=None, tool_calls=[], stop_reason="error",
+                error=f"Unexpected provider failure ({type(exc).__name__})",
+                retryable=False,
+            )
         # Record how long this generation took, so the harness can report the
         # endpoint's average tokens/second (see absorb_response). Only the
         # returned (last) attempt's time is kept — failed attempts and backoff
@@ -216,15 +235,17 @@ def agent_solve_range(
     # per-LLM-call cap keeps single hung requests bounded either way.
     timeout = payload.timeout_seconds
     run_deadline = start_time + timeout if timeout else float("inf")
+    range_start = date.fromisoformat(payload.startISO)
+    range_end = date.fromisoformat(payload.endISO or payload.startISO)
+    target_days = {
+        (range_start + timedelta(days=i)).isoformat()
+        for i in range((range_end - range_start).days + 1)
+    }
     # Required verification needs usable search time after model planning.
     # Reserve 10%, capped at the audit's own range-scaled budget (a minute
     # for a week, more for a month); the original caller limit still bounds
     # everything, and unlimited interactive runs remain unlimited.
-    from datetime import date as _date
-    from .workflow import audit_time_budget
-    _range_days = (_date.fromisoformat(payload.endISO or payload.startISO)
-                   - _date.fromisoformat(payload.startISO)).days + 1
-    audit_reserve = min(timeout * 0.1, audit_time_budget(_range_days)) if timeout else 0.0
+    audit_reserve = min(timeout * 0.1, audit_time_budget(len(target_days))) if timeout else 0.0
     deadline = run_deadline - audit_reserve
 
     # Replan semantics: assignments a previous SOLVER run left inside the
@@ -235,24 +256,20 @@ def agent_solve_range(
     # 29 duplicate drafts, 30 hard violations on a single day) and welded
     # the executor's fixed set shut. Out-of-range solver assignments stay:
     # they are context for rest/overlap checks at the boundaries.
-    from datetime import date as _date, timedelta as _timedelta
-
-    range_start = _date.fromisoformat(payload.startISO)
-    range_end = _date.fromisoformat(payload.endISO or payload.startISO)
-    target_days = {
-        (range_start + _timedelta(days=i)).isoformat()
-        for i in range((range_end - range_start).days + 1)
-    }
-    replaced = [
-        a
-        for a in state.assignments
-        if a.dateISO in target_days
-        and not is_protected_assignment(a)
-        and not a.rowId.startswith("pool-")
-    ]
+    # One partition pass: list membership on pydantic models is O(n*m)
+    # (seconds when the calendar history is large).
+    kept: List[Assignment] = []
+    replaced: List[Assignment] = []
+    for a in state.assignments:
+        is_replaceable = (
+            a.dateISO in target_days
+            and not is_protected_assignment(a)
+            and not a.rowId.startswith("pool-")
+        )
+        (replaced if is_replaceable else kept).append(a)
     if replaced:
         state = state.model_copy(deep=False)
-        state.assignments = [a for a in state.assignments if a not in replaced]
+        state.assignments = kept
 
     # ------------------------------------------------------------------
     # Phase 1: seed plan
@@ -451,10 +468,7 @@ def agent_solve_range(
     def _fmt_plan_line(a: Assignment, origin: str) -> str:
         inst = ctx.instances.get(f"{a.rowId}__{a.dateISO}")
         if inst is not None:
-            time_part = (
-                f"{inst.start // 60:02d}:{inst.start % 60:02d}"
-                f"-{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
-            )
+            time_part = _fmt_span(inst.start, inst.end)
             section = executor.section_names.get(inst.section_id, inst.section_id)
         else:
             time_part, section = "?", a.rowId
@@ -555,47 +569,40 @@ def agent_solve_range(
             for g in remaining_open
         ]
 
-        minutes: Dict[Tuple[str, str], int] = {}
-        for a in executor.fixed_assignments + list(best):
-            if a.dateISO not in ctx.target_date_set or a.rowId.startswith("pool-"):
-                continue
-            inst = ctx.instances.get(f"{a.rowId}__{a.dateISO}")
-            if inst is not None:
-                duration = inst.end - inst.start
-            else:
-                interval = ctx.all_slot_intervals.get(a.rowId)
-                if interval is None:
-                    continue
-                duration = interval[1] - interval[0]
-            key = (a.clinicianId, a.dateISO)
-            minutes[key] = minutes.get(key, 0) + max(0, duration)
-
+        # Short/over-long days come from the quality metrics, so the report
+        # can never disagree with them. Details carry the LLM-facing alias;
+        # the report shows the clinician's real name.
+        metrics = extra_metrics(executor, best)
         short_days: List[dict] = []
         overlong_days: List[dict] = []
-        for (cid, date_iso), mins in sorted(minutes.items(), key=lambda kv: kv[0][1]):
-            clinician = executor.clinicians_by_id.get(cid)
-            if clinician is None or mins <= 0:
-                continue
-            daily_min = executor._daily_min_minutes(cid, date_iso)
+        for detail in metrics["day_shape_details"]:
+            clinician = executor.clinicians_by_id.get(
+                executor._resolve_clinician(detail["clinicianId"])
+            )
+            name = clinician.name if clinician else detail["clinicianId"]
+            mins = detail["minutes"]
+            daily_min = detail["minimum_minutes"]
             if daily_min is not None and mins < daily_min:
                 short_days.append(
                     {
-                        "clinician": clinician.name,
-                        "dateISO": date_iso,
+                        "clinician": name,
+                        "dateISO": detail["dateISO"],
                         "hours": round(mins / 60.0, 1),
                         "min_hours": round(daily_min / 60.0, 1),
                     }
                 )
-            comfort = executor._daily_comfort_minutes(cid, date_iso)
+            comfort = detail["comfort_minutes"]
             if mins > comfort:
                 overlong_days.append(
                     {
-                        "clinician": clinician.name,
-                        "dateISO": date_iso,
+                        "clinician": name,
+                        "dateISO": detail["dateISO"],
                         "hours": round(mins / 60.0, 1),
                         "comfort_hours": round(comfort / 60.0, 1),
                     }
                 )
+        short_days.sort(key=lambda entry: entry["dateISO"])
+        overlong_days.sort(key=lambda entry: entry["dateISO"])
 
         # Placements the run made OUTSIDE someone's preferred working time
         # (the per-clinician wish; mandatory windows can never be violated).
@@ -616,10 +623,8 @@ def agent_solve_range(
                 {
                     "clinician": clinician.name if clinician else a.clinicianId,
                     "dateISO": a.dateISO,
-                    "time": f"{inst.start // 60:02d}:{inst.start % 60:02d}-"
-                    f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
-                    "preferred": f"{window[1] // 60:02d}:{window[1] % 60:02d}-"
-                    f"{(window[2] % 1440) // 60:02d}:{window[2] % 60:02d}",
+                    "time": _fmt_span(inst.start, inst.end),
+                    "preferred": _fmt_span(window[1], window[2]),
                 }
             )
 
@@ -628,7 +633,7 @@ def agent_solve_range(
             "short_days": short_days,
             "overlong_days": overlong_days,
             "outside_preferred_times": outside_preferred,
-            "quality_metrics": extra_metrics(executor, best),
+            "quality_metrics": metrics,
         }
         if (
             not open_entries
@@ -688,13 +693,20 @@ def agent_solve_range(
             )
         return lines, unsolved
 
+    def restore_best() -> bool:
+        """Reset the working copy to the best verified plan; True when it
+        differed."""
+        returned = {(a.rowId, a.dateISO, a.clinicianId): a for a in executor.best_assignments}
+        if executor.current == returned:
+            return False
+        executor.current = returned
+        executor.workflow.changed()
+        return True
+
     def run_final_checks():
         if strategy == "day_by_day" and executor.moves_accepted == 0:
             return  # preserve the explicit heuristic fallback for failed starts
-        returned = {(a.rowId, a.dateISO, a.clinicianId): a for a in executor.best_assignments}
-        if executor.current != returned:
-            executor.current = returned
-            executor.workflow.changed()
+        restore_best()
         agent_phase("Verify the final plan and remaining gaps")
         run_meta["model_days_skipped"] = sorted(set(run_meta["days_skipped"]))
         executor.wall_deadline = run_deadline
@@ -717,10 +729,7 @@ def agent_solve_range(
             run_final_checks()
         if cancel_event.is_set():
             status = "ABORTED"
-        returned = {(a.rowId, a.dateISO, a.clinicianId): a for a in executor.best_assignments}
-        if executor.current != returned:
-            executor.current = returned
-            executor.workflow.changed()
+        restore_best()
         if status == "ABORTED":
             run_meta["stop_reason"] = "aborted"
             run_meta["days_skipped"].extend(
@@ -903,7 +912,6 @@ def agent_solve_range(
                     "quality_profile": ctx.settings.agentQualityProfile,
                     "quality_order": list(executor.quality_fields),
                     "search_history": executor.workflow.summary(),
-                    "search_history_matches_returned_plan": set(executor.current) == {(a.rowId, a.dateISO, a.clinicianId) for a in best},
                     # Diagnostics for the copyable run log (real names).
                     **_log_extras(best),
                 },
@@ -1111,11 +1119,7 @@ def agent_solve_range(
         # bind rest days and weekly-hours budgets, and building the days
         # chronologically spent those budgets on ordinary day work first —
         # observed in production as a weekend whose on-call stayed empty.
-        on_call_class = (
-            ctx.settings.onCallRestClassId
-            if getattr(ctx.settings, "onCallRestEnabled", False)
-            else None
-        )
+        on_call_class = executor.on_call_class
 
         def open_duty_state() -> Tuple[List[str], int]:
             counts = executor._counts_by_instance(executor._working_list())
@@ -1132,8 +1136,7 @@ def agent_solve_range(
                         f"- {executor._alias_slot_key(inst.slot_key)}"
                         f"|{executor.section_names.get(inst.section_id, inst.section_id)}"
                         f"|{inst.date_iso}"
-                        f"|{inst.start // 60:02d}:{inst.start % 60:02d}-"
-                        f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
+                        f"|{_fmt_span(inst.start, inst.end)}"
                         f"|{missing}"
                     )
             return lines, positions
@@ -1181,7 +1184,7 @@ def agent_solve_range(
                     return finalize(
                         "ABORTED",
                         extra_notes
-                        + ["Agent run aborted by user; best plan so far returned."],
+                        + [ABORT_NOTE],
                     )
                 global_left = deadline - time.time()
                 if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
@@ -1204,7 +1207,7 @@ def agent_solve_range(
                 iterations_done += 1
                 absorb_response(response)
                 if cancel_event.is_set():
-                    return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
+                    return finalize("ABORTED", extra_notes + [ABORT_NOTE])
                 if response.stop_reason in ("error", "refusal"):
                     # A failed pre-pass must not abandon the days: duties can
                     # still be placed by the per-day conversations. It counts
@@ -1228,13 +1231,7 @@ def agent_solve_range(
                     results = []
                     for call in response.tool_calls:
                         if cancel_event.is_set():
-                            return finalize(
-                                "ABORTED",
-                                extra_notes
-                                + [
-                                    "Agent run aborted by user; best plan so far returned."
-                                ],
-                            )
+                            return finalize("ABORTED", extra_notes + [ABORT_NOTE])
                         results.append(
                             execute_tool(call)
                         )
@@ -1300,7 +1297,7 @@ def agent_solve_range(
                 return finalize(
                     "ABORTED",
                     extra_notes
-                    + ["Agent run aborted by user; best plan so far returned."],
+                    + [ABORT_NOTE],
                 )
             remaining = deadline - time.time()
             days_left = total_days - day_index
@@ -1341,11 +1338,6 @@ def agent_solve_range(
                 )
 
             counts = executor._counts_by_instance(executor._working_list())
-            on_call_class = (
-                ctx.settings.onCallRestClassId
-                if getattr(ctx.settings, "onCallRestEnabled", False)
-                else None
-            )
             day_slot_lines: List[str] = []
             open_positions = 0
             # Same processing order the tools use (minus eligibility, which
@@ -1365,8 +1357,7 @@ def agent_solve_range(
                 day_slot_lines.append(
                     f"- {executor._alias_slot_key(inst.slot_key)}"
                     f"|{executor.section_names.get(inst.section_id, inst.section_id)}"
-                    f"|{inst.start // 60:02d}:{inst.start % 60:02d}-"
-                    f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
+                    f"|{_fmt_span(inst.start, inst.end)}"
                     f"|{missing}"
                     f"|prio {inst.order_weight}"
                     + ("|ON-CALL" if inst.section_id == on_call_class else "")
@@ -1423,7 +1414,7 @@ def agent_solve_range(
                     return finalize(
                         "ABORTED",
                         extra_notes
-                        + ["Agent run aborted by user; best plan so far returned."],
+                        + [ABORT_NOTE],
                     )
                 global_left = deadline - time.time()
                 if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
@@ -1447,7 +1438,7 @@ def agent_solve_range(
                 iterations_done += 1
                 absorb_response(response)
                 if cancel_event.is_set():
-                    return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
+                    return finalize("ABORTED", extra_notes + [ABORT_NOTE])
                 if response.stop_reason in ("error", "refusal"):
                     # Post-retry failure: skip THIS day only and keep
                     # planning — one bad exchange used to abandon every
@@ -1484,7 +1475,7 @@ def agent_solve_range(
                             return finalize(
                                 "ABORTED",
                                 extra_notes
-                                + ["Agent run aborted by user; best plan so far returned."],
+                                + [ABORT_NOTE],
                             )
                         results.append(execute_tool(call))
                     emit_agent("tool_use", {"tools": [c.name for c in response.tool_calls]})
@@ -1614,11 +1605,9 @@ def agent_solve_range(
             and review_time_left > max(DEADLINE_HEADROOM_SECONDS, 30.0)
         ):
             moves_before_review = executor.moves_accepted
-            best_state = {(a.rowId, a.dateISO, a.clinicianId): a for a in executor.best_assignments}
-            if executor.current != best_state:
-                executor.current = best_state
-                executor.workflow.changed()
+            if restore_best():
                 extra_notes.append("Final review starts from the best verified snapshot.")
+            review_start_key = tuple(sorted(executor.current))
             unsolved_lines, _ = _unsolved_overview(executor.best_assignments)
             review_digest = (
                 build_review_digest(
@@ -1639,11 +1628,12 @@ def agent_solve_range(
             messages = [ChatMessage(role="user", content=review_digest)]
             # Fresh searches are useful during construction, but they must not
             # indefinitely extend a final review that never improves the plan.
-            guard = ProgressGuard(tuple(sorted(best_state)),
+            guard = ProgressGuard(review_start_key,
                                   nudge_after=review_idle_limit - 1,
                                   stop_after=review_idle_limit)
             agent_phase("Review the whole planning range")
             rounds_end = min(iterations_done + review_rounds, config.max_iterations)
+            truncation_nudges = 0
 
             def review_call_timeout() -> float:
                 return max(
@@ -1676,18 +1666,20 @@ def agent_solve_range(
                 iterations_done += 1
                 absorb_response(response)
                 if cancel_event.is_set():
-                    return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
+                    return finalize("ABORTED", extra_notes + [ABORT_NOTE])
                 if response.stop_reason in ("error", "refusal"):
+                    kind = "error" if response.stop_reason == "error" else "refusal"
+                    detail = f" ({response.error})" if response.error else ""
                     extra_notes.append(
-                        "LLM error during the final range review; best plan "
-                        "so far returned."
+                        f"LLM {kind} during the final range review{detail}; "
+                        "best plan so far returned."
                     )
                     break
                 if response.stop_reason == "tool_use" and response.tool_calls:
                     results = []
                     for call in response.tool_calls:
                         if cancel_event.is_set():
-                            return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
+                            return finalize("ABORTED", extra_notes + [ABORT_NOTE])
                         results.append(execute_tool(call))
                     messages.append(
                         ChatMessage(
@@ -1720,6 +1712,46 @@ def agent_solve_range(
                         )
                         break
                     continue
+                if response.stop_reason == "max_tokens":
+                    # Same handling as the duty and day loops: a cut-off reply
+                    # (possibly with tool calls) gets its tool results and up
+                    # to two nudges instead of silently ending the review.
+                    if truncation_nudges < 2:
+                        truncation_nudges += 1
+                        messages.append(
+                            ChatMessage(
+                                role="assistant",
+                                content=response.replay_text or "(truncated)",
+                                tool_calls=response.tool_calls,
+                                raw_content=response.raw_content,
+                            )
+                        )
+                        if response.tool_calls:
+                            messages.append(
+                                ChatMessage(
+                                    role="tool",
+                                    tool_results=[
+                                        execute_tool(c)
+                                        for c in response.tool_calls
+                                    ],
+                                )
+                            )
+                        messages.append(
+                            ChatMessage(
+                                role="user",
+                                content=(
+                                    "Your reply was truncated. Respond with tool "
+                                    "calls only, or finish the review with a "
+                                    "one-sentence summary."
+                                ),
+                            )
+                        )
+                        continue
+                    extra_notes.append(
+                        "LLM output repeatedly truncated in the final range "
+                        "review; best plan so far returned."
+                    )
+                    break
                 break  # end_turn: review finished
             review_changes = executor.moves_accepted - moves_before_review
             extra_notes.append(
@@ -1775,7 +1807,7 @@ def agent_solve_range(
 
     while iterations_done < config.max_iterations:
         if cancel_event.is_set():
-            return finalize("ABORTED", ["Agent run aborted by user; best plan so far returned."])
+            return finalize("ABORTED", [ABORT_NOTE])
         remaining = deadline - time.time()
         # Below ~30s a call cannot finish anything useful on slow self-hosted
         # models — it just dies in a timeout and pollutes the notes with
@@ -1803,7 +1835,7 @@ def agent_solve_range(
         iterations_done += 1
         absorb_response(response)
         if cancel_event.is_set():
-            return finalize("ABORTED", extra_notes + ["Agent run aborted by user; best plan so far returned."])
+            return finalize("ABORTED", extra_notes + [ABORT_NOTE])
 
         if response.stop_reason == "error":
             extra_notes.append(
@@ -1828,7 +1860,7 @@ def agent_solve_range(
             for call in response.tool_calls:
                 if cancel_event.is_set():
                     return finalize(
-                        "ABORTED", ["Agent run aborted by user; best plan so far returned."]
+                        "ABORTED", [ABORT_NOTE]
                     )
                 results.append(execute_tool(call))
             # Inspection-only rounds were invisible in the live feed, which

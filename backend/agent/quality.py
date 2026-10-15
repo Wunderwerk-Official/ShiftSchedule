@@ -34,7 +34,7 @@ def extra_metrics(executor, working):
         result = []
         if day.weekday() >= 5:
             result.append("weekend")
-        if end_minutes > 1440 or start_minutes < 360 or end_minutes > 1320:
+        if start_minutes < 360 or end_minutes > 1320:  # starts before 06:00 or ends after 22:00 (incl. overnight)
             result.append("night")
         if duty_section and section == duty_section:
             result.append("on_call")

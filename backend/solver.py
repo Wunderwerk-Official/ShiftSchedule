@@ -26,7 +26,7 @@ SOLVER PHASES (shown in UI progress)
 OBJECTIVE FUNCTION
 ==================
 The solver minimizes a weighted sum of terms (some negated for maximization).
-Defaults live in DEFAULT_WEIGHT_* constants below; users override them through
+Defaults live in models.SolverSettings; users override them through
 solverSettings in the app state.
 - Coverage: maximise filled required slots (default weight: 1000)
 - Slack: minimise unfilled slots (default weight: 1000)
@@ -91,7 +91,6 @@ class _RunHandle:
 
     run_id: str
     username: str
-    mode: str  # payload.resolved_mode() at admission time
     exclusive: bool  # non-agent modes claim the whole machine
     process: multiprocessing.Process
     progress_queue: Any  # mp Queue relaying progress/result/error messages
@@ -168,6 +167,9 @@ def active_run_count() -> int:
 # (admin decision 2026-07).
 RUN_OVERSHOOT_SOFT_SECONDS = 60.0
 RUN_OVERSHOOT_HARD_SECONDS = 120.0
+# Upper bound for reading what a dead worker left in its queue
+# (see _drain_dead_worker_queue).
+RUN_QUEUE_DRAIN_TIMEOUT_SECONDS = 10.0
 
 # Multiprocessing context for spawning solver processes
 _mp_context = multiprocessing.get_context("spawn")
@@ -205,42 +207,8 @@ def _cleanup_solver_processes():
 atexit.register(_cleanup_solver_processes)
 
 
-def _cleanup_orphaned_solver_processes():
-    """
-    Clean up any orphaned solver subprocesses from previous runs.
-    Called on backend startup to ensure no stale processes are running.
-    """
-    import subprocess
-    import sys
-
-    try:
-        # Find processes that match our solver subprocess pattern
-        # On macOS/Linux, look for python processes with _solver_subprocess_worker
-        if sys.platform == "darwin" or sys.platform.startswith("linux"):
-            # Use pgrep to find python processes, then filter by command line
-            result = subprocess.run(
-                ["pgrep", "-f", "_solver_subprocess_worker"],
-                capture_output=True,
-                text=True,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                pids = result.stdout.strip().split("\n")
-                current_pid = os.getpid()
-                for pid_str in pids:
-                    try:
-                        pid = int(pid_str.strip())
-                        # Don't kill ourselves
-                        if pid != current_pid:
-                            print(f"[solver] Killing orphaned solver subprocess: {pid}")
-                            os.kill(pid, signal.SIGKILL)
-                    except (ValueError, ProcessLookupError, PermissionError):
-                        pass
-    except Exception as e:
-        print(f"[solver] Error cleaning up orphaned processes: {e}")
-
-
-# Clean up orphans on module load (backend startup)
-_cleanup_orphaned_solver_processes()
+# Orphaned children need no startup sweep: each one exits on its own once
+# the parent's heartbeat stops (SUBPROCESS_HEARTBEAT_TIMEOUT_SECONDS).
 
 
 class SolverTimer:
@@ -272,13 +240,6 @@ class SolverTimer:
                 for name, _, dur in self.checkpoints
             ],
         }
-
-    def summary(self) -> str:
-        """Return a human-readable summary."""
-        lines = [f"Total: {self.total_ms():.1f}ms"]
-        for name, _, dur in self.checkpoints:
-            lines.append(f"  {name}: {dur:.1f}ms")
-        return "\n".join(lines)
 
 
 def _dump_solver_debug(
@@ -353,7 +314,7 @@ from .models import (
     UserPublic,
 )
 from .state import _load_state
-from .assignment_policy import is_protected_assignment
+from .assignment_policy import is_replaced_by_draft
 from .planning_preferences import vacation_dates_in_range
 
 router = APIRouter()
@@ -366,7 +327,7 @@ def _solver_subprocess_worker(
     cancel_event: multiprocessing.Event,
     heartbeat_value: multiprocessing.Value,
     start_time: float,
-    state_snapshot: Optional[dict] = None,
+    state_snapshot: dict,
 ):
     """
     Worker function that runs in a subprocess.
@@ -378,8 +339,6 @@ def _solver_subprocess_worker(
 
     start_time is the timestamp when the solve request started (for accurate timeout).
     """
-    import sys
-
     # Set up signal handlers for graceful termination
     def signal_handler(signum, frame):
         print(f"[solver subprocess] Received signal {signum}, setting cancel event", file=sys.stderr)
@@ -416,14 +375,7 @@ def _solver_subprocess_worker(
         # Reconstruct payload from dict
         payload = SolveRangeRequest(**payload_dict)
         from .models import AppState
-        state = AppState.model_validate(state_snapshot) if state_snapshot is not None else _load_state(username)
-
-        # Create a mock user for state loading
-        class MockUser:
-            def __init__(self, username: str):
-                self.username = username
-
-        mock_user = MockUser(username)
+        state = AppState.model_validate(state_snapshot)
 
         # Run the solver with a custom progress callback
         def on_progress(event_type: str, data: dict):
@@ -453,7 +405,10 @@ def _solver_subprocess_worker(
             result = heuristic_solve_range_v2(payload, state, cancel_event, on_progress, start_time)
         else:
             print(f"[SOLVER] Using CP-SAT solver for {payload.startISO} to {payload.endISO}")
-            result = _solve_range_impl_subprocess(payload, mock_user, cancel_event, on_progress, start_time, state_override=state)
+            result = _solve_range_impl(
+                payload, None, cancel_event=cancel_event, on_progress=on_progress,
+                start_time=start_time, state_override=state,
+            ).model_dump()
 
         # Send result
         progress_queue.put({"type": "result", "data": result})
@@ -498,7 +453,7 @@ def _broadcast_solver_progress(owner: str, run_token: str, event_type: str, data
 
 
 @router.post("/v1/solve/abort")
-async def abort_solver(
+def abort_solver(
     force: bool = Query(False, description="Force immediate termination by killing subprocess"),
     run_id: Optional[str] = Query(
         None, description="Target run id; defaults to your own active run"
@@ -512,8 +467,9 @@ async def abort_solver(
     unknown ids uniformly report no_solver_running so the endpoint never
     reveals whether another user has a run in flight.
 
-    This endpoint is async to ensure it can be processed even when the
-    sync thread pool is blocked by a running solver.
+    Sync on purpose: the registry lock and the terminate/join escalation
+    must not block the event loop (SSE streams). Runs are background jobs,
+    so the thread pool is free.
 
     Args:
         force: If True, immediately kills the solver subprocess.
@@ -586,17 +542,6 @@ async def solver_progress_stream(request: Request, subscriber: UserPublic = Depe
         "Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no",
     })
 
-
-# Default weights (used if not configured in solver_settings)
-DEFAULT_WEIGHT_COVERAGE = 1000
-DEFAULT_WEIGHT_SLACK = 1000
-DEFAULT_WEIGHT_TOTAL_ASSIGNMENTS = 100
-DEFAULT_WEIGHT_SLOT_PRIORITY = 10
-DEFAULT_WEIGHT_TIME_WINDOW = 20
-DEFAULT_WEIGHT_SECTION_PREFERENCE = 10
-DEFAULT_WEIGHT_WORKING_HOURS = 3
-DEFAULT_WEIGHT_MINIMUM_DAILY_HOURS = 5
-DEFAULT_WEIGHT_YTD_BALANCE = 5
 
 # Extra capacity per slot in "Distribute All" mode (beyond required)
 EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL = 1
@@ -829,7 +774,6 @@ def _collect_manual_assignments(
     day_isos: List[str],
     slot_ids: set[str],
     all_slot_intervals: Dict[str, Tuple[int, int, str]],
-    is_on_vac,
 ) -> Tuple[
     Dict[Tuple[str, str], List[str]],
     Dict[Tuple[str, str], List[str]],
@@ -1202,8 +1146,14 @@ def _add_on_call_rest_constraints(
     target_date_set: set[str],
     day_isos: List[str],
     day_index_by_iso: Dict[str, int],
-) -> Tuple[List[str], set[str], int, int]:
-    """Enforce rest days around on-call assignments."""
+) -> Tuple[List[str], bool]:
+    """Enforce rest days around on-call assignments.
+
+    Returns the manual rest-day conflicts and whether a manual on-call inside
+    the range collides with manual work on a context day (boundary conflict).
+    Solver-placed on-calls can never cause one: the model forbids them
+    whenever the rest window holds manual work, context days included.
+    """
     rest_class_id = solver_settings.onCallRestClassId
     rest_before = max(0, solver_settings.onCallRestDaysBefore or 0)
     rest_after = max(0, solver_settings.onCallRestDaysAfter or 0)
@@ -1214,94 +1164,96 @@ def _add_on_call_rest_constraints(
     }
 
     rest_day_conflicts: List[str] = []
-    if (
+    boundary_conflict = False
+    if not (
         solver_settings.onCallRestEnabled
         and rest_shift_row_ids
         and (rest_before > 0 or rest_after > 0)
     ):
-        on_call_dates_by_cid: Dict[str, List[Tuple[int, str]]] = {}
-        for (cid, date_iso), row_ids in manual_assignments.items():
-            if any(rid in rest_shift_row_ids for rid in row_ids):
-                idx = day_index_by_iso.get(date_iso)
-                if idx is not None:
-                    on_call_dates_by_cid.setdefault(cid, []).append((idx, date_iso))
+        return rest_day_conflicts, boundary_conflict
 
-        for cid, on_call_list in on_call_dates_by_cid.items():
-            for on_call_idx, on_call_date in on_call_list:
-                for offset in range(1, rest_before + 1):
-                    check_idx = on_call_idx - offset
-                    if 0 <= check_idx < len(day_isos):
-                        check_date = day_isos[check_idx]
-                        if manual_assignments.get((cid, check_date)):
-                            rest_day_conflicts.append(
-                                f"{cid}: on-call {on_call_date} but assigned on {check_date} (rest day before)"
-                            )
-                for offset in range(1, rest_after + 1):
-                    check_idx = on_call_idx + offset
-                    if 0 <= check_idx < len(day_isos):
-                        check_date = day_isos[check_idx]
-                        if manual_assignments.get((cid, check_date)):
-                            rest_day_conflicts.append(
-                                f"{cid}: on-call {on_call_date} but assigned on {check_date} (rest day after)"
-                            )
+    on_call_dates_by_cid: Dict[str, List[Tuple[int, str]]] = {}
+    for (cid, date_iso), row_ids in manual_assignments.items():
+        if any(rid in rest_shift_row_ids for rid in row_ids):
+            idx = day_index_by_iso.get(date_iso)
+            if idx is not None:
+                on_call_dates_by_cid.setdefault(cid, []).append((idx, date_iso))
 
-    if (
-        solver_settings.onCallRestEnabled
-        and rest_shift_row_ids
-        and (rest_before > 0 or rest_after > 0)
-    ):
-        for clinician_id, clinician_vars in vars_by_clinician_date.items():
-            for day_index, date_iso in enumerate(day_isos):
-                manual_rows = manual_assignments.get((clinician_id, date_iso), [])
-                manual_on_call = any(
-                    row_id in rest_shift_row_ids for row_id in manual_rows
+    for cid, on_call_list in on_call_dates_by_cid.items():
+        for on_call_idx, on_call_date in on_call_list:
+            for offset in range(1, rest_before + 1):
+                check_idx = on_call_idx - offset
+                if 0 <= check_idx < len(day_isos):
+                    check_date = day_isos[check_idx]
+                    if manual_assignments.get((cid, check_date)):
+                        rest_day_conflicts.append(
+                            f"{cid}: on-call {on_call_date} but assigned on {check_date} (rest day before)"
+                        )
+                        if on_call_date in target_date_set and check_date not in target_date_set:
+                            boundary_conflict = True
+            for offset in range(1, rest_after + 1):
+                check_idx = on_call_idx + offset
+                if 0 <= check_idx < len(day_isos):
+                    check_date = day_isos[check_idx]
+                    if manual_assignments.get((cid, check_date)):
+                        rest_day_conflicts.append(
+                            f"{cid}: on-call {on_call_date} but assigned on {check_date} (rest day after)"
+                        )
+                        if on_call_date in target_date_set and check_date not in target_date_set:
+                            boundary_conflict = True
+
+    for clinician_id, clinician_vars in vars_by_clinician_date.items():
+        for day_index, date_iso in enumerate(day_isos):
+            manual_rows = manual_assignments.get((clinician_id, date_iso), [])
+            manual_on_call = any(
+                row_id in rest_shift_row_ids for row_id in manual_rows
+            )
+            day_vars = clinician_vars.get(date_iso, [])
+            on_call_vars = [
+                var for (sid, var, _s, _e, _l) in day_vars
+                if sid in rest_shift_row_ids
+            ]
+            if not manual_on_call and not on_call_vars:
+                continue
+            on_call_var: Optional[cp_model.IntVar] = None
+            if not manual_on_call:
+                on_call_var = model.NewBoolVar(
+                    f"on_call_{clinician_id}_{date_iso}"
                 )
-                day_vars = clinician_vars.get(date_iso, [])
-                on_call_vars = [
-                    var for (sid, var, _s, _e, _l) in day_vars
-                    if sid in rest_shift_row_ids
-                ]
-                if not manual_on_call and not on_call_vars:
-                    continue
-                on_call_var: Optional[cp_model.IntVar] = None
-                if not manual_on_call:
-                    on_call_var = model.NewBoolVar(
-                        f"on_call_{clinician_id}_{date_iso}"
-                    )
-                    model.AddMaxEquality(on_call_var, on_call_vars)
+                model.AddMaxEquality(on_call_var, on_call_vars)
 
-                def apply_rest_constraint(target_idx: int) -> None:
-                    if target_idx < 0 or target_idx >= len(day_isos):
-                        return
-                    target_date = day_isos[target_idx]
-                    in_target_range = target_date in target_date_set
-                    target_day_vars = clinician_vars.get(target_date, [])
-                    vars_target = [var for (_sid, var, _s, _e, _l) in target_day_vars]
-                    manual_target = len(
-                        manual_assignments.get((clinician_id, target_date), [])
-                    )
-                    if manual_on_call:
-                        # Existing manual work can already violate this rest
-                        # day; it does not authorize additional solver work.
-                        if in_target_range and vars_target:
-                            model.Add(sum(vars_target) == 0)
-                        return
-                    if on_call_var is None:
-                        return
-                    if manual_target > 0:
-                        # Applies to CONTEXT days too: the solver must not
-                        # freshly place an on-call whose rest window collides
-                        # with manual work just outside the range.
-                        model.Add(on_call_var == 0)
-                    elif in_target_range and vars_target:
-                        model.Add(sum(vars_target) <= len(vars_target) * (1 - on_call_var))
+            def apply_rest_constraint(target_idx: int) -> None:
+                if target_idx < 0 or target_idx >= len(day_isos):
+                    return
+                target_date = day_isos[target_idx]
+                in_target_range = target_date in target_date_set
+                target_day_vars = clinician_vars.get(target_date, [])
+                vars_target = [var for (_sid, var, _s, _e, _l) in target_day_vars]
+                manual_target = len(
+                    manual_assignments.get((clinician_id, target_date), [])
+                )
+                if manual_on_call:
+                    # Existing manual work can already violate this rest
+                    # day; it does not authorize additional solver work.
+                    if in_target_range and vars_target:
+                        model.Add(sum(vars_target) == 0)
+                    return
+                if on_call_var is None:
+                    return
+                if manual_target > 0:
+                    # Applies to CONTEXT days too: the solver must not
+                    # freshly place an on-call whose rest window collides
+                    # with manual work just outside the range.
+                    model.Add(on_call_var == 0)
+                elif in_target_range and vars_target:
+                    model.Add(sum(vars_target) <= len(vars_target) * (1 - on_call_var))
 
-                for offset in range(1, rest_before + 1):
-                    apply_rest_constraint(day_index - offset)
-                for offset in range(1, rest_after + 1):
-                    apply_rest_constraint(day_index + offset)
+            for offset in range(1, rest_before + 1):
+                apply_rest_constraint(day_index - offset)
+            for offset in range(1, rest_after + 1):
+                apply_rest_constraint(day_index + offset)
 
-    return rest_day_conflicts, rest_shift_row_ids, rest_before, rest_after
+    return rest_day_conflicts, boundary_conflict
 
 
 def _add_working_hours_constraints(
@@ -1734,23 +1686,19 @@ def _start_solver_job_locked(
     state = _load_state(username)
     fingerprint = planning_fingerprint(state)
     if mode != "agent":
-        # Stored-run application replaces unlocked solver entries in-range.
-        # Do not feed those entries back as fixed coverage: CP-SAT otherwise
-        # returns only additions, and applying that incomplete draft deletes
-        # the previous solver schedule. Keep all protected/boundary context.
+        # Stored-run application replaces unlocked solver entries in-range
+        # (also on vacation days, see is_replaced_by_draft). Do not feed those
+        # entries back as fixed coverage: CP-SAT otherwise returns only
+        # additions, and applying that incomplete draft deletes the previous
+        # solver schedule. Keep all protected/boundary context.
         _start, _end, *_ = _build_date_context(payload)
         # Legacy solvers default to seven days. Persist that resolved range;
         # storing just startISO made apply discard days 2–7 of the result.
         payload.endISO = _end.isoformat()
         _start_iso, _end_iso = _start.isoformat(), _end.isoformat()
-        vacations = {c.id: c.vacations for c in state.clinicians}
         state = state.model_copy(update={"assignments": [
             a for a in state.assignments
-            if is_protected_assignment(a)
-            or a.rowId.startswith("pool-")
-            or not _start_iso <= a.dateISO <= _end_iso
-            or any(v.startISO <= a.dateISO <= v.endISO
-                   for v in vacations.get(a.clinicianId, []))
+            if not is_replaced_by_draft(a, _start_iso, _end_iso)
         ]})
 
     # Cross-user run_token collision guard (DB read BEFORE taking the lock
@@ -1810,7 +1758,6 @@ def _start_solver_job_locked(
         handle = _RunHandle(
             run_id=run_id,
             username=username,
-            mode=mode,
             exclusive=exclusive,
             process=owned_process,
             progress_queue=progress_queue,
@@ -1851,6 +1798,33 @@ def _start_solver_job_locked(
     monitor.start()
 
 
+def _drain_dead_worker_queue(progress_queue) -> list:
+    """Read every message a finished or killed worker left in its queue.
+
+    A worker killed mid-put (watchdog, force abort) can leave a torn message:
+    its length header is in the pipe but the body never arrives, and because
+    the parent still holds the pipe's write end, recv blocks forever instead
+    of hitting EOF. The read therefore runs in a daemon thread that is
+    abandoned after RUN_QUEUE_DRAIN_TIMEOUT_SECONDS; what it read by then
+    is used, so a torn message cannot leave the run 'running' forever.
+    """
+    drained: list = []
+
+    def _read() -> None:
+        while True:
+            try:
+                drained.append(progress_queue.get_nowait())
+            except Exception:
+                return
+
+    reader = threading.Thread(target=_read, name="solver-queue-drain", daemon=True)
+    reader.start()
+    reader.join(RUN_QUEUE_DRAIN_TIMEOUT_SECONDS)
+    if reader.is_alive():
+        print("[solver] Draining the worker queue timed out (torn message?)", file=sys.stderr)
+    return list(drained)
+
+
 def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
     """Own the subprocess for its whole life: relay progress to SSE, enforce
     the (optional) budget watchdog, persist the outcome to solver_runs, and
@@ -1881,6 +1855,7 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
     )
     overshoot_killed = False
     user_aborted = False
+    salvaged = False
 
     try:
         while True:
@@ -1894,17 +1869,24 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
                 cancel_event.set()
             if soft_stop_at is not None and time.time() > soft_stop_at:
                 cancel_event.set()
-            if hard_stop_at is not None and time.time() > hard_stop_at:
+            if hard_stop_at is not None and time.time() > hard_stop_at and not overshoot_killed:
                 overshoot_killed = True
+                # SIGKILL: the worker's SIGTERM handler only sets the cancel
+                # event (already set by the soft stop), so terminate() is a no-op.
+                # Trade-off: a killed agent run returns no debugInfo.agent, so
+                # its LLM spend so far is not charged (the harness reports
+                # usage only with its final result).
                 try:
-                    owned_process.terminate()
+                    owned_process.kill()
+                    # Reap it first, so the queue is read by the bounded drain
+                    # below and never by a blocking get() on a torn message.
+                    owned_process.join(timeout=5.0)
                 except Exception:
                     pass
 
             if not owned_process.is_alive():
-                while not progress_queue.empty():
+                for msg in _drain_dead_worker_queue(progress_queue):
                     try:
-                        msg = progress_queue.get_nowait()
                         if msg["type"] == "progress":
                             _emit_run_progress(handle, msg["event"], msg["data"])
                             if msg["event"] == "solution" and "assignments" in msg["data"]:
@@ -1931,13 +1913,17 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
                 pass  # queue timeout — keep looping
 
         owned_process.join(timeout=2.0)
+        user_aborted = user_aborted or handle.abort_requested.is_set()
 
         if error:
             raise Exception(error.get("error", "Unknown solver error"))
 
         # Salvage: aborted/killed without a proper result but with streamed
-        # solutions — keep the best one so the work is not lost.
+        # solutions — keep the best one so the work is not lost. A salvaged
+        # plan was never finished, so it is stored as 'aborted' (apply then
+        # asks for confirmation like any interrupted run).
         if result is None and last_solution_assignments is not None:
+            salvaged = True
             result = {
                 "startISO": payload.startISO,
                 "endISO": payload.endISO,
@@ -1948,6 +1934,10 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
                     if overshoot_killed
                     else "Solver was aborted - the last streamed solution "
                     "was salvaged."
+                    if user_aborted
+                    else "Solver process ended unexpectedly (exit code "
+                    f"{getattr(owned_process, 'exitcode', None)}) - the last "
+                    "streamed solution was salvaged."
                 ],
             }
 
@@ -1974,7 +1964,7 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
                 print(f"[solver] Failed to record agent spend: {spend_exc}", file=sys.stderr)
 
             result_aborted = (result.get("debugInfo") or {}).get("solver_status") == "ABORTED"
-            status = "aborted" if (user_aborted or overshoot_killed or result_aborted) else "finished"
+            status = "aborted" if (salvaged or user_aborted or overshoot_killed or result_aborted) else "finished"
             # Surface the closing report's summary line on the run row itself,
             # so the inbox shows "Unresolved: ..." without loading the result.
             summary_note = next(
@@ -2027,6 +2017,17 @@ def _monitor_solver_job(handle: _RunHandle, payload: SolveRangeRequest) -> None:
 
 @router.post("/v1/solve/range", response_model=SolveRangeStartResponse)
 def solve_range(payload: SolveRangeRequest, current_user: UserPublic = Depends(_get_current_user)):
+    # Reject malformed ranges before any run row or process exists. Only the
+    # canonical YYYY-MM-DD form is accepted: apply compares dates as strings.
+    try:
+        start = date.fromisoformat(payload.startISO)
+        end = date.fromisoformat(payload.endISO) if payload.endISO else start
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Invalid date range.")
+    if (start.isoformat() != payload.startISO
+            or (payload.endISO and end.isoformat() != payload.endISO) or end < start):
+        raise HTTPException(status_code=422, detail="Invalid date range.")
+
     # Agent governance: the model is a global admin setting and every account
     # has a spending cap. Both are SERVER-injected — whatever the client sent
     # in these fields is overwritten here, then travels into the solver
@@ -2080,7 +2081,7 @@ def apply_solver_run(
 ):
     from .run_apply import apply_stored_run
 
-    run, added, replaced = apply_stored_run(
+    _, added, _ = apply_stored_run(
         current_user.username, run_id, force=force, allow_partial=allow_partial,
         expected_revision=expected_revision, account_user=current_user,
     )
@@ -2094,7 +2095,12 @@ def discard_solver_run(run_id: str, current_user: UserPublic = Depends(_get_curr
         raise HTTPException(status_code=404, detail="No such run.")
     if run["status"] == "running":
         raise HTTPException(status_code=409, detail="Abort the run first.")
-    solver_runs.mark_run(run_id, "discarded")
+    # Conditional update: a concurrent apply (second tab) must never be
+    # overwritten with 'discarded' after it committed.
+    if not solver_runs.discard_run(run_id, current_user.username):
+        current = solver_runs.get_run(run_id, current_user.username)
+        status = current["status"] if current else "gone"
+        raise HTTPException(status_code=409, detail=f"Run is {status} and cannot be discarded.")
     return {"status": "discarded"}
 
 
@@ -2156,12 +2162,6 @@ def admin_get_solver_run(run_id: str, _: UserPublic = Depends(_require_admin)):
     return run
 
 
-def _range_fingerprint(username: str, start_iso: str, end_iso: str) -> str:
-    from .run_apply import planning_fingerprint
-
-    return planning_fingerprint(_load_state(username))
-
-
 def recover_interrupted_runs() -> None:
     """Called on backend startup: any run still marked 'running' was killed
     by a restart/crash/deploy. The most recent first-attempt run PER USER is
@@ -2201,32 +2201,6 @@ def recover_interrupted_runs() -> None:
         print(f"[solver] Run recovery failed: {exc}", file=sys.stderr)
 
 
-def _solve_range_impl_subprocess(
-    payload: SolveRangeRequest,
-    current_user,
-    cancel_event,
-    on_progress,
-    start_time: float = None,
-    state_override=None,
-) -> dict:
-    """
-    Subprocess-compatible implementation of solve_range.
-    Returns a dict that can be serialized and sent back to main process.
-
-    start_time: The timestamp when the solve request started (for accurate timeout).
-    """
-    result = _solve_range_impl(
-        payload,
-        current_user,
-        cancel_event=cancel_event,
-        on_progress=on_progress,
-        start_time=start_time,
-        state_override=state_override,
-    )
-    # Convert to dict for serialization
-    return result.model_dump()
-
-
 def _solve_range_impl(
     payload: SolveRangeRequest,
     current_user,
@@ -2250,10 +2224,14 @@ def _solve_range_impl(
 
     Args:
         payload: The solve request containing date range, timeout, and mode settings
-        current_user: User object (must have .username attribute) for loading state
-        cancel_event: Optional threading.Event to check for abort (defaults to global)
+        current_user: User object (needs .username); used only to load the state,
+            so it may be None when state_override is given (the subprocess
+            worker passes None plus its state snapshot)
+        cancel_event: Optional threading.Event to check for abort (defaults to a
+            private, never-set event)
         on_progress: Optional callback(event_type, data) for UI progress updates
         start_time: Timestamp when request started (for accurate timeout calculation)
+        state_override: Optional AppState to solve instead of loading it
 
     Returns:
         SolveRangeResponse with assignments, notes, and debug timing info
@@ -2329,7 +2307,6 @@ def _solve_range_impl(
         day_isos,
         slot_ids,
         all_slot_intervals,
-        is_on_vac,
     )
 
     solver_settings = SolverSettings.model_validate(state.solverSettings or {})
@@ -2436,7 +2413,7 @@ def _solve_range_impl(
     timer.checkpoint("coverage_constraints")
 
     on_progress("phase", {"phase": "on_call_rest_days", "label": "Preparation (6/10): Setting up on-call rest rules..."})
-    rest_day_conflicts, rest_shift_row_ids, rest_before, rest_after = _add_on_call_rest_constraints(
+    rest_day_conflicts, rest_boundary_conflict = _add_on_call_rest_constraints(
         model,
         solver_settings,
         slot_contexts,
@@ -2508,21 +2485,17 @@ def _solve_range_impl(
     # Total assignments - used to maximize distribution when not only_fill_required
     total_assignments = sum(var for var in var_map.values())
 
-    # Get configurable weights from solver_settings (with defaults)
-    # Note: Use 'is not None' check to allow explicit 0 values (0 is falsy in Python)
-    def get_weight(attr_name: str, default: int) -> int:
-        val = getattr(solver_settings, attr_name, None)
-        return val if val is not None else default
-
-    w_coverage = get_weight('weightCoverage', DEFAULT_WEIGHT_COVERAGE)
-    w_slack = get_weight('weightSlack', DEFAULT_WEIGHT_SLACK)
-    w_total_assignments = get_weight('weightTotalAssignments', DEFAULT_WEIGHT_TOTAL_ASSIGNMENTS)
-    w_slot_priority = get_weight('weightSlotPriority', DEFAULT_WEIGHT_SLOT_PRIORITY)
-    w_time_window = get_weight('weightTimeWindow', DEFAULT_WEIGHT_TIME_WINDOW)
-    w_section_pref = get_weight('weightSectionPreference', DEFAULT_WEIGHT_SECTION_PREFERENCE)
-    w_working_hours = get_weight('weightWorkingHours', DEFAULT_WEIGHT_WORKING_HOURS)
-    w_min_daily = get_weight('weightMinimumDailyHours', DEFAULT_WEIGHT_MINIMUM_DAILY_HOURS)
-    w_ytd_balance = get_weight('weightYtdBalance', DEFAULT_WEIGHT_YTD_BALANCE)
+    # Configurable weights; defaults live in models.SolverSettings (explicit
+    # 0 values are honored).
+    w_coverage = solver_settings.weightCoverage
+    w_slack = solver_settings.weightSlack
+    w_total_assignments = solver_settings.weightTotalAssignments
+    w_slot_priority = solver_settings.weightSlotPriority
+    w_time_window = solver_settings.weightTimeWindow
+    w_section_pref = solver_settings.weightSectionPreference
+    w_working_hours = solver_settings.weightWorkingHours
+    w_min_daily = solver_settings.weightMinimumDailyHours
+    w_ytd_balance = solver_settings.weightYtdBalance
 
     if payload.only_fill_required:
         model.Minimize(
@@ -2832,51 +2805,10 @@ def _solve_range_impl(
                 )
             )
 
-    if (
-        solver_settings.onCallRestEnabled
-        and rest_shift_row_ids
-        and (rest_before > 0 or rest_after > 0)
-    ):
-        boundary_conflicts: set[tuple[str, str, str]] = set()
-        on_call_assignments: set[tuple[str, str]] = set()
-        for (clinician_id, date_iso), row_ids in manual_assignments.items():
-            if date_iso not in target_date_set:
-                continue
-            if any(row_id in rest_shift_row_ids for row_id in row_ids):
-                on_call_assignments.add((clinician_id, date_iso))
-        for assignment in new_assignments:
-            if assignment.dateISO not in target_date_set:
-                continue
-            if assignment.rowId in rest_shift_row_ids:
-                on_call_assignments.add((assignment.clinicianId, assignment.dateISO))
-
-        for clinician_id, date_iso in on_call_assignments:
-            base_index = day_index_by_iso.get(date_iso)
-            if base_index is None:
-                continue
-            for offset in range(1, rest_before + 1):
-                target_idx = base_index - offset
-                if target_idx < 0 or target_idx >= len(day_isos):
-                    continue
-                target_date = day_isos[target_idx]
-                if target_date in target_date_set:
-                    continue
-                if manual_assignments.get((clinician_id, target_date)):
-                    boundary_conflicts.add((clinician_id, date_iso, target_date))
-            for offset in range(1, rest_after + 1):
-                target_idx = base_index + offset
-                if target_idx < 0 or target_idx >= len(day_isos):
-                    continue
-                target_date = day_isos[target_idx]
-                if target_date in target_date_set:
-                    continue
-                if manual_assignments.get((clinician_id, target_date)):
-                    boundary_conflicts.add((clinician_id, date_iso, target_date))
-
-        if boundary_conflicts:
-            notes.append(
-                "Rest day conflicts outside the selected range; some boundary days are already assigned."
-            )
+    if rest_boundary_conflict:
+        notes.append(
+            "Rest day conflicts outside the selected range; some boundary days are already assigned."
+        )
 
     if solver.Value(total_slack) > 0:
         notes.append("Could not fill all required slots.")

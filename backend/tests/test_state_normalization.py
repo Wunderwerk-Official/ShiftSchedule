@@ -7,7 +7,7 @@ Vacation) are preserved.
 
 import pytest
 
-from backend.models import AppState, Assignment, WorkplaceRow
+from backend.models import AppState, Assignment, Holiday, WorkplaceRow
 from backend.state import _default_state, _normalize_state
 
 from .conftest import (
@@ -324,3 +324,237 @@ class TestRegressionPoolNeverReappears:
         assignment_row_ids = {a.rowId for a in state.assignments}
         assert "pool-not-allocated" not in assignment_row_ids
         assert "pool-manual" not in assignment_row_ids
+
+
+# -----------------------------------------------------------------------------
+# Load revision must match the stored blob used by the save CAS
+# -----------------------------------------------------------------------------
+
+
+@pytest.fixture
+def state_db(tmp_path, monkeypatch):
+    from backend import db
+
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "state.db"))
+    monkeypatch.setattr(db, "_SCHEMA_READY", False)
+    return db
+
+
+def _store_raw_state(db, user_id, payload, updated_at="2020-01-01T00:00:00+00:00"):
+    import json
+
+    with db._get_connection() as conn:
+        conn.execute("INSERT OR REPLACE INTO app_state (id, data, updated_at) VALUES (?, ?, ?)",
+                     (user_id, json.dumps(payload), updated_at))
+
+
+def _stored_updated_at(db, user_id):
+    with db._get_connection() as conn:
+        return conn.execute("SELECT updated_at FROM app_state WHERE id = ?", (user_id,)).fetchone()[0]
+
+
+def _mutate_slot_time(location):
+    location["slots"][0]["startTime"] = "7:30"
+
+
+def _mutate_row_band_order(location):
+    location["rowBands"][-1]["order"] = 99
+
+
+def _mutate_row_band_label(location):
+    location["rowBands"][0]["label"] = ""
+
+
+@pytest.mark.parametrize("mutate", [_mutate_slot_time, _mutate_row_band_order, _mutate_row_band_label])
+def test_loaded_revision_is_accepted_by_save_cas_after_silent_normalization(state_db, mutate):
+    from backend.state import _load_state, _save_state
+
+    payload = _default_state().model_dump(exclude={"revision"})
+    mutate(payload["weeklyTemplate"]["locations"][0])
+    _store_raw_state(state_db, "u", payload)
+    loaded = _load_state("u")
+    _save_state(loaded, "u", check_revision=True, expected_revision=loaded.revision)
+    assert _load_state("u").revision == loaded.revision
+
+
+def test_load_does_not_rewrite_an_already_normalized_blob(state_db):
+    from backend.state import _load_state
+
+    normalized, _ = _normalize_state(_default_state())
+    _store_raw_state(state_db, "u", normalized.model_dump(exclude={"revision"}))
+    _load_state("u")
+    assert _stored_updated_at(state_db, "u") == "2020-01-01T00:00:00+00:00"
+
+
+_OVERRIDE_PROBE = """
+import json
+from backend.models import AppState
+from backend.state import _default_state, _normalize_state
+
+data = _default_state().model_dump()
+data["weeklyTemplate"] = None
+row = next(r for r in data["rows"] if r["kind"] == "class")
+base = row["subShifts"][0]
+row["subShifts"] = [dict(base, id=i, name=i, order=n + 1) for n, i in enumerate(["sa", "sb", "sc"])]
+state, _ = _normalize_state(AppState.model_validate(data))
+sec = row["id"]
+state.slotOverridesByKey = {f"{sec}::sb__mon__2026-01-05": 2, f"{sec}::zz__2026-01-12": 1}
+state, _ = _normalize_state(state)
+print(json.dumps({"sec": sec, "overrides": state.slotOverridesByKey}))
+"""
+
+
+def test_slot_override_migration_is_deterministic_and_keeps_valid_slot_ids():
+    import json
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    repo_root = Path(__file__).resolve().parents[2]
+    results = []
+    for seed in range(6):
+        env = dict(os.environ, PYTHONHASHSEED=str(seed),
+                   PYTHONPATH=os.pathsep.join(filter(None, [str(repo_root), os.environ.get("PYTHONPATH")])))
+        out = subprocess.run([sys.executable, "-c", _OVERRIDE_PROBE], env=env, cwd=repo_root,
+                             capture_output=True, text=True, check=True).stdout
+        results.append(json.loads(out.strip().splitlines()[-1]))
+    sec = results[0]["sec"]
+    expected = {f"{sec}::sb__mon__2026-01-05": 2, f"{sec}::sa__mon__2026-01-12": 1}
+    assert all(result["overrides"] == expected for result in results), results
+
+
+def test_default_section_colors_match_the_frontend_palette():
+    """Sections without a color get SECTION_BLOCK_COLORS in order. The app
+    (normalizeAppState in shiftRows.ts) takes the same list from
+    BLOCK_COLOR_OPTIONS in src/lib/colorPalette.ts, so both must stay equal."""
+    import re
+    from pathlib import Path
+
+    from backend.state import SECTION_BLOCK_COLORS
+
+    source = (Path(__file__).resolve().parents[2] / "src/lib/colorPalette.ts").read_text()
+    options = source.split("export const BLOCK_COLOR_OPTIONS", 1)[1].split("];", 1)[0]
+    assert re.findall(r'color: "(#[0-9A-Fa-f]{6})"', options) == SECTION_BLOCK_COLORS
+
+
+def test_normalization_is_idempotent_on_the_arena_fixture():
+    """A second pass must not change anything, or _load_state rewrites the blob
+    (and bumps updated_at, which feeds public ETags) on two successive loads."""
+    import json
+    from pathlib import Path
+
+    fixture = Path(__file__).resolve().parents[1] / "arena" / "fixture_complex.json"
+    raw = json.loads(fixture.read_text())["state"]
+    once, _ = _normalize_state(AppState.model_validate(raw))
+    first = once.model_dump(exclude={"revision"})
+    twice, changed = _normalize_state(AppState.model_validate(json.loads(json.dumps(first))))
+    assert changed is False
+    assert twice.model_dump(exclude={"revision"}) == first
+
+
+MONDAY = "2026-01-05"
+
+
+def _migrated_two_shift_state():
+    """Default state whose first section has sub-shifts s1 and s2, migrated to
+    template slot ids like "sec::s2__mon" (one slot per sub-shift and day type)."""
+    data = _default_state().model_dump()
+    data["weeklyTemplate"] = None
+    row = next(r for r in data["rows"] if r["kind"] == "class")
+    base = row["subShifts"][0]
+    row["subShifts"] = [dict(base, id=i, name=i, order=n + 1) for n, i in enumerate(["s1", "s2"])]
+    state, _ = _normalize_state(AppState.model_validate(data))
+    state.clinicians = [make_clinician()]
+    return state, row["id"]
+
+
+def test_assignment_on_migrated_sub_shift_slot_stays_with_its_override():
+    """A migrated slot id like "sec::s2__mon" is a slot id, not a legacy
+    shift-row id: the assignment must stay on s2, next to its override."""
+    state, sec = _migrated_two_shift_state()
+    state.assignments = [
+        make_assignment("a1", f"{sec}::s1__mon", MONDAY, "clin-1"),
+        make_assignment("a2", f"{sec}::s2__mon", MONDAY, "clin-1"),
+    ]
+    state.slotOverridesByKey = {f"{sec}::s2__mon__{MONDAY}": 1}
+
+    state, _ = _normalize_state(state)
+
+    assert {a.id: a.rowId for a in state.assignments} == {
+        "a1": f"{sec}::s1__mon",
+        "a2": f"{sec}::s2__mon",
+    }
+    assert state.slotOverridesByKey == {f"{sec}::s2__mon__{MONDAY}": 1}
+    _, changed = _normalize_state(state)
+    assert changed is False
+
+
+@pytest.mark.parametrize(
+    ("date_iso", "holiday_dates", "old_day_type", "new_day_type"),
+    [
+        (MONDAY, [MONDAY], "mon", "holiday"),  # the Monday becomes a holiday
+        (MONDAY, [], "holiday", "mon"),  # the holiday is removed again
+        ("2026-01-06", [], "mon", "tue"),  # slot and date disagree
+    ],
+)
+def test_assignments_on_migrated_slots_follow_their_dates_day_type(
+    date_iso, holiday_dates, old_day_type, new_day_type
+):
+    """Adding or removing a holiday moves each assignment to the same
+    sub-shift's slot for the date's new day type instead of dropping it."""
+    state, sec = _migrated_two_shift_state()
+    state.holidays = [Holiday(dateISO=d, name="Holiday") for d in holiday_dates]
+    state.assignments = [
+        make_assignment("a1", f"{sec}::s1__{old_day_type}", date_iso, "clin-1"),
+        make_assignment("a2", f"{sec}::s2__{old_day_type}", date_iso, "clin-1"),
+    ]
+
+    state, changed = _normalize_state(state)
+
+    assert changed is True
+    assert {a.id: a.rowId for a in state.assignments} == {
+        "a1": f"{sec}::s1__{new_day_type}",
+        "a2": f"{sec}::s2__{new_day_type}",
+    }
+    _, changed = _normalize_state(state)
+    assert changed is False
+
+
+def test_migrated_slot_moved_into_another_days_column_keeps_its_assignment():
+    """Dragging "slot-a__mon" into the Tuesday column keeps its id. Its column
+    fits a Tuesday, so the assignment stays on it instead of following the id
+    suffix to the sibling "slot-a__tue" (another row and time)."""
+    state, _ = _migrated_two_shift_state()
+    location = next(loc for loc in state.weeklyTemplate.locations if loc.slots)
+    tue_band = next(band for band in location.colBands if band.dayType == "tue")
+    base = next(slot for slot in location.slots if slot.colBandId == tue_band.id)
+    location.slots += [
+        base.model_copy(update={"id": "slot-a__mon", "startTime": "08:00", "endTime": "12:00"}),
+        base.model_copy(update={"id": "slot-a__tue", "startTime": "13:00", "endTime": "17:00"}),
+    ]
+    state.holidays = []
+    tuesday = "2026-01-13"
+    state.assignments = [make_assignment("a1", "slot-a__mon", tuesday, "clin-1")]
+    state.slotOverridesByKey = {f"slot-a__mon__{tuesday}": 1}
+
+    state, _ = _normalize_state(state)
+
+    assert {a.id: a.rowId for a in state.assignments} == {"a1": "slot-a__mon"}
+    assert state.slotOverridesByKey == {f"slot-a__mon__{tuesday}": 1}
+    _, changed = _normalize_state(state)
+    assert changed is False
+
+
+def test_assignment_on_a_deleted_migrated_slot_is_dropped_not_moved_to_s1():
+    state, sec = _migrated_two_shift_state()
+    for location in state.weeklyTemplate.locations:
+        location.slots = [slot for slot in location.slots if not slot.id.startswith(f"{sec}::s2__")]
+    state.assignments = [
+        make_assignment("a1", f"{sec}::s1__mon", MONDAY, "clin-1"),
+        make_assignment("a2", f"{sec}::s2__mon", MONDAY, "clin-1"),
+    ]
+
+    state, _ = _normalize_state(state)
+
+    assert {a.id: a.rowId for a in state.assignments} == {"a1": f"{sec}::s1__mon"}

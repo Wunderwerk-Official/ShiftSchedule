@@ -373,3 +373,56 @@ def test_debug_info_outcome_fields_on_a_green_run():
     assert agent["daysSkipped"] == []
     assert agent["daysPlanned"] == 1
     assert agent["retriesUsed"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Unexpected adapter exceptions degrade to the normal error path
+# ---------------------------------------------------------------------------
+
+
+class _RaisingProvider(MockProvider):
+    """Scripted provider that raises (instead of returning an error
+    response) on the given 1-based call numbers."""
+
+    def __init__(self, script, raise_on):
+        super().__init__(script)
+        self._raise_on = set(raise_on)
+        self.calls = 0
+
+    def complete(self, **kwargs):
+        self.calls += 1
+        if self.calls in self._raise_on:
+            raise RuntimeError("unexpected SDK failure https://secret.example")
+        return super().complete(**kwargs)
+
+
+def test_provider_exception_becomes_non_retryable_error(monkeypatch):
+    monkeypatch.setattr(harness, "RETRY_BACKOFF_SECONDS", (0.0, 0.0))
+    provider = _RaisingProvider([{"text": "must never be consumed"}], raise_on={1})
+    response = _retry(provider)
+    assert response.stop_reason == "error"
+    assert response.retryable is False
+    assert response.error == "Unexpected provider failure (RuntimeError)"
+    assert provider.calls == 1  # no retry
+
+
+def test_day_by_day_provider_exception_keeps_planned_days():
+    state = _range_state(["mon", "tue"])
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-mon__{MON}",
+             "clinicianId": "Alice"}]}}]},
+        {"text": "Day 1 complete."},
+    ]
+    payload = _payload(endISO=TUE)
+    payload.agent_strategy = "day_by_day"
+    provider = _RaisingProvider(script, raise_on={3})
+    result = harness.agent_solve_range(
+        payload, state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=provider, config=_config(),
+    )
+    agent = result["debugInfo"]["agent"]
+    assert result["debugInfo"]["solver_status"] == "AGENT_COMPLETE"
+    assert ("slot-mon", MON) in {(a["rowId"], a["dateISO"]) for a in result["assignments"]}
+    assert TUE in agent["modelDaysSkipped"]
+    assert not any("secret.example" in n for n in result["notes"])

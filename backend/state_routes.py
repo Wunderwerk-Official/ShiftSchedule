@@ -9,7 +9,7 @@ from . import schedule_changes
 from .auth import _get_current_user
 from .account_lifecycle import authenticated_account_connection
 from .models import AppState, UserPublic
-from .state import _load_state, _normalize_state, _save_state
+from .state import _get_day_type, _load_state, _normalize_state, _save_state
 
 router = APIRouter()
 
@@ -286,24 +286,6 @@ class WeeklyInspectionResult(BaseModel):
     stats: dict
 
 
-_WEEKDAY_TO_DAY_TYPE = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
-
-
-def _get_day_type(date: datetime, holidays: list) -> str:
-    """Determine day type for a given date.
-
-    Must return one of the values in ``DAY_TYPES`` from state.py
-    (``"mon" | "tue" | ... | "sun" | "holiday"``) so slot matching against
-    ``TemplateColBand.dayType`` works. A previous version returned
-    ``"saturday" | "sunday" | "weekday"`` which silently produced empty
-    inspection results because nothing ever matched the template day-type.
-    """
-    date_iso = date.strftime("%Y-%m-%d")
-    if any(h.dateISO == date_iso for h in holidays):
-        return "holiday"
-    return _WEEKDAY_TO_DAY_TYPE[date.weekday()]
-
-
 DAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
@@ -372,7 +354,7 @@ def inspect_week(
                 # Find which days this slot applies to
                 for date in week_dates:
                     date_iso = date.strftime("%Y-%m-%d")
-                    day_type = _get_day_type(date, state.holidays or [])
+                    day_type = _get_day_type(date_iso, state.holidays or [])
 
                     # Check if this slot applies to this day
                     if slot_day_type != day_type:

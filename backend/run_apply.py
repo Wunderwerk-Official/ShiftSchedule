@@ -8,7 +8,7 @@ from fastapi import HTTPException
 
 from . import solver_runs, schedule_changes
 from .account_lifecycle import account_lock, require_current_account
-from .assignment_policy import is_protected_assignment
+from .assignment_policy import is_replaced_by_draft
 from .db import _get_connection, _utcnow_iso
 from .models import AppState, Assignment
 from .snapshots import _write_auto_backup
@@ -31,12 +31,7 @@ def planning_fingerprint(state: AppState) -> str:
 
 def _candidate(state, run):
     start, end = run["start_iso"], run["end_iso"]
-    vacations = {c.id: c.vacations for c in state.clinicians}
-    kept = [a for a in state.assignments if (
-        a.rowId.startswith("pool-") or not start <= a.dateISO <= end
-        or is_protected_assignment(a)
-        or any(v.startISO <= a.dateISO <= v.endISO for v in vacations.get(a.clinicianId, []))
-    )]
+    kept = [a for a in state.assignments if not is_replaced_by_draft(a, start, end)]
     identity = lambda a: (a.rowId, a.dateISO, a.clinicianId)
     seen = {identity(a) for a in kept}
     additions = []

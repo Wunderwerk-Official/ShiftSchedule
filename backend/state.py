@@ -1,7 +1,7 @@
 import json
 import hashlib
 import re
-from contextlib import closing, nullcontext
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
@@ -31,7 +31,6 @@ from .models import (
     TemplateRowBand,
     TemplateSlot,
     UserStateExport,
-    VacationRange,
     WeeklyCalendarTemplate,
     WeeklyTemplateLocation,
     WorkplaceRow,
@@ -82,6 +81,14 @@ def _parse_shift_row_id(row_id: str) -> tuple[str, Optional[str]]:
         return row_id, None
     class_id, sub_shift_id = row_id.split(SHIFT_ROW_SEPARATOR, 1)
     return class_id, sub_shift_id or None
+
+
+def _is_day_type_slot_id(row_id: str) -> bool:
+    """Migrated template slot ids look like "sec::s2__mon": they are already
+    slot ids and must not be remapped as legacy shift-row ids ("sec::s2").
+    Mirrors isDayTypeSlotId in src/lib/shiftRows.ts."""
+    parts = row_id.split("__")
+    return len(parts) == 2 and parts[1] in DAY_TYPES
 
 
 _HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
@@ -658,6 +665,7 @@ def _normalize_sub_shifts(sub_shifts: List[SubShift]) -> List[SubShift]:
                 endTime=_format_minutes(
                     DEFAULT_SUB_SHIFT_START_MINUTES + DEFAULT_SUB_SHIFT_MINUTES
                 ),
+                endDayOffset=0,
             )
         ]
     used_orders = set()
@@ -720,21 +728,6 @@ def _normalize_sub_shifts(sub_shifts: List[SubShift]) -> List[SubShift]:
         )
     normalized.sort(key=lambda item: item.order)
     return normalized[:3]
-
-
-def _resolve_shift_row(
-    row_id: str, rows_by_id: Dict[str, WorkplaceRow]
-) -> tuple[Optional[WorkplaceRow], Optional[SubShift]]:
-    class_id, sub_shift_id = _parse_shift_row_id(row_id)
-    row = rows_by_id.get(class_id)
-    if not row or row.kind != "class":
-        return None, None
-    if not sub_shift_id:
-        sub_shift_id = "s1"
-    sub_shift = next(
-        (shift for shift in row.subShifts if shift.id == sub_shift_id), None
-    )
-    return row, sub_shift
 
 
 def _normalize_state(state: AppState) -> tuple[AppState, bool]:
@@ -866,6 +859,10 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
     next_assignments: List[Assignment] = []
     for assignment in state.assignments:
         row_id = assignment.rowId
+        if _is_day_type_slot_id(row_id):
+            # Validated against the template's slot ids in the second pass below.
+            next_assignments.append(assignment)
+            continue
         if row_id in class_row_ids and SHIFT_ROW_SEPARATOR not in row_id:
             fallback = fallback_shift_id_by_class.get(row_id, "s1")
             assignment = assignment.model_copy(
@@ -940,7 +937,9 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
         if not row_id or not date_iso:
             continue
         next_row_id = row_id
-        if row_id in class_row_ids and SHIFT_ROW_SEPARATOR not in row_id:
+        if _is_day_type_slot_id(row_id):
+            pass  # Validated against the template's slot ids in the second pass below.
+        elif row_id in class_row_ids and SHIFT_ROW_SEPARATOR not in row_id:
             next_row_id = _build_shift_row_id(row_id, "s1")
             changed = True
         elif SHIFT_ROW_SEPARATOR in row_id:
@@ -950,7 +949,8 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
                 changed = True
                 continue
             if sub_shift_id not in class_shift_ids:
-                fallback = next(iter(class_shift_ids), None)
+                # Deterministic, like the assignment pass (set order varies per process).
+                fallback = fallback_shift_id_by_class.get(class_id)
                 if not fallback:
                     changed = True
                     continue
@@ -1002,12 +1002,28 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
         day_type = _get_day_type(date_iso, state.holidays or [])
         return mapping.get(day_type)
 
+    def _follow_date_day_type(row_id: str, date_iso: str) -> str:
+        """A migrated slot id ("sec::s2__mon") follows its date's day type: when a
+        holiday is added or removed, the assignment moves to the same sub-shift's
+        slot for the new day type ("sec::s2__holiday"). Without such a slot the
+        day-type check below drops it. A slot whose column already fits the date
+        stays, even if its suffix names another day (it was dragged into another
+        day's column and kept its id). Mirrors followDateDayType in shiftRows.ts."""
+        if not _is_day_type_slot_id(row_id):
+            return row_id
+        day_type = _get_day_type(date_iso, state.holidays or [])
+        meta = slot_meta_by_id.get(row_id)
+        if meta and meta["dayType"] in (None, day_type):
+            return row_id
+        base_id = row_id.split("__")[0]
+        return slot_id_map_by_legacy.get(base_id, {}).get(day_type, row_id)
+
     mapped_assignments: List[Assignment] = []
     for assignment in state.assignments:
         if assignment.rowId in pool_row_ids:
             mapped_assignments.append(assignment)
             continue
-        next_row_id = assignment.rowId
+        next_row_id = _follow_date_day_type(assignment.rowId, assignment.dateISO)
         if next_row_id not in slot_ids:
             mapped = _resolve_legacy_slot_id(next_row_id, assignment.dateISO)
             if not mapped:
@@ -1236,12 +1252,15 @@ def _load_state(user_id: str, *, connection=None) -> AppState:
         state = _default_state()
         _save_state(state, user_id, connection=conn)
         return state
-    data = json.loads(row[0])
-    state = AppState.model_validate(data)
+    state = AppState.model_validate(json.loads(row[0]))
+    # The save CAS compares against the stored blob's revision, so persist any
+    # normalization difference (even one not flagged as changed) to keep the
+    # revision returned here equal to the stored one.
+    stored_revision = _state_revision(state)
     state, changed = _normalize_state(state)
-    if changed:
-        _save_state(state, user_id, connection=conn)
     state.revision = _state_revision(state)
+    if changed or state.revision != stored_revision:
+        _save_state(state, user_id, connection=conn)
     return state
 
 
@@ -1275,23 +1294,6 @@ def _save_state(
         (user_id, json.dumps(payload), now),
     )
     state.revision = _state_revision(state)
-
-
-def _load_raw_state_blob(username: str) -> Optional[Dict[str, Any]]:
-    """Side-effect-free read of the stored state blob. Unlike _load_state
-    this never creates, normalizes, or re-saves anything - the change log
-    diffs against exactly what was on disk."""
-    conn = _get_connection()
-    row = conn.execute(
-        "SELECT data FROM app_state WHERE id = ?", (username,)
-    ).fetchone()
-    conn.close()
-    if not row:
-        return None
-    try:
-        return json.loads(row[0])
-    except (TypeError, ValueError):
-        return None
 
 
 def _parse_date_input(value: Optional[str]) -> Optional[str]:
@@ -1345,20 +1347,15 @@ def _normalize_week_start(date_iso: str) -> tuple[str, str]:
     return week_start.isoformat(), week_end.isoformat()
 
 
-def _load_state_blob_and_updated_at(username: str, *, connection=None) -> tuple[Dict[str, Any], datetime, str]:
-    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
-    with resource as conn:
-        row = conn.execute(
-            "SELECT data, updated_at FROM app_state WHERE id = ?", (username,)
-        ).fetchone()
+def _load_state_blob_and_updated_at(username: str, *, connection) -> tuple[Dict[str, Any], datetime, str]:
+    row = connection.execute(
+        "SELECT data, updated_at FROM app_state WHERE id = ?", (username,)
+    ).fetchone()
     if not row:
-        state = _default_state()
         # Public readers use a stable read snapshot and must never resurrect
         # state for a deleted account as a side effect of an old link.
-        if connection is None:
-            _save_state(state, username)
         now = _utcnow_iso()
-        return state.model_dump(), datetime.fromisoformat(now), now
+        return _default_state().model_dump(), datetime.fromisoformat(now), now
     data = json.loads(row[0])
     updated_at_raw = row[1]
     updated_at = _parse_iso_datetime(updated_at_raw)

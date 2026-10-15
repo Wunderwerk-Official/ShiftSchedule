@@ -21,18 +21,17 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from .agent.config import DEFAULT_MODEL as DEFAULT_AGENT_MODEL, DEFAULT_PROVIDER
 from .auth import UserPublic, _get_current_user, _require_admin
 from .db import _get_connection
 
-DEFAULT_AGENT_MODEL = "claude-sonnet-5"
 DEFAULT_BUDGET_USD = 5.0
-DEFAULT_PROVIDER = "anthropic"
 VALID_PROVIDERS = ("anthropic", "openai")
 
 # model id -> (input USD/MTok, output USD/MTok)
 MODEL_PRICES: Dict[str, tuple] = {
     "claude-opus-4-8": (5.0, 25.0),
-    "claude-sonnet-5": (3.0, 15.0),
+    "claude-sonnet-5": (2.0, 10.0),
     "claude-haiku-4-5": (1.0, 5.0),
 }
 

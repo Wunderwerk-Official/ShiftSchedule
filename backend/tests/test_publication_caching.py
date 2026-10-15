@@ -67,3 +67,21 @@ def test_unchanged_etag_still_returns_304(public_calendar, validator):
     unchanged = client.get(url, headers={"If-None-Match": header})
     assert unchanged.status_code == 304
     assert unchanged.headers["ETag"] == etag
+
+
+def test_public_etags_stay_bit_identical_after_helper_merge():
+    """Subscribers must not refetch because of the shared ETag helper."""
+    from backend.publication import _compute_etag
+
+    state = {"clinicians": [{"id": "c1", "name": "Dr. Ä"}], "publishedWeekStartISOs": ["2026-01-05"]}
+    publication = {"username": "alice", "token": "tok", "start_date_iso": None, "end_date_iso": None,
+                   "cal_name": None, "created_at": "2026-01-01T00:00:00+00:00",
+                   "updated_at": "2026-01-02T00:00:00+00:00"}
+    state_at, publication_at = "2026-01-03T00:00:00+00:00", "2026-01-02T00:00:00+00:00"
+    # Reference values computed with the former _compute_public_etag/_compute_public_week_etag.
+    assert _compute_etag("tok", state_at, publication_at, state, publication) == (
+        '"292ea7cb496e0e14a74cc2760b54387e789a83bef62979f2ee753dd6304e5763"')
+    assert _compute_etag("tok", "", "", state, publication) == (
+        '"f96a072e2c6856c17eb2221ae22a472697feb4a3df6a3583b6f111408dd1c04d"')
+    assert _compute_etag("tok", "2026-01-05", state_at, publication_at, state, publication) == (
+        '"cf7df9e410ff574f7275d34fe473c101146101431c15649b70abd61d81560835"')

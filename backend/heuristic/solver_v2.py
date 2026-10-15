@@ -1,20 +1,17 @@
 """
-Human Heuristic Solver (v2) - Exact implementation of human-heuristic-solver.md
+Human Heuristic Solver (v2) - greedy, day-by-day heuristic with backtracking.
 
-This module implements the greedy, day-by-day heuristic approach with backtracking
-exactly as documented in /human-heuristic-solver.md.
+Follows the approach described in /human-heuristic-solver.md.
 
 Algorithm phases:
-0. Initialization: Calculate YTD hours, mark manual assignments
-1. Day-by-day iteration with retry logic
-2. Slot criticality prioritization and doctor ranking
-3. Consecutive slot filling at same location
-4. Backtracking on failure
-
-Key differences from v1 (band/pattern approach):
-- Simpler: no bands, no patterns, no coarse planning
-- Transparent: every decision follows documented priority rules
-- Backtracking: retries failed days with alternative doctor choices
+0. Initialization: expand slots (target + context days), mark manual
+   assignments, calculate YTD hours
+0.5. Bottleneck pre-assignment: slots with exactly one eligible clinician
+1. Day-by-day filling: slots by criticality, clinicians by ranking,
+   consecutive slot filling at the same location, retries with alternative
+   clinician choices when a day cannot be filled completely
+2. Optional capacity (distribute-all only): bounded extra assignments once
+   the required draft exists
 """
 
 import random
@@ -52,7 +49,13 @@ class HeuristicConfig:
 
 
 class SlotInfo:
-    """Information about a slot instance (template slot on a specific date)."""
+    """Information about a slot instance (template slot on a specific date).
+
+    Instances from _expand_slots_to_instances with end_day_offset == 0 always
+    have end_minutes > start_minutes. The implicit-overnight branches
+    (offset 0, end < start) here and in ClinicianState only guard directly
+    constructed instances.
+    """
     def __init__(
         self,
         slot_id: str,
@@ -92,15 +95,13 @@ class ClinicianState:
         # Default to 5 only when the field is genuinely missing (None). Using
         # `or 5` here was a bug: an explicit tolerance of 0 (a strict hour cap)
         # is falsy and would be silently turned into 5, letting the solver
-        # exceed contract hours. Match this guard in solver.py and
-        # local_improvement.py.
+        # exceed contract hours. Match this guard in solver.py.
         self.tolerance_hours = (
             clinician.workingHoursToleranceHours
             if clinician.workingHoursToleranceHours is not None
             else 5
         )
         self.eligible_sections = clinician.qualifiedClassIds
-        self.preferred_sections = clinician.preferredClassIds
         self.preferred_working_times = getattr(clinician, "preferredWorkingTimes", {})
         self.vacations = clinician.vacations
 
@@ -135,13 +136,9 @@ class ClinicianState:
 
     def is_on_vacation(self, date_iso: str) -> bool:
         """Check if clinician is on vacation on this date."""
-        for vac in self.vacations:
-            start = date.fromisoformat(vac.startISO)
-            end = date.fromisoformat(vac.endISO)
-            current = date.fromisoformat(date_iso)
-            if start <= current <= end:
-                return True
-        return False
+        # Same string comparison as validation._is_on_vacation and the CP-SAT
+        # model, so a malformed range never crashes the heuristic.
+        return any(vac.startISO <= date_iso <= vac.endISO for vac in self.vacations or [])
 
     def _has_on_call_on(self, date_iso: str, on_call_section_id: str) -> bool:
         """True if this clinician has an on-call assignment on the given date."""
@@ -234,7 +231,7 @@ class ClinicianState:
             prev_slots = self.assigned_slots_by_date.get(prev_date, [])
             for existing in prev_slots:
                 effective_offset = existing.end_day_offset
-                if effective_offset == 0 and existing.end_minutes <= existing.start_minutes:
+                if effective_offset == 0 and existing.end_minutes < existing.start_minutes:
                     effective_offset = 1  # Implicit overnight
                 if effective_offset >= days_back:
                     # This slot extends into today
@@ -247,7 +244,7 @@ class ClinicianState:
 
         # Check if the new slot extends into future days and conflicts
         new_effective_offset = slot.end_day_offset
-        if new_effective_offset == 0 and slot.end_minutes <= slot.start_minutes:
+        if new_effective_offset == 0 and slot.end_minutes < slot.start_minutes:
             new_effective_offset = 1  # Implicit overnight
         if new_effective_offset > 0:
             for days_forward in range(1, min(new_effective_offset + 1, 4)):
@@ -405,7 +402,10 @@ def heuristic_solve_range_v2(
     solver_settings = SolverSettings.model_validate(state.solverSettings or {})
 
     # Expand slots to instances
-    slot_instances = _expand_slots_to_instances(state, target_day_isos, holidays)
+    slot_warnings: List[str] = []
+    slot_instances = _expand_slots_to_instances(
+        state, target_day_isos, holidays, slot_warnings
+    )
 
     # Also expand CONTEXT days around the range: manual assignments there must
     # be visible to the rest-window and overnight-overlap checks (both read
@@ -473,14 +473,14 @@ def heuristic_solve_range_v2(
     if cancel_event.is_set():
         return interrupted()
 
-    # Phase 0.5: Constrained Doctor Pre-assignment
-    # Assign specialists (doctors with limited section options) first to prevent
-    # flexible generalists from taking their slots.
+    # Phase 0.5: Bottleneck Pre-assignment
+    # Fill slots that have exactly one eligible clinician first, so the
+    # day-by-day fill cannot give that clinician other work and leave the
+    # slot open.
     specialist_assignments, specialist_warnings = _preassign_constrained_doctors(
         slot_instances,
         clinician_states,
         solver_settings,
-        config,
         cancel_event,
     )
 
@@ -505,19 +505,11 @@ def heuristic_solve_range_v2(
 
     # Phase 1: Day-by-day iteration
     all_assignments = specialist_assignments[:]
-    warnings = specialist_warnings[:]
+    warnings = slot_warnings + specialist_warnings
 
-    prev_week_number = None
     for day_iso in target_day_isos:
-        # Reset weekly hours at the start of each new week (Monday)
-        current_date = date.fromisoformat(day_iso)
-        week_number = current_date.isocalendar()[1]
-        if prev_week_number is not None and week_number != prev_week_number:
-            # New week - reset all clinicians' weekly hours
-            for cs in clinician_states.values():
-                cs.current_week_hours = 0.0
-        prev_week_number = week_number
-
+        # Weekly hours need no reset here: _solve_single_day recomputes
+        # current_week_hours from the day's ISO week before every attempt.
         on_progress("phase", {
             "phase": "solve_day",
             "label": f"Solving day {day_iso}..."
@@ -638,10 +630,16 @@ def _expand_slots_to_instances(
     state: AppState,
     target_day_isos: List[str],
     holidays: List[Holiday],
+    warnings: Optional[List[str]] = None,
 ) -> List[SlotInfo]:
-    """Expand weekly template slots to concrete SlotInfo objects."""
+    """Expand weekly template slots to concrete SlotInfo objects.
+
+    Slots whose end is not after their start are skipped; if ``warnings`` is
+    given, one warning per skipped slot id is appended to it.
+    """
     slot_contexts = _collect_slot_contexts(state)
     instances = []
+    warned_slot_ids: Set[str] = set()
 
     for date_iso in target_day_isos:
         day_type = _get_day_type(date_iso, holidays)
@@ -652,6 +650,17 @@ def _expand_slots_to_instances(
 
             slot = ctx["slot"]
             start, end, loc = _build_slot_interval(slot, ctx["location_id"])
+            if end <= start:
+                # Zero-duration/malformed slot (e.g. 20:00-08:00 without +1d):
+                # validation._slot_interval rejects it as UNKNOWN_SLOT, so
+                # never schedule it.
+                if warnings is not None and slot.id not in warned_slot_ids:
+                    warned_slot_ids.add(slot.id)
+                    warnings.append(
+                        f"Slot {slot.id} skipped on {date_iso}: end is not "
+                        f"after start (missing +1d?)"
+                    )
+                continue
             # _build_slot_interval returns an offset-INCLUSIVE end, but
             # SlotInfo expects the raw clock end plus a separate
             # end_day_offset (duration/overlap logic re-adds the offset).
@@ -811,22 +820,21 @@ def _preassign_constrained_doctors(
     all_slot_instances: List[SlotInfo],
     clinician_states: Dict[str, ClinicianState],
     solver_settings: SolverSettings,
-    config: HeuristicConfig,
     cancel_event,
 ) -> Tuple[List[Assignment], List[str]]:
     """
-    Phase 0.5: Pre-assign constrained doctors (specialists) first.
+    Phase 0.5: Pre-assign bottleneck slots first.
 
-    This ensures doctors with limited section options get their work before
-    flexible generalists take those slots. Without this, a specialist like
-    Dr. Brown (only mammography) might be left idle while Dr. Johnson
-    (MRI + mammography) takes all the mammography slots.
+    A bottleneck slot is an unfilled slot with exactly one eligible clinician.
+    Filling it before the day-by-day phase keeps that clinician from being
+    given other work there, which would leave the slot open.
 
     Algorithm:
-    1. Identify specialists: doctors with <= SPECIALIST_THRESHOLD qualified sections
-    2. Sort by constraint level (fewest options first)
-    3. For each specialist, greedily assign them to unfilled slots in their domain
-    4. Mark those slots as filled before main algorithm runs
+    1. Per day, find an unfilled slot with exactly one eligible clinician
+    2. Assign that clinician to it
+    3. Re-check all slots (eligibility changes after each assignment) until
+       no such bottleneck slot remains
+    4. These assignments are preserved during the day-by-day backtracking
 
     Returns: (assignments made, warnings)
     """
@@ -879,7 +887,7 @@ def _preassign_constrained_doctors(
                     clinician_id, state = eligible[0]
 
                     # Pre-assign this slot
-                    assignment = _assign_slot_to_doctor(slot, state, "solver")
+                    assignment = _assign_slot_to_doctor(slot, state)
                     assignments.append(assignment)
                     bottleneck_count += 1
                     found_bottleneck = True
@@ -1089,6 +1097,7 @@ def _fill_day_with_prioritized_slots(
     # Step 2.3: Fill slots in priority order
     unfillable_count = 0
     skipped_count = 0
+    blocked_count = 0
     for slot, criticality, eligible_list in slot_criticality:
         if cancel_event.is_set():
             return False, assignments, unfillable_count
@@ -1112,8 +1121,11 @@ def _fill_day_with_prioritized_slots(
                 unfillable_count += 1
                 continue
             else:
-                # Slot became unfillable due to earlier assignments — trigger backtracking
-                return False, assignments, unfillable_count
+                # Slot became unfillable due to earlier choices; keep filling
+                # the rest so this attempt stays a complete partial plan, and
+                # signal failure below so the retry loop still backtracks.
+                blocked_count += 1
+                continue
 
         # Rank doctors
         ranked_doctors = _rank_doctors_by_deficit(eligible_list, slot, retry_count, clinician_states)
@@ -1128,15 +1140,16 @@ def _fill_day_with_prioritized_slots(
         chosen_state = clinician_states[chosen_doctor_id]
 
         # Make assignment
-        _assign_doctor_to_slot(chosen_state, slot, assignments)
+        assignments.append(_assign_slot_to_doctor(slot, chosen_state))
 
         # Try consecutive slot filling
         if config.ENABLE_CONSECUTIVE_FILLING:
-            _fill_consecutive_slots(chosen_state, slot, day_slots, clinician_states, solver_settings, config, assignments)
+            _fill_consecutive_slots(chosen_state, slot, day_slots, clinician_states, solver_settings, assignments)
 
-    # If slots were skipped due to retry offset, signal failure so the
-    # retry loop can pick the best attempt (typically retry_count=0).
-    if skipped_count > 0:
+    # If slots were skipped due to retry offset or blocked by earlier
+    # choices, signal failure so the retry loop can pick the best attempt
+    # (typically retry_count=0).
+    if skipped_count > 0 or blocked_count > 0:
         return False, assignments, unfillable_count
 
     return True, assignments, unfillable_count
@@ -1148,7 +1161,7 @@ def _is_doctor_eligible_for_slot(
     solver_settings: SolverSettings,
 ) -> bool:
     """
-    Check if a single doctor is eligible for a slot (all 7 criteria).
+    Check if a single doctor is eligible for a slot (all 8 criteria).
 
     Returns: True if eligible, False otherwise
     """
@@ -1210,7 +1223,6 @@ def _is_doctor_eligible_for_slot(
 def _assign_slot_to_doctor(
     slot: SlotInfo,
     state: ClinicianState,
-    source: str = "solver",
 ) -> Assignment:
     """
     Assign a slot to a doctor and update their state.
@@ -1236,7 +1248,7 @@ def _assign_slot_to_doctor(
         clinicianId=state.clinician_id,
         rowId=slot.slot_id,
         dateISO=slot.date_iso,
-        source=source if source in ["manual", "solver"] else "solver",
+        source="solver",
     )
     return assignment
 
@@ -1257,6 +1269,7 @@ def _filter_eligible_doctors(
     5. On-call rest days
     6. Same location per day (if enabled)
     7. Hour limit
+    8. Continuous shifts / no split shifts (if enabled)
     """
     eligible = []
 
@@ -1342,23 +1355,12 @@ def _rank_doctors_by_deficit(
     return doctor_ids
 
 
-def _assign_doctor_to_slot(
-    state: ClinicianState,
-    slot: SlotInfo,
-    assignments: List[Assignment],
-) -> None:
-    """Assign a doctor to a slot and update state (wrapper for _assign_slot_to_doctor)."""
-    assignment = _assign_slot_to_doctor(slot, state, source="solver")
-    assignments.append(assignment)
-
-
 def _fill_consecutive_slots(
     state: ClinicianState,
     initial_slot: SlotInfo,
     day_slots: List[SlotInfo],
     clinician_states: Dict[str, ClinicianState],
     solver_settings: SolverSettings,
-    config: HeuristicConfig,
     assignments: List[Assignment],
 ) -> None:
     """
@@ -1413,7 +1415,7 @@ def _fill_consecutive_slots(
             break
 
         # Assign to next slot
-        _assign_doctor_to_slot(state, next_slot, assignments)
+        assignments.append(_assign_slot_to_doctor(next_slot, state))
 
         # Update end time
         end_time = next_slot.end_minutes

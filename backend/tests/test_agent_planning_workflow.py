@@ -192,6 +192,33 @@ def test_final_audit_applies_checked_day_block_larger_than_model_move_limit():
     assert result["checks"][MON]["complete"]
 
 
+def test_final_audit_repair_skips_follow_up_search_but_model_apply_keeps_it():
+    from threading import Event
+
+    state = make_app_state(slots=[
+        make_template_slot("mon"), make_template_slot("tue", col_band_id="col-tue-1"),
+    ])
+    ex = executor(state, end=TUE)
+    calls = []
+    original = ex.execute
+
+    def recording_execute(name, args, call_id):
+        calls.append(call_id)
+        return original(name, args, call_id)
+
+    ex.execute = recording_execute
+    options = run(ex, "suggest_day_blocks", dateISO=MON)
+    applied = run(ex, "apply_proposal", proposal_id=options["candidates"][0]["proposal_id"])
+    assert applied["applied"] and "next" in applied
+    assert "proposal-followup" in calls
+
+    calls.clear()
+    result = ex.workflow.final_audit([MON, TUE], Event())
+    assert result["repairs"] >= 1
+    assert "final-checked-repair" in calls
+    assert "proposal-followup" not in calls
+
+
 def test_other_day_change_invalidates_proposal_and_negative_search_cache():
     state = make_app_state(slots=[
         make_template_slot("mon"), make_template_slot("tue", col_band_id="col-tue-1"),

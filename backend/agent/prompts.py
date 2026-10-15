@@ -225,7 +225,8 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    call apply_proposal({"proposal_id":"proposal-17"}). Always copy the
    actual returned ID. A stale_proposal means the plan changed: request
    fresh suggestions. already_applied means that earlier call succeeded.
-   When no proposal ID is present, use apply_moves with the WHOLE block
+   A candidate without a proposal ID failed the whole-block check: prefer
+   one with an ID, or use apply_moves with a shorter part of its block
    followed by suggest_day_blocks; custom swaps stay available as batches.
    Do not add prose restating candidates or the next action.
 5. Repeat step 4 until suggest_day_blocks returns day_complete=true (every
@@ -372,8 +373,9 @@ THE PROCEDURE:
 3. Use apply_proposal with the chosen candidate's proposal_id. Its next
    result describes the next duty (still single=true), or duty_complete.
    If the next duty has no candidates, skip to the next duty in the digest.
-   Without a proposal ID, apply_moves then suggest_day_blocks with the
-   NEXT duty slot and single=true remains available.
+   A candidate without a proposal ID failed the check: choose another.
+   After a custom apply_moves batch, call suggest_day_blocks with the
+   NEXT duty slot and single=true.
 4. A duty slot whose suggestion returns no candidates is unfillable now —
    skip it, continue with the next.
 5. When every listed duty slot is staffed or skipped, reply WITHOUT tool
@@ -389,6 +391,44 @@ copied exactly. Every reply must either CALL A TOOL or BE your final
 summary — announcing intentions without a tool call ends the pass."""
 
 
+def _section_names(state: AppState) -> Dict[str, str]:
+    """Section id -> display name."""
+    return {r.id: r.name for r in state.rows if r.kind == "class"}
+
+
+def _roster_lines(
+    state: AppState,
+    clinician_aliases: Dict[str, str],
+    worked_pct_by_id: Dict[str, Optional[int]],
+    *,
+    with_pattern: bool = True,
+) -> List[str]:
+    """One roster row per clinician (name|qualified|preferred|contract|ytd
+    worked %[|soft work pattern]); missing values render as '-'. The rows
+    sit in the cached prompt prefix, so the format must stay stable."""
+    sections = _section_names(state)
+
+    def _section_list(ids) -> str:
+        return ",".join(sections.get(i, i) for i in (ids or [])) or "-"
+
+    lines: List[str] = []
+    for c in state.clinicians:
+        worked_pct = worked_pct_by_id.get(c.id)
+        pattern = (
+            f"|soft work pattern: {c.workPattern.model_dump(exclude_none=True)}"
+            if with_pattern and c.workPattern
+            else ""
+        )
+        lines.append(
+            f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
+            f"|{_section_list(c.preferredClassIds)}"
+            f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
+            f"|{worked_pct if worked_pct is not None else '-'}"
+            f"{pattern}"
+        )
+    return lines
+
+
 def build_duty_digest(
     state: AppState,
     ctx: ScoringContext,
@@ -399,25 +439,12 @@ def build_duty_digest(
 ) -> str:
     """First user message of the duty pre-pass conversation: the roster and
     every open duty slot of the range, in date order."""
-    sections = {r.id: r.name for r in state.rows if r.kind == "class"}
-
-    def _section_list(ids) -> str:
-        return ",".join(sections.get(i, i) for i in (ids or [])) or "-"
-
     lines: List[str] = []
     lines.append(
         "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
         "of target, 100=on target, lower=behind):"
     )
-    for c in state.clinicians:
-        worked_pct = ytd_worked_pct_by_id.get(c.id)
-        lines.append(
-            f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
-            f"|{_section_list(c.preferredClassIds)}"
-            f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
-            f"|{worked_pct if worked_pct is not None else '-'}"
-            + (f"|soft work pattern: {c.workPattern.model_dump(exclude_none=True)}" if c.workPattern else "")
-        )
+    lines.extend(_roster_lines(state, clinician_aliases, ytd_worked_pct_by_id))
     lines.append("")
     lines.append(
         f"Duty pre-pass for {ctx.start_iso} to {ctx.end_iso}: staff ALL "
@@ -448,36 +475,19 @@ def build_day_digest(
     previous_day_lines: List[str],
     max_rounds: int,
     clinician_aliases: Dict[str, str],
-    ytd_worked_pct_by_id: Optional[Dict[str, Optional[int]]] = None,
+    ytd_worked_pct_by_id: Dict[str, Optional[int]],
     distribute_all: bool = False,
 ) -> str:
     """First user message of one day's conversation. The roster's YTD
     percentages are AS OF this day, including everything placed on earlier
     days of this run — frozen range-start numbers would misdirect the
     fairness choices of later days."""
-    sections = {r.id: r.name for r in state.rows if r.kind == "class"}
-
-    def _section_list(ids) -> str:
-        return ",".join(sections.get(i, i) for i in (ids or [])) or "-"
-
     lines: List[str] = []
     lines.append(
         "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
         f"of target as of {date_iso}, 100=on target, lower=behind):"
     )
-    for c in state.clinicians:
-        if ytd_worked_pct_by_id is not None:
-            worked_pct = ytd_worked_pct_by_id.get(c.id)
-        else:
-            deficit = ctx.ytd_deficit_pct.get(c.id)
-            worked_pct = (100 - deficit) if deficit is not None else None
-        lines.append(
-            f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
-            f"|{_section_list(c.preferredClassIds)}"
-            f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
-            f"|{worked_pct if worked_pct is not None else '-'}"
-            + (f"|soft work pattern: {c.workPattern.model_dump(exclude_none=True)}" if c.workPattern else "")
-        )
+    lines.extend(_roster_lines(state, clinician_aliases, ytd_worked_pct_by_id))
     lines.append("")
     lines.append(
         f"Build day {day_index + 1} of {total_days}: {date_iso} "
@@ -541,7 +551,7 @@ def build_problem_digest(
     display names — small models handle meaningful words far better than
     UUID-ish ids (which they must otherwise copy hex-perfectly).
     """
-    sections = {r.id: r.name for r in state.rows if r.kind == "class"}
+    sections = _section_names(state)
     lines: List[str] = []
     lines.append(
         f"Solve range: {ctx.start_iso} to {ctx.end_iso} "
@@ -555,19 +565,14 @@ def build_problem_digest(
         "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
         "of target, 100=on target, lower=behind):"
     )
-
-    def _section_list(ids) -> str:
-        return ",".join(sections.get(i, i) for i in (ids or [])) or "-"
-
-    for c in state.clinicians:
-        deficit = ctx.ytd_deficit_pct.get(c.id)
-        worked_pct = (100 - deficit) if deficit is not None else "-"
-        lines.append(
-            f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
-            f"|{_section_list(c.preferredClassIds)}"
-            f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
-            f"|{worked_pct}"
-        )
+    worked_pct_by_id = {
+        cid: 100 - deficit
+        for cid, deficit in ctx.ytd_deficit_pct.items()
+        if deficit is not None
+    }
+    lines.extend(
+        _roster_lines(state, clinician_aliases, worked_pct_by_id, with_pattern=False)
+    )
     lines.append("")
     lines.append(
         f"Seed plan: {seed_stats.filled_slots}/{seed_stats.total_required_slots} "

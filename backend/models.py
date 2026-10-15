@@ -289,11 +289,6 @@ class SolveRangeRequest(BaseModel):
         return "heuristic" if self.use_heuristic else "cpsat"
 
 
-class SolverDebugCheckpoint(BaseModel):
-    name: str
-    duration_ms: float
-
-
 class SolverDebugSolutionTime(BaseModel):
     solution: int
     time_ms: float
@@ -331,10 +326,6 @@ class SolveRangeResponse(BaseModel):
     assignments: List[Assignment]
     notes: List[str]
     debugInfo: Optional[SolverDebugInfo] = None
-
-
-class IcalPublishRequest(BaseModel):
-    pass
 
 
 class IcalPublishAllLink(BaseModel):
@@ -375,11 +366,16 @@ class ViewConfig(BaseModel):
     colorBy: ColorBy = "section"  # only meaningful for scope="team"
 
 
+ViewStartAt = Literal["today", "nextShift", "weekStart"]
+
+
 class SavedView(ViewConfig):
     model_config = ConfigDict(str_strip_whitespace=True)
 
     id: str = Field(min_length=1, max_length=64)
     name: str = Field(min_length=1, max_length=60)
+    # Relative anchor when the view is opened; never a fixed date.
+    startAt: ViewStartAt = "today"
 
 
 class OrientationByRange(BaseModel):
@@ -389,11 +385,19 @@ class OrientationByRange(BaseModel):
     month: Orientation = "top"
 
 
+class OrientationByRangeMobile(OrientationByRange):
+    # Phones remember their own orientations; the week opens as the agenda.
+    week: Orientation = "left"
+
+
 class UserPreferences(BaseModel):
     version: int = Field(default=1, ge=1)
     clinicianId: Optional[str] = Field(default=None, max_length=200)  # "I am …"
     orientationByRange: OrientationByRange = Field(default_factory=OrientationByRange)
+    orientationByRangeMobile: OrientationByRangeMobile = Field(default_factory=OrientationByRangeMobile)
     myPlanRange: PlanRange = "week"
+    # Phones remember their own My-plan range (SPEC R17: per area x range x device).
+    myPlanRangeMobile: PlanRange = "week"
     teamColorBy: ColorBy = "section"
     savedViews: List[SavedView] = Field(default_factory=list, max_length=MAX_SAVED_VIEWS)
     startViewDesktop: Optional[ViewConfig] = None

@@ -10,13 +10,17 @@ Maps the provider-neutral protocol in ``provider.py`` onto the official
   digest plus all tool results — from the cache instead of re-billing it at
   full input price every round
 - adaptive thinking is enabled only on models that support it (Opus 4.6+,
-  Sonnet 4.6+, Sonnet 5, Fable/Mythos 5). Haiku and unknown models get no
+  Sonnet 4.6+, Haiku 5.x, Fable/Mythos 5). Haiku 4.5 and unknown models get no
   ``thinking`` parameter — sending ``{"type": "adaptive"}`` to them is a 400
-  ("adaptive thinking is not supported"). No sampling parameters — current
-  Opus models reject them.
-- API failures never raise: typed SDK errors are mapped to
+  ("adaptive thinking is not supported"). ``display: "summarized"`` is sent
+  where the model default is ``"omitted"`` (Opus 4.7+, Sonnet 5+, Haiku 5.x,
+  Fable/Mythos)
+  so the reasoning feed / run log is not silently empty. No sampling
+  parameters — current Opus models reject them.
+- API failures never raise: SDK errors are mapped to
   ``ProviderResponse(stop_reason="error")`` with ``retryable`` classifying
-  transient failures (429/5xx/connection). SDK retries are disabled
+  transient failures (429/5xx/connection); any other ``AnthropicError`` is a
+  non-retryable error response. SDK retries are disabled
   (``max_retries=0``) — the harness retries deadline-aware instead.
 """
 
@@ -42,11 +46,19 @@ _ADAPTIVE_THINKING_PREFIXES = (
     "claude-opus-4-6",
     "claude-opus-4-7",
     "claude-opus-4-8",
+    "claude-opus-5",  # also matches claude-opus-5-5
     "claude-sonnet-4-6",
-    "claude-sonnet-5",
+    "claude-sonnet-5",  # also matches claude-sonnet-5-5
+    "claude-haiku-5",  # Haiku 5.x only; Haiku 4.5 has no adaptive thinking
     "claude-fable",
     "claude-mythos",
 )
+
+
+# Adaptive-thinking models whose ``thinking.display`` already defaults to
+# "summarized"; every other adaptive model defaults to "omitted" (empty
+# thinking text), so we ask for "summarized" explicitly there.
+_SUMMARIZED_BY_DEFAULT_PREFIXES = ("claude-opus-4-6", "claude-sonnet-4-6")
 
 
 def supports_adaptive_thinking(model: str) -> bool:
@@ -85,7 +97,12 @@ class AnthropicProvider(LLMProvider):
             # failures degrade to the best-plan-so-far path instead.
             request_kwargs = {}
             if supports_adaptive_thinking(self._config.model):
-                request_kwargs["thinking"] = {"type": "adaptive"}
+                thinking = {"type": "adaptive"}
+                if not (self._config.model or "").lower().startswith(
+                    _SUMMARIZED_BY_DEFAULT_PREFIXES
+                ):
+                    thinking["display"] = "summarized"
+                request_kwargs["thinking"] = thinking
             if tools:
                 # Omitted entirely for plain chat calls (admin connection
                 # test) — an empty tools array is pointless on the wire.
@@ -126,6 +143,14 @@ class AnthropicProvider(LLMProvider):
                 error=f"Anthropic connection error: {exc}",
                 retryable=True,
             )
+        except anthropic.AnthropicError as exc:
+            # Anything else from the SDK (e.g. APIResponseValidationError):
+            # honour the never-raise contract, but do not retry blindly.
+            return ProviderResponse(
+                text=None, tool_calls=[], stop_reason="error",
+                error=f"Anthropic API error: {exc}",
+                retryable=False,
+            )
 
         text_parts: List[str] = []
         reasoning_parts: List[str] = []
@@ -164,8 +189,9 @@ class AnthropicProvider(LLMProvider):
         text = "\n".join(text_parts) or None
         reasoning = "\n".join(reasoning_parts) or None
         if text is None and reasoning is not None:
-            # Reasoning-only turn: promote it to text so the run summary and
-            # feed never end up empty (matches the OpenAI adapter's contract).
+            # Reasoning-only turn (typical for tool_use turns): promote it to
+            # text so the run summary and feed never end up empty. Intended —
+            # same contract as the OpenAI adapter; replay uses raw_content.
             text, reasoning = reasoning, None
         return ProviderResponse(
             text=text,
@@ -174,9 +200,11 @@ class AnthropicProvider(LLMProvider):
             usage=usage,
             reasoning=reasoning,
             # raw_content wins on replay (thinking blocks must be echoed
-            # verbatim); replay_text is the fallback for consistency.
+            # verbatim); replay_text is the fallback for consistency. An
+            # empty content list (end_turn without blocks) becomes None so the
+            # replay never sends an empty assistant message (API 400).
             replay_text=text,
-            raw_content=raw_content,
+            raw_content=raw_content or None,
             output_truncated=stop_reason == "max_tokens",
         )
 
@@ -189,12 +217,13 @@ class AnthropicProvider(LLMProvider):
                     {
                         "role": "user",
                         # block form (not bare string) so a cache breakpoint
-                        # can attach; the API rejects empty text blocks.
-                        "content": [{"type": "text", "text": msg.content or " "}],
+                        # can attach; the API rejects empty and
+                        # whitespace-only text blocks.
+                        "content": [{"type": "text", "text": msg.content or "(empty)"}],
                     }
                 )
             elif msg.role == "assistant":
-                if msg.raw_content is not None:
+                if msg.raw_content:
                     # Replay the turn exactly as the API returned it —
                     # thinking blocks included (required for adaptive
                     # thinking + tool use).
@@ -212,6 +241,10 @@ class AnthropicProvider(LLMProvider):
                             "input": call.arguments,
                         }
                     )
+                if not blocks:
+                    # The API rejects empty (and whitespace-only) assistant
+                    # content on any non-final message.
+                    blocks.append({"type": "text", "text": "(no reply)"})
                 out.append({"role": "assistant", "content": blocks})
             else:  # "tool" — all results of one assistant turn in ONE user message
                 out.append(

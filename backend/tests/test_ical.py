@@ -90,6 +90,15 @@ class TestFoldIcalLine:
             segment.encode("utf-8")
 
 
+    def test_fold_boundary_at_75_octets(self) -> None:
+        """Exactly 75 octets stays one line; 76 folds, also with multi-byte chars."""
+        assert _fold_ical_line("X" * 75) == "X" * 75
+        assert _fold_ical_line("X" * 74 + "ü") == "X" * 74 + "\r\n ü"
+        assert _fold_ical_line("X" * 73 + "ü") == "X" * 73 + "ü"
+        folded = _fold_ical_line("X" * 76)
+        assert folded == "X" * 75 + "\r\n X"
+
+
 class TestFormatDtstamp:
     """Tests for _format_dtstamp() function."""
 
@@ -353,6 +362,29 @@ class TestGenerateIcs:
         assert result.count("BEGIN:VEVENT") == 1
         assert "Dr. Alice" in result
         assert "Dr. Bob" not in result
+
+
+    def _single_event_ics(self, slot_extra=None, clinician_id="clin-1"):
+        state = self._make_test_state(assignments=[
+            {"id": "a1", "rowId": "slot-a", "dateISO": "2026-01-05", "clinicianId": clinician_id},
+        ])
+        state["weeklyTemplate"]["locations"][0]["slots"][0].update(slot_extra or {})
+        return generate_ics(state, ["2026-01-05"], "Test Calendar")
+
+    @pytest.mark.parametrize("slot_extra,expected_end", [
+        ({}, "20260106"),
+        ({"endDayOffset": 1}, "20260107"),
+        ({"endDayOffset": 9}, "20260109"),  # capped at +3 extra days
+    ])
+    def test_dtend_extends_for_shifts_crossing_midnight(self, slot_extra, expected_end) -> None:
+        result = self._single_event_ics(slot_extra)
+        assert "DTSTART;VALUE=DATE:20260105\r\n" in result
+        assert f"DTEND;VALUE=DATE:{expected_end}\r\n" in result
+
+    def test_skips_assignments_of_deleted_clinicians(self) -> None:
+        result = self._single_event_ics(clinician_id="ghost")
+        assert "BEGIN:VEVENT" not in result
+        assert "ghost" not in result
 
 
 class TestIcalPoolNeverReferenced:

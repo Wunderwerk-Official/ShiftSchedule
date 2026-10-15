@@ -1,4 +1,4 @@
-"""Per-user UI preferences: defaults, round trip, validation, isolation, deletion."""
+"""Per-user UI preferences: defaults, round trip, merge, validation, isolation, deletion."""
 
 from __future__ import annotations
 
@@ -35,16 +35,18 @@ def _client_as(username: str = USER) -> TestClient:
 
 def _view(view_id: str = "v1", name: str = "My week", **overrides) -> dict:
     return {"id": view_id, "name": name, "scope": "me", "range": "week",
-            "orientation": "left", "colorBy": "section", **overrides}
+            "orientation": "left", "colorBy": "section", "startAt": "today", **overrides}
 
 
 FULL = {
     "version": 1,
     "clinicianId": "clin-1",
     "orientationByRange": {"day": "left", "week": "top", "month": "left"},
+    "orientationByRangeMobile": {"day": "top", "week": "top", "month": "left"},
     "myPlanRange": "month",
+    "myPlanRangeMobile": "day",
     "teamColorBy": "person",
-    "savedViews": [_view()],
+    "savedViews": [_view(), _view("v2", "Next shift", startAt="nextShift")],
     "startViewDesktop": {"scope": "me", "range": "week", "orientation": "top", "colorBy": "section"},
     "startViewMobile": {"scope": "me", "range": "day", "orientation": "left", "colorBy": "section"},
 }
@@ -57,7 +59,9 @@ def test_get_returns_defaults_when_nothing_stored():
         "version": 1,
         "clinicianId": None,
         "orientationByRange": {"day": "top", "week": "top", "month": "top"},
+        "orientationByRangeMobile": {"day": "top", "week": "left", "month": "top"},
         "myPlanRange": "week",
+        "myPlanRangeMobile": "week",
         "teamColorBy": "section",
         "savedViews": [],
         "startViewDesktop": None,
@@ -80,15 +84,44 @@ def test_partial_input_is_completed_with_defaults_and_unknown_fields_ignored():
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["orientationByRange"] == {"day": "top", "week": "left", "month": "top"}
+    # Phones keep their own orientations: the week defaults to the agenda.
+    assert body["orientationByRangeMobile"] == {"day": "top", "week": "left", "month": "top"}
     assert body["clinicianId"] is None
     assert "futureField" not in body
     assert client.get(URL).json() == body
 
 
+def test_put_keeps_the_stored_keys_it_does_not_name():
+    """A tab that loaded earlier sends only what it changed; the "I am" link and
+    the views another device saved meanwhile must survive."""
+    client = _client_as()
+    client.put(URL, json=FULL)
+    res = client.put(URL, json={"myPlanRange": "day", "orientationByRange": {"week": "left"}})
+    assert res.status_code == 200, res.text
+    # A named object is replaced whole (omitted ranges fall back to defaults).
+    expected = {**FULL, "myPlanRange": "day",
+                "orientationByRange": {"day": "top", "week": "left", "month": "top"}}
+    assert res.json() == expected
+    assert client.get(URL).json() == expected
+
+
+def test_put_clears_keys_sent_as_null_or_empty():
+    client = _client_as()
+    client.put(URL, json=FULL)
+    res = client.put(URL, json={"clinicianId": None, "startViewMobile": None, "savedViews": []})
+    assert res.status_code == 200, res.text
+    expected = {**FULL, "clinicianId": None, "startViewMobile": None, "savedViews": []}
+    assert res.json() == expected
+    assert client.get(URL).json() == expected
+
+
 @pytest.mark.parametrize("payload", [
     {"myPlanRange": "year"},
+    {"myPlanRangeMobile": "year"},
     {"teamColorBy": "rainbow"},
     {"orientationByRange": {"week": "diagonal"}},
+    {"orientationByRangeMobile": {"day": "diagonal"}},
+    {"savedViews": [_view(startAt="yesterday")]},
     {"startViewDesktop": {"scope": "everyone"}},
     {"savedViews": [_view(f"v{i}") for i in range(MAX_SAVED_VIEWS + 1)]},
     {"savedViews": [_view(name="x" * 61)]},
@@ -150,6 +183,10 @@ def test_unreadable_stored_row_falls_back_to_defaults():
         conn.execute("INSERT INTO user_preferences VALUES (?, ?, ?)",
                      (USER, '{"myPlanRange": "fortnight"}', "2026-01-01T00:00:00+00:00"))
     assert client.get(URL).json() == UserPreferences().model_dump()
+    # A partial save starts from the defaults instead of failing on the old row.
+    expected = {**UserPreferences().model_dump(), "clinicianId": "clin-1"}
+    assert client.put(URL, json={"clinicianId": "clin-1"}).json() == expected
+    assert client.get(URL).json() == expected
 
 
 def test_schema_init_adds_the_table_to_a_database_from_before_the_feature(monkeypatch):

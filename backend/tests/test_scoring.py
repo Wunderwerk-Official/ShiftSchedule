@@ -2,7 +2,7 @@
 
 The seed-parity tests are the contract that makes an LLM repair loop sound:
 plans produced by the heuristic solver v2 must (a) pass
-``validation.validate_assignments`` and (b) never score worse than the empty
+``validation.validate_assignments`` and (b) fill more slots than the empty
 plan. They reuse the realistic scenarios from
 ``test_heuristic_v2_integration.py`` so the contract is checked against the
 same states the solver tests use.
@@ -17,7 +17,6 @@ from backend.scoring import (
     build_scoring_context,
     open_slots,
     plan_stats,
-    score_plan,
 )
 from backend.validation import validate_assignments
 
@@ -51,94 +50,21 @@ def _solver_assignment(slot_id: str, date_iso: str, clinician_id: str) -> Assign
 
 
 # ---------------------------------------------------------------------------
-# Score behaviour
+# Fixed context
 # ---------------------------------------------------------------------------
 
 
-def test_score_improves_when_filling_open_slot():
-    state = make_app_state(clinicians=[make_clinician("clin-1", "Alice")])
-    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
-    empty = score_plan(ctx, [])
-    filled = score_plan(ctx, [_solver_assignment("slot-a__mon", MON, "clin-1")])
-    assert filled.total < empty.total
-    assert filled.components["slack"] == 0
-    assert empty.components["slack"] > 0
-
-
-def test_score_weight_plumbing_zeroes_components():
-    state = make_app_state(clinicians=[make_clinician("clin-1", "Alice")])
-    state.solverSettings = {"weightCoverage": 0, "weightSlack": 0}
-    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
-    empty = score_plan(ctx, [])
-    filled = score_plan(ctx, [_solver_assignment("slot-a__mon", MON, "clin-1")])
-    assert empty.components["coverage"] == 0
-    assert empty.components["slack"] == 0
-    # With coverage/slack neutralized and no other signals, both plans tie
-    assert filled.total == empty.total
-
-
-def test_score_prefers_preferred_section_assignee():
-    state = make_app_state(
-        clinicians=[
-            make_clinician("clin-pref", "Alice", preferred_class_ids=["section-a"]),
-            make_clinician("clin-neutral", "Bob"),
-        ]
-    )
-    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
-    preferred = score_plan(ctx, [_solver_assignment("slot-a__mon", MON, "clin-pref")])
-    neutral = score_plan(ctx, [_solver_assignment("slot-a__mon", MON, "clin-neutral")])
-    assert preferred.total < neutral.total
-    assert preferred.components["section_preference"] < 0
-    assert neutral.components["section_preference"] == 0
-
-
-def test_score_rewards_preference_time_window_fit():
-    fitting = make_clinician("clin-1", "Alice")
-    fitting.preferredWorkingTimes = {
-        "mon": PreferredWorkingTime(startTime="06:00", endTime="18:00", requirement="preference")
-    }
-    state = make_app_state(clinicians=[fitting])
-    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
-    score = score_plan(ctx, [_solver_assignment("slot-a__mon", MON, "clin-1")])
-    assert score.components["time_window"] < 0
-
-
-def test_score_penalizes_working_hours_deviation():
-    # 40h contract, 5h tolerance, scale 1/7 for a single day: target ~343min,
-    # tolerance ~43min. One 8h shift (480min) overshoots.
-    state = make_app_state(
-        clinicians=[make_clinician("clin-1", "Alice", working_hours_per_week=40.0)]
-    )
-    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
-    empty = score_plan(ctx, [])
-    filled = score_plan(ctx, [_solver_assignment("slot-a__mon", MON, "clin-1")])
-    # Under-hours penalty for the empty plan, over-hours penalty when filled
-    assert empty.components["working_hours"] > 0
-    assert filled.components["working_hours"] > 0
-
-
-def test_distribute_all_rewards_total_assignments_and_priority():
-    state = make_app_state(clinicians=[make_clinician("clin-1", "Alice")])
-    ctx = build_scoring_context(state, MON, MON, only_fill_required=False)
-    filled = score_plan(ctx, [_solver_assignment("slot-a__mon", MON, "clin-1")])
-    assert filled.components["total_assignments"] < 0
-    assert filled.components["slot_priority"] < 0
-    ctx_required = build_scoring_context(state, MON, MON, only_fill_required=True)
-    required_score = score_plan(ctx_required, [_solver_assignment("slot-a__mon", MON, "clin-1")])
-    assert "total_assignments" not in required_score.components
-
-
 def test_fixed_state_assignments_count_as_context():
-    # A manual assignment already covering the slot: empty candidate plan has
-    # no slack, and score matches a fully-covered plan.
+    # A manual assignment already covering the slot: the empty candidate plan
+    # leaves nothing open and counts the slot as filled.
     state = make_app_state(
         clinicians=[make_clinician("clin-1", "Alice")],
         assignments=[make_assignment("m1", "slot-a__mon", MON, "clin-1")],
     )
     ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
-    empty = score_plan(ctx, [])
-    assert empty.components["slack"] == 0
-    assert empty.components["coverage"] < 0
+    empty = plan_stats(ctx, [])
+    assert empty.open_slots == 0
+    assert empty.filled_slots == 1
     assert open_slots(ctx, []) == []
 
 
@@ -202,6 +128,38 @@ def test_plan_stats_ignores_assignments_outside_active_instances():
     assert stats.open_slots == 1
 
 
+def test_plan_stats_counts_preferred_section_matches():
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-pref", "Alice", preferred_class_ids=["section-a"]),
+            make_clinician("clin-neutral", "Bob"),
+        ]
+    )
+    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
+    preferred = plan_stats(ctx, [_solver_assignment("slot-a__mon", MON, "clin-pref")])
+    neutral = plan_stats(ctx, [_solver_assignment("slot-a__mon", MON, "clin-neutral")])
+    assert preferred.section_preference_matches == 1
+    assert neutral.section_preference_matches == 0
+
+
+def test_plan_stats_counts_preference_time_window_fits():
+    # slot-a__mon runs 08:00-16:00
+    fitting = make_clinician("clin-fit", "Alice")
+    fitting.preferredWorkingTimes = {
+        "mon": PreferredWorkingTime(startTime="06:00", endTime="18:00", requirement="preference")
+    }
+    late = make_clinician("clin-late", "Bob")
+    late.preferredWorkingTimes = {
+        "mon": PreferredWorkingTime(startTime="10:00", endTime="18:00", requirement="preference")
+    }
+    state = make_app_state(clinicians=[fitting, late])
+    ctx = build_scoring_context(state, MON, MON, only_fill_required=True)
+    fits = plan_stats(ctx, [_solver_assignment("slot-a__mon", MON, "clin-fit")])
+    misses = plan_stats(ctx, [_solver_assignment("slot-a__mon", MON, "clin-late")])
+    assert fits.time_window_fits == 1
+    assert misses.time_window_fits == 0
+
+
 def test_scoring_context_rejects_invalid_dates():
     state = make_app_state()
     with pytest.raises(ValueError):
@@ -249,4 +207,4 @@ def test_heuristic_seed_passes_validation_and_beats_empty_plan(
     assert report.is_valid, [v.message for v in report.violations]
 
     ctx = build_scoring_context(state, start_iso, end_iso, only_fill_required=True)
-    assert score_plan(ctx, seed).total < score_plan(ctx, []).total
+    assert plan_stats(ctx, seed).filled_slots > plan_stats(ctx, []).filled_slots

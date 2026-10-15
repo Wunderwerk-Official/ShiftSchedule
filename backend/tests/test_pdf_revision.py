@@ -60,3 +60,38 @@ def test_later_batch_request_refuses_a_different_revision(export_case):
     assert failure.value.status_code == 409
     assert "changed during export" in failure.value.detail
     assert len(rendered) == 1
+
+
+def test_filenames_stay_per_endpoint(export_case, request):
+    _, _, call = export_case
+    disposition = call().headers["Content-Disposition"]
+    expected = ("shift-planner-2026-01-05-2w.pdf" if request.node.callspec.params["export_case"] == "weeks"
+                else "shift-planner-2026-01-05.pdf")
+    assert disposition == f'attachment; filename="{expected}"'
+
+
+def test_render_failure_is_logged_with_print_path(export_case, monkeypatch, caplog):
+    _, _, call = export_case
+
+    def broken_launch(_):
+        raise RuntimeError("chromium missing")
+
+    monkeypatch.setattr(pdf, "_launch_chromium", broken_launch)
+    with caplog.at_level("ERROR", logger="backend.pdf"), pytest.raises(HTTPException) as failure:
+        call()
+    assert failure.value.status_code == 500
+    records = [r for r in caplog.records if r.name == "backend.pdf" and r.levelname == "ERROR"]
+    assert records and "/print/week" in records[0].getMessage()
+
+
+def test_render_timeout_is_logged_as_warning(export_case, monkeypatch, caplog):
+    _, _, call = export_case
+
+    def slow_launch(_):
+        raise pdf.PlaywrightTimeoutError("timeout")
+
+    monkeypatch.setattr(pdf, "_launch_chromium", slow_launch)
+    with caplog.at_level("WARNING", logger="backend.pdf"), pytest.raises(HTTPException) as failure:
+        call()
+    assert failure.value.status_code == 504
+    assert any(r.name == "backend.pdf" and r.levelname == "WARNING" for r in caplog.records)

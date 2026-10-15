@@ -30,11 +30,7 @@ from backend.heuristic.solver_v2 import (
     _filter_eligible_doctors,
     _rank_doctors_by_deficit,
     _reset_day_to_manual_only,
-    _assign_slot_to_doctor,
-    _fill_consecutive_slots,
     _is_doctor_eligible_for_slot,
-    _preassign_constrained_doctors,
-    HeuristicConfig,
 )
 
 
@@ -236,6 +232,40 @@ def test_eligibility_vacation(basic_state):
     assignments = result["assignments"]
     alice_assignments = [a for a in assignments if a["clinicianId"] == "doc-1"]
     assert len(alice_assignments) == 0
+
+
+def test_eligibility_malformed_vacation_does_not_crash():
+    """A malformed vacation date (free-form str in the model) must not crash.
+
+    The heuristic compares ISO strings like validation._is_on_vacation, so an
+    empty startISO covers every date up to endISO, exactly as the validator
+    sees it.
+    """
+    from .conftest import make_app_state, make_clinician, make_template_slot
+
+    clinician = make_clinician(
+        "X", "X", working_hours_per_week=40,
+        vacations=[VacationRange(id="v", startISO="", endISO="2026-01-09")],
+    )
+    state = make_app_state(
+        clinicians=[clinician],
+        slots=[
+            make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot("slot-a__sat", col_band_id="col-sat-1"),
+        ],
+    )
+    payload = SolveRangeRequest(
+        startISO="2026-01-05", endISO="2026-01-11",
+        only_fill_required=True, use_heuristic=True,
+    )
+
+    result = heuristic_solve_range_v2(
+        payload, state, MockCancelEvent(), mock_progress, 0.0
+    )
+
+    assert [(a["rowId"], a["dateISO"]) for a in result["assignments"]] == [
+        ("slot-a__sat", "2026-01-10")
+    ]
 
 
 def test_eligibility_time_overlap():
@@ -1731,7 +1761,6 @@ def test_retry_skip_rank_offset_produces_different_top_doctor():
         cs.contract_hours = 40.0
         cs.tolerance_hours = 5.0
         cs.eligible_sections = ["sec-a"]
-        cs.preferred_sections = ["sec-a"]
         cs.preferred_working_times = {}
         cs.vacations = []
         cs.ytd_hours = 0.0
@@ -1792,7 +1821,6 @@ def test_filter_eligible_doctors_returns_correct_ids():
     cs1.contract_hours = 40.0
     cs1.tolerance_hours = 5.0
     cs1.eligible_sections = ["sec-a"]
-    cs1.preferred_sections = ["sec-a"]
     cs1.preferred_working_times = {}
     cs1.vacations = []
     cs1.ytd_hours = 0.0
@@ -1811,7 +1839,6 @@ def test_filter_eligible_doctors_returns_correct_ids():
     cs2.contract_hours = 40.0
     cs2.tolerance_hours = 5.0
     cs2.eligible_sections = ["sec-b"]  # Not qualified for sec-a
-    cs2.preferred_sections = ["sec-b"]
     cs2.preferred_working_times = {}
     cs2.vacations = []
     cs2.ytd_hours = 0.0
@@ -1830,7 +1857,6 @@ def test_filter_eligible_doctors_returns_correct_ids():
     cs3.contract_hours = 40.0
     cs3.tolerance_hours = 5.0
     cs3.eligible_sections = ["sec-a"]
-    cs3.preferred_sections = ["sec-a"]
     cs3.preferred_working_times = {}
     cs3.vacations = [VacationRange(id="v1", startISO=monday.isoformat(), endISO=monday.isoformat())]
     cs3.ytd_hours = 0.0
@@ -2056,6 +2082,29 @@ class TestCrossDayOvernightOverlap:
             start_time="04:00", end_time="08:00",
         )
         assert state.has_time_overlap("2026-02-10", tuesday_early) is True
+
+    def test_zero_duration_slot_does_not_block_next_day(self):
+        """A zero-duration slot (start == end, offset 0) is not an overnight shift.
+
+        The validator rejects such slots, so they must not lock the clinician
+        out of the following day (or be blocked by it) via the implicit
+        overnight branch.
+        """
+        state = _make_clinician_state()
+        zero = _make_slot(
+            slot_id="zero-mon", date_iso="2026-02-09",
+            start_time="20:00", end_time="20:00", end_day_offset=0,
+        )
+        state.assigned_slots_by_date["2026-02-09"] = [zero]
+        tuesday_day = _make_slot(
+            slot_id="day-tue", date_iso="2026-02-10",
+            start_time="08:00", end_time="16:00",
+        )
+        assert state.has_time_overlap("2026-02-10", tuesday_day) is False
+
+        state = _make_clinician_state()
+        state.assigned_slots_by_date["2026-02-10"] = [tuesday_day]
+        assert state.has_time_overlap("2026-02-09", zero) is False
 
 
 class TestForwardLookingOvernightConflict:
@@ -2561,7 +2610,6 @@ def test_ranking_zero_contract_hours_ranked_last():
     cs_a.contract_hours = 0.0  # No contract
     cs_a.tolerance_hours = 5.0
     cs_a.eligible_sections = ["sec-a"]
-    cs_a.preferred_sections = ["sec-a"]
     cs_a.preferred_working_times = {}
     cs_a.vacations = []
     cs_a.ytd_hours = 0.0
@@ -2580,7 +2628,6 @@ def test_ranking_zero_contract_hours_ranked_last():
     cs_b.contract_hours = 40.0
     cs_b.tolerance_hours = 5.0
     cs_b.eligible_sections = ["sec-a"]
-    cs_b.preferred_sections = ["sec-a"]
     cs_b.preferred_working_times = {}
     cs_b.vacations = []
     cs_b.ytd_hours = 0.0

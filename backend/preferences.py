@@ -41,13 +41,10 @@ async def _limit_body_size(
         )
 
 
-@router.get("/v1/me/preferences", response_model=UserPreferences)
-def get_preferences(current_user: UserPublic = Depends(_get_current_user)):
-    with authenticated_account_connection(current_user, write=False) as conn:
-        row = conn.execute(
-            "SELECT data FROM user_preferences WHERE username = ?",
-            (current_user.username,),
-        ).fetchone()
+def _read_preferences(conn, username: str) -> UserPreferences:
+    row = conn.execute(
+        "SELECT data FROM user_preferences WHERE username = ?", (username,)
+    ).fetchone()
     if not row:
         return UserPreferences()
     try:
@@ -56,8 +53,14 @@ def get_preferences(current_user: UserPublic = Depends(_get_current_user)):
         # Bad JSON or a row written under an older schema (pydantic's
         # ValidationError is a ValueError) must not lock the user out of the
         # page; the next save replaces it.
-        logger.warning("Ignoring unreadable preferences of %s", current_user.username)
+        logger.warning("Ignoring unreadable preferences of %s", username)
         return UserPreferences()
+
+
+@router.get("/v1/me/preferences", response_model=UserPreferences)
+def get_preferences(current_user: UserPublic = Depends(_get_current_user)):
+    with authenticated_account_connection(current_user, write=False) as conn:
+        return _read_preferences(conn, current_user.username)
 
 
 @router.put(
@@ -69,9 +72,15 @@ def put_preferences(
     payload: UserPreferences,
     current_user: UserPublic = Depends(_get_current_user),
 ):
+    """Stores the top-level keys the request names and keeps all others, so a
+    tab that sends only what it changed cannot undo what another device saved
+    meanwhile. A complete object replaces everything. Returns the stored result."""
+    changes = payload.model_dump(include=payload.model_fields_set)
     with authenticated_account_connection(current_user) as conn:
+        stored = _read_preferences(conn, current_user.username).model_dump()
+        data = UserPreferences.model_validate({**stored, **changes})
         conn.execute(
             "INSERT OR REPLACE INTO user_preferences (username, data, updated_at) VALUES (?, ?, ?)",
-            (current_user.username, json.dumps(payload.model_dump()), _utcnow_iso()),
+            (current_user.username, json.dumps(data.model_dump()), _utcnow_iso()),
         )
-    return payload
+    return data

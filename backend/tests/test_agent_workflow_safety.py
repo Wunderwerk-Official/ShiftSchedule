@@ -18,6 +18,7 @@ from backend.agent.mock_provider import MockProvider
 from backend.auth import _get_current_user, _create_user
 from backend.main import app
 from backend.models import Holiday, SolveRangeRequest, UserPublic, VacationRange
+from backend.run_apply import planning_fingerprint
 from backend.state import _load_state, _save_state
 from backend.tests.conftest import make_app_state, make_assignment, make_clinician, make_template_slot
 
@@ -42,7 +43,7 @@ def seed_run(state, assignments, *, end=MON, status="finished", debug=None):
     _load_state(USER)
     solver_runs.create_run(
         "review-run", USER, MON, end, {"solver_mode": "agent"},
-        input_fingerprint=solver._range_fingerprint(USER, MON, end),
+        input_fingerprint=planning_fingerprint(_load_state(USER)),
     )
     result = {
         "startISO": MON, "endISO": end,

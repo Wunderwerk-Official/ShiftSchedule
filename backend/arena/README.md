@@ -1,7 +1,7 @@
 # Agent test arena
 
 Benchmarks the AI planning agent against a generated scheduling case in
-`fixture_complex.json`, version **synthetic-v2**. It contains 24 fictitious
+`fixture_complex.json`, version **synthetic-v3** (see "Fixture synthetic-v3" below). It contains 24 fictitious
 clinicians, 35 rows (33 sections and two pools), 163 weekly template slots and
 four generically named locations. The layout, capacities and shift times are
 retained from the earlier fixture; all identifiers, labels, personnel profiles,
@@ -26,9 +26,10 @@ January daytime history supplies unequal previous workloads for fairness tests.
 These are constructed test conditions, not measurements of an actual practice.
 
 **Comparability:** historical tables below used the legacy export and are not
-numerically comparable with synthetic-v2. New runs must record the fixture
+numerically comparable with the current fixture, and synthetic-v2 results are
+not comparable with synthetic-v3. New runs must record the fixture
 version/hash and use the same fixture for both sides of a comparison. No new
-model-quality or latency benchmark is claimed for synthetic-v2. Git history
+model-quality or latency benchmark is claimed for the synthetic fixtures. Git history
 is unchanged; replacing this working fixture does not erase the earlier data
 from historical commits or previously exported artifacts.
 
@@ -53,6 +54,16 @@ Select `implementation=checkout` to test the chosen branch and its fixture in
 a temporary directory with read-only saved provider settings. The workflow
 serializes GPU use. Wait for a pending run to start before queuing another:
 GitHub retains only one pending run per concurrency group.
+
+**v1.64 comparability:** the text the model sees changed in v1.64 (violation
+messages show S-codes and section names instead of raw slot/section ids, the
+`suggest_day_blocks`/`suggest_balance_moves` descriptions and both system
+prompts describe candidates without a proposal id differently, the final
+audit no longer runs follow-up searches after repairs, and the re-check
+window follows the on-call rest window). Results from before and after v1.64
+are not strictly comparable, even on the same fixture; the `harness`,
+`tools` and prompt hashes in each `prompt_eval` report tell them apart. `backend.arena.run --max-iterations` has no
+effect: every solve sets its own iteration budget (slot instances × 10).
 
 The report includes source/prompt/fixture hashes, model calls, outcome quality,
 search limits, candidate-check cache hits/misses, model seconds and top-level
@@ -99,7 +110,7 @@ line (the fields listed under "Current harness evaluation") and a
 
 ## Scenarios (`--scenario`)
 
-- `base` — synthetic-v2 unchanged. Start `2026-02-16` selects the
+- `base` — the current fixture (synthetic-v3) unchanged. Start `2026-02-16` selects the
   constructed scarcity week with nine synthetic clinicians away.
 - `vacation-wave` — 5 clinicians on vacation for the whole range (scarcity,
   with their in-range bookings cleared so the gaps can be reassigned).
@@ -172,7 +183,8 @@ cd <repo> && AGENT_PROVIDER=mock \
 ## Historical baseline findings (v1.29, legacy fixture)
 
 All results and recommendations from this point refer to their recorded older
-code/model versions and the legacy fixture. They do not validate synthetic-v2
+code/model versions and the legacy fixture. They do not validate the current
+synthetic fixture (v3)
 or the current model deployment. Bounded searches and timed CP-SAT results do
 not prove global infeasibility; historical wording claiming such proofs should
 be read as the outcome of those particular searches.

@@ -13,6 +13,7 @@ from passlib.context import CryptContext
 from .db import _get_connection
 from .account_lifecycle import account_lock
 from .models import (
+    AppState,
     LoginRequest,
     Role,
     TokenResponse,
@@ -114,7 +115,10 @@ def _list_users() -> List[UserPublic]:
     return [_user_row_to_public(row) for row in rows]
 
 
-def _create_user(username: str, password: str, role: Role, active: bool = True) -> UserPublic:
+def _create_user(
+    username: str, password: str, role: Role, active: bool = True,
+    *, initial_state: Optional[AppState] = None,
+) -> UserPublic:
     password_hash = _hash_password(password)
     with account_lock(username), closing(_get_connection()) as conn, conn:
         conn.execute("BEGIN IMMEDIATE")
@@ -129,6 +133,9 @@ def _create_user(username: str, password: str, role: Role, active: bool = True) 
             (username, password_hash, role, 1 if active else 0,
              datetime.now(timezone.utc).isoformat(), secrets.token_hex(16)),
         )
+        if initial_state is not None:
+            # Same transaction: an account never exists without its start state.
+            _save_state(initial_state, username, connection=conn)
         row = conn.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
     if not row:
         raise RuntimeError("User creation failed.")
@@ -215,11 +222,10 @@ def _extract_bearer_token(authorization: Optional[str]) -> Optional[str]:
 
 
 def _get_current_user(authorization: Optional[str] = Header(default=None)) -> UserPublic:
-    if not authorization:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token.")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer" or not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token.")
+    token = _extract_bearer_token(authorization)
+    if not token:
+        detail = "Invalid token." if authorization else "Missing token."
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=detail)
     return _verify_token_and_get_user(token)
 
 
@@ -366,28 +372,27 @@ def create_user(
         import_state = _parse_import_state(payload.importState)
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid import state.")
-    with account_lock(username):
-        try:
-            created = _create_user(username, payload.password, payload.role, active=True)
-        except sqlite3.IntegrityError as exc:
-            raise HTTPException(status_code=409, detail="User already exists.") from exc
-        if import_state is None:
-            # Use default state for new users (not admin's state).
-            _save_state(_default_state(), username)
-        else:
-            _save_state(import_state, username)
-    return created
+    try:
+        # New users get the default state (not the admin's) unless importing.
+        return _create_user(
+            username, payload.password, payload.role, active=True,
+            initial_state=import_state if import_state is not None else _default_state(),
+        )
+    except sqlite3.IntegrityError as exc:
+        raise HTTPException(status_code=409, detail="User already exists.") from exc
 
 
 @router.patch("/auth/users/{username}", response_model=UserPublic)
 def update_user(
     username: str,
     payload: UserUpdateRequest,
-    _: UserPublic = Depends(_require_admin),
+    current_user: UserPublic = Depends(_require_admin),
 ):
     normalized = username.strip().lower()
     if not normalized:
         raise HTTPException(status_code=400, detail="Username required.")
+    if normalized == current_user.username and (payload.active is False or payload.role == "user"):
+        raise HTTPException(status_code=400, detail="Cannot disable or demote yourself.")
     if payload.password is not None and not payload.password:
         raise HTTPException(status_code=400, detail="Password required.")
     return _update_user(normalized, payload)

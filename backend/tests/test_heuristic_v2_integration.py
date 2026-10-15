@@ -1939,3 +1939,121 @@ class TestOnCallRestReverseDirection:
         report = validate_assignments(state, assignments, skip_references=True)
         rest = [v for v in report.violations if v.code == VIOLATION_ON_CALL_REST]
         assert rest == [], f"Seed plan contains rest-day violations: {rest}"
+
+
+# ---------------------------------------------------------------------------
+# Blocked slot must not abort the rest of the day
+# ---------------------------------------------------------------------------
+
+
+def test_v2_blocked_slot_does_not_leave_fillable_slots_open():
+    """Demand > supply in one section must not stop the day attempt early.
+
+    X and Y can work A and B, Z0-Z2 only B; three A slots and two B slots run
+    in parallel. Only two A slots are fillable (X, Y). The third A slot becomes
+    unfillable after X and Y are placed; the attempt must still fill the B
+    slots, so both X and Y end up on A slots instead of one of them idling.
+    """
+    from backend.validation import validate_assignments
+    from .conftest import (
+        make_app_state, make_clinician, make_pool_row, make_template_slot,
+        make_workplace_row,
+    )
+
+    clinicians = [
+        make_clinician("X", "X", ["section-a", "section-b"], working_hours_per_week=40),
+        make_clinician("Y", "Y", ["section-a", "section-b"], working_hours_per_week=40),
+    ] + [
+        make_clinician(f"Z{i}", f"Z{i}", ["section-b"], working_hours_per_week=40)
+        for i in range(3)
+    ]
+    slots = [make_template_slot(f"A{i}", block_id="block-a") for i in range(3)]
+    slots += [make_template_slot(f"B{i}", block_id="block-b") for i in range(2)]
+    rows = [
+        make_workplace_row("section-a"),
+        make_workplace_row("section-b", "B"),
+        make_pool_row("pool-rest-day", "Rest"),
+        make_pool_row("pool-vacation", "Vac"),
+    ]
+    state = make_app_state(clinicians=clinicians, slots=slots, rows=rows)
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+
+    monday = date(2026, 1, 5)
+    result = _run_multi_day_solver(state, monday, monday)
+    assignments = [Assignment.model_validate(a) for a in result["assignments"]]
+
+    assert len(assignments) == 4, [(a.rowId, a.clinicianId) for a in assignments]
+    a_doctors = {a.clinicianId for a in assignments if a.rowId.startswith("A")}
+    assert a_doctors == {"X", "Y"}
+    assert sum(a.rowId.startswith("B") for a in assignments) == 2
+    report = validate_assignments(
+        state, state.assignments + assignments, only_fill_required=True
+    )
+    assert report.violations == []
+
+
+# ---------------------------------------------------------------------------
+# Zero-duration (misconfigured overnight) slots
+# ---------------------------------------------------------------------------
+
+
+def test_v2_zero_duration_slot_is_skipped_and_does_not_block_next_day():
+    """20:00-08:00 without +1d collapses to zero duration.
+
+    The validator rejects such a slot as UNKNOWN_SLOT, so the heuristic must
+    not schedule it and must not treat it as an overnight shift that blocks
+    the following day.
+    """
+    from backend.validation import VIOLATION_UNKNOWN_SLOT, validate_assignments
+    from .conftest import make_app_state, make_clinician, make_template_slot
+
+    slots = [
+        make_template_slot("night__mon", col_band_id="col-mon-1",
+                           start_time="20:00", end_time="08:00", end_day_offset=0),
+        make_template_slot("day__tue", col_band_id="col-tue-1",
+                           start_time="08:00", end_time="16:00"),
+    ]
+    state = make_app_state(
+        clinicians=[make_clinician("X", "X", working_hours_per_week=40)],
+        slots=slots,
+    )
+
+    result = _run_multi_day_solver(state, date(2026, 1, 5), date(2026, 1, 6))
+    assignments = [Assignment.model_validate(a) for a in result["assignments"]]
+
+    assert [(a.rowId, a.dateISO, a.clinicianId) for a in assignments] == [
+        ("day__tue", "2026-01-06", "X")
+    ]
+    report = validate_assignments(state, assignments, only_fill_required=True)
+    assert [v for v in report.violations if v.code == VIOLATION_UNKNOWN_SLOT] == []
+    assert (
+        "  - Slot night__mon skipped on 2026-01-05: end is not after start "
+        "(missing +1d?)"
+    ) in result["notes"]
+
+
+def test_v2_zero_duration_slot_warns_once_per_slot():
+    """The skip warning names each malformed slot once, not once per date."""
+    from .conftest import make_app_state, make_clinician, make_template_slot
+
+    state = make_app_state(
+        clinicians=[make_clinician("X", "X", working_hours_per_week=40)],
+        slots=[
+            make_template_slot("night__mon", col_band_id="col-mon-1",
+                               start_time="20:00", end_time="08:00",
+                               end_day_offset=0),
+        ],
+    )
+
+    # Two Mondays in range
+    result = _run_multi_day_solver(state, date(2026, 1, 5), date(2026, 1, 12))
+
+    assert result["assignments"] == []
+    skipped = [n for n in result["notes"] if "Slot night__mon skipped" in n]
+    assert skipped == [
+        "  - Slot night__mon skipped on 2026-01-05: end is not after start "
+        "(missing +1d?)"
+    ]
+    assert result["debugInfo"]["num_warnings"] == 1

@@ -1155,6 +1155,72 @@ def test_finalize_reports_all_clear_when_nothing_unsolved():
     assert unsolved["quality_metrics"]["structured_wish_violations"] == 0
 
 
+def test_unsolved_overview_lists_short_and_overlong_days_by_date():
+    """Short and over-long days in the closing report: real (not
+    de-duplicated) names, sorted by date, same order within a date as the
+    plan, and in agreement with the quality metrics."""
+    tue = "2026-01-06"
+
+    def slot(slot_id, day, start, end):
+        return make_template_slot(
+            slot_id=slot_id, col_band_id=f"col-{day}-1", required_slots=0,
+            start_time=start, end_time=end,
+        )
+
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-a1", "Alice", working_hours_per_week=40),
+            make_clinician("clin-a2", "Alice", working_hours_per_week=40),
+            make_clinician("clin-b", "Bob", working_hours_per_week=40),
+            make_clinician("clin-c", "Carla", working_hours_per_week=40),
+        ],
+        slots=[
+            slot("short-mon", "mon", "08:00", "10:00"),
+            slot("hour-mon", "mon", "10:00", "11:00"),
+            slot("long-mon", "mon", "07:00", "19:00"),
+            slot("short-tue", "tue", "08:00", "10:00"),
+            slot("long-tue", "tue", "07:00", "19:00"),
+        ],
+        # Fixed (manual) context, deliberately not in date order.
+        assignments=[
+            make_assignment("m1", "short-tue", tue, "clin-a2"),
+            make_assignment("m2", "long-mon", MON, "clin-b"),
+            make_assignment("m3", "hour-mon", MON, "clin-c"),
+            make_assignment("m4", "short-mon", MON, "clin-a1"),
+            make_assignment("m5", "long-tue", tue, "clin-a1"),
+        ],
+    )
+    result = agent_solve_range(
+        _payload(endISO=tue),
+        state,
+        MockCancelEvent(),
+        ProgressRecorder(),
+        time.time(),
+        provider=MockProvider([{"text": "Seed accepted."}]),
+        config=_config(),
+    )
+    unsolved = result["debugInfo"]["agent"]["unsolved"]
+    assert unsolved["short_days"] == [
+        {"clinician": "Carla", "dateISO": MON, "hours": 1.0, "min_hours": 4.0},
+        {"clinician": "Alice", "dateISO": MON, "hours": 2.0, "min_hours": 4.0},
+        {"clinician": "Alice", "dateISO": tue, "hours": 2.0, "min_hours": 4.0},
+    ]
+    assert unsolved["overlong_days"] == [
+        {"clinician": "Bob", "dateISO": MON, "hours": 12.0, "comfort_hours": 9.0},
+        {"clinician": "Alice", "dateISO": tue, "hours": 12.0, "comfort_hours": 9.0},
+    ]
+    assert unsolved["quality_metrics"]["short_days"] == 3
+    assert unsolved["quality_metrics"]["overlong_days"] == 2
+    day_lines = [n for n in result["notes"] if n.startswith(("- short day:", "- over-long day:"))]
+    assert day_lines == [
+        f"- short day: Carla {MON}: 1.0h (minimum 4.0h)",
+        f"- short day: Alice {MON}: 2.0h (minimum 4.0h)",
+        f"- short day: Alice {tue}: 2.0h (minimum 4.0h)",
+        f"- over-long day: Bob {MON}: 12.0h (comfortable up to 9.0h)",
+        f"- over-long day: Alice {tue}: 12.0h (comfortable up to 9.0h)",
+    ]
+
+
 def test_unsolved_overview_counts_placements_outside_preferred_times():
     """The closing report lists placements outside someone's PREFERRED
     working time (the wish; mandatory windows can never be violated)."""
@@ -1286,6 +1352,64 @@ def test_cancel_during_final_review_generation_keeps_pre_abort_plan():
                               cancel, ProgressRecorder(), time.time(), provider=provider, config=_config())
     assert result["debugInfo"]["solver_status"] == "ABORTED"
     assert result["debugInfo"]["agent"]["stopReason"] == "aborted"
+    assert [a["clinicianId"] for a in result["assignments"]] == ["clin-1"]
+
+
+def _run_day_by_day_with_review_turns(review_turns):
+    """One-day run whose day conversation places Alice (so the final range
+    review starts); the review gets ``review_turns``. Returns the result and
+    the message lists the review calls saw."""
+    from backend.agent.prompts import REVIEW_SYSTEM_PROMPT
+
+    turns = iter(review_turns)
+    review_messages = []
+
+    class ScriptedReview(MockProvider):
+        def complete(self, **kwargs):
+            if kwargs["system"] == REVIEW_SYSTEM_PROMPT:
+                review_messages.append(list(kwargs["messages"]))
+                return next(turns)
+            return super().complete(**kwargs)
+
+    provider = ScriptedReview([
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"},
+        ]}}]}, {"text": "Day complete."},
+    ])
+    result = agent_solve_range(_payload(agent_strategy="day_by_day"), _two_clinician_state(),
+                              MockCancelEvent(), ProgressRecorder(), time.time(),
+                              provider=provider, config=_config())
+    return result, review_messages
+
+
+def test_final_review_truncated_replies_run_their_tools_and_get_nudged():
+    """A cut-off review reply (max_tokens, here with a tool call) gets its
+    tool results and a nudge, like the duty and day loops, instead of
+    silently ending the review; the third cut-off in a row ends it with a
+    note."""
+    truncated = ProviderResponse(text=None, stop_reason="max_tokens", tool_calls=[
+        ToolCall("cut-1", "get_plan_overview", {}),
+    ])
+    result, review_messages = _run_day_by_day_with_review_turns([
+        truncated,
+        ProviderResponse(text="I was about to", tool_calls=[], stop_reason="max_tokens"),
+        ProviderResponse(text="I was about to", tool_calls=[], stop_reason="max_tokens"),
+    ])
+    assert len(review_messages) == 3
+    assistant, tool, nudge = review_messages[1][-3:]
+    assert assistant.role == "assistant" and assistant.tool_calls == truncated.tool_calls
+    assert [(r.tool_call_id, r.is_error) for r in tool.tool_results] == [("cut-1", False)]
+    assert nudge.role == "user" and "truncated" in nudge.content
+    assert any("repeatedly truncated in the final range review" in n for n in result["notes"])
+    assert any(n.startswith("Final range review: 0 additional change") for n in result["notes"])
+
+
+def test_final_review_reports_a_refusal_as_refusal():
+    result, review_messages = _run_day_by_day_with_review_turns([
+        ProviderResponse(text=None, tool_calls=[], stop_reason="refusal"),
+    ])
+    assert len(review_messages) == 1
+    assert "LLM refusal during the final range review; best plan so far returned." in result["notes"]
     assert [a["clinicianId"] for a in result["assignments"]] == ["clin-1"]
 
 

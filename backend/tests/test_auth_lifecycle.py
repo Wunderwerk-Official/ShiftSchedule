@@ -2,6 +2,7 @@
 
 import json
 import sqlite3
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -193,7 +194,7 @@ def test_monitor_cannot_restore_old_data_or_charge_recreated_account(monkeypatch
     }})
     process = SimpleNamespace(is_alive=lambda: False, join=lambda **_: None)
     handle = solver._RunHandle(
-        run_id="reused-run-id", username="victim", mode="agent", exclusive=False,
+        run_id="reused-run-id", username="victim", exclusive=False,
         process=process, progress_queue=queue, mp_cancel_event=Event(),
         heartbeat_value=SimpleNamespace(value=0), started_at=time.time(),
         account_generation=old_generation,
@@ -336,3 +337,81 @@ def test_save_authenticated_before_deletion_rechecks_identity_after_preparation(
             pending.result(timeout=5)
         assert error.value.status_code == 401
     assert owned_rows("same") == before
+
+
+_ACCOUNT_KEY_COLUMNS = ("username", "user_id", "owner", "account")
+
+
+def _account_tables(conn):
+    """Every table holding per-account rows, found by schema introspection.
+
+    Only tables keyed by one of _ACCOUNT_KEY_COLUMNS (plus app_state.id) are
+    found; a per-account table keyed any other way must be added here.
+    """
+    tables = {"app_state": "id"}
+    for (name,) in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall():
+        columns = {row[1] for row in conn.execute(f"PRAGMA table_info({name})").fetchall()}
+        column = next((key for key in _ACCOUNT_KEY_COLUMNS if key in columns), None)
+        if column:
+            tables[name] = column
+    return tables
+
+
+def test_delete_covers_every_table_with_account_rows(monkeypatch):
+    auth._create_user("victim", "password", "user")
+    seed_owned_data("victim")
+    monkeypatch.setattr(solver, "stop_account_work", lambda _: None, raising=False)
+    with closing(db._get_connection()) as conn:
+        tables = _account_tables(conn)
+        # A new per-account table must be seeded here so the delete check below covers it.
+        missing = [table for table, column in tables.items() if not conn.execute(
+            f"SELECT 1 FROM {table} WHERE {column} = ?", ("victim",)).fetchone()]
+    assert not missing, f"seed_owned_data does not cover: {missing}"
+    auth._delete_user("victim")
+    with closing(db._get_connection()) as conn:
+        leftovers = [table for table, column in tables.items() if conn.execute(
+            f"SELECT 1 FROM {table} WHERE {column} = ?", ("victim",)).fetchone()]
+    assert not leftovers
+
+
+def test_create_user_is_atomic_with_its_start_state(monkeypatch):
+    from backend.models import UserCreateRequest
+
+    admin = auth._create_user("admin", "password", "admin")
+    original_save = auth._save_state
+
+    def failing_save(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    monkeypatch.setattr(auth, "_save_state", failing_save)
+    with pytest.raises(RuntimeError):
+        auth.create_user(UserCreateRequest(username="new", password="pw"), admin)
+    assert auth._get_user_by_username("new") is None
+    # Not monkeypatch.undo(): that would also revert the per-test DB path.
+    monkeypatch.setattr(auth, "_save_state", original_save)
+    created = auth.create_user(UserCreateRequest(username="new", password="pw"), admin)
+    assert created.username == "new"
+    with db._get_connection() as conn:
+        assert conn.execute("SELECT 1 FROM app_state WHERE id = ?", ("new",)).fetchone()
+
+
+def test_admin_cannot_disable_or_demote_themselves():
+    boss = auth._create_user("boss", "password", "admin")
+    auth._create_user("other", "password", "user")
+    for update in (UserUpdateRequest(active=False), UserUpdateRequest(role="user")):
+        with pytest.raises(HTTPException) as error:
+            auth.update_user("BOSS ", update, boss)
+        assert error.value.status_code == 400
+    assert auth._get_user_by_username("boss")["active"] == 1
+    assert auth.update_user("other", UserUpdateRequest(active=False), boss).active is False
+
+
+@pytest.mark.parametrize("authorization,detail", [
+    (None, "Missing token."), ("", "Missing token."), ("Basic x", "Invalid token."),
+    ("Bearer ", "Invalid token."), ("Bearer    ", "Invalid token."),
+])
+def test_current_user_rejects_missing_or_malformed_bearer(authorization, detail):
+    with pytest.raises(HTTPException) as error:
+        auth._get_current_user(authorization)
+    assert error.value.status_code == 401
+    assert error.value.detail == detail

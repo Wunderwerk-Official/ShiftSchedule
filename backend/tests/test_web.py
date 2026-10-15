@@ -202,6 +202,17 @@ class TestWebEtagCaching:
         assert response.status_code == 200
 
 
+class TestWebSlotOverrides:
+    def test_overrides_are_clamped_to_week_by_last_separator(self, client, setup_web_publication):
+        state = setup_web_publication["state"]
+        # Slot ids contain "__" themselves; the date is after the LAST separator.
+        state.slotOverridesByKey = {"slot-a__mon__2026-01-04": 2, "slot-a__mon__2026-01-05": 3}
+        _save_state(state, setup_web_publication["username"])
+        response = client.get(f"/v1/web/{setup_web_publication['token']}/week?start=2026-01-05")
+        assert response.status_code == 200
+        assert response.json()["slotOverridesByKey"] == {"slot-a__mon__2026-01-05": 3}
+
+
 class TestWebVacationFiltering:
     """Tests for vacation day filtering in web API."""
 

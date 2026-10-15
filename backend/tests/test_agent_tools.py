@@ -47,6 +47,24 @@ def test_split_slot_key_handles_double_underscore_slot_ids():
     assert _split_slot_key("simple__2026-01-05") == ("simple", "2026-01-05")
 
 
+def test_time_formatting_wraps_only_the_end_past_midnight():
+    from backend.agent.tools import _fmt_span, _hhmm
+
+    assert _hhmm(0) == "00:00" and _hhmm(1439) == "23:59"
+    assert _fmt_span(0, 15) == "00:00-00:15"
+    assert _fmt_span(480, 1440 + 60) == "08:00-01:00"  # night shift ends 01:00
+    assert _fmt_span(1200, 1440) == "20:00-00:00"
+
+
+def test_assignment_interval_falls_back_to_the_template_slot_outside_the_range():
+    executor = _make_executor(make_app_state())  # solve range: MON only
+    next_monday = "2026-01-12"
+    assert executor._assignment_interval(_seed("slot-a__mon", MON, "clin-1")) == (480, 960)
+    # No slot instance outside the range: the template interval still counts.
+    assert executor._assignment_interval(_seed("slot-a__mon", next_monday, "clin-1")) == (480, 960)
+    assert executor._assignment_interval(_seed("no-such-slot", MON, "clin-1")) is None
+
+
 @pytest.mark.parametrize("arguments", [
     {}, {"moves": []}, {"moves": None}, [], None,
     {"moves": [{"action": "assign", "slot_key": f"slot-a__mon__{MON}"}]},
@@ -281,7 +299,7 @@ def test_open_slots_and_overview_shapes():
     assert overview["quality_of_best_snapshot"]["open_required_slots"] == 1
 
     summary, _ = _run(executor, "get_clinician_summary", {"clinicianId": "clin-1"})
-    assert summary["qualified_sections"] == ["section-a"]
+    assert summary["qualified_sections"] == ["Section A"]
     assert summary["planning_wishes"] is None  # unset -> explicit None
 
     unknown, is_error = _run(executor, "get_clinician_summary", {"clinicianId": "nope"})
@@ -395,6 +413,61 @@ def test_problem_digest_uses_names_and_slot_codes():
     assert "S1__" in digest and "slot-a__mon" not in digest
 
 
+def test_digest_roster_rows_render_identically_in_all_three_digests():
+    """The roster rows are part of the cached prompt prefix: the exact text
+    (missing values as '-', unknown section ids verbatim, the work-pattern
+    suffix only in the duty and day digests) must not drift."""
+    from backend.agent.prompts import (
+        build_day_digest,
+        build_duty_digest,
+        build_problem_digest,
+    )
+    from backend.models import WorkPattern
+    from backend.scoring import open_slots, plan_stats
+
+    alice = make_clinician(
+        "clin-a", "Dr. Alice", preferred_class_ids=["section-a"], working_hours_per_week=40
+    )
+    alice.workPattern = WorkPattern(daysPerWeek=4, preferredDaysOff=["fri"])
+    bob = make_clinician("clin-b", "Dr. Bob", qualified_class_ids=["section-a", "gone-section"])
+    state = make_app_state(clinicians=[alice, bob])
+    executor = _make_executor(state)
+    executor.ctx.ytd_deficit_pct = {"clin-a": 13}
+    aliases = executor.alias_by_id
+    pattern = "|soft work pattern: {'daysPerWeek': 4.0, 'preferredDaysOff': ['fri']}"
+    alice_row = "- Dr. Alice|Section A|Section A|40.0|87"
+    bob_row = "- Dr. Bob|Section A,gone-section|-|-|-"
+
+    duty = build_duty_digest(state, executor.ctx, [], 5, aliases, {"clin-a": 87})
+    day = build_day_digest(
+        state, executor.ctx, MON, 0, 1, 1, [], [], [], 5, aliases,
+        ytd_worked_pct_by_id={"clin-a": 87},
+    )
+    problem = build_problem_digest(
+        state,
+        executor.ctx,
+        plan_stats(executor.ctx, []),
+        open_slots(executor.ctx, []),
+        new_hard_violation_count=0,
+        soft_violation_count=0,
+        max_iterations=10,
+        clinician_aliases=aliases,
+    )
+
+    roster_head = (
+        "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
+        "of target{}, 100=on target, lower=behind):"
+    )
+    assert duty.splitlines()[:3] == [roster_head.format(""), alice_row + pattern, bob_row]
+    assert day.splitlines()[:3] == [
+        roster_head.format(f" as of {MON}"), alice_row + pattern, bob_row
+    ]
+    problem_lines = problem.splitlines()
+    assert "Sections: Section A" in problem_lines
+    start = problem_lines.index(roster_head.format(""))
+    assert problem_lines[start + 1 : start + 3] == [alice_row, bob_row]
+
+
 def test_activity_feed_uses_real_names_for_the_ui():
     events = []
     state = make_app_state(clinicians=[make_clinician("clin-1", "Dr. Alice")])
@@ -500,6 +573,24 @@ def test_candidates_sorted_most_behind_first_and_tool_lists_progress():
     aliases = [e["clinicianId"] for e in progress["clinicians"]]
     assert aliases[0] == executor.alias_by_id["clin-2"]  # most behind first
     assert all(e["clinicianId"].startswith("D") for e in progress["clinicians"])
+
+    dated, is_error = _run(executor, "get_ytd_progress", {"dateISO": MAR_MON})
+    assert not is_error and dated["clinicians"]
+
+
+def test_ytd_progress_rejects_invalid_date():
+    executor = _make_executor(_ytd_state(), start=MAR_MON, end=MAR_MON)
+    payload, _ = _run(executor, "get_ytd_progress", {"dateISO": "2026-13-01"})
+    assert "error" in payload
+    assert "clinicians" not in payload
+
+
+def test_ytd_progress_normalises_compact_iso_date():
+    executor = _make_executor(_ytd_state(), start=MAR_MON, end=MAR_MON)
+    compact, _ = _run(executor, "get_ytd_progress", {"dateISO": MAR_MON.replace("-", "")})
+    extended, _ = _run(executor, "get_ytd_progress", {"dateISO": MAR_MON})
+    assert compact["as_of"] == MAR_MON
+    assert compact["clinicians"] == extended["clinicians"]
 
 
 # ---------------------------------------------------------------------------
@@ -718,6 +809,27 @@ def test_hours_overview_flags_underworked_first():
     assert alice_week["status"] == "under" and alice_week["hours"] == 0.0
     bob_week = payload["clinicians"][1]["weeks"]["2026-W02"]
     assert bob_week["status"] == "over"
+
+
+def test_negative_tolerance_is_clamped_like_the_weekly_hours_gate():
+    """validate_weekly_hours treats a negative tolerance as 0. The advisory
+    tools must report the same limits, or exactly-on-contract weeks show as
+    'under' while the gate accepts them."""
+    from backend.validation import validate_weekly_hours
+
+    clinician = make_clinician("clin-1", "Alice", working_hours_per_week=8)
+    clinician.workingHoursToleranceHours = -2
+    state = make_app_state(clinicians=[clinician])
+    executor = _make_executor(state, [_seed("slot-a__mon", MON, "clin-1")])
+
+    overview, _ = _run(executor, "get_hours_overview", {})
+    entry = overview["clinicians"][0]
+    assert entry["tolerance_hours"] == 0
+    assert entry["weeks"]["2026-W02"] == {"hours": 8.0, "deviation_h": 0.0, "status": "ok"}
+    summary, _ = _run(executor, "get_clinician_summary", {"clinicianId": "Alice"})
+    assert summary["tolerance_hours"] == 0
+    # The gate agrees: 8h on an 8h contract is within the clamped cap.
+    assert validate_weekly_hours(state, executor._full_plan()) == []
 
 
 def test_day_schedule_lists_slots_with_assignees():
@@ -1966,3 +2078,77 @@ def test_suggest_balance_moves_extends_short_day_from_longer_neighbour():
 
     applied, _ = _run(executor, "apply_moves", {"moves": extend["batch"]})
     assert applied["applied"] is True
+
+
+# ---------------------------------------------------------------------------
+# Validator messages use S-codes / section names, never raw ids
+# ---------------------------------------------------------------------------
+
+
+def test_violation_outputs_use_slot_codes_not_raw_ids():
+    slots = [
+        make_template_slot("slot-x", col_band_id="col-mon-1",
+                           start_time="08:00", end_time="12:00"),
+        make_template_slot("slot-y", col_band_id="col-mon-1",
+                           start_time="11:00", end_time="15:00"),
+    ]
+    state = make_app_state(clinicians=[make_clinician("clin-1", "Alice")], slots=slots)
+    executor = _make_executor(state)
+    rejected, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"slot-x__{MON}", "clinicianId": "clin-1"},
+        {"action": "assign", "slot_key": f"slot-y__{MON}", "clinicianId": "clin-1"},
+    ]})
+    overlap = [v for v in rejected["new_hard_violations"] if v["code"] == "OVERLAP"]
+    assert overlap
+    codes = {executor.slot_code_by_id["slot-x"], executor.slot_code_by_id["slot-y"]}
+    for v in overlap:
+        assert "slot-" not in v["message"]
+        assert any(code in v["message"] for code in codes)
+
+    fixed = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        assignments=[make_assignment("m1", "slot-x", MON, "clin-1"),
+                     make_assignment("m2", "slot-y", MON, "clin-1")],
+        slots=slots,
+    )
+    executor = _make_executor(fixed)
+    payload, _ = _run(executor, "get_violations", {"severity": "hard"})
+    overlap = [v for v in payload["violations"] if v["code"] == "OVERLAP"]
+    assert overlap
+    for v in overlap:
+        assert "slot_id" not in v
+        assert "slot-" not in v["message"]
+        assert v["slot_key"] in {f"{executor.slot_code_by_id[s]}__{MON}" for s in ("slot-x", "slot-y")}
+
+
+def test_violation_text_respects_token_boundaries():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Amrita", qualified_class_ids=["section-a"],
+                                   planning_wishes="No mri shifts, slot-a__mon is fine.")],
+        rows=[make_workplace_row(), make_workplace_row("mri", "MRT"),
+              make_pool_row("pool-rest-day", "Rest Day")],
+    )
+    executor = _make_executor(state)
+    code = executor.slot_code_by_id["slot-a__mon"]
+    message = f"Amrita is not qualified for section mri (slot slot-a__mon on {MON})"
+    assert executor._violation_text(message) == (
+        f"Amrita is not qualified for section MRT (slot {code} on {MON})"
+    )
+    # An unknown "::" row id that merely starts with a known id stays intact.
+    assert executor._violation_text("slot mri::s1 overlaps") == "slot mri::s1 overlaps"
+    # Free text (wishes) is not rewritten.
+    summary, _ = _run(executor, "get_clinician_summary", {"clinicianId": "clin-1"})
+    assert summary["planning_wishes"] == "No mri shifts, slot-a__mon is fine."
+    assert summary["qualified_sections"] == ["Section A"]
+
+
+def test_suggest_tool_descriptions_point_to_apply_proposal():
+    from backend.agent.tools import TOOL_SPECS_RAW
+
+    specs = {t["name"]: t["description"] for t in TOOL_SPECS_RAW}
+    for name in ("suggest_day_blocks", "suggest_balance_moves"):
+        assert "apply_proposal" in specs[name]
+        assert "apply_moves FIRST" not in specs[name]
+    # Only blocks that failed the dry-run lack an ID; never advise re-applying them whole.
+    assert "WHOLE block in one apply_moves" not in specs["suggest_day_blocks"]
+    assert "failed the whole-block check" in specs["suggest_day_blocks"]

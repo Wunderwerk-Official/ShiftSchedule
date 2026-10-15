@@ -1,6 +1,4 @@
 import json
-import secrets
-import sqlite3
 from contextlib import closing
 from typing import Any, Dict, List, Optional
 
@@ -11,12 +9,12 @@ from .account_lifecycle import authenticated_account_connection
 from .db import _get_connection, _utcnow_iso
 from .models import AppState, UserPublic, WebPublishStatus
 from .publication import (
-    _compute_public_week_etag,
-    _etag_matches,
-    _format_http_datetime,
+    _compute_etag,
     _get_web_publication_by_token,
     _get_web_publication_by_username,
-    _if_modified_since_matches,
+    _new_token,
+    _not_modified,
+    _public_cache_headers,
     _web_token_exists,
 )
 from .state import (
@@ -47,38 +45,19 @@ def publish_web(current_user: UserPublic = Depends(_get_current_user)):
             (current_user.username,),
         ).fetchone()
         if existing:
-            token = existing["token"]
-            conn.execute(
-                "UPDATE web_publications SET updated_at = ? WHERE username = ?",
-                (now, current_user.username),
-            )
-            return WebPublishStatus(published=True, token=token)
+            # Idempotent like publish_ical: touching updated_at would change
+            # the public week ETag/Last-Modified for every viewer.
+            return WebPublishStatus(published=True, token=existing["token"])
 
-        for _ in range(10):
-            token = secrets.token_urlsafe(32)
-            if _web_token_exists(conn, token):
-                continue
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO web_publications (username, token, created_at, updated_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (current_user.username, token, now, now),
-                )
-                return WebPublishStatus(published=True, token=token)
-            except sqlite3.IntegrityError:
-                # The conflict may be on the username primary key (a concurrent
-                # publish won the race) rather than the token; return the
-                # existing publication instead of retrying until a 500.
-                raced = conn.execute(
-                    "SELECT token FROM web_publications WHERE username = ?",
-                    (current_user.username,),
-                ).fetchone()
-                if raced:
-                    return WebPublishStatus(published=True, token=raced["token"])
-                continue
-        raise HTTPException(status_code=500, detail="Failed to generate token.")
+        token = _new_token(conn, _web_token_exists)
+        conn.execute(
+            """
+            INSERT INTO web_publications (username, token, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (current_user.username, token, now, now),
+        )
+        return WebPublishStatus(published=True, token=token)
 
 
 @router.post("/v1/web/publish/rotate", response_model=WebPublishStatus)
@@ -91,19 +70,12 @@ def rotate_web(current_user: UserPublic = Depends(_get_current_user)):
         ).fetchone()
         if not existing:
             raise HTTPException(status_code=404, detail="No publication found.")
-        for _ in range(10):
-            token = secrets.token_urlsafe(32)
-            if _web_token_exists(conn, token):
-                continue
-            try:
-                conn.execute(
-                    "UPDATE web_publications SET token = ?, updated_at = ? WHERE username = ?",
-                    (token, now, current_user.username),
-                )
-                return WebPublishStatus(published=True, token=token)
-            except sqlite3.IntegrityError:
-                continue
-        raise HTTPException(status_code=500, detail="Failed to generate token.")
+        token = _new_token(conn, _web_token_exists)
+        conn.execute(
+            "UPDATE web_publications SET token = ?, updated_at = ? WHERE username = ?",
+            (token, now, current_user.username),
+        )
+        return WebPublishStatus(published=True, token=token)
 
 
 @router.delete("/v1/web/publish", status_code=204)
@@ -137,26 +109,16 @@ def get_public_web_week(
     publication_updated_at_raw = publication["updated_at"] or ""
     publication_updated_at = _parse_iso_datetime(publication_updated_at_raw)
     last_modified = max(state_updated_at, publication_updated_at)
-    etag = _compute_public_week_etag(
+    etag = _compute_etag(
         token,
         week_start_iso,
-        state_updated_at_raw,
-        publication_updated_at_raw,
+        state_updated_at_raw or "",
+        publication_updated_at_raw or "",
         state_payload,
         dict(publication),
     )
-    headers = {
-        "Cache-Control": "private, max-age=0, must-revalidate",
-        "ETag": etag,
-        "Last-Modified": _format_http_datetime(last_modified),
-        "Referrer-Policy": "no-referrer",
-    }
-
-    # RFC 9110: If-None-Match takes precedence over If-Modified-Since.
-    if _etag_matches(if_none_match, etag) or (
-        if_none_match is None
-        and _if_modified_since_matches(if_modified_since, last_modified)
-    ):
+    headers = _public_cache_headers(etag, last_modified)
+    if _not_modified(if_none_match, if_modified_since, etag, last_modified):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
 
     state = AppState.model_validate(state_payload)

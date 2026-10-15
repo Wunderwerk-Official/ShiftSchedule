@@ -7,7 +7,8 @@ This document explains the testing infrastructure for the shift scheduler solver
 ## Quick Start
 
 ```bash
-# Run all solver tests
+# Run all solver tests (the glob also picks up test_solver_benchmark.py,
+# ~7 min, which CI skips; add --ignore=backend/tests/test_solver_benchmark.py)
 python3 -m pytest backend/tests/test_solver*.py -v
 
 # Run just the continuity tests
@@ -28,6 +29,8 @@ python3 -m pytest backend/tests/test_solver_continuity.py::TestMartinLikeFixture
 | `test_solver_coverage.py` | Coverage tests (required slots, multi-slot, working hours) |
 | `test_solver_preferences.py` | Time window preferences and hours distribution |
 | `test_solver_time.py` | Time parsing and interval handling |
+| `test_solver_monitor.py` | Background-run monitor end states: watchdog kill, salvaged plans stored as `aborted`, torn queue messages, agent spend recorded once (v1.64; fake processes, no CP-SAT) |
+| `test_solver_run_endpoints.py` | `POST /v1/solve/range` date validation (422), discard 409s, draft apply replacing vacation-hidden solver rows (v1.64) |
 | `fixtures_martin_like.py` | Realistic test fixtures mimicking Martin's radiology department |
 | `conftest.py` | Shared pytest fixtures and factory functions |
 
@@ -320,7 +323,7 @@ solver_settings = {
 
 The solver's constraints **work correctly**. Testing revealed:
 
-1. **No bugs in current solver** - All 57 solver tests pass
+1. **No bugs in current solver** - All solver tests pass
 2. **Continuity works** - No split shifts when `preferContinuousShifts=True`
 3. **Multi-week works** - 3-week schedules solve correctly (~3 minutes)
 4. **Historical gaps** - Gaps in existing data were created by older solver versions

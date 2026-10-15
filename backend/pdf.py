@@ -1,8 +1,9 @@
 import json
+import logging
 import os
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from playwright.sync_api import sync_playwright
 
@@ -10,6 +11,8 @@ from .auth import _extract_bearer_token, _get_current_user
 from .account_lifecycle import authenticated_account_connection
 from .models import UserPublic
 from .state import _load_state, _parse_date_input
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -49,22 +52,17 @@ def _bind_print_snapshot(page, snapshot: str):
     ))
 
 
-@router.get("/v1/pdf/week")
-def export_week_pdf(
-    start: str = Query(..., min_length=8),
-    expected_revision: Optional[str] = Query(default=None),
-    authorization: Optional[str] = Header(default=None),
-    current_user: UserPublic = Depends(_get_current_user),
-):
-    start_iso = _parse_date_input(start)
-    if not start_iso:
-        raise HTTPException(status_code=400, detail="Start date required.")
+def _render_pdf(
+    print_path: str,
+    filename: str,
+    current_user: UserPublic,
+    authorization: Optional[str],
+    expected_revision: Optional[str],
+) -> Response:
+    # _get_current_user already rejected requests without a bearer token.
     token = _extract_bearer_token(authorization)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token.")
     snapshot, revision = _export_snapshot(current_user, expected_revision)
-    base_url = FRONTEND_BASE_URL.rstrip("/")
-    print_url = f"{base_url}/print/week?start={start_iso}"
+    print_url = f"{FRONTEND_BASE_URL.rstrip('/')}{print_path}"
 
     try:
         with sync_playwright() as playwright:
@@ -92,16 +90,34 @@ def export_week_pdf(
             finally:
                 browser.close()
     except PlaywrightTimeoutError as exc:
+        logger.warning("PDF render timed out for %s", print_url)
         raise HTTPException(status_code=504, detail="PDF render timed out.") from exc
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception as exc:
+        # HTTPException causes are not logged by FastAPI; keep the diagnosis.
+        logger.exception("PDF render failed for %s", print_url)
         raise HTTPException(status_code=500, detail="PDF render failed.") from exc
 
-    filename = f"shift-planner-{start_iso}.pdf"
     return Response(
         content=pdf_bytes,
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"',
                  "X-Calendar-Revision": revision or ""},
+    )
+
+
+@router.get("/v1/pdf/week")
+def export_week_pdf(
+    start: str = Query(..., min_length=8),
+    expected_revision: Optional[str] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
+    current_user: UserPublic = Depends(_get_current_user),
+):
+    start_iso = _parse_date_input(start)
+    if not start_iso:
+        raise HTTPException(status_code=400, detail="Start date required.")
+    return _render_pdf(
+        f"/print/week?start={start_iso}", f"shift-planner-{start_iso}.pdf",
+        current_user, authorization, expected_revision,
     )
 
 
@@ -116,52 +132,7 @@ def export_weeks_pdf(
     start_iso = _parse_date_input(start)
     if not start_iso:
         raise HTTPException(status_code=400, detail="Start date required.")
-    token = _extract_bearer_token(authorization)
-    if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing token.")
-    snapshot, revision = _export_snapshot(current_user, expected_revision)
-    base_url = FRONTEND_BASE_URL.rstrip("/")
-    print_url = f"{base_url}/print/weeks?start={start_iso}&weeks={weeks}"
-
-    try:
-        with sync_playwright() as playwright:
-            browser = _launch_chromium(playwright)
-            try:
-                # Set viewport to A4 landscape dimensions at 96 DPI
-                # 297mm x 210mm = 1122 x 794 px at 96 DPI
-                page = browser.new_page(viewport={"width": 1122, "height": 794})
-                _bind_print_snapshot(page, snapshot)
-                page.add_init_script(
-                    "localStorage.setItem('authToken', %s);" % json.dumps(token)
-                )
-                page.emulate_media(media="print")
-                page.goto(print_url, wait_until="networkidle", timeout=20000)
-                page.wait_for_function("window.__PDF_READY__ === true", timeout=20000)
-                # Frontend already scales content to fit A4 printable area with margins,
-                # so we use scale=1.0 and no additional PDF margins
-                pdf_bytes = page.pdf(
-                    format="A4",
-                    landscape=True,
-                    print_background=True,
-                    scale=1.0,
-                    margin={
-                        "top": "0mm",
-                        "right": "0mm",
-                        "bottom": "0mm",
-                        "left": "0mm",
-                    },
-                )
-            finally:
-                browser.close()
-    except PlaywrightTimeoutError as exc:
-        raise HTTPException(status_code=504, detail="PDF render timed out.") from exc
-    except Exception as exc:  # pragma: no cover - defensive
-        raise HTTPException(status_code=500, detail="PDF render failed.") from exc
-
-    filename = f"shift-planner-{start_iso}-{weeks}w.pdf"
-    return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"',
-                 "X-Calendar-Revision": revision or ""},
+    return _render_pdf(
+        f"/print/weeks?start={start_iso}&weeks={weeks}", f"shift-planner-{start_iso}-{weeks}w.pdf",
+        current_user, authorization, expected_revision,
     )

@@ -2,14 +2,13 @@ import json
 import os
 import secrets
 import sqlite3
-from contextlib import closing, nullcontext
 from email.utils import format_datetime, parsedate_to_datetime
 from hashlib import sha256
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 
-from .db import _get_connection, _utcnow_iso
+from .db import _utcnow_iso
 from .models import Clinician, IcalPublishAllLink, IcalPublishClinicianLink, IcalPublishStatus
 
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip()
@@ -47,52 +46,31 @@ def _if_modified_since_matches(
     return parsed_utc >= last_modified
 
 
-def _compute_public_etag(
-    token: str,
-    state_updated_at: str,
-    publication_updated_at: str,
-    state_payload: Dict[str, Any],
-    publication_payload: Dict[str, Any],
-) -> str:
+def _compute_etag(*parts: Any) -> str:
     # Timestamps have second precision; separate edits within one second
     # still represent different calendars and must invalidate the cache.
-    payload = json.dumps(
-        [
-            token,
-            state_updated_at or "",
-            publication_updated_at or "",
-            state_payload,
-            publication_payload,
-        ],
-        sort_keys=True,
-        separators=(",", ":"),
-    )
+    payload = json.dumps(list(parts), sort_keys=True, separators=(",", ":"))
     digest = sha256(payload.encode("utf-8")).hexdigest()
     return f"\"{digest}\""
 
 
-def _compute_public_week_etag(
-    token: str,
-    week_start_iso: str,
-    state_updated_at: str,
-    publication_updated_at: str,
-    state_payload: Dict[str, Any],
-    publication_payload: Dict[str, Any],
-) -> str:
-    payload = json.dumps(
-        [
-            token,
-            week_start_iso,
-            state_updated_at or "",
-            publication_updated_at or "",
-            state_payload,
-            publication_payload,
-        ],
-        sort_keys=True,
-        separators=(",", ":"),
+def _public_cache_headers(etag: str, last_modified) -> Dict[str, str]:
+    return {
+        "Cache-Control": "private, max-age=0, must-revalidate",
+        "ETag": etag,
+        "Last-Modified": _format_http_datetime(last_modified),
+        "Referrer-Policy": "no-referrer",
+    }
+
+
+def _not_modified(
+    if_none_match: Optional[str], if_modified_since: Optional[str], etag: str, last_modified
+) -> bool:
+    # RFC 9110: If-None-Match takes precedence over If-Modified-Since.
+    return _etag_matches(if_none_match, etag) or (
+        if_none_match is None
+        and _if_modified_since_matches(if_modified_since, last_modified)
     )
-    digest = sha256(payload.encode("utf-8")).hexdigest()
-    return f"\"{digest}\""
 
 
 def _build_subscribe_url(request: Request, token: str) -> str:
@@ -121,74 +99,73 @@ def _web_token_exists(conn: sqlite3.Connection, token: str) -> bool:
     return row is not None
 
 
-def _get_publication_by_username(username: str, *, connection=None) -> Optional[sqlite3.Row]:
-    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
-    with resource as conn:
-        row = conn.execute(
-            """
-            SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
-            FROM ical_publications
-            WHERE username = ?
-            """,
-            (username,),
-        ).fetchone()
-    return row
+def _new_token(conn: sqlite3.Connection, exists: Callable[[sqlite3.Connection, str], bool]) -> str:
+    """Return a fresh token unused by ``exists``.
+
+    Callers hold the account's write transaction (account lock + BEGIN
+    IMMEDIATE), so no other writer can claim the token or the row between
+    this check and their INSERT/UPDATE.
+    """
+    for _ in range(10):
+        token = secrets.token_urlsafe(32)
+        if not exists(conn, token):
+            return token
+    raise HTTPException(status_code=500, detail="Failed to generate token.")
 
 
-def _get_web_publication_by_username(username: str, *, connection=None) -> Optional[sqlite3.Row]:
-    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
-    with resource as conn:
-        row = conn.execute(
-            """
-            SELECT username, token, created_at, updated_at
-            FROM web_publications
-            WHERE username = ?
-            """,
-            (username,),
-        ).fetchone()
-    return row
+def _get_publication_by_username(username: str, *, connection) -> Optional[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
+        FROM ical_publications
+        WHERE username = ?
+        """,
+        (username,),
+    ).fetchone()
 
 
-def _get_web_publication_by_token(token: str, *, connection=None) -> Optional[sqlite3.Row]:
-    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
-    with resource as conn:
-        row = conn.execute(
-            """
-            SELECT username, token, created_at, updated_at
-            FROM web_publications
-            WHERE token = ?
-            """,
-            (token,),
-        ).fetchone()
-    return row
+def _get_web_publication_by_username(username: str, *, connection) -> Optional[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT username, token, created_at, updated_at
+        FROM web_publications
+        WHERE username = ?
+        """,
+        (username,),
+    ).fetchone()
 
 
-def _get_publication_by_token(token: str, *, connection=None) -> Optional[sqlite3.Row]:
-    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
-    with resource as conn:
-        row = conn.execute(
-            """
-            SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
-            FROM ical_publications
-            WHERE token = ?
-            """,
-            (token,),
-        ).fetchone()
-    return row
+def _get_web_publication_by_token(token: str, *, connection) -> Optional[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT username, token, created_at, updated_at
+        FROM web_publications
+        WHERE token = ?
+        """,
+        (token,),
+    ).fetchone()
 
 
-def _get_clinician_publication_by_token(token: str, *, connection=None) -> Optional[sqlite3.Row]:
-    resource = closing(_get_connection()) if connection is None else nullcontext(connection)
-    with resource as conn:
-        row = conn.execute(
-            """
-            SELECT username, clinician_id, token, created_at, updated_at
-            FROM ical_clinician_publications
-            WHERE token = ?
-            """,
-            (token,),
-        ).fetchone()
-    return row
+def _get_publication_by_token(token: str, *, connection) -> Optional[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT username, token, start_date_iso, end_date_iso, cal_name, created_at, updated_at
+        FROM ical_publications
+        WHERE token = ?
+        """,
+        (token,),
+    ).fetchone()
+
+
+def _get_clinician_publication_by_token(token: str, *, connection) -> Optional[sqlite3.Row]:
+    return connection.execute(
+        """
+        SELECT username, clinician_id, token, created_at, updated_at
+        FROM ical_clinician_publications
+        WHERE token = ?
+        """,
+        (token,),
+    ).fetchone()
 
 
 def _get_clinician_publications_for_user(
@@ -213,38 +190,22 @@ def _ensure_clinician_publications(
     for clinician in clinicians:
         if clinician.id in existing:
             continue
-        for _ in range(10):
-            token = secrets.token_urlsafe(32)
-            if _token_exists(conn, token):
-                continue
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO ical_clinician_publications (
-                        username, clinician_id, token, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (username, clinician.id, token, now, now),
-                )
-                existing[clinician.id] = {
-                    "clinician_id": clinician.id,
-                    "token": token,
-                    "created_at": now,
-                    "updated_at": now,
-                }
-                break
-            except sqlite3.IntegrityError:
-                # Do NOT roll back: this runs on the caller's connection and a
-                # rollback would discard the caller's uncommitted writes (e.g.
-                # the main publication insert). A failed INSERT has no effects
-                # of its own. If the row was created concurrently, reuse it;
-                # otherwise it was a token collision — retry with a new token.
-                refreshed = _get_clinician_publications_for_user(conn, username)
-                if clinician.id in refreshed:
-                    existing[clinician.id] = refreshed[clinician.id]
-                    break
-                continue
+        token = _new_token(conn, _token_exists)
+        conn.execute(
+            """
+            INSERT INTO ical_clinician_publications (
+                username, clinician_id, token, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (username, clinician.id, token, now, now),
+        )
+        existing[clinician.id] = {
+            "clinician_id": clinician.id,
+            "token": token,
+            "created_at": now,
+            "updated_at": now,
+        }
     return existing
 
 

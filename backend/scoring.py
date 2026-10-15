@@ -1,25 +1,13 @@
 """
-Deterministic plan scoring and statistics for shift-schedule assignments.
+Deterministic plan statistics and open slots for shift-schedule assignments.
 
 Companion to ``validation.py`` (pass/fail hard constraints): this module
 answers "how GOOD is a plan" so two candidate schedules can be compared.
-
-The AGENT solver does NOT use the weighted score: since the lexicographic
-quality gate (``agent/tools.PlanToolExecutor._quality``) replaced it, the
-agent compares plans tier by tier over ``plan_stats`` + validator counts, and
-``score_plan`` below survives only as the pure-Python replica of the legacy
-CP-SAT objective (same hand-tuned :class:`SolverSettings` weights, same
-minimized orientation: LOWER IS BETTER) for the ``solver_mode="cpsat"`` API
-path and its parity tests. Do not wire the weighted score back into agent
-decisions — its weights are gut-feel calibrations that predate the agent.
-
-Terms that the CP-SAT model computes over its decision variables only (total
-assignments, slot priority, preferences, time windows, YTD bonus) are computed
-over the *new* assignments only; terms that include manual context (coverage,
-slack, working hours, minimum daily minutes) include the pre-existing
-assignments captured in the context. Constant offsets versus the CP-SAT
-objective are possible (e.g. instances fully covered by manual assignments),
-which never affects comparisons between plans of the same problem.
+The agent's lexicographic quality gate
+(``agent/tools.PlanToolExecutor._quality``) compares plans tier by tier over
+``plan_stats`` + validator counts; ``open_slots`` lists the remaining gaps.
+There is no weighted score here: the CP-SAT objective is built in
+``solver.py`` only.
 
 Usage::
 
@@ -27,7 +15,6 @@ Usage::
                                 only_fill_required=True)
     stats = plan_stats(ctx, proposed_assignments)   # feeds the quality tiers
     gaps = open_slots(ctx, proposed_assignments)
-    score = score_plan(ctx, proposed_assignments)   # CP-SAT replica only
 
 Design notes
 ------------
@@ -49,7 +36,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from .models import AppState, Assignment, SolverSettings
 from .planning_preferences import daily_min_minutes, vacation_dates_in_range
@@ -66,13 +53,6 @@ from .solver import (
 # ---------------------------------------------------------------------------
 # Result shapes
 # ---------------------------------------------------------------------------
-
-
-class PlanScore(BaseModel):
-    """Objective value on the CP-SAT scale (minimized — lower is better)."""
-
-    total: float
-    components: Dict[str, float] = Field(default_factory=dict)
 
 
 class OpenSlot(BaseModel):
@@ -229,28 +209,16 @@ class ScoringContext:
             and f"{a.rowId}__{a.dateISO}" in self.instances
         ]
         self.fixed_counts: Dict[str, int] = {}
-        self.fixed_minutes_by_clinician: Dict[str, int] = {}
         self.fixed_minutes_by_clinician_date: Dict[Tuple[str, str], int] = {}
         for a in self.fixed_assignments:
             inst = self.instances[f"{a.rowId}__{a.dateISO}"]
             self.fixed_counts[inst.slot_key] = self.fixed_counts.get(inst.slot_key, 0) + 1
             duration = max(0, inst.end - inst.start)
-            self.fixed_minutes_by_clinician[a.clinicianId] = (
-                self.fixed_minutes_by_clinician.get(a.clinicianId, 0) + duration
-            )
             key = (a.clinicianId, a.dateISO)
             self.fixed_minutes_by_clinician_date[key] = (
                 self.fixed_minutes_by_clinician_date.get(key, 0) + duration
             )
 
-        # Section preference weights, same rank formula as solver.py.
-        self.pref_weight: Dict[str, Dict[str, int]] = {}
-        for clinician in state.clinicians:
-            preferred = clinician.preferredClassIds or []
-            self.pref_weight[clinician.id] = {
-                class_id: max(1, len(preferred) - idx)
-                for idx, class_id in enumerate(preferred)
-            }
         self.preferred_sections: Dict[str, set] = {
             c.id: set(c.preferredClassIds or []) for c in state.clinicians
         }
@@ -284,7 +252,6 @@ class ScoringContext:
                     0, _tol if _tol is not None else 5
                 )
 
-        self.scale = len(self.target_day_isos) / 7.0
         self.ytd_deficit_pct = _compute_ytd_deficit_hours(
             state, range_start, self.all_slot_intervals
         )
@@ -303,7 +270,7 @@ def build_scoring_context(
 
 
 # ---------------------------------------------------------------------------
-# Scoring
+# Helpers
 # ---------------------------------------------------------------------------
 
 
@@ -321,99 +288,6 @@ def _active_new_assignments(
         if inst is not None:
             out.append((a, inst))
     return out
-
-
-def score_plan(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanScore:
-    """Score fixed-context + ``new_assignments``. Lower is better."""
-    s = ctx.settings
-    new = _active_new_assignments(ctx, new_assignments)
-
-    counts: Dict[str, int] = dict(ctx.fixed_counts)
-    for _a, inst in new:
-        counts[inst.slot_key] = counts.get(inst.slot_key, 0) + 1
-
-    covered_weighted = 0
-    slack_weighted = 0
-    for inst in ctx.instances.values():
-        count = counts.get(inst.slot_key, 0)
-        if inst.target > 0 and count >= 1:
-            covered_weighted += inst.order_weight
-        slack_weighted += inst.order_weight * max(0, inst.target - count)
-
-    preference_score = 0
-    time_window_score = 0
-    priority_score = 0
-    ytd_bonus = 0
-    new_minutes_by_clinician: Dict[str, int] = {}
-    new_minutes_by_clinician_date: Dict[Tuple[str, str], int] = {}
-    new_count_by_clinician_date: Dict[Tuple[str, str], int] = {}
-    for a, inst in new:
-        priority_score += inst.order_weight
-        preference_score += ctx.pref_weight.get(a.clinicianId, {}).get(inst.section_id, 0)
-        window = ctx.window_by_clinician_date.get((a.clinicianId, a.dateISO))
-        if (
-            window is not None
-            and window[0] == "preference"
-            and inst.start >= window[1]
-            and inst.end <= window[2]
-        ):
-            time_window_score += 1
-        ytd_bonus += ctx.ytd_deficit_pct.get(a.clinicianId, 0)
-        duration = max(0, inst.end - inst.start)
-        new_minutes_by_clinician[a.clinicianId] = (
-            new_minutes_by_clinician.get(a.clinicianId, 0) + duration
-        )
-        key = (a.clinicianId, a.dateISO)
-        new_minutes_by_clinician_date[key] = (
-            new_minutes_by_clinician_date.get(key, 0) + duration
-        )
-        new_count_by_clinician_date[key] = new_count_by_clinician_date.get(key, 0) + 1
-
-    hours_penalty_minutes = 0
-    for cid, contract in ctx.contract_hours.items():
-        total_minutes = ctx.fixed_minutes_by_clinician.get(
-            cid, 0
-        ) + new_minutes_by_clinician.get(cid, 0)
-        target_minutes = int(round(contract * 60 * ctx.scale))
-        tol_minutes = int(round(ctx.tolerance_hours[cid] * 60 * ctx.scale))
-        if target_minutes <= 0 and tol_minutes <= 0:
-            continue
-        under = max(0, (target_minutes - tol_minutes) - total_minutes)
-        over = max(0, total_minutes - (target_minutes + tol_minutes))
-        hours_penalty_minutes += under + over
-
-    daily_deficit_minutes = 0
-    for (cid, date_iso), new_count in new_count_by_clinician_date.items():
-        if new_count < 1:
-            continue
-        window = ctx.window_by_clinician_date.get((cid, date_iso))
-        if window is not None:
-            min_minutes = max(1, (window[2] - window[1]) // 2)
-        elif cid in ctx.contract_hours:
-            min_minutes = max(1, int(round(ctx.contract_hours[cid] * 60 / 5)) // 2)
-        else:
-            continue
-        manual_minutes = ctx.fixed_minutes_by_clinician_date.get((cid, date_iso), 0)
-        if manual_minutes >= min_minutes:
-            continue
-        total_day = manual_minutes + new_minutes_by_clinician_date.get((cid, date_iso), 0)
-        deficit = min(max(0, min_minutes - total_day), min_minutes - manual_minutes)
-        daily_deficit_minutes += deficit
-
-    components: Dict[str, float] = {
-        "coverage": -covered_weighted * s.weightCoverage,
-        "slack": slack_weighted * s.weightSlack,
-        "section_preference": -preference_score * s.weightSectionPreference,
-        "time_window": -time_window_score * s.weightTimeWindow,
-        "working_hours": hours_penalty_minutes * s.weightWorkingHours,
-        "minimum_daily_hours": daily_deficit_minutes * s.weightMinimumDailyHours,
-        "ytd_balance": -ytd_bonus * s.weightYtdBalance,
-    }
-    if not ctx.only_fill_required:
-        components["total_assignments"] = -len(new) * s.weightTotalAssignments
-        components["slot_priority"] = -priority_score * s.weightSlotPriority
-
-    return PlanScore(total=sum(components.values()), components=components)
 
 
 # ---------------------------------------------------------------------------
@@ -513,8 +387,9 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
     # vacation-scaled targets, mirroring the frontend's live stats
     # (src/lib/solverStats.ts). A single whole-range comparison would report
     # ~0 for e.g. 0h in week 1 + 2x target in week 2. (The CP-SAT objective
-    # itself uses the whole-range scale — see score_plan — which is the right
-    # reference for the objective, but not for this user-facing stat.)
+    # itself uses the whole-range scale — see
+    # solver._add_working_hours_constraints — which is the right reference
+    # for the objective, but not for this user-facing stat.)
     week_days: Dict[Tuple[int, int], int] = {}
     for date_iso in ctx.target_day_isos:
         wk = datetime.fromisoformat(f"{date_iso}T00:00:00").date().isocalendar()[:2]
@@ -598,13 +473,11 @@ def plan_stats(ctx: ScoringContext, new_assignments: List[Assignment]) -> PlanSt
 
 
 __all__ = [
-    "PlanScore",
     "PlanStats",
     "OpenSlot",
     "SlotInstance",
     "ScoringContext",
     "build_scoring_context",
-    "score_plan",
     "plan_stats",
     "open_slots",
 ]

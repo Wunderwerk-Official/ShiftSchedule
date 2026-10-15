@@ -22,10 +22,10 @@ latest manual_edit row is merged in place (add-then-remove cancels out)
 instead of spraying one row per save.
 
 Caveats for readers: ``run_id``/``after_run_id`` may reference runs that
-``solver_runs`` has since pruned - never assume the join resolves. Two
-concurrent saves by the same account can diff against the same old blob;
-the schedule write itself is last-writer-wins (pre-existing), and the rare
-duplicate change row is acceptable for a diagnostic log.
+``solver_runs`` has since pruned - never assume the join resolves.
+Manual-edit rows are written in the same transaction as the revision-checked
+save (account lock + BEGIN IMMEDIATE), so a stale save fails with 409 and
+logs nothing.
 """
 
 from __future__ import annotations

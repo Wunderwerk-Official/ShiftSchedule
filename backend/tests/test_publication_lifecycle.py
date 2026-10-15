@@ -130,3 +130,88 @@ def test_current_account_can_manage_links_and_rotation_revokes_old_token(kind):
     assert client.delete(route, headers=headers).status_code == 204
     assert client.get(new_url).status_code == 404
     assert client.get(route, headers=headers).json()["published"] is False
+
+
+def ical_token(link):
+    return link.subscribeUrl.rsplit("/", 1)[-1].removesuffix(".ics")
+
+
+@pytest.mark.parametrize("username", ["łukasz", "müller"])
+def test_ical_feeds_serve_non_latin1_account_names(username):
+    user = auth._create_user(username, "password", "user")
+    _save_state(make_app_state(
+        clinicians=[make_clinician(name="Dr. A")],
+        assignments=[make_assignment("saved", "slot-a__mon", MON)],
+        published_week_start_isos=[MON],
+    ), username)
+    status = ical_routes.publish_ical(REQUEST, user)
+    client = TestClient(app)
+    for link in (status.all, status.clinicians[0]):
+        response = client.get(f"/v1/ical/{ical_token(link)}.ics")
+        assert response.status_code == 200
+        assert response.headers["content-type"].startswith("text/calendar")
+
+
+@pytest.mark.parametrize("username, plain, encoded", [
+    ("alice", "shift-planner-alice.ics", "shift-planner-alice.ics"),
+    ("łukasz", "shift-planner.ics", "shift-planner-%C5%82ukasz.ics"),
+    ('dr "x"', "shift-planner.ics", "shift-planner-dr%20%22x%22.ics"),
+])
+def test_ical_filename_keeps_account_name_when_ascii_safe(username, plain, encoded):
+    user = auth._create_user(username, "password", "user")
+    _save_state(make_app_state(published_week_start_isos=[MON]), username)
+    status = ical_routes.publish_ical(REQUEST, user)
+    response = TestClient(app).get(f"/v1/ical/{ical_token(status.all)}.ics")
+    assert response.headers["content-disposition"] == (
+        f"inline; filename=\"{plain}\"; filename*=UTF-8''{encoded}")
+
+
+def test_ical_feed_answers_head_like_get():
+    _, _, ical_status = seed("Dr. A")
+    client = TestClient(app)
+    url = f"/v1/ical/{ical_token(ical_status.all)}.ics"
+    got = client.get(url)
+    head = client.head(url)
+    assert head.status_code == 200
+    assert head.headers["ETag"] == got.headers["ETag"]
+    assert head.headers["Last-Modified"] == got.headers["Last-Modified"]
+    assert client.head(url, headers={"If-None-Match": got.headers["ETag"]}).status_code == 304
+    assert client.head("/v1/ical/unknown-token.ics").status_code == 404
+
+
+def test_republishing_ical_keeps_tokens_and_feed_validators(monkeypatch):
+    user, _, first = seed("Dr. A")
+    client = TestClient(app)
+    url = f"/v1/ical/{ical_token(first.all)}.ics"
+    etag = client.get(url).headers["ETag"]
+    monkeypatch.setattr(ical_routes, "_utcnow_iso", lambda: "2030-01-01T00:00:00+00:00")
+    again = ical_routes.publish_ical(REQUEST, user)
+    assert again == first
+    assert client.get(url).headers["ETag"] == etag
+
+
+def test_republishing_web_keeps_token_and_week_validators(monkeypatch):
+    user, first, _ = seed("Dr. A")
+    client = TestClient(app)
+    url = f"/v1/web/{first.token}/week?start={MON}"
+    before = client.get(url)
+    monkeypatch.setattr(web, "_utcnow_iso", lambda: "2030-01-01T00:00:00+00:00")
+    assert web.publish_web(user) == first
+    after = client.get(url)
+    assert after.headers["ETag"] == before.headers["ETag"]
+    assert after.headers["Last-Modified"] == before.headers["Last-Modified"]
+
+
+def test_status_adds_link_for_new_clinician_and_keeps_existing_tokens():
+    user, _, first = seed("Dr. A")
+    state = make_app_state(
+        clinicians=[make_clinician(name="Dr. A"), make_clinician("clin-new", name="Dr. New")],
+        published_week_start_isos=[MON],
+    )
+    _save_state(state, "same")
+    status = ical_routes.get_ical_publication_status(REQUEST, user)
+    assert status.all == first.all
+    by_id = {link.clinicianId: link for link in status.clinicians}
+    assert by_id[first.clinicians[0].clinicianId] == first.clinicians[0]
+    assert "clin-new" in by_id
+    assert ical_token(by_id["clin-new"]) not in {ical_token(first.all), ical_token(first.clinicians[0])}

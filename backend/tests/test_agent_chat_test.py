@@ -147,6 +147,6 @@ def test_chat_test_meters_anthropic_spend(temp_db, monkeypatch):
     assert res.status_code == 200
     data = res.json()
     assert data["text"] == "pong"
-    # 1M input tokens on sonnet-5 = $3.00, recorded against the admin.
-    assert data["cost_usd"] == pytest.approx(3.0)
-    assert agent_budget.get_spend_usd("metered-admin") == pytest.approx(3.0)
+    # 1M input tokens on sonnet-5 = $2.00, recorded against the admin.
+    assert data["cost_usd"] == pytest.approx(2.0)
+    assert agent_budget.get_spend_usd("metered-admin") == pytest.approx(2.0)

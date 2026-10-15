@@ -22,16 +22,13 @@ of demanding an empty report.
 from __future__ import annotations
 
 import json
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from ..models import AppState, Assignment, Clinician
 from ..scoring import ScoringContext, open_slots, plan_stats
 from ..validation import (
-    VIOLATION_ON_CALL_REST,
-    VIOLATION_OVERLAP,
-    VIOLATION_SAME_LOCATION,
-    VIOLATION_SPLIT_SHIFT,
     VIOLATION_WEEKLY_HOURS,
     Violation,
     validate_assignments,
@@ -289,15 +286,16 @@ TOOL_SPECS_RAW = [
             "get_day_priorities: single-candidate slots, then on-call, then "
             "slot priority; slots nobody can take are skipped); when "
             "nothing fillable remains it returns day_complete=true instead. "
-            "Candidates are pre-sorted: daily minimum met first, "
-            "preferred-working-time fit (window_fit) next, then lowest "
-            "ytd_worked_pct; when no block reaches the minimum, longest "
-            "block first. Apply the WHOLE chosen block in one apply_moves "
-            "batch. Blocks are validated against the current plan and go "
-            "stale after apply_moves — re-query rather than reusing old "
-            "suggestions (in auto mode: put apply_moves FIRST and this call "
-            "SECOND in the same message, so the new suggestion already "
-            "reflects the applied batch)."
+            "Candidates are pre-sorted (balanced profile: by quality_after; "
+            "classic: daily minimum met first, preferred-working-time fit "
+            "(window_fit) next, then lowest ytd_worked_pct; when no block "
+            "reaches the minimum, longest block first). Each candidate "
+            "carries a proposal_id: apply it with apply_proposal; its "
+            "next.result already contains fresh suggestions. A candidate "
+            "WITHOUT a proposal_id failed the whole-block check (that "
+            "apply_moves batch would be rejected): prefer one with an ID, or "
+            "apply_moves a shorter part of its block and re-query (blocks go "
+            "stale after any change)."
         ),
         "input_schema": {
             "type": "object",
@@ -355,9 +353,10 @@ TOOL_SPECS_RAW = [
             "SOFT and offers are graded: receiver_overshoot_hours marks a "
             "handover that leaves the receiver slightly past their "
             "comfortable span — weigh it against the problem it solves. "
-            "Apply ONE batch per round exactly as given, then call this "
-            "again (other offers go stale); when it returns no offers the "
-            "day is balanced — write your final summary. Fixed/manual "
+            "Apply ONE improving offer per round via "
+            "apply_proposal(proposal_id) (compare quality_after/"
+            "improves_best); next.result contains fresh offers. When no "
+            "improving offer remains, write your final summary. Fixed/manual "
             "assignments are never touched."
         ),
         "input_schema": {
@@ -419,6 +418,18 @@ def _split_slot_key(slot_key: str) -> Tuple[str, str]:
         raise ValueError(f"Invalid slot_key: {slot_key!r}")
     slot_id, date_iso = slot_key.rsplit("__", 1)
     return slot_id, date_iso
+
+
+def _hhmm(minutes: int) -> str:
+    """'HH:MM' for a minute offset, unwrapped: end times that may pass
+    midnight are wrapped by the caller (``end % 1440``)."""
+    return f"{minutes // 60:02d}:{minutes % 60:02d}"
+
+
+def _fmt_span(start: int, end: int) -> str:
+    """'HH:MM-HH:MM'; the end wraps past midnight (a night shift ending at
+    1500 shows 01:00), the start is shown as is."""
+    return f"{_hhmm(start)}-{_hhmm(end % 1440)}"
 
 
 def build_clinician_aliases(state: AppState) -> Dict[str, str]:
@@ -494,6 +505,20 @@ class PlanToolExecutor:
         self.slot_id_by_code: Dict[str, str] = {
             v: k for k, v in self.slot_code_by_id.items()
         }
+        # Validator messages embed raw slot ids (rowId) and section ids;
+        # map them to S-codes / section names for the LLM. Token-boundary
+        # matching (and ids of 3+ chars only) so a short id never rewrites
+        # part of a name or word ("mri" must not touch "Amrita").
+        self._violation_id_names: Dict[str, str] = {
+            **{k: v for k, v in self.section_names.items() if k != v},
+            **self.slot_code_by_id,
+        }
+        _ids = sorted((i for i in self._violation_id_names if len(i) >= 3), key=len, reverse=True)
+        self._violation_id_pattern = (
+            re.compile(r"(?<![A-Za-z0-9_:-])(" + "|".join(map(re.escape, _ids)) + r")(?![A-Za-z0-9_:-])")
+            if _ids
+            else None
+        )
 
         # Fixed context: everything already in app state. Kept in full so
         # boundary checks (overlap/rest across the range edges) see it.
@@ -552,7 +577,7 @@ class PlanToolExecutor:
         # count — naming the cases up front lets round 1 target them.
         self.seed_repairable_violation_lines: List[str] = [
             f"- {v.code}|{self._alias(v.clinician_id) or '-'}|{v.date_iso or '-'}"
-            f"|{self._scrub(v.message)[:120]}"
+            f"|{self._violation_text(v.message)[:120]}"
             for v in baseline
             if (v.date_iso is None or v.date_iso in ctx.target_date_set)
             and _violation_key(v) not in self.unrepairable_hard_keys
@@ -675,6 +700,21 @@ class PlanToolExecutor:
     def _is_new_hard(self, v: Violation) -> bool:
         """True when a violation is NEW (or worsened) relative to the seed baseline."""
         return is_new_or_worsened(v, self.baseline_hard_context)
+
+    def _creates_new_hard(self, trial: Dict[Tuple[str, str, str], Assignment]) -> bool:
+        """True when the trial working copy breaks a hard rule that the seed
+        did not (the apply_moves gate)."""
+        hard = self._hard_violations(self._full_plan(list(trial.values())))
+        return any(self._is_new_hard(v) for v in hard)
+
+    @property
+    def on_call_class(self) -> Optional[str]:
+        """Section id of the on-call duty, None when on-call rest is off."""
+        return (
+            self.ctx.settings.onCallRestClassId
+            if getattr(self.ctx.settings, "onCallRestEnabled", False)
+            else None
+        )
 
     def _counts_by_instance(self, working: List[Assignment]) -> Dict[str, int]:
         counts: Dict[str, int] = dict(self.ctx.fixed_counts)
@@ -818,10 +858,10 @@ class PlanToolExecutor:
                 item = {
                     "severity": "hard",
                     "code": v.code,
-                    "message": self._scrub(v.message),
+                    "message": self._violation_text(v.message),
                     "clinicianId": self._alias(v.clinician_id),
                     "dateISO": v.date_iso,
-                    "slot_id": v.slot_id,
+                    "slot_key": self._violation_slot_key(v),
                     "new": self._is_new_hard(v),
                     # False = exists among fixed assignments alone: you
                     # cannot repair it, do not try.
@@ -830,11 +870,9 @@ class PlanToolExecutor:
                 # Graded magnitude for weekly hours: 0.5h over reads very
                 # differently from 20h over, and the message-only number was
                 # easy for models to skim past.
-                if v.code == VIOLATION_WEEKLY_HOURS and v.context:
-                    assigned = v.context.get("assigned_minutes")
-                    cap = v.context.get("max_minutes")
-                    if isinstance(assigned, (int, float)) and isinstance(cap, (int, float)):
-                        item["over_by_hours"] = round((assigned - cap) / 60.0, 1)
+                over_by = self._over_by_hours(v)
+                if over_by is not None:
+                    item["over_by_hours"] = over_by
                 items.append(item)
         if severity in (None, "soft"):
             for v in validate_solver_rules(self.state, full):
@@ -842,10 +880,10 @@ class PlanToolExecutor:
                     {
                         "severity": "soft",
                         "code": v.code,
-                        "message": self._scrub(v.message),
+                        "message": self._violation_text(v.message),
                         "clinicianId": self._alias(v.clinician_id),
                         "dateISO": v.date_iso,
-                        "slot_id": v.slot_id,
+                        "slot_key": self._violation_slot_key(v),
                         "new": False,
                     }
                 )
@@ -948,12 +986,7 @@ class PlanToolExecutor:
                             + (inst.end - inst.start) / 60.0
                             - (
                                 (clinician.workingHoursPerWeek or 0)
-                                + max(
-                                    0,
-                                    clinician.workingHoursToleranceHours
-                                    if clinician.workingHoursToleranceHours is not None
-                                    else 5,
-                                )
+                                + self._tolerance_hours(clinician)
                             ),
                             1,
                         )
@@ -1019,15 +1052,14 @@ class PlanToolExecutor:
             week_key = self._week_key(date_iso)
             if week_key not in weeks:
                 weeks[week_key] = round(self._week_hours(cid, date_iso), 1)
-        _tol = clinician.workingHoursToleranceHours
         return {
             "clinicianId": self._alias(cid),
             "contract_hours_per_week": clinician.workingHoursPerWeek,
-            "tolerance_hours": _tol if _tol is not None else 5,
+            "tolerance_hours": self._tolerance_hours(clinician),
             "week_hours": weeks,
             "ytd_worked_pct": self.ytd_completion_pct(cid, self.ctx.start_iso),
-            "qualified_sections": clinician.qualifiedClassIds,
-            "preferred_sections": clinician.preferredClassIds or [],
+            "qualified_sections": [self.section_names.get(i, i) for i in clinician.qualifiedClassIds or []],
+            "preferred_sections": [self.section_names.get(i, i) for i in clinician.preferredClassIds or []],
             "preferred_working_times": {
                 day: {
                     "start": w.startTime,
@@ -1072,13 +1104,9 @@ class PlanToolExecutor:
             total = 0
             slots = []
             for a in assignments:
-                inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
-                if inst is not None:
-                    duration = max(0, inst.end - inst.start)
-                else:
-                    interval = self.ctx.all_slot_intervals.get(a.rowId)
-                    duration = max(0, interval[1] - interval[0]) if interval else 0
-                total += duration
+                interval = self._assignment_interval(a)
+                if interval is not None:
+                    total += max(0, interval[1] - interval[0])
                 slots.append(
                     {
                         "slot_key": self._alias_slot_key(f"{a.rowId}__{a.dateISO}"),
@@ -1155,7 +1183,7 @@ class PlanToolExecutor:
             return []
         counts = self._counts_by_instance(self._working_list())
         options: List[dict] = []
-        for key, inst in self.ctx.instances.items():
+        for inst in self.ctx.instances.values():
             if inst.date_iso != date_iso or inst.section_id not in qualified:
                 continue
             touches = any(
@@ -1300,10 +1328,7 @@ class PlanToolExecutor:
             return {}
         return {
             "window_fit": start >= window[1] and end <= window[2],
-            "preferred_window": (
-                f"{window[1] // 60:02d}:{window[1] % 60:02d}-"
-                f"{(window[2] % 1440) // 60:02d}:{window[2] % 60:02d}"
-            ),
+            "preferred_window": _fmt_span(window[1], window[2]),
         }
 
     # Chains never build days longer than this (+1h step tolerance). Longer
@@ -1328,7 +1353,15 @@ class PlanToolExecutor:
         return daily_target_minutes(clinician, window) if clinician else 480
 
     def _tool_ytd_progress(self, args: dict) -> dict:
+        from datetime import date
+
         as_of = args.get("dateISO") or self.ctx.start_iso
+        try:
+            # Normalised: 3.11+ also parses "20261015" / "2026-W42-4", and
+            # ytd_completion_pct compares the string against dateISO values.
+            as_of = date.fromisoformat(as_of).isoformat()
+        except (TypeError, ValueError):
+            return {"error": f"Invalid dateISO: {as_of!r}; expected YYYY-MM-DD."}
         entries = []
         for clinician in self.state.clinicians:
             entries.append(
@@ -1357,8 +1390,7 @@ class PlanToolExecutor:
         clinicians_out = []
         for clinician in self.state.clinicians:
             contract = clinician.workingHoursPerWeek
-            _tol = clinician.workingHoursToleranceHours
-            tolerance = _tol if _tol is not None else 5
+            tolerance = self._tolerance_hours(clinician)
             weeks_out: Dict[str, dict] = {}
             for week_key, sample_date in week_sample_date.items():
                 hours = round(self._week_hours(clinician.id, sample_date), 1)
@@ -1401,10 +1433,7 @@ class PlanToolExecutor:
     def _tool_day_schedule(self, args: dict) -> dict:
         date_iso = args.get("dateISO")
         if date_iso not in self.ctx.target_date_set:
-            return {
-                "error": f"{date_iso} is outside the solve range "
-                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
-            }
+            return self._range_error(date_iso)
         counts = self._counts_by_instance(self._working_list())
         slots = []
         for inst in self.ctx.instances.values():
@@ -1424,8 +1453,8 @@ class PlanToolExecutor:
                 {
                     "slot_key": self._alias_slot_key(inst.slot_key),
                     "section": self.section_names.get(inst.section_id, inst.section_id),
-                    "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
-                    "end": f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
+                    "start": _hhmm(inst.start),
+                    "end": _hhmm(inst.end % 1440),
                     "required": inst.target,
                     "missing": max(0, inst.target - counts.get(inst.slot_key, 0)),
                     "assigned": assigned,
@@ -1452,11 +1481,7 @@ class PlanToolExecutor:
         Eligibility = number of clinicians who could legally take the slot
         against the CURRENT plan (the exact apply_moves gate)."""
         counts = self._counts_by_instance(self._working_list())
-        on_call_class = (
-            self.ctx.settings.onCallRestClassId
-            if getattr(self.ctx.settings, "onCallRestEnabled", False)
-            else None
-        )
+        on_call_class = self.on_call_class
         entries = []
         for inst in self.ctx.instances.values():
             if inst.date_iso != date_iso:
@@ -1489,8 +1514,8 @@ class PlanToolExecutor:
                     "raw_slot_key": inst.slot_key,
                     "slot_key": self._alias_slot_key(inst.slot_key),
                     "section": self.section_names.get(inst.section_id, inst.section_id),
-                    "start": f"{inst.start // 60:02d}:{inst.start % 60:02d}",
-                    "end": f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}",
+                    "start": _hhmm(inst.start),
+                    "end": _hhmm(inst.end % 1440),
                     "missing": missing,
                     "priority": inst.order_weight,
                     "on_call": inst.section_id == on_call_class,
@@ -1512,10 +1537,7 @@ class PlanToolExecutor:
     def _tool_day_priorities(self, args: dict) -> dict:
         date_iso = args.get("dateISO")
         if date_iso not in self.ctx.target_date_set:
-            return {
-                "error": f"{date_iso} is outside the solve range "
-                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
-            }
+            return self._range_error(date_iso)
         entries = [dict(e) for e in self._day_open_entries(date_iso)]
         for entry in entries:
             entry.pop("raw_slot_key", None)
@@ -1662,8 +1684,7 @@ class PlanToolExecutor:
             contract = clinician.workingHoursPerWeek if clinician else None
             week_max = None
             if isinstance(contract, (int, float)) and contract > 0:
-                _tol = clinician.workingHoursToleranceHours
-                week_max = contract + max(0, _tol if _tol is not None else 5)
+                week_max = contract + self._tolerance_hours(clinician)
             out.append(
                 {
                     "clinicianId": cand["clinicianId"],
@@ -1747,11 +1768,7 @@ class PlanToolExecutor:
                 moves, next_tool="suggest_day_blocks",
                 next_args={"duty_pass": True} if single else {"dateISO": inst.date_iso}
             ))
-        on_call_class = (
-            self.ctx.settings.onCallRestClassId
-            if getattr(self.ctx.settings, "onCallRestEnabled", False)
-            else None
-        )
+        on_call_class = self.on_call_class
         return {
             "slot_key": self._alias_slot_key(slot_key),
             "section": self.section_names.get(inst.section_id, inst.section_id),
@@ -1793,10 +1810,7 @@ class PlanToolExecutor:
         unfillable: 'X could do it if Y took over X's afternoon.'"""
         date_iso = args.get("dateISO")
         if date_iso not in self.ctx.target_date_set:
-            return {
-                "error": f"{date_iso} is outside the solve range "
-                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
-            }
+            return self._range_error(date_iso)
         offset = 0
         cursor = args.get("cursor")
         if cursor is not None:
@@ -1824,10 +1838,6 @@ class PlanToolExecutor:
                     else ""
                 ),
             }
-
-        def _new_hard(trial: Dict[Tuple[str, str, str], Assignment]) -> bool:
-            hard = self._hard_violations(self._full_plan(list(trial.values())))
-            return any(self._is_new_hard(v) for v in hard)
 
         rescues: List[dict] = []
         no_rescue: List[str] = []
@@ -1867,7 +1877,7 @@ class PlanToolExecutor:
                 trial_free[identity] = self._make_assignment(
                     inst.slot_id, date_iso, cid
                 )
-                if _new_hard(trial_free):
+                if self._creates_new_hard(trial_free):
                     continue
                 for blocker in own_today:
                     trial = dict(self.current)
@@ -1875,7 +1885,7 @@ class PlanToolExecutor:
                     trial[identity] = self._make_assignment(
                         inst.slot_id, date_iso, cid
                     )
-                    if _new_hard(trial):
+                    if self._creates_new_hard(trial):
                         continue
                     vacated_key = f"{blocker[0]}__{date_iso}"
                     vac_inst = self.ctx.instances.get(vacated_key)
@@ -1893,7 +1903,7 @@ class PlanToolExecutor:
                         trial2[sub_id] = self._make_assignment(
                             blocker[0], date_iso, sub.id
                         )
-                        if _new_hard(trial2):
+                        if self._creates_new_hard(trial2):
                             continue
                         found.append(
                             {
@@ -1973,10 +1983,7 @@ class PlanToolExecutor:
         new mini-stint, and pass the exact apply gate."""
         date_iso = args.get("dateISO")
         if date_iso not in self.ctx.target_date_set:
-            return {
-                "error": f"{date_iso} is outside the solve range "
-                f"({self.ctx.start_iso} to {self.ctx.end_iso})."
-            }
+            return self._range_error(date_iso)
 
         def _contiguous(intervals: List[Tuple[int, int]]) -> bool:
             ivs = sorted(intervals)
@@ -1988,10 +1995,6 @@ class PlanToolExecutor:
                     return False
                 reach = max(reach, e)
             return True
-
-        def _new_hard(trial: Dict[Tuple[str, str, str], Assignment]) -> bool:
-            hard = self._hard_violations(self._full_plan(list(trial.values())))
-            return any(self._is_new_hard(v) for v in hard)
 
         # OUR movable assignments of the day per clinician (fixed/manual
         # ones are immutable anchors and never offered for transfer).
@@ -2027,10 +2030,9 @@ class PlanToolExecutor:
         overlong: List[Tuple[int, str]] = []
         stubs: List[Tuple[int, str]] = []
         for cid in set(own_by_cid) | fixed_today:
-            ivs, mins = _stats(cid)
+            _, mins = _stats(cid)
             if mins <= 0:
                 continue
-            target = self._daily_target_minutes(cid, date_iso)
             if mins > self._daily_comfort_minutes(cid, date_iso):
                 overlong.append((mins - self._daily_comfort_minutes(cid, date_iso), cid))
             daily_min = self._daily_min_minutes(cid, date_iso)
@@ -2121,7 +2123,7 @@ class PlanToolExecutor:
                     trial[(inst.slot_id, date_iso, rid)] = self._make_assignment(
                         inst.slot_id, date_iso, rid
                     )
-                if _new_hard(trial):
+                if self._creates_new_hard(trial):
                     continue
                 overshoot_min = max(0, r_after - r_comfort)
                 batch = [
@@ -2348,8 +2350,7 @@ class PlanToolExecutor:
             if room <= 0:
                 return False
             trial[key] = self._make_assignment(inst.slot_id, date_iso, cid)
-            hard = self._hard_violations(self._full_plan(list(trial.values())))
-            if any(self._is_new_hard(v) for v in hard):
+            if self._creates_new_hard(trial):
                 del trial[key]
                 return False
             return True
@@ -2486,12 +2487,10 @@ class PlanToolExecutor:
         for v in trial_hard:
             if not self._is_new_hard(v):
                 continue
-            rejected_item = {"code": v.code, "message": self._scrub(v.message)}
-            if v.code == VIOLATION_WEEKLY_HOURS and v.context:
-                assigned = v.context.get("assigned_minutes")
-                cap = v.context.get("max_minutes")
-                if isinstance(assigned, (int, float)) and isinstance(cap, (int, float)):
-                    rejected_item["over_by_hours"] = round((assigned - cap) / 60.0, 1)
+            rejected_item = {"code": v.code, "message": self._violation_text(v.message)}
+            over_by = self._over_by_hours(v)
+            if over_by is not None:
+                rejected_item["over_by_hours"] = over_by
             new_hard.append(rejected_item)
         if args.get("dry_run"):
             if new_hard:
@@ -2591,8 +2590,9 @@ class PlanToolExecutor:
         return f"{self.slot_id_by_code.get(sid, sid)}__{date_iso}"
 
     def _resolve_clinician(self, alias_or_id: str) -> str:
-        """Translate an LLM-facing alias (D1, ...) back to the real id.
-        Real ids are accepted too, so in-process callers/tests keep working."""
+        """Translate an LLM-facing name (the clinician's real name, made
+        unique) back to the id. Raw ids are accepted too, so in-process
+        callers/tests keep working."""
         return self.id_by_alias.get(alias_or_id, alias_or_id)
 
     def _alias(self, clinician_id: Optional[str]) -> Optional[str]:
@@ -2615,6 +2615,22 @@ class PlanToolExecutor:
         so the model never has to deal with UUID-ish identifiers."""
         return self._unscrub(text)
 
+    def _violation_text(self, text: str) -> str:
+        """LLM-bound validator message: names instead of clinician ids, S-codes
+        instead of raw slot ids, section names instead of section ids. Only
+        for validator messages — wishes/admin text go through ``_scrub``."""
+        text = self._scrub(text)
+        if self._violation_id_pattern is None:
+            return text
+        return self._violation_id_pattern.sub(
+            lambda m: self._violation_id_names[m.group(1)], text
+        )
+
+    def _violation_slot_key(self, v) -> Optional[str]:
+        if v.slot_id and v.date_iso:
+            return self._alias_slot_key(f"{v.slot_id}__{v.date_iso}")
+        return None
+
     def scrub_text(self, text: str) -> str:
         """Public entry point for preparing LLM-bound free text."""
         return self._scrub(text)
@@ -2632,14 +2648,24 @@ class PlanToolExecutor:
                 continue
             if a.rowId.startswith("pool-"):
                 continue
-            inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
-            if inst is not None:
-                out.append((inst.start, inst.end))
-                continue
-            interval = self.ctx.all_slot_intervals.get(a.rowId)
+            interval = self._assignment_interval(a)
             if interval is not None:
-                out.append((interval[0], interval[1]))
+                out.append(interval)
         return out
+
+    def _assignment_interval(self, a: Assignment) -> Optional[Tuple[int, int]]:
+        """(start, end) minutes of an assignment: its solve-range instance,
+        else the template slot interval. Fixed assignments OUTSIDE the solve
+        range have no instance but still count (validate_weekly_hours counts
+        them, so the advisory numbers must too or the model proposes moves
+        that then get rejected). None for unknown slots."""
+        inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
+        if inst is not None:
+            return inst.start, inst.end
+        interval = self.ctx.all_slot_intervals.get(a.rowId)
+        if interval is not None:
+            return interval[0], interval[1]
+        return None
 
     def _describe_move(self, move: dict) -> dict:
         """Humanize one accepted move for the live UI feed (real names are
@@ -2657,8 +2683,8 @@ class PlanToolExecutor:
         start = end = ""
         if inst is not None:
             section = self.section_names.get(inst.section_id, inst.section_id)
-            start = f"{inst.start // 60:02d}:{inst.start % 60:02d}"
-            end = f"{(inst.end % 1440) // 60:02d}:{inst.end % 60:02d}"
+            start = _hhmm(inst.start)
+            end = _hhmm(inst.end % 1440)
         return {
             "action": move.get("action"),
             "clinician": clinician.name if clinician else cid,
@@ -2677,6 +2703,33 @@ class PlanToolExecutor:
             clinicianId=clinician_id,
             source=AGENT_ASSIGNMENT_SOURCE,
         )
+
+    def _range_error(self, date_iso: Optional[str]) -> dict:
+        """Tool error for a day outside the solve range."""
+        return {
+            "error": f"{date_iso} is outside the solve range "
+            f"({self.ctx.start_iso} to {self.ctx.end_iso})."
+        }
+
+    @staticmethod
+    def _over_by_hours(v: Violation) -> Optional[float]:
+        """Hours beyond the weekly cap for a WEEKLY_HOURS violation, None for
+        other codes or an incomplete context."""
+        if v.code != VIOLATION_WEEKLY_HOURS or not v.context:
+            return None
+        assigned = v.context.get("assigned_minutes")
+        cap = v.context.get("max_minutes")
+        if isinstance(assigned, (int, float)) and isinstance(cap, (int, float)):
+            return round((assigned - cap) / 60.0, 1)
+        return None
+
+    @staticmethod
+    def _tolerance_hours(clinician: Clinician) -> float:
+        """Personal weekly-hours tolerance around the contract: 5 only when
+        missing (an explicit 0 is a strict cap), never negative. Same rule as
+        validate_weekly_hours, so advisory numbers match the gate."""
+        tol = clinician.workingHoursToleranceHours
+        return max(0, tol if tol is not None else 5)
 
     @staticmethod
     def _week_key(date_iso: str) -> str:
@@ -2698,18 +2751,9 @@ class PlanToolExecutor:
                 continue
             if date.fromisoformat(a.dateISO).isocalendar()[:2] != target_week:
                 continue
-            inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
-            if inst is not None:
-                minutes += max(0, inst.end - inst.start)
-                continue
-            # Fixed assignments OUTSIDE the solve range have no instance but
-            # still count toward the week (validate_weekly_hours counts them,
-            # so the advisory number must too or the model proposes moves that
-            # then get rejected).
-            interval = self.ctx.all_slot_intervals.get(a.rowId)
+            interval = self._assignment_interval(a)
             if interval is not None:
-                start, end, _loc = interval
-                minutes += max(0, end - start)
+                minutes += max(0, interval[1] - interval[0])
         return minutes / 60.0
 
     def ytd_completion_pct(self, clinician_id: str, as_of_iso: str) -> Optional[int]:
@@ -2766,12 +2810,7 @@ class PlanToolExecutor:
                 continue
             if not (year_start_iso <= a.dateISO < as_of_iso):
                 continue
-            inst = self.ctx.instances.get(f"{a.rowId}__{a.dateISO}")
-            if inst is not None:
-                minutes += max(0, inst.end - inst.start)
-                continue
-            interval = self.ctx.all_slot_intervals.get(a.rowId)
+            interval = self._assignment_interval(a)
             if interval is not None:
-                start, end, _loc = interval
-                minutes += max(0, end - start)
+                minutes += max(0, interval[1] - interval[0])
         return max(0, min(200, round(minutes / expected_minutes * 100)))

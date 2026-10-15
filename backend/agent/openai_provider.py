@@ -51,16 +51,14 @@ def _parse_arguments(raw: object) -> dict:
     string, but self-hosted models occasionally emit malformed JSON or the
     server pre-parses it. Preserve parse failures as tool errors rather than
     turning them into a successful empty operation."""
-    if isinstance(raw, dict):
-        return raw
-    if isinstance(raw, str) and raw.strip():
+    parsed: object = raw
+    if isinstance(raw, str):
         try:
             parsed = json.loads(raw)
-            if isinstance(parsed, dict):
-                return parsed
-            raise ValueError("Tool arguments must be a JSON object.")
         except (ValueError, TypeError):
-            raise ValueError("Tool arguments must contain a valid JSON object.") from None
+            parsed = None
+    if isinstance(parsed, dict):
+        return parsed
     raise ValueError("Tool arguments must contain a valid JSON object.")
 
 

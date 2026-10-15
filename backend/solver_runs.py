@@ -10,7 +10,8 @@ schedule (or discards it). The UI's run inbox reads this table.
 Statuses:
     running    - subprocess alive (or restarted after a backend restart)
     finished   - plan computed and stored in `result`, awaiting apply
-    aborted    - stopped by the user; a salvaged partial result may exist
+    aborted    - stopped (user, watchdog) or ended unexpectedly; a salvaged
+                 partial result may exist
     failed     - crashed / errored; `error` says why
     crashed    - interrupted by a backend restart and NOT auto-restarted
     applied    - result written into the schedule
@@ -114,6 +115,23 @@ def mark_run(run_id: str, status: str, note: Optional[str] = None) -> None:
             (status, applied_at, (note + "\n") if note else "", run_id),
         )
         conn.commit()
+
+
+def discard_run(run_id: str, username: str) -> int:
+    """Atomically discard a run that still awaits a decision. Returns the
+    number of updated rows (0 when the run is applied/failed/... by now, e.g.
+    applied from another tab). 'discarded' stays idempotent."""
+    with _get_connection() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE solver_runs SET status = 'discarded'
+            WHERE id = ? AND username = ?
+              AND status IN ('finished', 'aborted', 'discarded')
+            """,
+            (run_id, username),
+        )
+        conn.commit()
+        return cursor.rowcount
 
 
 def bump_attempt(run_id: str, note: str) -> None:

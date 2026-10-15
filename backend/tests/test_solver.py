@@ -536,6 +536,78 @@ class TestWeekSolverRestDays:
         monday_assignments = [a for a in response.assignments if a.dateISO == "2026-01-05"]
         assert len(monday_assignments) == 0
 
+    @pytest.mark.parametrize("range_day, expect_note", [
+        ("2026-01-05", True),   # on-call in range, manual work on the context day after
+        ("2026-01-06", False),  # on-call itself on the context day before
+    ])
+    def test_boundary_rest_conflict_note(self, monkeypatch, range_day, expect_note) -> None:
+        clinicians = [make_clinician(), make_clinician("clin-2", "Bob")]
+        for clinician in clinicians:
+            clinician.qualifiedClassIds = ["section-a"]
+        col_bands = [make_template_col_band(f"col-{day_type}-1", "", 1, day_type) for day_type in DAY_TYPES]
+        slots = [
+            make_template_slot(slot_id="slot-mon", col_band_id="col-mon-1", required_slots=2,
+                               start_time="08:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-tue", col_band_id="col-tue-1", required_slots=2,
+                               start_time="08:00", end_time="16:00"),
+        ]
+        state = _build_solver_state(clinicians, slots, col_bands, {
+            "enforceSameLocationPerDay": False,
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "section-a",
+            "onCallRestDaysBefore": 0,
+            "onCallRestDaysAfter": 1,
+        }, assignments=[
+            Assignment(id="manual-mon", rowId="slot-mon", dateISO="2026-01-05", clinicianId="clin-1"),
+            Assignment(id="manual-tue", rowId="slot-tue", dateISO="2026-01-06", clinicianId="clin-1"),
+        ])
+        monkeypatch.setattr("backend.solver._load_state", lambda _user_id: state)
+
+        response = _solve_range_impl(
+            SolveRangeRequest(startISO=range_day, endISO=range_day, only_fill_required=True),
+            current_user=TEST_USER,
+        )
+
+        note = "Rest day conflicts outside the selected range; some boundary days are already assigned."
+        assert (note in response.notes) is expect_note
+
+    def test_solver_on_call_never_collides_with_manual_context_work(self, monkeypatch) -> None:
+        # No manual on-call at all: the only manual entry is work on the
+        # context day after the range. The model must not place an on-call
+        # whose rest day is that work, so no boundary note can arise from
+        # solver-placed on-calls.
+        clinicians = [make_clinician(), make_clinician("clin-2", "Bob")]
+        for clinician in clinicians:
+            clinician.qualifiedClassIds = ["section-a"]
+        col_bands = [make_template_col_band(f"col-{day_type}-1", "", 1, day_type) for day_type in DAY_TYPES]
+        slots = [
+            make_template_slot(slot_id="slot-mon", col_band_id="col-mon-1", required_slots=2,
+                               start_time="08:00", end_time="16:00"),
+            make_template_slot(slot_id="slot-tue", col_band_id="col-tue-1", required_slots=1,
+                               start_time="08:00", end_time="16:00"),
+        ]
+        state = _build_solver_state(clinicians, slots, col_bands, {
+            "enforceSameLocationPerDay": False,
+            "onCallRestEnabled": True,
+            "onCallRestClassId": "section-a",
+            "onCallRestDaysBefore": 0,
+            "onCallRestDaysAfter": 1,
+        }, assignments=[
+            Assignment(id="manual-tue", rowId="slot-tue", dateISO="2026-01-06", clinicianId="clin-1"),
+        ])
+        monkeypatch.setattr("backend.solver._load_state", lambda _user_id: state)
+
+        response = _solve_range_impl(
+            SolveRangeRequest(startISO="2026-01-05", endISO="2026-01-05", only_fill_required=True),
+            current_user=TEST_USER,
+        )
+
+        monday = {a.clinicianId for a in response.assignments if a.dateISO == "2026-01-05"}
+        # Two open Monday on-call seats, but clin-1 works Tuesday (rest day).
+        assert monday == {"clin-2"}
+        note = "Rest day conflicts outside the selected range; some boundary days are already assigned."
+        assert note not in response.notes
+
 
 class TestWeekSolverHoursDistribution:
     """Tests for working hours distribution."""

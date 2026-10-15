@@ -146,6 +146,10 @@ class PlanningWorkflow:
             return result
         proposal["applied"] = True
         result.update({"proposal_id": proposal_id, "plan_revision": self.revision})
+        if not proposal["next_tool"]:
+            # final_audit repairs: the audit re-checks itself, a follow-up
+            # inspection would only burn its time budget.
+            return result
         next_args = proposal["next_args"]
         if next_args.get("duty_pass"):
             ex = self.executor
@@ -271,7 +275,8 @@ class PlanningWorkflow:
         """Audit the returned best; repair only fresh, strictly better checked offers.
 
         A repair re-checks only the days it can influence (its ISO week plus
-        the adjacent days: weekly hours, workday patterns, rest and overnight
+        the adjacent days, widened to the on-call rest window when enabled:
+        weekly hours, workday patterns, rest, overnight and on-call rest
         rules); completed checks elsewhere are carried to the new revision.
         The opt-in balanced profile scores range-wide averages, so there a
         repair re-checks every day. Both repairs and elapsed time are bounded,
@@ -334,6 +339,7 @@ class PlanningWorkflow:
                         # day block, larger than the model's 20-move payload
                         # limit. Use the same proposal contract as the model.
                         before = set(ex.current)
+                        proposal["next_tool"] = None  # no follow-up search: the audit re-checks itself
                         reply = ex.execute("apply_proposal", {"proposal_id": pid}, "final-checked-repair")
                         applied = json.loads(reply.content)
                         if applied.get("applied"):
@@ -358,7 +364,9 @@ class PlanningWorkflow:
     def _days_affected_by_repair(self, days, before, after):
         """Days whose required checks a mutation can change: the ISO weeks of
         the touched dates (weekly hours, workday patterns) plus the adjacent
-        days (rest, overnight and on-call rest rules). Conservative fallbacks:
+        days (rest and overnight rules), widened to the configured on-call
+        rest window (up to 7 days before/after) when that rule is enabled.
+        Conservative fallbacks:
         every day when the change cannot be located or when the balanced
         profile's range-wide averages are in play."""
         changed = {key[1] for key in before.symmetric_difference(after)}
@@ -366,9 +374,13 @@ class PlanningWorkflow:
             return set(days)
         changed_dates = {date.fromisoformat(d) for d in changed}
         weeks = {d.isocalendar()[:2] for d in changed_dates}
+        settings = self.executor.ctx.settings
+        radius = 1
+        if settings.onCallRestEnabled:
+            radius = max(1, settings.onCallRestDaysBefore or 0, settings.onCallRestDaysAfter or 0)
         stale = set()
         for day in days:
             current = date.fromisoformat(day)
-            if current.isocalendar()[:2] in weeks or any(abs((current - c).days) <= 1 for c in changed_dates):
+            if current.isocalendar()[:2] in weeks or any(abs((current - c).days) <= radius for c in changed_dates):
                 stale.add(day)
         return stale

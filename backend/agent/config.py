@@ -12,12 +12,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 DEFAULT_PROVIDER = "anthropic"
-# Keep in sync with agent_budget.DEFAULT_AGENT_MODEL and the frontend default
-# in src/lib/llmPricing.ts.
+# Keep in sync with the frontend default in src/lib/llmPricing.ts
+# (agent_budget imports this constant).
 DEFAULT_MODEL = "claude-sonnet-5"
-# Backstop against runaway loops, not a working budget: the wall-clock
-# timeout is the real limit. 100 starved day-by-day runs mid-construction
-# (both round-1 arena runs hit it with ~500s of budget unused).
+# Placeholder only: agent_solve_range replaces max_iterations on every solve
+# with slot instances x 10, so neither this default nor an environment
+# variable sets the real cap.
 DEFAULT_MAX_ITERATIONS = 1000
 DEFAULT_MAX_TOKENS = 16000
 
@@ -59,7 +59,6 @@ class AgentConfig:
         return cls(
             provider=os.environ.get("AGENT_PROVIDER", DEFAULT_PROVIDER).strip().lower(),
             model=os.environ.get("AGENT_MODEL", DEFAULT_MODEL).strip(),
-            max_iterations=_int("AGENT_MAX_ITERATIONS", DEFAULT_MAX_ITERATIONS),
             max_tokens=_int("AGENT_MAX_TOKENS", DEFAULT_MAX_TOKENS),
             mock_script_path=os.environ.get("AGENT_MOCK_SCRIPT") or None,
             openai_base_url=(os.environ.get("OPENAI_BASE_URL") or "").strip() or None,

@@ -56,6 +56,21 @@ def test_defaults_are_sonnet_and_five_dollars(temp_db):
     assert settings["budget_usd"] == DEFAULT_BUDGET_USD == 5.0
 
 
+def test_budget_defaults_come_from_agent_config():
+    from backend import agent_budget
+    from backend.agent import config
+
+    assert agent_budget.DEFAULT_AGENT_MODEL == config.DEFAULT_MODEL
+    assert agent_budget.DEFAULT_PROVIDER == config.DEFAULT_PROVIDER
+
+
+def test_agent_max_iterations_env_is_ignored(monkeypatch):
+    from backend.agent.config import DEFAULT_MAX_ITERATIONS, AgentConfig
+
+    monkeypatch.setenv("AGENT_MAX_ITERATIONS", "5")
+    assert AgentConfig.from_env().max_iterations == DEFAULT_MAX_ITERATIONS
+
+
 def test_settings_endpoint_shows_own_spend(temp_db):
     add_spend_usd("budget-user", 1.25)
     client = _client_as("user")
@@ -212,10 +227,33 @@ def test_estimate_cost_matches_pricing_table():
         "cache_read_input_tokens": 1_000_000,
         "cache_creation_input_tokens": 1_000_000,
     }
-    # Sonnet 5: 3 in + 15 out + 0.3 cache read + 3.75 cache write
-    assert estimate_cost_usd("claude-sonnet-5", usage) == pytest.approx(22.05)
+    # Sonnet 5 ($2 / $10 per MTok): 2 in + 10 out + 0.2 cache read + 2.5 cache write
+    assert estimate_cost_usd("claude-sonnet-5", usage) == pytest.approx(14.7)
+    # Opus 4.8 ($5 / $25): 5 + 25 + 0.5 + 6.25; Haiku 4.5 ($1 / $5): 1 + 5 + 0.1 + 1.25
+    assert estimate_cost_usd("claude-opus-4-8", usage) == pytest.approx(36.75)
+    assert estimate_cost_usd("claude-haiku-4-5", usage) == pytest.approx(7.35)
     assert estimate_cost_usd("unknown-model", usage) == 0.0
     assert estimate_cost_usd("claude-sonnet-5", None) == 0.0
+
+
+def test_backend_prices_match_the_frontend_table():
+    """MODEL_PRICES mirrors src/lib/llmPricing.ts (budget enforcement vs. the
+    cost shown in the UI); the two tables must never drift apart."""
+    import re
+    from pathlib import Path
+
+    from backend.agent_budget import MODEL_PRICES
+
+    source = (Path(__file__).resolve().parents[2] / "src/lib/llmPricing.ts").read_text()
+    frontend = {
+        model_id: (float(inp), float(out))
+        for model_id, inp, out in re.findall(
+            r'id: "([^"]+)",.*?inputPerMTok: ([\d.]+),\s*outputPerMTok: ([\d.]+),',
+            source,
+            re.S,
+        )
+    }
+    assert frontend == MODEL_PRICES
 
 
 def test_exhausted_budget_falls_back_to_draft(temp_db, monkeypatch):

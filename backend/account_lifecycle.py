@@ -21,24 +21,14 @@ def account_lock(username: str):
         return _locks.setdefault(username, threading.RLock())
 
 
-def get_account_generation(username: str) -> str | None:
-    with closing(_get_connection()) as conn:
-        row = conn.execute("SELECT account_generation FROM users WHERE username = ?",
-                           (username,)).fetchone()
-    return row["account_generation"] if row else None
-
-
-def account_is_current(username: str, generation: str | None, *, token_version: int | None = None,
-                       require_active: bool = False) -> bool:
+def account_is_current(username: str, generation: str | None) -> bool:
     """Missing identities never authorize writes to a real account."""
     if not generation:
         return False
     with closing(_get_connection()) as conn:
-        row = conn.execute("SELECT account_generation, token_version, active FROM users WHERE username = ?",
+        row = conn.execute("SELECT account_generation FROM users WHERE username = ?",
                            (username,)).fetchone()
-    return bool(row and row["account_generation"] == generation
-                and (token_version is None or row["token_version"] == token_version)
-                and (not require_active or row["active"]))
+    return bool(row and row["account_generation"] == generation)
 
 
 def require_current_account(conn, user) -> None:

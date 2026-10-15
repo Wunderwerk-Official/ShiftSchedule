@@ -204,7 +204,7 @@ def test_classic_solver_includes_fixed_entries_in_constraint_context():
     state = make_app_state(assignments=[make_assignment(row_id='slot-a__mon', source='solver')])
     state.assignments[0].locked = True
     selected, context, skipped = _collect_manual_assignments(state, [MON], {'slot-a__mon'},
-        {'slot-a__mon': (480, 960, 'loc-default')}, lambda *_: False)
+        {'slot-a__mon': (480, 960, 'loc-default')})
     assert selected == context == {('clin-1', MON): ['slot-a__mon']}
     assert skipped == []
 
@@ -345,6 +345,24 @@ def test_days_affected_by_repair_covers_iso_week_and_neighbours():
     assert ex.workflow._days_affected_by_repair(days, set(), set()) == set(days)
     ex.ctx.settings.agentQualityProfile = 'balanced'
     assert ex.workflow._days_affected_by_repair(days, before, after) == set(days)
+
+
+def test_days_affected_by_repair_widens_to_on_call_rest_window():
+    ex = executor(week_state(5), assignments([0]), end='2026-01-25')
+    days = ex.ctx.target_day_isos  # 2026-01-05 .. 2026-01-25
+    monday = {('a1', '2026-01-12', 'a')}
+    saturday = {('a1', '2026-01-17', 'a')}
+    # Rule disabled: unchanged ISO week + one neighbour.
+    ex.ctx.settings.onCallRestDaysBefore = 3
+    ex.ctx.settings.onCallRestDaysAfter = 3
+    assert ex.workflow._days_affected_by_repair(days, set(), monday) == {
+        d for d in days if '2026-01-11' <= d <= '2026-01-18'}
+    # Rule enabled with 3 rest days: the Friday before becomes stale too.
+    ex.ctx.settings.onCallRestEnabled = True
+    assert ex.workflow._days_affected_by_repair(days, set(), monday) == {
+        d for d in days if '2026-01-09' <= d <= '2026-01-18'}
+    assert ex.workflow._days_affected_by_repair(days, set(), saturday) == {
+        d for d in days if '2026-01-12' <= d <= '2026-01-20'}
 
 
 def test_exhausted_audit_reports_unverified_not_pending():
