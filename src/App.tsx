@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   clearAuthToken,
   getCurrentUser,
+  HttpError,
   login,
   setAuthToken,
   type AuthUser,
@@ -14,12 +15,13 @@ import PublicWeekPage from "./pages/PublicWeekPage";
 import WeeklySchedulePage from "./pages/WeeklySchedulePage";
 import { APP_BUILD, APP_VERSION } from "./version";
 
-/** Subtle, always-visible build identifier at the bottom of the app. Not
- * rendered on print/public/export routes to keep those documents clean. */
+/** Subtle build identifier at the bottom of the app. Not rendered on
+ * print/public/export routes to keep those documents clean, and hidden on
+ * phones, where it would sit on right-aligned plan content (hours). */
 function VersionBadge() {
   return (
     <div
-      className="pointer-events-none fixed bottom-1 right-2 z-50 select-none text-[10px] tabular-nums text-slate-400/80 dark:text-slate-500/80"
+      className="pointer-events-none fixed bottom-1 right-2 z-50 hidden select-none text-[10px] tabular-nums text-slate-400/80 dark:text-slate-500/80 sm:block"
       aria-label={`App version ${APP_VERSION} build ${APP_BUILD}`}
     >
       v{APP_VERSION} ({APP_BUILD})
@@ -37,14 +39,29 @@ export default function App() {
     return window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light";
   });
 
-  useEffect(() => {
+  const [serverUnreachable, setServerUnreachable] = useState(false);
+
+  const checkSession = useCallback(() => {
+    setLoading(true);
+    setServerUnreachable(false);
     getCurrentUser()
       .then((user) => setCurrentUser(user))
-      .catch(() => {
-        clearAuthToken();
+      .catch((error) => {
+        // Only drop the token when the server rejects it (401 invalid/expired,
+        // 403 disabled). Transient failures (deploy restart, network) keep it
+        // and offer a retry instead of the login page.
+        if (error instanceof HttpError && (error.status === 401 || error.status === 403)) {
+          clearAuthToken();
+        } else {
+          setServerUnreachable(true);
+        }
       })
       .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    checkSession();
+  }, [checkSession]);
 
   useEffect(() => {
     const handler = () => setCurrentUser(null);
@@ -117,6 +134,38 @@ export default function App() {
           Loading...
         </div>
       </div>
+    );
+  }
+
+  if (!currentUser && serverUnreachable) {
+    return (
+      <>
+        <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
+          <div className="mx-auto flex min-h-screen max-w-xl flex-col justify-center gap-4 px-6 text-slate-600 dark:text-slate-300">
+            <p role="alert">
+              The server is not reachable right now (it may be restarting). You are
+              still signed in; please try again in a moment.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={checkSession}
+                className="rounded-xl bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-700"
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => setServerUnreachable(false)}
+                className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+              >
+                Go to sign in
+              </button>
+            </div>
+          </div>
+        </div>
+        <VersionBadge />
+      </>
     );
   }
 

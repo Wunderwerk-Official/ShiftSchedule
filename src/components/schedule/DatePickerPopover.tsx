@@ -6,7 +6,9 @@ import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
 type DatePickerPopoverProps = {
   open: boolean;
   onClose: () => void;
-  onSelectDate: (date: Date) => void;
+  // firstDayInMonth: the row's first day inside the displayed month (rows
+  // are single buttons, so this is not necessarily the day under the cursor).
+  onSelectDate: (weekStart: Date, firstDayInMonth: Date) => void;
   selectedDate: Date;
   anchorRef: React.RefObject<HTMLElement>;
 };
@@ -146,10 +148,12 @@ export default function DatePickerPopover({
     setViewDate(new Date(year, month + 1, 1));
   };
 
-  const handleSelectWeek = (date: Date) => {
-    // Navigate to the Monday of the selected week
-    const weekStart = getWeekStart(date);
-    onSelectDate(weekStart);
+  const handleSelectWeek = (firstDayInMonth: Date) => {
+    // Navigate to the Monday of the selected week; the row's first day in the
+    // displayed month is passed too (month pickers need it: the Monday may
+    // lie in the previous month).
+    const weekStart = getWeekStart(firstDayInMonth);
+    onSelectDate(weekStart, firstDayInMonth);
     onClose();
   };
 

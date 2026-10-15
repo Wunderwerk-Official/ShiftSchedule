@@ -404,6 +404,158 @@ describe("normalizeAppState", () => {
     });
   });
 
+  it("gives sections without a color the same default palette as the backend", () => {
+    // Same list and order as SECTION_BLOCK_COLORS in backend/state.py; the
+    // backend test test_default_section_colors_match_the_frontend_palette
+    // compares that list with colorPalette.ts, so drift on either side fails.
+    const backendPalette = [
+      "#FDE2E4", "#FFD9C9", "#FFE8D6", "#FFEFD1", "#FFF4C1", "#EEF6C8",
+      "#E6F7D9", "#DDF6EE", "#D9F0FF", "#DEE8FF", "#E8E1F5",
+    ];
+    const rows: WorkplaceRow[] = Array.from({ length: 12 }, (_, index) => ({
+      id: `section-${index}`,
+      name: `Section ${index}`,
+      kind: "class",
+      dotColorClass: "bg-slate-400",
+    }));
+    const { state } = normalizeAppState(makeMinimalState({ rows, weeklyTemplate: undefined }));
+    expect(state.rows.filter((row) => row.kind === "class").map((row) => row.blockColor)).toEqual([
+      ...backendPalette,
+      backendPalette[0],
+    ]);
+  });
+
+  describe("migrated sub-shift slot ids", () => {
+    const MONDAY = "2026-01-05";
+    // Template migrated from rows: one slot per sub-shift and day type,
+    // e.g. "section-a::s2__mon". Mirrors _migrated_two_shift_state (backend).
+    const migratedTwoShiftState = (): AppState => {
+      const twoShiftRows: WorkplaceRow[] = [
+        {
+          id: "section-a",
+          name: "MRI",
+          kind: "class",
+          dotColorClass: "bg-slate-400",
+          subShifts: [
+            { id: "s1", name: "Early", order: 1, startTime: "08:00", endTime: "16:00" },
+            { id: "s2", name: "Late", order: 2, startTime: "16:00", endTime: "23:00" },
+          ],
+        },
+      ];
+      return normalizeAppState(makeMinimalState({ rows: twoShiftRows, weeklyTemplate: undefined }))
+        .state;
+    };
+    const assignmentOn = (id: string, rowId: string, dateISO = MONDAY) => ({
+      id,
+      rowId,
+      dateISO,
+      clinicianId: "c1",
+    });
+
+    it("keeps an assignment on `section-a::s2__mon` next to its override", () => {
+      const { state } = normalizeAppState({
+        ...migratedTwoShiftState(),
+        assignments: [
+          assignmentOn("a1", "section-a::s1__mon"),
+          assignmentOn("a2", "section-a::s2__mon"),
+        ],
+        slotOverridesByKey: { "section-a::s2__mon__2026-01-05": 1 },
+      });
+
+      expect(state.assignments.map((a) => [a.id, a.rowId])).toEqual([
+        ["a1", "section-a::s1__mon"],
+        ["a2", "section-a::s2__mon"],
+      ]);
+      expect(state.slotOverridesByKey).toEqual({ "section-a::s2__mon__2026-01-05": 1 });
+      expect(normalizeAppState(state).changed).toBe(false);
+    });
+
+    it.each([
+      { dateISO: MONDAY, holidayDates: [MONDAY], from: "mon", to: "holiday" },
+      { dateISO: MONDAY, holidayDates: [], from: "holiday", to: "mon" },
+      { dateISO: "2026-01-06", holidayDates: [], from: "mon", to: "tue" },
+    ])(
+      "moves assignments on `$from` slots to the same sub-shift's `$to` slot",
+      ({ dateISO, holidayDates, from, to }) => {
+        const { state, changed } = normalizeAppState({
+          ...migratedTwoShiftState(),
+          holidays: holidayDates.map((date) => ({ dateISO: date, name: "Holiday" })),
+          assignments: [
+            assignmentOn("a1", `section-a::s1__${from}`, dateISO),
+            assignmentOn("a2", `section-a::s2__${from}`, dateISO),
+          ],
+        });
+
+        expect(changed).toBe(true);
+        expect(state.assignments.map((a) => [a.id, a.rowId])).toEqual([
+          ["a1", `section-a::s1__${to}`],
+          ["a2", `section-a::s2__${to}`],
+        ]);
+        expect(normalizeAppState(state).changed).toBe(false);
+      },
+    );
+
+    it("keeps an assignment on a migrated slot moved into another day's column", () => {
+      // Dragging "slot-a__mon" into the Tuesday column keeps its id. Its column
+      // fits a Tuesday, so the assignment stays on it instead of following the
+      // id suffix to the sibling "slot-a__tue" (another row and time).
+      const migrated = migratedTwoShiftState();
+      const template = migrated.weeklyTemplate!;
+      const location = template.locations.find((loc) => loc.slots.length > 0)!;
+      const tueBand = location.colBands.find((band) => band.dayType === "tue")!;
+      const base = location.slots.find((slot) => slot.colBandId === tueBand.id)!;
+      const tuesday = "2026-01-13";
+      const { state } = normalizeAppState({
+        ...migrated,
+        weeklyTemplate: {
+          ...template,
+          locations: template.locations.map((loc) =>
+            loc !== location
+              ? loc
+              : {
+                  ...loc,
+                  slots: [
+                    ...loc.slots,
+                    { ...base, id: "slot-a__mon", startTime: "08:00", endTime: "12:00" },
+                    { ...base, id: "slot-a__tue", startTime: "13:00", endTime: "17:00" },
+                  ],
+                },
+          ),
+        },
+        holidays: [],
+        assignments: [assignmentOn("a1", "slot-a__mon", tuesday)],
+        slotOverridesByKey: { [`slot-a__mon__${tuesday}`]: 1 },
+      });
+
+      expect(state.assignments.map((a) => [a.id, a.rowId])).toEqual([["a1", "slot-a__mon"]]);
+      expect(state.slotOverridesByKey).toEqual({ [`slot-a__mon__${tuesday}`]: 1 });
+      expect(normalizeAppState(state).changed).toBe(false);
+    });
+
+    it("drops an assignment on a deleted migrated slot instead of moving it to s1", () => {
+      const migrated = migratedTwoShiftState();
+      const template = migrated.weeklyTemplate!;
+      const { state } = normalizeAppState({
+        ...migrated,
+        weeklyTemplate: {
+          ...template,
+          locations: template.locations.map((location) => ({
+            ...location,
+            slots: location.slots.filter((slot) => !slot.id.startsWith("section-a::s2__")),
+          })),
+        },
+        assignments: [
+          assignmentOn("a1", "section-a::s1__mon"),
+          assignmentOn("a2", "section-a::s2__mon"),
+        ],
+      });
+
+      expect(state.assignments.map((a) => [a.id, a.rowId])).toEqual([
+        ["a1", "section-a::s1__mon"],
+      ]);
+    });
+  });
+
   describe("idempotence", () => {
     it("normalizing twice produces the same result", () => {
       const state = makeMinimalState({

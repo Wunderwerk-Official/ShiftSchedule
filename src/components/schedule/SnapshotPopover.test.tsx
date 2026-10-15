@@ -90,4 +90,34 @@ describe("SnapshotPopover", () => {
     const restoreButtons = screen.getAllByText("Restore") as HTMLButtonElement[];
     expect(restoreButtons.every((button) => button.disabled)).toBe(true);
   });
+
+  it("disables an already open restore confirmation once the solver starts", async () => {
+    const props = { onSaveSnapshot: vi.fn(), onRestoreSnapshot: vi.fn() };
+    const { rerender } = render(<SnapshotPopover {...props} restoreDisabled={false} />);
+    fireEvent.click(screen.getByLabelText("Calendar snapshots"));
+    await waitFor(() => expect(screen.getByText("Planung Juli")).toBeTruthy());
+    fireEvent.click(screen.getAllByText("Restore")[0]);
+    expect(screen.getByText(/Restores the entire calendar/)).toBeTruthy();
+
+    rerender(<SnapshotPopover {...props} restoreDisabled />);
+    const confirmButton = screen.getAllByText("Restore")[0] as HTMLButtonElement;
+    expect(confirmButton.disabled).toBe(true);
+    fireEvent.click(confirmButton);
+    expect(props.onRestoreSnapshot).not.toHaveBeenCalled();
+  });
+
+  it("Escape while renaming cancels the rename but keeps the panel open", async () => {
+    setup();
+    fireEvent.click(screen.getByLabelText("Calendar snapshots"));
+    await waitFor(() => expect(screen.getByText("Planung Juli")).toBeTruthy());
+    fireEvent.click(screen.getByText("Rename"));
+    const input = screen.getByDisplayValue("Planung Juli");
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(screen.queryByDisplayValue("Planung Juli")).toBeNull();
+    expect(screen.getByText("Planung Juli")).toBeTruthy();
+    // A second Escape (outside the input) closes the panel as before.
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByText("Planung Juli")).toBeNull();
+  });
 });

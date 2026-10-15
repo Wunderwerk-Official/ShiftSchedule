@@ -6,9 +6,6 @@ import { toISODate } from "./date";
 
 type ColumnTimeMeta = { label?: string; mixed: boolean };
 
-// Time metadata by location: key is "locationId-dayType-colBandOrder"
-type LocationColumnTimeMeta = { label?: string; mixed: boolean };
-
 export type DayColumn = {
   date: Date;
   dateISO: string;
@@ -80,13 +77,19 @@ export const buildLocationSeparatorRowIds = (calendarRows: ScheduleRow[]) => {
   return Array.from(ids);
 };
 
-export const buildColumnTimeMetaByKey = (scheduleRows: ScheduleRow[]) => {
+// Shared time-heading logic: groups class slots by keyOf (null = skip) and
+// records one label per group, or mixed when the slots' times differ.
+const buildTimeMeta = (
+  scheduleRows: ScheduleRow[],
+  keyOf: (row: ScheduleRow) => string | null,
+): Map<string, ColumnTimeMeta> => {
   const map = new Map<string, ColumnTimeMeta>();
   const state = new Map<string, { label: string; hasSlot: boolean; mixed: boolean }>();
   for (const row of scheduleRows) {
     if (row.kind !== "class") continue;
     if (!row.dayType || !row.colBandOrder) continue;
-    const key = `${row.dayType}-${row.colBandOrder}`;
+    const key = keyOf(row);
+    if (key === null) continue;
     const interval = buildShiftInterval(row);
     const entry = state.get(key) ?? { label: "", hasSlot: false, mixed: false };
     if (!interval) {
@@ -111,51 +114,20 @@ export const buildColumnTimeMetaByKey = (scheduleRows: ScheduleRow[]) => {
   }
   return map;
 };
+
+/** Time metadata per column. Key format: "dayType-colBandOrder". */
+export const buildColumnTimeMetaByKey = (scheduleRows: ScheduleRow[]) =>
+  buildTimeMeta(scheduleRows, (row) => `${row.dayType}-${row.colBandOrder}`);
 
 /**
  * Build time metadata per location and column.
  * Key format: "locationId__dayType-colBandOrder"
  * This allows showing per-location time headings when the global column has mixed times.
  */
-export const buildLocationColumnTimeMetaByKey = (
-  scheduleRows: ScheduleRow[],
-): Map<string, LocationColumnTimeMeta> => {
-  const map = new Map<string, LocationColumnTimeMeta>();
-  const state = new Map<string, { label: string; hasSlot: boolean; mixed: boolean }>();
-
-  for (const row of scheduleRows) {
-    if (row.kind !== "class") continue;
-    if (!row.dayType || !row.colBandOrder || !row.locationId) continue;
-
-    const key = `${row.locationId}__${row.dayType}-${row.colBandOrder}`;
-    const interval = buildShiftInterval(row);
-    const entry = state.get(key) ?? { label: "", hasSlot: false, mixed: false };
-
-    if (!interval) {
-      state.set(key, entry);
-      continue;
-    }
-
-    const label = formatTimeRangeLabel(interval.start, interval.end);
-    entry.hasSlot = true;
-    if (!entry.label) {
-      entry.label = label;
-    } else if (entry.label !== label) {
-      entry.mixed = true;
-    }
-    state.set(key, entry);
-  }
-
-  for (const [key, entry] of state.entries()) {
-    if (!entry.hasSlot) continue;
-    map.set(key, {
-      label: entry.mixed ? undefined : entry.label || undefined,
-      mixed: entry.mixed,
-    });
-  }
-
-  return map;
-};
+export const buildLocationColumnTimeMetaByKey = (scheduleRows: ScheduleRow[]) =>
+  buildTimeMeta(scheduleRows, (row) =>
+    row.locationId ? `${row.locationId}__${row.dayType}-${row.colBandOrder}` : null,
+  );
 
 export const buildDayColumns = (
   displayDays: Date[],

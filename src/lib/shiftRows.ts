@@ -15,6 +15,7 @@ import type {
   WorkplaceRow,
 } from "../api/client";
 import { normalizePreferredWorkingTimes, normalizeWorkPattern } from "./clinicianPreferences";
+import { BLOCK_COLOR_SWATCH_OPTIONS } from "./colorPalette";
 import { DAY_TYPES, getDayType } from "./dayTypes";
 
 export const SHIFT_ROW_SEPARATOR = "::";
@@ -72,19 +73,9 @@ export function getContrastTextColor(bgColor: string | undefined): {
   };
 }
 
-const SECTION_BLOCK_COLORS = [
-  "#FDE2E4",
-  "#FFD9C9",
-  "#FFE8D6",
-  "#FFEFD1",
-  "#FFF4C1",
-  "#EEF6C8",
-  "#E6F7D9",
-  "#DDF6EE",
-  "#D9F0FF",
-  "#DEE8FF",
-  "#E8E1F5",
-];
+// Must match SECTION_BLOCK_COLORS in backend/state.py (checked by the backend
+// test test_default_section_colors_match_the_frontend_palette).
+const SECTION_BLOCK_COLORS = BLOCK_COLOR_SWATCH_OPTIONS.map((option) => option.color);
 
 export type ScheduleRow = {
   id: string;
@@ -141,6 +132,16 @@ export function parseShiftRowId(rowId: string): { classId: string; subShiftId?: 
     return { classId: rowId };
   }
   return { classId, subShiftId };
+}
+
+/**
+ * Migrated template slot ids look like "class-1::s2__mon": they are already
+ * slot ids and must not be remapped as legacy shift-row ids ("class-1::s2").
+ * Mirrors _is_day_type_slot_id in backend/state.py.
+ */
+function isDayTypeSlotId(rowId: string): boolean {
+  const parts = rowId.split("__");
+  return parts.length === 2 && DAY_TYPES.includes(parts[1] as DayType);
 }
 
 function parseTimeToMinutes(value?: string): number | null {
@@ -894,6 +895,11 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
       continue;
     }
     let rowId = assignment.rowId;
+    if (isDayTypeSlotId(rowId)) {
+      // Validated against the template's slot ids below.
+      assignments.push(assignment);
+      continue;
+    }
     if (classRowIds.has(rowId) && !rowId.includes(SHIFT_ROW_SEPARATOR)) {
       const fallback = fallbackShiftIdByClass.get(rowId) ?? "s1";
       rowId = buildShiftRowId(rowId, fallback);
@@ -967,13 +973,8 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
     const rowId = separatorIndex >= 0 ? key.slice(0, separatorIndex) : key;
     const dateISO = separatorIndex >= 0 ? key.slice(separatorIndex + 2) : "";
     if (!rowId || !dateISO) continue;
-    // Migrated slot ids carry a `__${dayType}` suffix; they are already in
-    // slot-id form and must not be remapped as legacy shift-row ids.
-    const slotIdParts = rowId.split("__");
-    const isTemplateSlotId =
-      slotIdParts.length === 2 && DAY_TYPES.includes(slotIdParts[1] as DayType);
     let nextRowId = rowId;
-    if (isTemplateSlotId) {
+    if (isDayTypeSlotId(rowId)) {
       // Keep as-is; validated against the template's slot ids below.
     } else if (classRowIds.has(rowId) && !rowId.includes(SHIFT_ROW_SEPARATOR)) {
       nextRowId = buildShiftRowId(rowId, "s1");
@@ -1056,13 +1057,31 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
     return mapping[dayType] ?? null;
   };
 
+  // A migrated slot id ("class-1::s2__mon") follows its date's day type: when a
+  // holiday is added or removed, the assignment moves to the same sub-shift's
+  // slot for the new day type ("class-1::s2__holiday"). Without such a slot the
+  // day-type check below drops it. A slot whose column already fits the date
+  // stays, even if its suffix names another day (it was dragged into another
+  // day's column and kept its id). Mirrors _follow_date_day_type in backend/state.py.
+  const followDateDayType = (rowId: string, dateISO: string) => {
+    if (!isDayTypeSlotId(rowId)) return rowId;
+    const dayType = getDayType(dateISO, holidaySet);
+    const meta = slotMetaById.get(rowId);
+    if (meta && (meta.dayType === undefined || meta.dayType === dayType)) return rowId;
+    const baseId = rowId.split("__")[0];
+    return slotIdMapByLegacyKey[baseId]?.[dayType] ?? rowId;
+  };
+
   const mappedAssignments: Assignment[] = [];
   for (const assignment of assignments) {
     if (poolRowIds.has(assignment.rowId)) {
       mappedAssignments.push(assignment);
       continue;
     }
-    let nextRowId = assignment.rowId;
+    let nextRowId = followDateDayType(assignment.rowId, assignment.dateISO);
+    if (nextRowId !== assignment.rowId) {
+      changed = true;
+    }
     if (!slotIds.has(nextRowId)) {
       const mapped = resolveLegacySlotId(nextRowId, assignment.dateISO);
       if (!mapped) {

@@ -2,6 +2,7 @@ import { addDays, toISODate } from "./date";
 import type { SolverSettings } from "../api/client";
 import type { Assignment, Clinician } from "../api/client";
 import type { ScheduleRow } from "./shiftRows";
+import { parseTimeToMinutes } from "./time";
 
 export const REST_DAY_POOL_ID = "pool-rest-day";
 export const VACATION_POOL_ID = "pool-vacation";
@@ -21,17 +22,6 @@ export function splitAssignmentKey(key: string): { rowId: string; dateISO: strin
   const idx = key.lastIndexOf("__");
   if (idx < 0) return { rowId: key, dateISO: "" };
   return { rowId: key.slice(0, idx), dateISO: key.slice(idx + 2) };
-}
-
-function parseTimeToMinutes(value?: string): number | null {
-  if (!value) return null;
-  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return null;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-  return hours * 60 + minutes;
 }
 
 function formatMinutesWithOffset(totalMinutes: number): string {
@@ -66,6 +56,24 @@ export function intervalsOverlap(a: TimeRange, b: TimeRange): boolean {
   return !(a.end <= b.start || b.end <= a.start);
 }
 
+/**
+ * Order of the people in a grid cell: by surname (the last word of the
+ * name), then by the full name. Lists of fewer than two come back as is.
+ */
+export function sortAssignmentsBySurname<T extends { clinicianId: string }>(
+  assignments: T[],
+  getName: (clinicianId: string) => string,
+): T[] {
+  if (assignments.length < 2) return assignments;
+  const surnameOf = (name: string) => name.trim().split(/\s+/).slice(-1)[0] ?? name;
+  return [...assignments].sort((a, b) => {
+    const nameA = getName(a.clinicianId);
+    const nameB = getName(b.clinicianId);
+    const bySurname = surnameOf(nameA).localeCompare(surnameOf(nameB));
+    return bySurname !== 0 ? bySurname : nameA.localeCompare(nameB);
+  });
+}
+
 export function buildRenderedAssignmentMap(
   assignmentMap: Map<string, Assignment[]>,
   clinicians: Clinician[],
@@ -73,6 +81,7 @@ export function buildRenderedAssignmentMap(
   options?: {
     scheduleRows?: ScheduleRow[];
     solverSettings?: SolverSettings;
+    /** Unused. Still accepted because existing callers pass it. */
     holidayDates?: Set<string>;
   },
 ) {
@@ -86,6 +95,8 @@ export function buildRenderedAssignmentMap(
   };
   const displayDateSet = new Set(displayDays.map((date) => toISODate(date)));
   const rowKindById = new Map(scheduleRows.map((row) => [row.id, row.kind]));
+  const rowKindOf = (rowId: string) =>
+    rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
   const sectionByRowId = new Map(
     scheduleRows
       .filter((row) => row.kind === "class")
@@ -120,39 +131,28 @@ export function buildRenderedAssignmentMap(
   }
 
   const next = new Map<string, RenderedAssignment[]>();
-  const assignedCliniciansByDate = new Map<string, Set<string>>();
   const assignedShiftRowsByDate = new Map<string, Map<string, Set<string>>>();
   const restDayAssignmentsByDate = new Map<string, Set<string>>();
-  const poolCliniciansByKey = new Map<string, Set<string>>();
-  const poolCliniciansByDate = new Map<string, Set<string>>();
 
+  // Stored pool entries (Rest Day) keep their own ids, even when the clinician
+  // also holds a slot that day: dragging the pill out of Rest Day removes the
+  // stored entry by that id.
   for (const [key, list] of assignmentMap.entries()) {
     const { rowId, dateISO } = splitAssignmentKey(key);
     if (!dateISO) continue;
     if (rowId === VACATION_POOL_ID) continue;
-    const rowKind =
-      rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
+    const rowKind = rowKindOf(rowId);
 
     const vacationSet = vacationByDate.get(dateISO);
     const filtered = list.filter((item) => !vacationSet || !vacationSet.has(item.clinicianId));
     if (filtered.length === 0) continue;
     next.set(key, [...filtered]);
-    if (rowKind === "pool") {
-      const poolSet = poolCliniciansByKey.get(key) ?? new Set<string>();
+    if (rowKind === "pool" && rowId === REST_DAY_POOL_ID) {
+      const restSet = restDayAssignmentsByDate.get(dateISO) ?? new Set<string>();
       for (const item of filtered) {
-        poolSet.add(item.clinicianId);
-        const dateSet = poolCliniciansByDate.get(dateISO) ?? new Set<string>();
-        dateSet.add(item.clinicianId);
-        poolCliniciansByDate.set(dateISO, dateSet);
+        restSet.add(item.clinicianId);
       }
-      poolCliniciansByKey.set(key, poolSet);
-      if (rowId === REST_DAY_POOL_ID) {
-        const restSet = restDayAssignmentsByDate.get(dateISO) ?? new Set<string>();
-        for (const item of filtered) {
-          restSet.add(item.clinicianId);
-        }
-        restDayAssignmentsByDate.set(dateISO, restSet);
-      }
+      restDayAssignmentsByDate.set(dateISO, restSet);
     }
 
     if (rowKind !== "class") continue;
@@ -161,52 +161,11 @@ export function buildRenderedAssignmentMap(
       dayShiftRows = new Map();
       assignedShiftRowsByDate.set(dateISO, dayShiftRows);
     }
-    let assignedSet = assignedCliniciansByDate.get(dateISO);
-    if (!assignedSet) {
-      assignedSet = new Set();
-      assignedCliniciansByDate.set(dateISO, assignedSet);
-    }
     for (const item of filtered) {
-      assignedSet.add(item.clinicianId);
       const assignedRows = dayShiftRows.get(item.clinicianId) ?? new Set<string>();
       assignedRows.add(rowId);
       dayShiftRows.set(item.clinicianId, assignedRows);
     }
-  }
-
-  for (const [key, list] of next.entries()) {
-    const { rowId, dateISO } = splitAssignmentKey(key);
-    if (!rowId || !dateISO) continue;
-    const rowKind =
-      rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
-    if (rowKind !== "pool") continue;
-    const assignedSet = assignedCliniciansByDate.get(dateISO);
-    if (!assignedSet || assignedSet.size === 0) continue;
-    const filtered = list.filter((item) => !assignedSet.has(item.clinicianId));
-    if (filtered.length === 0) {
-      next.delete(key);
-      continue;
-    }
-    if (filtered.length !== list.length) {
-      next.set(key, filtered);
-    }
-  }
-  poolCliniciansByKey.clear();
-  poolCliniciansByDate.clear();
-  for (const [key, list] of next.entries()) {
-    const { rowId, dateISO } = splitAssignmentKey(key);
-    if (!rowId || !dateISO) continue;
-    const rowKind =
-      rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
-    if (rowKind !== "pool") continue;
-    const poolSet = poolCliniciansByKey.get(key) ?? new Set<string>();
-    for (const item of list) {
-      poolSet.add(item.clinicianId);
-      const dateSet = poolCliniciansByDate.get(dateISO) ?? new Set<string>();
-      dateSet.add(item.clinicianId);
-      poolCliniciansByDate.set(dateISO, dateSet);
-    }
-    poolCliniciansByKey.set(key, poolSet);
   }
 
   const offByDate = new Map<string, Set<string>>();
@@ -250,9 +209,7 @@ export function buildRenderedAssignmentMap(
     for (const [key, list] of next.entries()) {
       const { rowId, dateISO } = splitAssignmentKey(key);
       if (!rowId || !dateISO) continue;
-      const rowKind =
-        rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
-      if (rowKind !== "pool") continue;
+      if (rowKindOf(rowId) !== "pool") continue;
       const offSet = offByDate.get(dateISO);
       if (!offSet || offSet.size === 0) continue;
       if (rowId === REST_DAY_POOL_ID || rowId === VACATION_POOL_ID) continue;
@@ -281,6 +238,13 @@ export function buildRenderedAssignmentMap(
         next.set(key, filtered);
       }
     }
+  }
+
+  const poolCliniciansByKey = new Map<string, Set<string>>();
+  for (const [key, list] of next.entries()) {
+    const { rowId } = splitAssignmentKey(key);
+    if (rowKindOf(rowId) !== "pool") continue;
+    poolCliniciansByKey.set(key, new Set(list.map((item) => item.clinicianId)));
   }
 
   for (const date of displayDays) {

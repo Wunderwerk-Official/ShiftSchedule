@@ -76,6 +76,11 @@ export default function ClinicianPickerPopover({
   const [searchQuery, setSearchQuery] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [popoverHeight, setPopoverHeight] = useState(0);
+  // The grids pass onClose as an inline arrow (new identity every render).
+  // Keep it in a ref so a parent re-render doesn't re-run the effects below
+  // and yank focus back into the search field.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
 
   useEffect(() => {
     if (!open) {
@@ -83,7 +88,7 @@ export default function ClinicianPickerPopover({
       return;
     }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") onCloseRef.current();
     };
     window.addEventListener("keydown", onKeyDown);
     const timeoutId = setTimeout(() => inputRef.current?.focus({ preventScroll: true }), 0);
@@ -91,18 +96,18 @@ export default function ClinicianPickerPopover({
       window.removeEventListener("keydown", onKeyDown);
       clearTimeout(timeoutId);
     };
-  }, [open, onClose]);
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const handleClickOutside = (e: MouseEvent) => {
       if (popoverRef.current && !popoverRef.current.contains(e.target as Node)) {
-        onClose();
+        onCloseRef.current();
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open, onClose]);
+  }, [open]);
 
   // Measure popover height after render
   useEffect(() => {

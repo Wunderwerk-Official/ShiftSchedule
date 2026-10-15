@@ -5,6 +5,8 @@ import { useEffect, useRef, useState } from "react";
 export function useAnimatedNumber(target: number, durationMs = 500): number {
   const [display, setDisplay] = useState(target);
   const fromRef = useRef(target);
+  // Last value shown; a new target mid-animation continues from here.
+  const displayRef = useRef(target);
   const frameRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -14,6 +16,7 @@ export function useAnimatedNumber(target: number, durationMs = 500): number {
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
     ) {
       fromRef.current = target;
+      displayRef.current = target;
       setDisplay(target);
       return;
     }
@@ -23,6 +26,7 @@ export function useAnimatedNumber(target: number, durationMs = 500): number {
       const t = Math.min(1, (now - startedAt) / durationMs);
       const eased = 1 - Math.pow(1 - t, 3); // ease-out cubic
       const value = Math.round(from + (target - from) * eased);
+      displayRef.current = value;
       setDisplay(value);
       if (t < 1) {
         frameRef.current = requestAnimationFrame(tick);
@@ -33,7 +37,7 @@ export function useAnimatedNumber(target: number, durationMs = 500): number {
     frameRef.current = requestAnimationFrame(tick);
     return () => {
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-      fromRef.current = target;
+      fromRef.current = displayRef.current;
     };
   }, [target, durationMs]);
 

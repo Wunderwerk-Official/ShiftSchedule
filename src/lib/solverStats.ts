@@ -1,5 +1,6 @@
 import type { Assignment, Clinician } from "../api/client";
 import type { ScheduleRow } from "./shiftRows";
+import { parseTimeToMinutes } from "./time";
 
 export type SolverLiveStats = {
   filledSlots: number;
@@ -50,18 +51,6 @@ function getDatesInRange(startISO: string, endISO: string): string[] {
     current.setUTCDate(current.getUTCDate() + 1);
   }
   return dates;
-}
-
-// Parse "HH:MM" to minutes since midnight
-function parseTimeToMinutes(time: string | undefined): number | null {
-  if (!time) return null;
-  const match = time.match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return null;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-  return hours * 60 + minutes;
 }
 
 // Calculate slot duration in minutes

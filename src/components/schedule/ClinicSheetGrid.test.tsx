@@ -51,6 +51,8 @@ const setup = (options: { readOnly?: boolean } = {}) => {
   ];
   const assignmentMap = new Map([[`${slotRow.id}__2026-07-06`, assignments]]);
   const onAddAssignment = vi.fn();
+  const onRemoveAssignment = vi.fn();
+  const onMoveWithinDay = vi.fn();
   render(
     <ClinicSheetGrid
       model={model}
@@ -74,11 +76,28 @@ const setup = (options: { readOnly?: boolean } = {}) => {
         },
       ]}
       onAddAssignment={onAddAssignment}
-      onRemoveAssignment={vi.fn()}
-      onMoveWithinDay={vi.fn()}
+      onRemoveAssignment={onRemoveAssignment}
+      onMoveWithinDay={onMoveWithinDay}
     />,
   );
-  return { onAddAssignment, slotRow };
+  return { onAddAssignment, onRemoveAssignment, onMoveWithinDay, slotRow };
+};
+
+const sheetCell = (rowId: string, dateISO: string) =>
+  document.querySelector(
+    `[data-schedule-cell="true"][data-row-id="${rowId}"][data-date-iso="${dateISO}"]`,
+  ) as HTMLElement;
+
+const makeDataTransfer = () => {
+  const data: Record<string, string> = {};
+  return {
+    setData: (type: string, value: string) => {
+      data[type] = value;
+    },
+    getData: (type: string) => data[type] ?? "",
+    effectAllowed: "all",
+    dropEffect: "none",
+  };
 };
 
 describe("ClinicSheetGrid", () => {
@@ -166,6 +185,48 @@ describe("ClinicSheetGrid", () => {
       '[data-schedule-cell="true"][data-row-id="pool-vacation"][data-date-iso="2026-07-06"]',
     ) as HTMLElement;
     expect(poolCell.textContent).toContain("Bergmann");
+  });
+
+  it("moves a name into a pool row of the same day", () => {
+    const { onMoveWithinDay, onRemoveAssignment, slotRow } = setup();
+    const name = screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(name, { dataTransfer });
+    fireEvent.dragOver(sheetCell("pool-vacation", "2026-07-06"), { dataTransfer });
+    fireEvent.drop(sheetCell("pool-vacation", "2026-07-06"), { dataTransfer });
+    expect(onMoveWithinDay).toHaveBeenCalledWith({
+      dateISO: "2026-07-06",
+      fromRowId: slotRow.id,
+      toRowId: "pool-vacation",
+      assignmentId: "assign-1",
+      clinicianId: "clin-1",
+    });
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+  });
+
+  it("removes the assignment when dropped on another day (current semantics)", () => {
+    const { onMoveWithinDay, onRemoveAssignment, slotRow } = setup();
+    const name = screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(name, { dataTransfer });
+    fireEvent.drop(sheetCell("pool-vacation", "2026-07-07"), { dataTransfer });
+    expect(onRemoveAssignment).toHaveBeenCalledWith({
+      rowId: slotRow.id,
+      dateISO: "2026-07-06",
+      assignmentId: "assign-1",
+      clinicianId: "clin-1",
+    });
+    expect(onMoveWithinDay).not.toHaveBeenCalled();
+  });
+
+  it("ignores a malformed drag payload", () => {
+    const { onMoveWithinDay, onRemoveAssignment } = setup();
+    const name = screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;
+    fireEvent.dragStart(name, { dataTransfer: makeDataTransfer() });
+    const broken = { ...makeDataTransfer(), getData: () => "{not json" };
+    fireEvent.drop(sheetCell("pool-vacation", "2026-07-06"), { dataTransfer: broken });
+    expect(onMoveWithinDay).not.toHaveBeenCalled();
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
   });
 
   it("uses the sheet cyan constant for weekend blocks", () => {

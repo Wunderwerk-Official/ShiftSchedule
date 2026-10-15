@@ -6,6 +6,7 @@ import {
   formatTimeRangeLabel,
   intervalsOverlap,
   REST_DAY_POOL_ID,
+  sortAssignmentsBySurname,
   VACATION_POOL_ID,
 } from "./schedule";
 import type { ScheduleRow } from "./shiftRows";
@@ -115,6 +116,31 @@ describe("formatTimeRangeLabel", () => {
   it("formats time range with day offset", () => {
     // 22:00 = 1320 minutes, 06:00 next day = 360 + 1440 = 1800 minutes
     expect(formatTimeRangeLabel(1320, 1800)).toBe("22:00 - 06:00 +1d");
+  });
+});
+
+describe("sortAssignmentsBySurname", () => {
+  const names: Record<string, string> = {
+    a: "Zoe Adams",
+    b: "Anna Baker",
+    c: "Carl Adams",
+    d: "Dr. Eva  Zimmer ",
+  };
+  const getName = (id: string) => names[id];
+  const entries = (...ids: string[]) => ids.map((clinicianId) => ({ clinicianId }));
+
+  it("sorts by surname, then by the full name", () => {
+    const sorted = sortAssignmentsBySurname(entries("d", "b", "a", "c"), getName);
+    expect(sorted.map((entry) => entry.clinicianId)).toEqual(["c", "a", "b", "d"]);
+  });
+
+  it("returns lists of fewer than two unchanged and leaves the input alone", () => {
+    const single = entries("a");
+    expect(sortAssignmentsBySurname(single, getName)).toBe(single);
+    expect(sortAssignmentsBySurname([], getName)).toEqual([]);
+    const input = entries("b", "a");
+    sortAssignmentsBySurname(input, getName);
+    expect(input.map((entry) => entry.clinicianId)).toEqual(["b", "a"]);
   });
 });
 
@@ -265,6 +291,88 @@ describe("buildRenderedAssignmentMap", () => {
     const poolAssignments = result.get(`${REST_DAY_POOL_ID}__2026-01-07`);
     expect(poolAssignments).toBeDefined();
     expect(poolAssignments?.some((a) => a.clinicianId === "clin-1")).toBe(true);
+  });
+
+  it("keeps the stored id of a Rest Day entry when the clinician also holds a slot that day", () => {
+    // Dragging the Rest Day pill back into a slot removes the stored entry by
+    // its id, so the rendered entry must not be replaced by a synthetic one.
+    const clinicians = [makeClinicianWithVacation("clin-1")];
+    const assignmentMap = new Map<string, Assignment[]>([
+      ["slot-a__2026-01-07", [
+        { id: "a2", rowId: "slot-a", dateISO: "2026-01-07", clinicianId: "clin-1" },
+      ]],
+      ["pool-rest-day__2026-01-07", [
+        { id: "a1", rowId: "pool-rest-day", dateISO: "2026-01-07", clinicianId: "clin-1" },
+      ]],
+    ]);
+    const displayDays = [new Date(2026, 0, 7)];
+
+    const result = buildRenderedAssignmentMap(assignmentMap, clinicians, displayDays, {
+      scheduleRows,
+    });
+
+    expect(result.get(`${REST_DAY_POOL_ID}__2026-01-07`)?.map((a) => a.id)).toEqual(["a1"]);
+    expect(result.get("slot-a__2026-01-07")?.map((a) => a.id)).toEqual(["a2"]);
+  });
+
+  it("does not duplicate a Rest Day entry the on-call rule also produces", () => {
+    const clinicians = [makeClinicianWithVacation("clin-1")];
+    const assignmentMap = new Map<string, Assignment[]>([
+      ["slot-a__2026-01-07", [
+        { id: "a1", rowId: "slot-a", dateISO: "2026-01-07", clinicianId: "clin-1" },
+      ]],
+      ["pool-rest-day__2026-01-08", [
+        { id: "r1", rowId: "pool-rest-day", dateISO: "2026-01-08", clinicianId: "clin-1" },
+      ]],
+    ]);
+    const displayDays = [new Date(2026, 0, 7), new Date(2026, 0, 8)];
+
+    const result = buildRenderedAssignmentMap(assignmentMap, clinicians, displayDays, {
+      scheduleRows,
+      solverSettings: {
+        enforceSameLocationPerDay: false,
+        onCallRestEnabled: true,
+        onCallRestClassId: "mri",
+        onCallRestDaysBefore: 0,
+        onCallRestDaysAfter: 1,
+        preferContinuousShifts: true,
+      },
+    });
+
+    expect(result.get(`${REST_DAY_POOL_ID}__2026-01-08`)?.map((a) => a.id)).toEqual(["r1"]);
+  });
+
+  it("lists a clinician moved from another pool into Rest Day by the on-call rule once", () => {
+    const clinicians = [makeClinicianWithVacation("clin-1")];
+    const assignmentMap = new Map<string, Assignment[]>([
+      ["slot-a__2026-01-07", [
+        { id: "a1", rowId: "slot-a", dateISO: "2026-01-07", clinicianId: "clin-1" },
+      ]],
+      ["pool-extra__2026-01-08", [
+        { id: "p1", rowId: "pool-extra", dateISO: "2026-01-08", clinicianId: "clin-1" },
+      ]],
+    ]);
+    const displayDays = [new Date(2026, 0, 7), new Date(2026, 0, 8)];
+
+    const result = buildRenderedAssignmentMap(assignmentMap, clinicians, displayDays, {
+      scheduleRows: [
+        ...scheduleRows,
+        { id: "pool-extra", kind: "pool", name: "Extra", dotColorClass: "bg-slate-200" },
+      ],
+      solverSettings: {
+        enforceSameLocationPerDay: false,
+        onCallRestEnabled: true,
+        onCallRestClassId: "mri",
+        onCallRestDaysBefore: 0,
+        onCallRestDaysAfter: 1,
+        preferContinuousShifts: true,
+      },
+    });
+
+    expect(result.get("pool-extra__2026-01-08")).toBeUndefined();
+    expect(
+      result.get(`${REST_DAY_POOL_ID}__2026-01-08`)?.map((a) => a.clinicianId),
+    ).toEqual(["clin-1"]);
   });
 
   it("places clinician in rest day pool when on-call rest days are enabled", () => {

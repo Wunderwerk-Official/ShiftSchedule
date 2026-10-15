@@ -1,59 +1,20 @@
-import type { PreferredWorkingTimes, WeeklyCalendarTemplate } from "../api/client";
-import { addDays, startOfWeek, toISODate } from "../lib/date";
+import type {
+  Assignment,
+  Clinician,
+  Location,
+  WeeklyCalendarTemplate,
+  WorkplaceRow,
+} from "../api/client";
 
-export type WorkplaceRow = {
-  id: string;
-  name: string;
-  kind: "class" | "pool";
-  dotColorClass: string;
-  blockColor?: string;
-  locationId?: string;
-  subShifts?: SubShift[];
-};
-
-export type Location = {
-  id: string;
-  name: string;
-};
-
-export type SubShift = {
-  id: string;
-  name: string;
-  order: 1 | 2 | 3;
-  startTime: string;
-  endTime: string;
-  endDayOffset?: number;
-  hours?: number;
-};
-
-export type AssignmentSource = "manual" | "solver";
-
-export type Assignment = {
-  id: string;
-  rowId: string;
-  dateISO: string; // YYYY-MM-DD
-  clinicianId: string;
-  locked?: boolean;
-  source?: AssignmentSource; // "manual" (default) or "solver" - tracks how assignment was created
-};
-
-export type VacationPeriod = {
-  id: string;
-  startISO: string;
-  endISO: string;
-};
-
-export type Clinician = {
-  id: string;
-  name: string;
-  qualifiedClassIds: string[];
-  preferredClassIds: string[];
-  vacations: VacationPeriod[];
-  preferredWorkingTimes?: PreferredWorkingTimes;
-  workingHoursPerWeek?: number;
-  /** Free-text wishes the AI planner reads as soft preferences (max 500 chars). */
-  planningWishes?: string;
-};
+// The API types live in api/client; re-exported here for existing importers.
+export type {
+  Assignment,
+  AssignmentSource,
+  Clinician,
+  Location,
+  SubShift,
+  WorkplaceRow,
+} from "../api/client";
 
 export const locations: Location[] = [{ id: "loc-default", name: "Berlin" }];
 export const locationsEnabled = true;
@@ -106,20 +67,10 @@ export const defaultSolverSettings = {
   weightSlack: 1000,
   weightTotalAssignments: 100,
   weightSlotPriority: 10,
-  weightTimeWindow: 5,
-  weightSectionPreference: 1,
-  weightWorkingHours: 1,
+  weightTimeWindow: 20,
+  weightSectionPreference: 10,
+  weightWorkingHours: 3,
 };
-
-export const defaultSolverRules: Array<{
-  id: string;
-  name: string;
-  enabled: boolean;
-  ifShiftRowId: string;
-  dayDelta: -1 | 1;
-  thenType: "shiftRow" | "off";
-  thenShiftRowId?: string;
-}> = [];
 
 export const clinicians: Clinician[] = [
   {
@@ -180,12 +131,6 @@ export const weeklyTemplate: WeeklyCalendarTemplate = {
     },
   ],
 };
-
-const seedWeekStart = startOfWeek(new Date("2025-12-21T12:00:00"), 1);
-
-function isoAt(dayOffset: number) {
-  return toISODate(addDays(seedWeekStart, dayOffset));
-}
 
 export const assignments: Assignment[] = [];
 

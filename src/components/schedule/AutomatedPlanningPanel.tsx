@@ -12,8 +12,6 @@ import { SolverInfoButton } from "./SolverInfoModal";
 
 import type { SolverMode } from "../../api/client";
 
-// LLM agent runs need more wall clock than the optimizer default of 60s.
-
 type AutomatedPlanningPanelProps = {
   weekStartISO: string;
   weekEndISO: string;

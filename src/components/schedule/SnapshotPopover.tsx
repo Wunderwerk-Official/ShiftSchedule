@@ -261,7 +261,12 @@ export default function SnapshotPopover({
                               }
                               onKeyDown={(event) => {
                                 if (event.key === "Enter") void handleRename();
-                                if (event.key === "Escape") setRenaming(null);
+                                if (event.key === "Escape") {
+                                  // Cancel only the rename; don't let the
+                                  // document listener close the whole panel.
+                                  event.stopPropagation();
+                                  setRenaming(null);
+                                }
                               }}
                               className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-2 py-1 text-xs text-slate-800 focus:outline-none dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100"
                             />
@@ -345,7 +350,7 @@ export default function SnapshotPopover({
                                 <div className="mt-1.5 flex items-center justify-end gap-2">
                                   <button
                                     type="button"
-                                    disabled={busy}
+                                    disabled={busy || (confirm.action === "restore" && restoreDisabled)}
                                     onClick={() =>
                                       confirm.action === "restore"
                                         ? void handleRestore(snapshot.id)

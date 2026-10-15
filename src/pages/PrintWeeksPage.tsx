@@ -336,11 +336,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
     () => buildScheduleRows(rows, locations, locationsEnabled, weeklyTemplate),
     [rows, locations, locationsEnabled, weeklyTemplate],
   );
-  const visibleScheduleRows = scheduleRows;
-  const calendarRows = useMemo(
-    () => buildCalendarRows(visibleScheduleRows),
-    [visibleScheduleRows],
-  );
+  const calendarRows = useMemo(() => buildCalendarRows(scheduleRows), [scheduleRows]);
   const locationSeparatorRowIds = useMemo(
     () => buildLocationSeparatorRowIds(calendarRows),
     [calendarRows],
@@ -351,8 +347,15 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
   );
   const rowById = useMemo(() => new Map(scheduleRows.map((row) => [row.id, row])), [scheduleRows]);
 
-  const getWeekDays = (weekIndex: number) =>
-    Array.from({ length: 7 }, (_, i) => addDays(addWeeks(weekStart, weekIndex), i));
+  // Stable per-week arrays, so each PrintableWeek's memos (rendered assignment
+  // map, columns, sheet model) do not recompute on every parent render.
+  const weekDaysByIndex = useMemo(
+    () =>
+      Array.from({ length: totalWeeks }, (_, weekIndex) =>
+        Array.from({ length: 7 }, (_, i) => addDays(addWeeks(weekStart, weekIndex), i)),
+      ),
+    [weekStart, totalWeeks],
+  );
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -458,7 +461,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
       {(() => {
         const poolId = calendarRows.find((row) => row.kind === "pool")?.id;
         return Array.from({ length: totalWeeks }, (_, index) => {
-          const days = getWeekDays(index);
+          const days = weekDaysByIndex[index];
           const rangeStart = days[0];
           const rangeEnd = days[6];
           return (

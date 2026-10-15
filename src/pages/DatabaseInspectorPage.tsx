@@ -1,11 +1,11 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import {
   inspectWeek,
   type WeeklyInspectionResult,
   type SlotInspection,
 } from "../api/client";
 import { cx } from "../lib/classNames";
-import { toISODate } from "../lib/date";
+import { addWeeks, startOfWeek, toISODate } from "../lib/date";
 
 type DatabaseInspectorPageProps = {
   theme: "light" | "dark";
@@ -17,22 +17,13 @@ function formatDate(dateISO: string): string {
   return `${day}.${month}.${year}`;
 }
 
-function getWeekStart(date: Date): string {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  d.setDate(diff);
-  // Serialize the LOCAL date; toISOString converts to UTC and yields a
-  // non-Monday whenever local time crosses the UTC date boundary.
-  return toISODate(d);
+function currentWeekStartISO(): string {
+  return toISODate(startOfWeek(new Date(), 1));
 }
 
-function addWeeks(dateISO: string, weeks: number): string {
-  // Parse as local midnight so the local setDate arithmetic below cannot
-  // drift a day across DST transitions (bare YYYY-MM-DD parses as UTC).
-  const d = new Date(`${dateISO}T00:00:00`);
-  d.setDate(d.getDate() + weeks * 7);
-  return toISODate(d);
+function shiftWeekISO(dateISO: string, weeks: number): string {
+  // Local midnight: a bare YYYY-MM-DD would parse as UTC.
+  return toISODate(addWeeks(new Date(`${dateISO}T00:00:00`), weeks));
 }
 
 type GroupedSlots = {
@@ -47,25 +38,32 @@ export default function DatabaseInspectorPage({
   theme,
   onBack,
 }: DatabaseInspectorPageProps) {
-  const [weekStart, setWeekStart] = useState(() => getWeekStart(new Date()));
+  const [weekStart, setWeekStart] = useState(currentWeekStartISO);
   const [result, setResult] = useState<WeeklyInspectionResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showOnlyOpen, setShowOnlyOpen] = useState(false);
   const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
+  // Only the latest request may update state: with quick week changes an
+  // older response can arrive last and would show the wrong week.
+  const requestIdRef = useRef(0);
 
   const loadData = async () => {
+    const requestId = ++requestIdRef.current;
+    const isLatest = () => requestId === requestIdRef.current;
     setLoading(true);
     setError(null);
     try {
       const data = await inspectWeek(weekStart);
+      if (!isLatest()) return;
       setResult(data);
       // Expand all days by default
       setExpandedDays(new Set(data.slots.map((s) => s.dateISO)));
     } catch (err) {
+      if (!isLatest()) return;
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
-      setLoading(false);
+      if (isLatest()) setLoading(false);
     }
   };
 
@@ -153,7 +151,8 @@ export default function DatabaseInspectorPage({
               <div className="flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-2 py-1 dark:border-slate-700 dark:bg-slate-800">
                 <button
                   type="button"
-                  onClick={() => setWeekStart(addWeeks(weekStart, -1))}
+                  onClick={() => setWeekStart(shiftWeekISO(weekStart, -1))}
+                  aria-label="Previous week"
                   className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
                 >
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -167,7 +166,8 @@ export default function DatabaseInspectorPage({
                 </span>
                 <button
                   type="button"
-                  onClick={() => setWeekStart(addWeeks(weekStart, 1))}
+                  onClick={() => setWeekStart(shiftWeekISO(weekStart, 1))}
+                  aria-label="Next week"
                   className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-700 dark:text-slate-400 dark:hover:bg-slate-700 dark:hover:text-slate-200"
                 >
                   <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -177,7 +177,7 @@ export default function DatabaseInspectorPage({
               </div>
               <button
                 type="button"
-                onClick={() => setWeekStart(getWeekStart(new Date()))}
+                onClick={() => setWeekStart(currentWeekStartISO())}
                 className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
                 Today

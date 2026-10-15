@@ -43,9 +43,17 @@ export function buildShiftIntervalsByRowId(rows: ScheduleRow[]): Map<string, Tim
   return map;
 }
 
+const rowKindOf = (rowKindById: Map<string, "class" | "pool">, rowId: string) =>
+  rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
+
 export type DateIntervalIndex = {
   assignedIntervalsByDate: Map<string, Map<string, TimeRange[]>>;
-  unknownIntervalsByDate: Map<string, Set<string>>;
+  /**
+   * Per date and clinician: how many of their class assignments sit in a slot
+   * without a valid time (e.g. 20:00-08:00 without "+1 day"). A count, not a
+   * set, so a drag can leave out the dragged assignment itself.
+   */
+  unknownIntervalsByDate: Map<string, Map<string, number>>;
 };
 
 export function buildDateIntervalIndex(
@@ -54,19 +62,20 @@ export function buildDateIntervalIndex(
   shiftIntervalsByRowId: Map<string, TimeRange>,
 ): DateIntervalIndex {
   const assignedByDate = new Map<string, Map<string, TimeRange[]>>();
-  const unknownByDate = new Map<string, Set<string>>();
+  const unknownByDate = new Map<string, Map<string, number>>();
   for (const [key, list] of assignmentMap.entries()) {
     const { rowId, dateISO } = splitAssignmentKey(key);
     if (!rowId || !dateISO) continue;
-    const rowKind =
-      rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
-    if (rowKind !== "class") continue;
+    if (rowKindOf(rowKindById, rowId) !== "class") continue;
     const interval = shiftIntervalsByRowId.get(rowId);
     for (const assignment of list) {
       if (!interval) {
-        const unknownSet = unknownByDate.get(dateISO) ?? new Set<string>();
-        unknownSet.add(assignment.clinicianId);
-        unknownByDate.set(dateISO, unknownSet);
+        const unknownCounts = unknownByDate.get(dateISO) ?? new Map<string, number>();
+        unknownCounts.set(
+          assignment.clinicianId,
+          (unknownCounts.get(assignment.clinicianId) ?? 0) + 1,
+        );
+        unknownByDate.set(dateISO, unknownCounts);
         continue;
       }
       let clinicianMap = assignedByDate.get(dateISO);
@@ -89,6 +98,29 @@ export type DragPayload = {
   clinicianId: string;
 };
 
+/** Drag data type the schedule grids use for a dragged assignment. */
+export const DRAG_MIME = "application/x-schedule-cell";
+
+/** Reads the grids' drag data; null when missing or malformed (e.g. a cross-tab drop). */
+export function readDragPayload(dataTransfer: Pick<DataTransfer, "getData">): DragPayload | null {
+  const raw = dataTransfer.getData(DRAG_MIME);
+  if (!raw) return null;
+  try {
+    const payload = JSON.parse(raw) as Partial<DragPayload> | null;
+    if (!payload?.rowId || !payload.dateISO || !payload.assignmentId || !payload.clinicianId) {
+      return null;
+    }
+    return {
+      rowId: payload.rowId,
+      dateISO: payload.dateISO,
+      assignmentId: payload.assignmentId,
+      clinicianId: payload.clinicianId,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function canDropAssignment(
   payload: DragPayload,
   targetRowId: string,
@@ -96,8 +128,8 @@ export function canDropAssignment(
   index: {
     rowKindById: Map<string, "class" | "pool">;
     shiftIntervalsByRowId: Map<string, TimeRange>;
-    assignedIntervalsByDate: Map<string, Map<string, TimeRange[]>>;
-    unknownIntervalsByDate: Map<string, Set<string>>;
+    assignedIntervalsByDate: DateIntervalIndex["assignedIntervalsByDate"];
+    unknownIntervalsByDate: DateIntervalIndex["unknownIntervalsByDate"];
   },
 ): boolean {
   const {
@@ -131,8 +163,18 @@ export function canDropAssignment(
       return true;
     });
   }
-  const hasUnknown =
-    unknownIntervalsByDate.get(targetDateISO)?.has(payload.clinicianId) ?? false;
+  // A same-day move out of a slot without a valid time takes that unknown
+  // interval along: only the clinician's other unknown intervals block.
+  const ownUnknown =
+    payload.dateISO === targetDateISO &&
+    payload.rowId !== targetRowId &&
+    rowKindOf(rowKindById, payload.rowId) === "class" &&
+    !shiftIntervalsByRowId.has(payload.rowId)
+      ? 1
+      : 0;
+  const unknownCount =
+    unknownIntervalsByDate.get(targetDateISO)?.get(payload.clinicianId) ?? 0;
+  const hasUnknown = unknownCount - ownUnknown > 0;
   const hasAny = effectiveIntervals.length > 0 || hasUnknown;
   // Always allow multiple shifts as long as times don't overlap
   if (!hasAny) return true;
@@ -152,10 +194,9 @@ export function buildClinicianOptionsForSlot(args: {
   clinicians: SlotOptionClinician[];
   enforceSameLocationPerDay: boolean;
   shiftIntervalsByRowId: Map<string, TimeRange>;
-  assignedIntervalsByDate: Map<string, Map<string, TimeRange[]>>;
-  unknownIntervalsByDate: Map<string, Set<string>>;
+  assignedIntervalsByDate: DateIntervalIndex["assignedIntervalsByDate"];
+  unknownIntervalsByDate: DateIntervalIndex["unknownIntervalsByDate"];
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
-  getHasTimeConflict?: (clinicianId: string, dateISO: string, rowId: string) => boolean;
 }): ClinicianOption[] {
   const {
     rowId,
@@ -168,7 +209,6 @@ export function buildClinicianOptionsForSlot(args: {
     assignedIntervalsByDate,
     unknownIntervalsByDate,
     getIsOnRestDay,
-    getHasTimeConflict,
   } = args;
   const row =
     rows.find((r) => r.id === rowId) ??
@@ -227,9 +267,7 @@ export function buildClinicianOptionsForSlot(args: {
       slotInterval &&
       assignedIntervals.some((interval) => intervalsOverlap(interval, slotInterval));
     // Always allow multiple shifts as long as times don't overlap
-    const fallbackConflict = hasUnknownInterval || Boolean(computedConflict);
-    const hasTimeConflict =
-      getHasTimeConflict?.(clinician.id, dateISO, rowId) ?? fallbackConflict;
+    const hasTimeConflict = hasUnknownInterval || Boolean(computedConflict);
 
     // Check location conflict (only if enforceSameLocationPerDay is enabled)
     let hasLocationConflict = false;

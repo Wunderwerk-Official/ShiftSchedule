@@ -48,8 +48,8 @@ const MONTH_LABELS = [
   "December",
 ];
 
-// Module-level state to preserve across open/close cycles
-// (component unmounts when closed, so refs don't work)
+// Module-level so band selection and colors survive a remount of the page
+// (e.g. logout/login); open/close alone keeps the mounted instance's state.
 const VACATION_BAND_ID = "__vacation__";
 let persistedActiveSectionIds: string[] = [VACATION_BAND_ID];
 let persistedSectionColorsById: Record<string, string> = {};
@@ -134,7 +134,6 @@ export default function VacationOverviewModal({
 }: VacationOverviewModalProps) {
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
-  const [visibleYear, setVisibleYear] = useState(currentYear);
   const [pendingScrollToToday, setPendingScrollToToday] = useState(false);
   const [scrollBehavior, setScrollBehavior] = useState<"instant" | "smooth">("instant");
   const REST_DAY_BAND_ID = "__rest_day__";
@@ -273,17 +272,6 @@ export default function VacationOverviewModal({
     return sum;
   }, [yearSpans]);
   const totalWidth = totalDays * DAY_WIDTH;
-  const resolveYearForDayIndex = useCallback(
-    (dayIndex: number) => {
-      let remaining = dayIndex;
-      for (const span of yearSpans) {
-        if (remaining < span.days) return span.year;
-        remaining -= span.days;
-      }
-      return yearSpans[yearSpans.length - 1]?.year ?? rangeStartYear;
-    },
-    [yearSpans, rangeStartYear],
-  );
   const todayIndex = useMemo(() => {
     if (currentYear < rangeStartYear || currentYear > rangeEndYear) return null;
     return dateToDayIndexInTimeline(
@@ -619,24 +607,6 @@ export default function VacationOverviewModal({
 
   useEffect(() => {
     if (!open) return;
-    const container = scrollContainerRef.current;
-    if (!container) return;
-    const updateVisibleYear = () => {
-      const visibleWidth = Math.max(0, container.clientWidth - leftColumnWidth);
-      const centerIndex = Math.max(
-        0,
-        Math.floor((container.scrollLeft + visibleWidth / 2) / DAY_WIDTH),
-      );
-      const nextYear = resolveYearForDayIndex(centerIndex);
-      setVisibleYear((prev) => (prev === nextYear ? prev : nextYear));
-    };
-    updateVisibleYear();
-    container.addEventListener("scroll", updateVisibleYear, { passive: true });
-    return () => container.removeEventListener("scroll", updateVisibleYear);
-  }, [open, resolveYearForDayIndex]);
-
-  useEffect(() => {
-    if (!open) return;
     if (!pendingScrollToToday) return;
     if (todayIndex === null) return;
     const container = scrollContainerRef.current;
@@ -649,8 +619,8 @@ export default function VacationOverviewModal({
     setPendingScrollToToday(false);
   }, [open, pendingScrollToToday, todayIndex, scrollBehavior]);
 
-  // Render the modal always but hide it when not open to preserve state
-  // (activeSectionIds, sectionColorsById, clinician order, etc.)
+  // The instance stays mounted while closed (rendered unconditionally by the
+  // page), so its state survives open/close; render nothing while closed.
   if (!open) {
     return null;
   }

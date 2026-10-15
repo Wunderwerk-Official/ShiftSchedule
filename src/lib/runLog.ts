@@ -1,6 +1,6 @@
 // Run-log building shared between the solver run inbox (SolverInfoModal)
 // and the admin's feedback review (AdminUsersPanel): one entry shape, one
-// plain-text log format, one download helper.
+// plain-text log format.
 
 import type { AgentModelSelection, SolverDebugInfo, SolverRunDetail } from "../api/client";
 import type { StatsHistoryEntry } from "../components/schedule/SolverOverlay";
@@ -155,14 +155,5 @@ export const buildRunLog = (entry: SolverHistoryEntry): string => {
   return lines.join("\n");
 };
 
-export const downloadTextFile = (filename: string, text: string) => {
-  const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  document.body.appendChild(anchor);
-  anchor.click();
-  document.body.removeChild(anchor);
-  URL.revokeObjectURL(url);
-};
+// The download helper now lives in ./download; re-exported for existing callers.
+export { downloadTextFile } from "./download";

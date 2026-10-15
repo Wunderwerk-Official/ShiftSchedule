@@ -1,10 +1,13 @@
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { cx } from "../../lib/classNames";
+import type { LocationRowTint } from "./teamColors";
 type RowLabelProps = {
   row: ScheduleRow;
+  /** Colored location: the location name uses the tint's text color. */
+  tint?: LocationRowTint;
 };
 
-export default function RowLabel({ row }: RowLabelProps) {
+export default function RowLabel({ row, tint }: RowLabelProps) {
   const showVacationNote = row.id === "pool-vacation";
   const locationLabel = row.locationName ?? "";
   const rowLabel = row.rowBandLabel?.trim() ?? "";
@@ -27,7 +30,10 @@ export default function RowLabel({ row }: RowLabelProps) {
           <span
             className="w-full truncate text-center text-[9px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500"
             title={locationLabel}
-            style={{ fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' }}
+            style={{
+              fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif',
+              ...(tint?.text ? { color: tint.text } : null),
+            }}
           >
             {locationLabel}
           </span>

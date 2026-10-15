@@ -4,6 +4,7 @@ import type {
   PreferredWorkingTimes,
   WorkPattern,
 } from "../api/client";
+import { parseTimeToMinutes } from "./time";
 
 export const normalizeWorkPattern = (raw?: WorkPattern | null): WorkPattern | undefined => {
   if (!raw || typeof raw !== "object") return undefined;
@@ -37,17 +38,6 @@ export const DEFAULT_PREFERRED_WORKING_TIMES: PreferredWorkingTimes = {
   fri: { startTime: DEFAULT_START, endTime: DEFAULT_END, requirement: "none" },
   sat: { startTime: DEFAULT_START, endTime: DEFAULT_END, requirement: "none" },
   sun: { startTime: DEFAULT_START, endTime: DEFAULT_END, requirement: "none" },
-};
-
-const parseTimeToMinutes = (value?: string) => {
-  if (!value) return null;
-  const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-  if (!match) return null;
-  const hours = Number(match[1]);
-  const minutes = Number(match[2]);
-  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-  return hours * 60 + minutes;
 };
 
 const normalizeRequirement = (value: unknown): PreferredWorkingTimeRequirement => {

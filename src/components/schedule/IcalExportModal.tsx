@@ -149,13 +149,16 @@ export default function IcalExportModal({
 
   const pdfValidation = useMemo(() => {
     const parsedStart = parseDateInput(pdfStartText);
+    // Unlike the iCal range, an empty start is not "all dates" here: the PDF
+    // export needs a concrete starting week.
+    const startValid = parsedStart.valid && Boolean(parsedStart.iso);
     const weeksValid = pdfWeeks >= 1 && pdfWeeks <= 55;
     return {
-      startValid: parsedStart.valid,
+      startValid,
       startISO: parsedStart.iso,
       weeksValid,
       weeks: pdfWeeks,
-      hasError: !parsedStart.valid || !weeksValid,
+      hasError: !startValid || !weeksValid,
     };
   }, [pdfStartText, pdfWeeks]);
 
@@ -380,8 +383,7 @@ export default function IcalExportModal({
                   PDF export
                 </div>
                 <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  Choose a starting week and how many weeks to export. Each week is saved as a
-                  separate PDF.
+                  Choose a starting week and how many weeks to export.
                 </div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div className="grid gap-1">

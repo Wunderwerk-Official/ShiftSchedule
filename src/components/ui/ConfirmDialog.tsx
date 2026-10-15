@@ -58,13 +58,13 @@ export function ConfirmDialogProvider({ children }: { children: ReactNode }) {
     }
   }, [handleCancel]);
 
+  // Enter is left to the focused button (Confirm has autoFocus), so Enter on a
+  // focused "Cancel" cancels instead of confirming a destructive action.
   const handleKeyDown = useCallback((e: React.KeyboardEvent) => {
     if (e.key === "Escape") {
       handleCancel();
-    } else if (e.key === "Enter") {
-      handleConfirm();
     }
-  }, [handleCancel, handleConfirm]);
+  }, [handleCancel]);
 
   return (
     <ConfirmContext.Provider value={{ confirm }}>

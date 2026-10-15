@@ -299,9 +299,10 @@ export async function login(username: string, password: string): Promise<{
     headers: buildHeaders(),
     body: JSON.stringify({ username, password }),
   });
-  if (res.status === 401) handleUnauthorized();
+  // No handleUnauthorized() here: a 401 means wrong credentials, not an
+  // expired session. The status lets the login page tell the two apart.
   if (!res.ok) {
-    throw new Error(`Failed to login: ${res.status}`);
+    throw new HttpError(`Failed to login: ${res.status}`, res.status);
   }
   return res.json();
 }
@@ -312,7 +313,9 @@ export async function getCurrentUser(): Promise<AuthUser> {
   });
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {
-    throw new Error(`Failed to fetch user: ${res.status}`);
+    // Keep the status so callers can tell auth failures from transient ones
+    // (502/503 during a deploy restart).
+    throw new HttpError(`Failed to fetch user: ${res.status}`, res.status);
   }
   return res.json();
 }
@@ -1429,9 +1432,13 @@ export type ViewConfig = {
   colorBy: ColorBy;
 };
 
+/** Relative anchor a saved view opens at (never a fixed date). */
+export type ViewStartAt = "today" | "nextShift" | "weekStart";
+
 export type SavedView = ViewConfig & {
   id: string;
   name: string;
+  startAt: ViewStartAt;
 };
 
 export type UserPreferences = {
@@ -1439,7 +1446,11 @@ export type UserPreferences = {
   /** "I am …": the clinician this account is linked to. */
   clinicianId: string | null;
   orientationByRange: Record<PlanRange, Orientation>;
+  /** Phones remember their own orientations (default: the week as agenda). */
+  orientationByRangeMobile: Record<PlanRange, Orientation>;
   myPlanRange: PlanRange;
+  /** Phones remember their own range (SPEC R17). */
+  myPlanRangeMobile: PlanRange;
   teamColorBy: ColorBy;
   /** At most 12 (backend limit). */
   savedViews: SavedView[];
@@ -1458,13 +1469,26 @@ export async function getUserPreferences(): Promise<UserPreferences> {
   return res.json();
 }
 
+/**
+ * The server stores only the top-level keys sent (null or [] clears one, an
+ * object such as orientationByRange is replaced whole) and returns the merged
+ * document. keepalive lets a save started on pagehide outlive the page.
+ */
 export async function saveUserPreferences(
-  prefs: UserPreferences,
+  changes: Partial<UserPreferences>,
 ): Promise<UserPreferences> {
+  // Signed out (logout, expired session): a PUT could only fail with 401.
+  if (!readToken()) throw new Error("Not signed in: preferences were not saved.");
+  const body = JSON.stringify(changes);
+  // The server rejects larger bodies (413); browsers refuse keepalive bodies over 64 KB.
+  if (new TextEncoder().encode(body).length > 32 * 1024) {
+    throw new Error("Preferences are limited to 32 KB.");
+  }
   const res = await fetch(`${API_BASE}/v1/me/preferences`, {
     method: "PUT",
     headers: buildHeaders(),
-    body: JSON.stringify(prefs),
+    body,
+    keepalive: true,
   });
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {

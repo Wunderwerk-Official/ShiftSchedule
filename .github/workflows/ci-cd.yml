@@ -92,12 +92,13 @@ jobs:
             if curl -fsS http://127.0.0.1:5173/ >/dev/null; then break; fi
             sleep 1
           done
-          npx playwright test e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts e2e/model-settings.spec.ts
+          npx playwright test e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts
 
   # ---------------------------------------------------------------------------
-  # Deploy: SSH into the Hetzner server, fast-forward the repo and rebuild the
-  # Docker stack, then health-check the backend. Only on push to main, only if
-  # both CI jobs are green.
+  # Deploy: SSH into the Hetzner server (since 2026-07 only a redirect host to
+  # shiftplanner.truhn.ai), check out the tested commit, run
+  # scripts/deploy-compose.sh, then health-check the backend. Only on push to
+  # main, only if both CI jobs are green.
   # ---------------------------------------------------------------------------
   deploy:
     name: Deploy (SSH -> Hetzner)
@@ -116,7 +117,7 @@ jobs:
           printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-      - name: Deploy (git pull + docker compose up)
+      - name: Deploy (checkout tested commit + deploy-compose.sh)
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}

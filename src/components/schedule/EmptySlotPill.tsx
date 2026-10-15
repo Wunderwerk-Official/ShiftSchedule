@@ -1,10 +1,7 @@
-import type { MouseEvent } from "react";
 import { cx } from "../../lib/classNames";
 
 type EmptySlotPillProps = {
-  label?: string;
   onRemove?: () => void;
-  onClick?: (event: MouseEvent<HTMLDivElement>) => void;
   variant?: "default" | "ghost";
   showAddIcon?: boolean;
   highlighted?: boolean;
@@ -12,9 +9,7 @@ type EmptySlotPillProps = {
 };
 
 export default function EmptySlotPill({
-  label = "Open Slot",
   onRemove,
-  onClick,
   variant = "default",
   showAddIcon = false,
   highlighted = false,
@@ -22,8 +17,6 @@ export default function EmptySlotPill({
 }: EmptySlotPillProps) {
   return (
     <div
-      role={onClick ? "button" : undefined}
-      onClick={onClick}
       // Border width is kept at border-2 in every state so that the
       // hover/highlighted styling (previously border → border-2) doesn't
       // grow the box by 1px on each side, which used to shift every row
@@ -35,11 +28,10 @@ export default function EmptySlotPill({
           : variant === "ghost"
             ? "border-dashed border-slate-200 bg-white text-slate-400 dark:border-slate-700 dark:bg-slate-800/60 dark:text-slate-400"
             : "border-dashed border-slate-300 bg-white text-slate-600 dark:border-slate-600 dark:bg-slate-800/70 dark:text-slate-300",
-        onClick && "cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-700",
         className,
       )}
     >
-      {label}
+      Open Slot
       {showAddIcon ? (
         <span className="no-print absolute right-1 top-0 -translate-y-1/2">
           <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[12px] font-semibold text-slate-500 shadow-sm dark:bg-slate-700 dark:text-slate-300">

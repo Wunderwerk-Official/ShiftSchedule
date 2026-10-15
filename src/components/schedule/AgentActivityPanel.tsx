@@ -9,6 +9,7 @@ import {
   type AgentStage,
 } from "../../lib/agentActivity";
 import { buttonSmall } from "../../lib/buttonStyles";
+import { copyTextToClipboard } from "../../lib/clipboard";
 
 // Live view of the agent solver: stage stepper, iteration progress, and a
 // feed of the concrete changes the agent makes. Rendered inside SolverOverlay
@@ -171,21 +172,10 @@ function ThoughtDialog({
     return () => { window.removeEventListener("keydown", onKey); previousFocus?.focus(); };
   }, [onClose]);
   const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(details.text);
-      setCopied(true);
-    } catch {
-      const textarea = document.createElement("textarea");
-      textarea.value = details.text;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand("copy");
-      document.body.removeChild(textarea);
-      setCopied(true);
-    }
-    window.setTimeout(() => setCopied(false), 1500);
+    // Only confirm when the copy actually worked.
+    const ok = await copyTextToClipboard(details.text);
+    setCopied(ok);
+    if (ok) window.setTimeout(() => setCopied(false), 1500);
   };
   return createPortal(
     <div className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-8">

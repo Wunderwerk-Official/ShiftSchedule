@@ -8,21 +8,22 @@ import {
   buildRowKindById,
   buildShiftIntervalsByRowId,
   canDropAssignment as canDropAssignmentPure,
+  DRAG_MIME,
+  readDragPayload,
+  type DateIntervalIndex,
+  type DragPayload,
 } from "../../lib/clinicianSlotOptions";
 import { formatDayHeader, toISODate } from "../../lib/date";
-import {
-  formatTimeRangeLabel,
-  intervalsOverlap,
-  splitAssignmentKey,
-} from "../../lib/schedule";
+import { formatTimeRangeLabel, sortAssignmentsBySurname } from "../../lib/schedule";
 import { getDayType } from "../../lib/dayTypes";
 import AssignmentPill from "./AssignmentPill";
 import EmptySlotPill from "./EmptySlotPill";
 import RowLabel from "./RowLabel";
+import type { LocationRowTint, PersonPillStyle } from "./teamColors";
 import ClinicianPickerPopover from "./ClinicianPickerPopover";
 import type { ClinicianOption } from "./ClinicianPickerPopover";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { Dispatch, MouseEvent as ReactMouseEvent, SetStateAction } from "react";
+import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getContrastTextColor } from "../../lib/shiftRows";
 
@@ -76,11 +77,16 @@ type ScheduleGridProps = {
     vacations: Array<{ startISO: string; endISO: string }>;
   }>;
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
-  getHasTimeConflict?: (clinicianId: string, dateISO: string, rowId: string) => boolean;
   enforceSameLocationPerDay?: boolean;
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
   onRemoveAssignment?: (args: { rowId: string; dateISO: string; assignmentId: string; clinicianId: string }) => void;
+  /** Team "Color by: Person": pill colors by clinician id (absent = section look). */
+  personPillStyles?: Map<string, PersonPillStyle>;
+  /** Clinician whose pills get the "you" outline; the page passes the linked one in "Color by: Person" only. */
+  myClinicianId?: string | null;
+  /** Tints of colored locations by location id (label cells + separator row). */
+  locationRowTints?: Map<string, LocationRowTint>;
 };
 
 export default function ScheduleGrid({
@@ -112,11 +118,13 @@ export default function ScheduleGrid({
   highlightOpenSlots = false,
   clinicians = [],
   getIsOnRestDay,
-  getHasTimeConflict,
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
   onToggleAssignmentLock,
+  personPillStyles,
+  myClinicianId,
+  locationRowTints,
 }: ScheduleGridProps) {
   type DayColumn = NonNullable<ScheduleGridProps["dayColumns"]>[number];
   const columns: DayColumn[] =
@@ -186,68 +194,14 @@ export default function ScheduleGrid({
     });
   }, [columns, rows]);
   const rowKindById = useMemo(() => buildRowKindById(rows), [rows]);
-  // `dragState` was previously {dragging, dragOverKey}. dragOverKey was
-  // re-set on every dragover tick (many per second) but was never read from
-  // the render tree — it only served as an idempotency key inside the
-  // dragover/dragLeave handlers to avoid redundant setState calls. In
-  // practice it was the biggest source of "drag lag": each mouse movement
-  // triggered a full ScheduleGrid re-render for no visual change.
-  //
-  // Split into two: `dragging` keeps state-driven rendering, `dragOverKeyRef`
-  // is a mutable box for the idempotency check that no longer re-renders.
-  // The wrapper `setDragState` preserves the old call sites.
-  const [dragging, setDragging] = useState<{
-    rowId: string;
-    dateISO: string;
-    assignmentId: string;
-    clinicianId: string;
-  } | null>(null);
-  const dragOverKeyRef = useRef<string | null>(null);
-  // Back-compat shim: reassemble the old shape for downstream code that still
-  // reads `dragState.dragging`. We don't expose dragOverKey in this reader
-  // (it's write-only now) — callers that need to check it use the ref directly.
-  const dragState = { dragging, dragOverKey: null as string | null };
-  type DragStateUpdate =
-    | {
-        dragging: {
-          rowId: string;
-          dateISO: string;
-          assignmentId: string;
-          clinicianId: string;
-        } | null;
-        dragOverKey: string | null;
-      }
-    | ((prev: {
-        dragging: ReturnType<typeof getDragging>;
-        dragOverKey: string | null;
-      }) => {
-        dragging: ReturnType<typeof getDragging>;
-        dragOverKey: string | null;
-      });
-  const getDragging = () => dragging;
-  const setDragState = (update: DragStateUpdate) => {
-    const prevShape = {
-      dragging,
-      dragOverKey: dragOverKeyRef.current,
-    };
-    const next = typeof update === "function" ? update(prevShape) : update;
-    // Dragging is rendered — fire setState only when it actually changes.
-    const draggingChanged =
-      next.dragging?.assignmentId !== prevShape.dragging?.assignmentId ||
-      next.dragging?.rowId !== prevShape.dragging?.rowId ||
-      next.dragging?.dateISO !== prevShape.dragging?.dateISO ||
-      next.dragging?.clinicianId !== prevShape.dragging?.clinicianId;
-    if (draggingChanged) {
-      setDragging(next.dragging);
-    }
-    // dragOverKey is silent — just mutate the ref, no re-render.
-    dragOverKeyRef.current = next.dragOverKey;
-  };
+  // The pill being dragged: its day and person drive the cell styling.
+  // Dragover sets no state on purpose — it fires many times per second and
+  // each update would re-render the whole grid for no visual change.
+  const [dragging, setDragging] = useState<DragPayload | null>(null);
   const [hoveredClassCell, setHoveredClassCell] = useState<{
     rowId: string;
     dateISO: string;
   } | null>(null);
-  const gridRef = useRef<HTMLDivElement | null>(null);
   const hoveredClassCellRef = useRef<{ rowId: string; dateISO: string } | null>(
     null,
   );
@@ -291,7 +245,6 @@ export default function ScheduleGrid({
       assignedIntervalsByDate,
       unknownIntervalsByDate,
       getIsOnRestDay,
-      getHasTimeConflict,
     });
 
   const handleEmptySlotClick = (
@@ -314,7 +267,7 @@ export default function ScheduleGrid({
 
   const handleMouseMove = (event: ReactMouseEvent<HTMLDivElement>) => {
     if (readOnly) return;
-    if (dragState.dragging) {
+    if (dragging) {
       clearHoveredCell();
       return;
     }
@@ -336,7 +289,7 @@ export default function ScheduleGrid({
   };
 
   useEffect(() => {
-    if (!dragState.dragging) return;
+    if (!dragging) return;
     const handleWindowDragOver = (event: DragEvent) => {
       const target = event.target as HTMLElement | null;
       const inGrid = target?.closest?.('[data-schedule-grid="true"]');
@@ -352,11 +305,11 @@ export default function ScheduleGrid({
       if (inGrid) return;
       event.preventDefault();
       // Remove assignment when dropped outside grid
-      if (dragState.dragging && onRemoveAssignment) {
-        const { rowId, dateISO, assignmentId, clinicianId } = dragState.dragging;
+      if (onRemoveAssignment) {
+        const { rowId, dateISO, assignmentId, clinicianId } = dragging;
         onRemoveAssignment({ rowId, dateISO, assignmentId, clinicianId });
       }
-      setDragState({ dragging: null, dragOverKey: null });
+      setDragging(null);
     };
     window.addEventListener("dragover", handleWindowDragOver);
     window.addEventListener("drop", handleWindowDrop);
@@ -364,7 +317,7 @@ export default function ScheduleGrid({
       window.removeEventListener("dragover", handleWindowDragOver);
       window.removeEventListener("drop", handleWindowDrop);
     };
-  }, [dragState.dragging, onRemoveAssignment]);
+  }, [dragging, onRemoveAssignment]);
 
   const pickerClinicians = pickerState.open
     ? getClinicianOptionsForSlot(pickerState.rowId, pickerState.dateISO)
@@ -395,7 +348,6 @@ export default function ScheduleGrid({
             >
               <div className="min-w-full w-full">
                 <div
-                  ref={gridRef}
                   data-schedule-grid="true"
                   className="relative grid"
                   onMouseMove={readOnly ? undefined : handleMouseMove}
@@ -404,7 +356,7 @@ export default function ScheduleGrid({
                     readOnly
                       ? undefined
                       : (e) => {
-                          if (!dragState.dragging) return;
+                          if (!dragging) return;
                           // Allow drop on grid areas not covered by cells
                           const target = e.target as HTMLElement | null;
                           const isCell = target?.closest?.('[data-schedule-cell="true"]');
@@ -424,38 +376,12 @@ export default function ScheduleGrid({
                           const isCell = target?.closest?.('[data-schedule-cell="true"]');
                           if (isCell) return;
                           e.preventDefault();
-                          const raw = e.dataTransfer.getData("application/x-schedule-cell");
-                          if (!raw) {
-                            setDragState({ dragging: null, dragOverKey: null });
-                            return;
+                          // A malformed payload (e.g. a cross-tab drop) is ignored.
+                          const payload = readDragPayload(e.dataTransfer);
+                          if (payload && onRemoveAssignment) {
+                            onRemoveAssignment(payload);
                           }
-                          try {
-                            const payload = JSON.parse(raw) as {
-                              rowId: string;
-                              dateISO: string;
-                              assignmentId: string;
-                              clinicianId: string;
-                            };
-                            if (
-                              onRemoveAssignment &&
-                              payload?.rowId &&
-                              payload.dateISO &&
-                              payload.assignmentId &&
-                              payload.clinicianId
-                            ) {
-                              onRemoveAssignment({
-                                rowId: payload.rowId,
-                                dateISO: payload.dateISO,
-                                assignmentId: payload.assignmentId,
-                                clinicianId: payload.clinicianId,
-                              });
-                            }
-                          } catch {
-                            // Malformed drag payload (e.g. cross-tab drop) — drop it silently,
-                            // the finally block will still reset drag state.
-                          } finally {
-                            setDragState({ dragging: null, dragOverKey: null });
-                          }
+                          setDragging(null);
                         }
                   }
                   style={{
@@ -481,10 +407,8 @@ export default function ScheduleGrid({
                   const isWeekend =
                     group.date.getDay() === 0 || group.date.getDay() === 6;
                   const isToday = dateISO === todayISO;
-                  const isOtherDay =
-                    !!dragState.dragging && dragState.dragging.dateISO !== dateISO;
-                  const isActiveDay =
-                    !!dragState.dragging && dragState.dragging.dateISO === dateISO;
+                  const isOtherDay = !!dragging && dragging.dateISO !== dateISO;
+                  const isActiveDay = !!dragging && dragging.dateISO === dateISO;
                   return (
                     <div
                       key={`day-${dateISO}`}
@@ -536,8 +460,9 @@ export default function ScheduleGrid({
                   const nextRowId = nextRow?.id;
                   const suppressBottomBorder =
                     !!nextRowId && separatorBeforeRowIds.includes(nextRowId);
-                  const isSubShiftContinuation = false;
-                  const hasNextSubShift = false;
+                  const rowTint = row.locationId
+                    ? locationRowTints?.get(row.locationId)
+                    : undefined;
                   return (
                     <Fragment key={row.id}>
                       {showLocationSeparator ? (
@@ -547,6 +472,8 @@ export default function ScheduleGrid({
                           locationColumnTimeMetaByKey={locationColumnTimeMetaByKey}
                           holidayDates={holidayDates}
                           holidayNameByDate={holidayNameByDate}
+                          tint={rowTint}
+                          locationName={row.locationName}
                         />
                       ) : null}
                       {showSeparator ? <SeparatorRow /> : null}
@@ -563,13 +490,11 @@ export default function ScheduleGrid({
                         onMoveWithinDay={onMoveWithinDay}
                         onRemoveAssignment={onRemoveAssignment}
                         onToggleAssignmentLock={onToggleAssignmentLock}
-                        dragState={dragState}
-                        setDragState={setDragState}
+                        dragging={dragging}
+                        setDragging={setDragging}
                         hoveredClassCell={hoveredClassCell}
                         setHoveredCell={setHoveredCell}
                         suppressBottomBorder={suppressBottomBorder}
-                        isSubShiftContinuation={isSubShiftContinuation}
-                        hasNextSubShift={hasNextSubShift}
                         minSlotsByRowId={minSlotsByRowId}
                         slotOverridesByKey={slotOverridesByKey}
                         onRemoveEmptySlot={onRemoveEmptySlot}
@@ -584,6 +509,9 @@ export default function ScheduleGrid({
                         highlightOpenSlots={highlightOpenSlots}
                         rowKindById={rowKindById}
                         onEmptySlotClick={onAddAssignment ? handleEmptySlotClick : undefined}
+                        personPillStyles={personPillStyles}
+                        myClinicianId={myClinicianId}
+                        rowTint={rowTint}
                       />
                     </Fragment>
                   );
@@ -630,16 +558,14 @@ function RowSection({
   onMoveWithinDay,
   onRemoveAssignment,
   onToggleAssignmentLock,
-  dragState,
-  setDragState,
+  dragging,
+  setDragging,
   hoveredClassCell,
   setHoveredCell,
   suppressBottomBorder,
   minSlotsByRowId,
   slotOverridesByKey,
   onRemoveEmptySlot,
-  isSubShiftContinuation,
-  hasNextSubShift,
   showBlockTimes,
   readOnly = false,
   shiftIntervalsByRowId,
@@ -651,6 +577,9 @@ function RowSection({
   highlightOpenSlots,
   rowKindById,
   onEmptySlotClick,
+  personPillStyles,
+  myClinicianId,
+  rowTint,
 }: {
   row: ScheduleRow;
   dayColumns: {
@@ -685,39 +614,19 @@ function RowSection({
     assignmentId: string;
     clinicianId: string;
   }) => void;
-  dragState: {
-    dragging: {
-      rowId: string;
-      dateISO: string;
-      assignmentId: string;
-      clinicianId: string;
-    } | null;
-    dragOverKey: string | null;
-  };
-  setDragState: Dispatch<
-    SetStateAction<{
-      dragging: {
-        rowId: string;
-        dateISO: string;
-        assignmentId: string;
-        clinicianId: string;
-      } | null;
-      dragOverKey: string | null;
-    }>
-  >;
+  dragging: DragPayload | null;
+  setDragging: (next: DragPayload | null) => void;
   hoveredClassCell: { rowId: string; dateISO: string } | null;
   setHoveredCell: (next: { rowId: string; dateISO: string } | null) => void;
   suppressBottomBorder: boolean;
   minSlotsByRowId?: Record<string, { weekday: number; weekend: number }>;
   slotOverridesByKey: Record<string, number>;
   onRemoveEmptySlot?: (args: { rowId: string; dateISO: string }) => void;
-  isSubShiftContinuation: boolean;
-  hasNextSubShift: boolean;
   showBlockTimes: boolean;
   readOnly?: boolean;
   shiftIntervalsByRowId: Map<string, TimeRange>;
-  assignedIntervalsByDate: Map<string, Map<string, TimeRange[]>>;
-  unknownIntervalsByDate: Map<string, Set<string>>;
+  assignedIntervalsByDate: DateIntervalIndex["assignedIntervalsByDate"];
+  unknownIntervalsByDate: DateIntervalIndex["unknownIntervalsByDate"];
   violatingAssignmentKeys?: Set<string>;
   highlightedAssignmentKeys?: Set<string>;
   highlightedSplitShiftKeys?: Set<string>;
@@ -729,6 +638,9 @@ function RowSection({
     dateISO: string,
     rowName: string,
   ) => void;
+  personPillStyles?: Map<string, PersonPillStyle>;
+  myClinicianId?: string | null;
+  rowTint?: LocationRowTint;
 }) {
   const rowBg =
     row.id === "pool-vacation"
@@ -736,20 +648,10 @@ function RowSection({
       : row.id === "pool-rest-day"
         ? "bg-slate-50/70 dark:bg-slate-900/70"
         : "bg-white dark:bg-slate-900";
-  const isRestDayPoolRow = row.id === "pool-rest-day";
-  const hideBottomBorder = row.kind === "class" && hasNextSubShift;
   const borderBottomClass =
-    suppressBottomBorder || hideBottomBorder
-          ? "border-b-0"
-          : row.id === "pool-vacation"
-            ? "border-b-0"
-            : "border-b border-slate-200 dark:border-slate-800";
-  const subShiftSeparatorClass = isSubShiftContinuation
-    ? "border-t border-slate-200 dark:border-slate-700"
-    : "";
-  const subShiftSeparatorStyle = isSubShiftContinuation
-    ? { borderTopStyle: "dashed" as const }
-    : undefined;
+    suppressBottomBorder || row.id === "pool-vacation"
+      ? "border-b-0"
+      : "border-b border-slate-200 dark:border-slate-800";
   const applyDragImage = (
     source: HTMLElement,
     event: ReactMouseEvent<HTMLElement> | DragEvent,
@@ -806,34 +708,133 @@ function RowSection({
     }
     return groups;
   }, [dayColumns]);
-  const canDropAssignment = (
-    payload: {
-      rowId: string;
-      assignmentId: string;
-      clinicianId: string;
-      dateISO: string;
-    },
-    targetRowId: string,
-    targetDateISO: string,
-  ) =>
+  const canDropAssignment = (payload: DragPayload, targetRowId: string, targetDateISO: string) =>
     canDropAssignmentPure(payload, targetRowId, targetDateISO, {
       rowKindById,
       shiftIntervalsByRowId,
       assignedIntervalsByDate,
       unknownIntervalsByDate,
     });
+  // Drop on a pool or class cell: a same-day drop moves the pill, a drop on
+  // its own cell is a no-op. A drop from another day, onto an inactive cell
+  // or onto a slot that clashes with another shift of the person removes the
+  // assignment. A malformed payload is ignored.
+  const handleCellDrop = (
+    event: ReactDragEvent<HTMLElement>,
+    targetRowId: string,
+    dateISO: string,
+    isInactiveTarget: boolean,
+  ) => {
+    event.preventDefault();
+    const payload = readDragPayload(event.dataTransfer);
+    setDragging(null);
+    if (!payload) return;
+    if (payload.dateISO !== dateISO) {
+      onRemoveAssignment?.(payload);
+      return;
+    }
+    if (payload.rowId === targetRowId) return;
+    if (isInactiveTarget || !canDropAssignment(payload, targetRowId, dateISO)) {
+      onRemoveAssignment?.(payload);
+      return;
+    }
+    onMoveWithinDay({
+      dateISO,
+      fromRowId: payload.rowId,
+      toRowId: targetRowId,
+      assignmentId: payload.assignmentId,
+      clinicianId: payload.clinicianId,
+    });
+  };
+  // One pill of a pool or class cell; slotRowId is the row it lives in. Only
+  // class rows show the lock, the eligibility warning and the highlights.
+  const renderPill = (
+    assignment: RenderedAssignment,
+    slotRowId: string,
+    dateISO: string,
+    siblingNames: string[],
+  ) => {
+    const isClassRow = row.kind === "class";
+    const isDraggingAssignment =
+      dragging?.assignmentId === assignment.id &&
+      dragging.rowId === slotRowId &&
+      dragging.dateISO === dateISO;
+    const isDragFocus =
+      !!dragging &&
+      dragging.dateISO === dateISO &&
+      dragging.clinicianId === assignment.clinicianId;
+    const violationKey = `${assignment.rowId}__${assignment.dateISO}__${assignment.clinicianId}`;
+    return (
+      <AssignmentPill
+        key={assignment.id}
+        name={getClinicianName(assignment.clinicianId)}
+        siblingNames={siblingNames}
+        assignmentKey={violationKey}
+        personStyle={personPillStyles?.get(assignment.clinicianId)}
+        isMe={!!myClinicianId && assignment.clinicianId === myClinicianId}
+        showNoEligibilityWarning={!getHasEligibleClasses(assignment.clinicianId)}
+        showIneligibleWarning={
+          isClassRow && !getIsQualified(assignment.clinicianId, slotRowId)
+        }
+        isManual={isClassRow && assignment.source !== "solver"}
+        isLocked={assignment.locked}
+        onToggleLock={
+          !readOnly && isClassRow && assignment.source === "solver" && onToggleAssignmentLock
+            ? () => onToggleAssignmentLock(assignment)
+            : undefined
+        }
+        isHighlighted={isClassRow ? highlightedSplitShiftKeys?.has(violationKey) : undefined}
+        isViolation={(isClassRow ? highlightedAssignmentKeys : violatingAssignmentKeys)?.has(
+          violationKey,
+        )}
+        isDragging={isDraggingAssignment}
+        isDragFocus={isDragFocus || isDraggingAssignment}
+        draggable={!readOnly}
+        onClick={
+          readOnly || !onClinicianClick
+            ? undefined
+            : (e) => {
+                e.stopPropagation();
+                onClinicianClick(assignment.clinicianId);
+              }
+        }
+        onDragStart={
+          readOnly
+            ? undefined
+            : (e) => {
+                e.stopPropagation();
+                setHoveredCell(null);
+                e.dataTransfer.effectAllowed = "move";
+                applyDragImage(e.currentTarget, e);
+                const payload: DragPayload = {
+                  rowId: slotRowId,
+                  dateISO,
+                  assignmentId: assignment.id,
+                  clinicianId: assignment.clinicianId,
+                };
+                e.dataTransfer.setData(DRAG_MIME, JSON.stringify(payload));
+                setDragging(payload);
+              }
+        }
+        onDragEnd={readOnly ? undefined : () => setDragging(null)}
+        className={cx(
+          !readOnly && "cursor-grab active:cursor-grabbing",
+          isDraggingAssignment && "opacity-0",
+        )}
+      />
+    );
+  };
   return (
     <>
       <div
         className={cx(
           "row border-r-2 border-slate-300 py-1 dark:border-slate-700 sm:py-1",
           borderBottomClass,
-          subShiftSeparatorClass,
           rowBg,
         )}
-        style={subShiftSeparatorStyle}
+        style={rowTint ? { backgroundColor: rowTint.ground } : undefined}
       >
-        <RowLabel row={row} />
+        <RowLabel row={row} tint={rowTint} />
       </div>
       {row.kind === "pool"
         ? dayGroups.map((group, groupIndex) => {
@@ -842,23 +843,10 @@ function RowSection({
             const isDayDivider = !isLastGroup;
             const cellKey = `${row.id}__${dateISO}__pool`;
             const assignments = assignmentMap.get(`${row.id}__${dateISO}`) ?? [];
-            const sortedAssignments =
-              assignments.length > 1
-                ? [...assignments].sort((a, b) => {
-                    const nameA = getClinicianName(a.clinicianId);
-                    const nameB = getClinicianName(b.clinicianId);
-                    const surnameA =
-                      nameA.trim().split(/\s+/).slice(-1)[0] ?? nameA;
-                    const surnameB =
-                      nameB.trim().split(/\s+/).slice(-1)[0] ?? nameB;
-                    const bySurname = surnameA.localeCompare(surnameB);
-                    return bySurname !== 0 ? bySurname : nameA.localeCompare(nameB);
-                  })
-                : assignments;
-            const isOtherDay =
-              !!dragState.dragging && dragState.dragging.dateISO !== dateISO;
-            const isActiveDay =
-              !!dragState.dragging && dragState.dragging.dateISO === dateISO;
+            const sortedAssignments = sortAssignmentsBySurname(assignments, getClinicianName);
+            // For unique abbreviations within the cell.
+            const siblingNames = sortedAssignments.map((a) => getClinicianName(a.clinicianId));
+            const isOtherDay = !!dragging && dragging.dateISO !== dateISO;
             const cellBgClass = isOtherDay
               ? "bg-slate-200/70 text-slate-400 opacity-60"
               : rowBg;
@@ -876,91 +864,12 @@ function RowSection({
                   readOnly
                     ? undefined
                     : (e) => {
-                        if (!dragState.dragging) return;
+                        if (!dragging) return;
                         e.preventDefault();
-                        if (dragState.dragging.dateISO !== dateISO) {
-                          setDragState((s) =>
-                            s.dragOverKey ? { ...s, dragOverKey: null } : s,
-                          );
-                          return;
-                        }
-                        if (!canDropAssignment(dragState.dragging, row.id, dateISO)) {
-                          e.dataTransfer.dropEffect = "move";
-                          setDragState((s) =>
-                            s.dragOverKey ? { ...s, dragOverKey: null } : s,
-                          );
-                          return;
-                        }
-                        e.dataTransfer.dropEffect = "move";
-                        setDragState((s) =>
-                          s.dragOverKey === cellKey
-                            ? s
-                            : { ...s, dragOverKey: cellKey },
-                        );
+                        if (dragging.dateISO === dateISO) e.dataTransfer.dropEffect = "move";
                       }
                 }
-                onDragLeave={
-                  readOnly
-                    ? undefined
-                    : () => {
-                        setDragState((s) =>
-                          s.dragOverKey === cellKey
-                            ? { ...s, dragOverKey: null }
-                            : s,
-                        );
-                      }
-                }
-                onDrop={
-                  readOnly
-                    ? undefined
-                    : (e) => {
-                        e.preventDefault();
-                        const raw = e.dataTransfer.getData(
-                          "application/x-schedule-cell",
-                        );
-                        if (!raw) return;
-                        try {
-                          const payload = JSON.parse(raw) as {
-                            rowId: string;
-                            dateISO: string;
-                            assignmentId: string;
-                            clinicianId: string;
-                          };
-                          if (payload.dateISO !== dateISO) {
-                            if (onRemoveAssignment) {
-                              onRemoveAssignment({
-                                rowId: payload.rowId,
-                                dateISO: payload.dateISO,
-                                assignmentId: payload.assignmentId,
-                                clinicianId: payload.clinicianId,
-                              });
-                            }
-                            return;
-                          }
-                          if (payload.rowId === row.id) return;
-                          if (!canDropAssignment(payload, row.id, dateISO)) {
-                            if (onRemoveAssignment) {
-                              onRemoveAssignment({
-                                rowId: payload.rowId,
-                                dateISO: payload.dateISO,
-                                assignmentId: payload.assignmentId,
-                                clinicianId: payload.clinicianId,
-                              });
-                            }
-                            return;
-                          }
-                          onMoveWithinDay({
-                            dateISO,
-                            fromRowId: payload.rowId,
-                            toRowId: row.id,
-                            assignmentId: payload.assignmentId,
-                            clinicianId: payload.clinicianId,
-                          });
-                        } finally {
-                          setDragState({ dragging: null, dragOverKey: null });
-                        }
-                      }
-                }
+                onDrop={readOnly ? undefined : (e) => handleCellDrop(e, row.id, dateISO, false)}
                 data-schedule-cell="true"
                 data-row-id={row.id}
                 data-row-kind={row.kind}
@@ -968,100 +877,20 @@ function RowSection({
                 className={cx(
                   "row group relative border-r border-slate-200 p-0.5 text-left dark:border-slate-800 sm:p-1",
                   borderBottomClass,
-                  subShiftSeparatorClass,
                   cellBgClass,
                   isDayDivider && "border-r-2 border-slate-300 dark:border-slate-700",
                   { "border-r-0": !isDayDivider },
                 )}
                 style={{
-                  ...subShiftSeparatorStyle,
                   borderRightStyle: "solid",
                   gridColumn: `span ${group.columns.length}`,
                 }}
               >
                 {sortedAssignments.length > 0 ? (
                   <div className="flex flex-col gap-1">
-                    {(() => {
-                      // Compute sibling names for uniqueness check
-                      const siblingNames = sortedAssignments.map((a) =>
-                        getClinicianName(a.clinicianId),
-                      );
-                      return sortedAssignments.map((assignment) => {
-                        const isDraggingAssignment =
-                          dragState.dragging?.assignmentId === assignment.id &&
-                          dragState.dragging?.rowId === row.id &&
-                          dragState.dragging?.dateISO === dateISO;
-                        const isDragFocus =
-                          !!dragState.dragging &&
-                          dragState.dragging.dateISO === dateISO &&
-                          dragState.dragging.clinicianId === assignment.clinicianId;
-                        const violationKey = `${assignment.rowId}__${assignment.dateISO}__${assignment.clinicianId}`;
-                        return (
-                          <AssignmentPill
-                            key={assignment.id}
-                            name={getClinicianName(assignment.clinicianId)}
-                            siblingNames={siblingNames}
-                            assignmentKey={violationKey}
-                            showNoEligibilityWarning={
-                              !getHasEligibleClasses(assignment.clinicianId)
-                            }
-                            isManual={row.kind === "class" && assignment.source !== "solver"}
-                            isLocked={assignment.locked}
-                            onToggleLock={!readOnly && row.kind === "class" && assignment.source === "solver" && onToggleAssignmentLock
-                              ? () => onToggleAssignmentLock(assignment) : undefined}
-                            isViolation={violatingAssignmentKeys?.has(violationKey)}
-                            isDragging={isDraggingAssignment}
-                            isDragFocus={isDragFocus || isDraggingAssignment}
-                            draggable={!readOnly}
-                            onClick={
-                              readOnly || !onClinicianClick
-                                ? undefined
-                                : (e) => {
-                                    e.stopPropagation();
-                                    onClinicianClick(assignment.clinicianId);
-                                  }
-                            }
-                            onDragStart={
-                              readOnly
-                                ? undefined
-                                : (e) => {
-                                    e.stopPropagation();
-                                    e.dataTransfer.effectAllowed = "move";
-                                    applyDragImage(e.currentTarget, e);
-                                    e.dataTransfer.setData(
-                                      "application/x-schedule-cell",
-                                      JSON.stringify({
-                                        rowId: row.id,
-                                        dateISO,
-                                        assignmentId: assignment.id,
-                                        clinicianId: assignment.clinicianId,
-                                      }),
-                                    );
-                                    setDragState({
-                                      dragging: {
-                                        rowId: row.id,
-                                        dateISO,
-                                        assignmentId: assignment.id,
-                                        clinicianId: assignment.clinicianId,
-                                      },
-                                      dragOverKey: null,
-                                    });
-                                  }
-                            }
-                            onDragEnd={
-                              readOnly
-                                ? undefined
-                                : () =>
-                                    setDragState({ dragging: null, dragOverKey: null })
-                            }
-                            className={cx(
-                              !readOnly && "cursor-grab active:cursor-grabbing",
-                              isDraggingAssignment && "opacity-0",
-                            )}
-                          />
-                        );
-                      });
-                    })()}
+                    {sortedAssignments.map((assignment) =>
+                      renderPill(assignment, row.id, dateISO, siblingNames),
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -1077,7 +906,6 @@ function RowSection({
         const isHoliday = dayType === "holiday";
         const isWeekend =
           isHoliday || dayType === "sat" || dayType === "sun";
-        const isHoverDate = hoveredClassCell?.dateISO === dateISO;
         const slotRow =
           row.kind === "class" && row.slotRows?.length
             ? row.slotRows.find(
@@ -1097,7 +925,7 @@ function RowSection({
               : resolvedMinSlots.weekday;
         const slotOverride =
           slotOverridesByKey[`${activeRow.id}__${dateISO}`] ?? 0;
-        const isColumnMatch =
+        const isCellActive =
           row.kind !== "class"
             ? column.isFirstInDay
             : row.slotRows?.length
@@ -1106,7 +934,6 @@ function RowSection({
                 ? row.dayType === dayType &&
                   (row.colBandOrder ?? 1) === colOrder
                 : column.isFirstInDay;
-        const isCellActive = isColumnMatch;
         const rowInterval = shiftIntervalsByRowId.get(activeRow.id) ?? null;
         const rowTimeLabel = rowInterval
           ? formatTimeRangeLabel(rowInterval.start, rowInterval.end)
@@ -1115,17 +942,9 @@ function RowSection({
         const assignments = isCellActive
           ? assignmentMap.get(`${activeRow.id}__${dateISO}`) ?? []
           : [];
-        const sortedAssignments =
-          assignments.length > 1
-            ? [...assignments].sort((a, b) => {
-                const nameA = getClinicianName(a.clinicianId);
-                const nameB = getClinicianName(b.clinicianId);
-                const surnameA = nameA.trim().split(/\s+/).slice(-1)[0] ?? nameA;
-                const surnameB = nameB.trim().split(/\s+/).slice(-1)[0] ?? nameB;
-                const bySurname = surnameA.localeCompare(surnameB);
-                return bySurname !== 0 ? bySurname : nameA.localeCompare(nameB);
-              })
-            : assignments;
+        const sortedAssignments = sortAssignmentsBySurname(assignments, getClinicianName);
+        // For unique abbreviations within the cell.
+        const siblingNames = sortedAssignments.map((a) => getClinicianName(a.clinicianId));
         const targetSlots = isCellActive
           ? Math.max(0, baseRequired + slotOverride)
           : 0;
@@ -1133,27 +952,26 @@ function RowSection({
           row.kind === "class" && isCellActive
             ? Math.max(0, targetSlots - assignments.length)
             : 0;
-        const isOtherDay = !!dragState.dragging && dragState.dragging.dateISO !== dateISO;
-        const isActiveDay = !!dragState.dragging && dragState.dragging.dateISO === dateISO;
+        const isOtherDay = !!dragging && dragging.dateISO !== dateISO;
+        const isActiveDay = !!dragging && dragging.dateISO === dateISO;
         // The source cell (the one the pill is being dragged out of) would
         // otherwise fail canDropAssignment because its own interval overlaps
         // with itself. Dropping back on source is handled as a no-op by the
-        // drop handler (ScheduleGrid.onDrop: `if (payload.rowId === row.id)
+        // drop handler (handleCellDrop: `if (payload.rowId === targetRowId)
         // return;`), so treating the source cell as "qualified" for the
         // outline is visually consistent and functionally safe.
         const isSourceCell =
-          !!dragState.dragging &&
-          dragState.dragging.rowId === activeRow.id &&
-          dragState.dragging.dateISO === dateISO;
+          !!dragging &&
+          dragging.rowId === activeRow.id &&
+          dragging.dateISO === dateISO;
         const showQualified =
           !readOnly &&
-          !!dragState.dragging &&
+          !!dragging &&
           isActiveDay &&
           row.kind === "class" &&
           isCellActive &&
-          getIsQualified(dragState.dragging.clinicianId, activeRow.id) &&
-          (isSourceCell ||
-            canDropAssignment(dragState.dragging, activeRow.id, dateISO));
+          getIsQualified(dragging.clinicianId, activeRow.id) &&
+          (isSourceCell || canDropAssignment(dragging, activeRow.id, dateISO));
 
         const isHoveredCell =
           hoveredClassCell?.rowId === activeRow.id &&
@@ -1204,124 +1022,16 @@ function RowSection({
               readOnly
                 ? undefined
                 : (e) => {
-                    if (!dragState.dragging) return;
+                    if (!dragging) return;
                     e.preventDefault();
-                    if (dragState.dragging.dateISO !== dateISO) {
-                      setDragState((s) =>
-                        s.dragOverKey ? { ...s, dragOverKey: null } : s,
-                      );
-                      return;
-                    }
-                    if (!canDropAssignment(dragState.dragging, activeRow.id, dateISO)) {
-                      e.dataTransfer.dropEffect = "move";
-                      setDragState((s) =>
-                        s.dragOverKey ? { ...s, dragOverKey: null } : s,
-                      );
-                      return;
-                    }
-                    if (row.kind === "class" && !isCellActive) {
-                      e.dataTransfer.dropEffect = "move";
-                      setDragState((s) =>
-                        s.dragOverKey ? { ...s, dragOverKey: null } : s,
-                      );
-                      return;
-                    }
-                    e.dataTransfer.dropEffect = "move";
-                    setDragState((s) =>
-                      s.dragOverKey === cellKey
-                        ? s
-                        : { ...s, dragOverKey: cellKey },
-                    );
+                    if (dragging.dateISO === dateISO) e.dataTransfer.dropEffect = "move";
                   }
-            }
-            onDragLeave={
-              readOnly
-                ? undefined
-                : () => {
-                  setDragState((s) =>
-                    s.dragOverKey === cellKey ? { ...s, dragOverKey: null } : s,
-                  );
-                }
             }
             onDrop={
               readOnly
                 ? undefined
-                : (e) => {
-                    e.preventDefault();
-                    const raw = e.dataTransfer.getData("application/x-schedule-cell");
-                      if (!raw) return;
-                      try {
-                        const payload = JSON.parse(raw) as {
-                          rowId: string;
-                          dateISO: string;
-                          assignmentId: string;
-                          clinicianId: string;
-                        };
-                      if (payload.dateISO !== dateISO) {
-                        if (onRemoveAssignment) {
-                          onRemoveAssignment({
-                            rowId: payload.rowId,
-                            dateISO: payload.dateISO,
-                            assignmentId: payload.assignmentId,
-                            clinicianId: payload.clinicianId,
-                          });
-                        }
-                        setDragState({ dragging: null, dragOverKey: null });
-                        return;
-                      }
-                      if (payload.rowId === activeRow.id) {
-                        setDragState({ dragging: null, dragOverKey: null });
-                        return;
-                      }
-                      // Check for inactive cell first - always remove when dropping on empty cell
-                      if (row.kind === "class" && !isCellActive) {
-                        if (onRemoveAssignment) {
-                          onRemoveAssignment({
-                            rowId: payload.rowId,
-                            dateISO: payload.dateISO,
-                            assignmentId: payload.assignmentId,
-                            clinicianId: payload.clinicianId,
-                          });
-                        }
-                        setDragState({ dragging: null, dragOverKey: null });
-                        return;
-                      }
-                      if (!canDropAssignment(payload, activeRow.id, dateISO)) {
-                        if (onRemoveAssignment) {
-                          onRemoveAssignment({
-                            rowId: payload.rowId,
-                            dateISO: payload.dateISO,
-                            assignmentId: payload.assignmentId,
-                            clinicianId: payload.clinicianId,
-                          });
-                        }
-                        setDragState({ dragging: null, dragOverKey: null });
-                        return;
-                      }
-                      // This check is now redundant but kept for safety
-                      if (row.kind === "class" && !isCellActive) {
-                        if (onRemoveAssignment) {
-                          onRemoveAssignment({
-                            rowId: payload.rowId,
-                            dateISO: payload.dateISO,
-                            assignmentId: payload.assignmentId,
-                            clinicianId: payload.clinicianId,
-                          });
-                        }
-                        setDragState({ dragging: null, dragOverKey: null });
-                        return;
-                      }
-                      onMoveWithinDay({
-                        dateISO,
-                        fromRowId: payload.rowId,
-                        toRowId: activeRow.id,
-                        assignmentId: payload.assignmentId,
-                        clinicianId: payload.clinicianId,
-                      });
-                    } finally {
-                      setDragState({ dragging: null, dragOverKey: null });
-                    }
-                  }
+                : (e) =>
+                    handleCellDrop(e, activeRow.id, dateISO, row.kind === "class" && !isCellActive)
             }
             data-schedule-cell="true"
             data-row-id={activeRow.id}
@@ -1330,111 +1040,27 @@ function RowSection({
             className={cx(
               "row group relative border-r border-slate-200 p-0.5 text-left dark:border-slate-800 sm:p-1",
               borderBottomClass,
-              subShiftSeparatorClass,
               cellBgClass,
               isDayDivider &&
                 "border-solid border-r-2 border-r-slate-300 dark:border-r-slate-700",
               { "border-r-0": isLastCol },
             )}
             style={{
-              ...subShiftSeparatorStyle,
               borderRightStyle: isDayDivider ? "solid" : "dashed",
             }}
           >
             {(() => {
               const showSlotPanel = row.kind === "class" && isCellActive;
-              const hasHighlightedViolation = false;
+              // Color by: Person — neutral section blocks, only the person
+              // colors carry hue (SPEC E7: cells without the section fill).
+              const sectionFill = personPillStyles ? undefined : activeRow.blockColor;
               const cellContent = (
                 <>
-                  {sortedAssignments.length > 0 ? (
-                    (() => {
-                      // Compute sibling names for uniqueness check
-                      const siblingNames = sortedAssignments.map((a) =>
-                        getClinicianName(a.clinicianId),
-                      );
-                      return sortedAssignments.map((assignment) => {
-                        const isDraggingAssignment =
-                          dragState.dragging?.assignmentId === assignment.id &&
-                          dragState.dragging?.rowId === activeRow.id &&
-                          dragState.dragging?.dateISO === dateISO;
-                        const isDragFocus =
-                          !!dragState.dragging &&
-                          dragState.dragging.dateISO === dateISO &&
-                          dragState.dragging.clinicianId === assignment.clinicianId;
-                        const violationKey = `${assignment.rowId}__${assignment.dateISO}__${assignment.clinicianId}`;
-                        return (
-                          <AssignmentPill
-                            key={assignment.id}
-                            name={getClinicianName(assignment.clinicianId)}
-                            siblingNames={siblingNames}
-                            assignmentKey={violationKey}
-                            showNoEligibilityWarning={
-                              !getHasEligibleClasses(assignment.clinicianId)
-                            }
-                            showIneligibleWarning={
-                              row.kind === "class" &&
-                              !getIsQualified(assignment.clinicianId, activeRow.id)
-                            }
-                            isManual={row.kind === "class" && assignment.source !== "solver"}
-                            isLocked={assignment.locked}
-                            onToggleLock={!readOnly && row.kind === "class" && assignment.source === "solver" && onToggleAssignmentLock
-                              ? () => onToggleAssignmentLock(assignment) : undefined}
-                            isHighlighted={highlightedSplitShiftKeys?.has(violationKey)}
-                            isViolation={highlightedAssignmentKeys?.has(violationKey)}
-                            isDragging={isDraggingAssignment}
-                            isDragFocus={isDragFocus || isDraggingAssignment}
-                            draggable={!readOnly}
-                            onDragStart={
-                              readOnly
-                                ? undefined
-                                : (e) => {
-                                    e.stopPropagation();
-                                    setHoveredCell(null);
-                                    e.dataTransfer.effectAllowed = "move";
-                                    applyDragImage(e.currentTarget, e);
-                                    e.dataTransfer.setData(
-                                      "application/x-schedule-cell",
-                                      JSON.stringify({
-                                        rowId: activeRow.id,
-                                        dateISO,
-                                        assignmentId: assignment.id,
-                                        clinicianId: assignment.clinicianId,
-                                      }),
-                                    );
-                                    setDragState({
-                                      dragging: {
-                                        rowId: activeRow.id,
-                                        dateISO,
-                                        assignmentId: assignment.id,
-                                        clinicianId: assignment.clinicianId,
-                                      },
-                                      dragOverKey: null,
-                                    });
-                                  }
-                            }
-                            onClick={
-                              readOnly || !onClinicianClick
-                                ? undefined
-                                : (e) => {
-                                    e.stopPropagation();
-                                    onClinicianClick(assignment.clinicianId);
-                                  }
-                            }
-                            onDragEnd={
-                              readOnly
-                                ? undefined
-                                : () =>
-                                    setDragState({ dragging: null, dragOverKey: null })
-                            }
-                            className={cx(
-                              !readOnly && "cursor-grab active:cursor-grabbing",
-                              isDraggingAssignment && "opacity-0",
-                            )}
-                          />
-                        );
-                      });
-                    })()
-                  ) : null}
+                  {sortedAssignments.length > 0
+                    ? sortedAssignments.map((assignment) =>
+                        renderPill(assignment, activeRow.id, dateISO, siblingNames),
+                      )
+                    : null}
                   {emptySlots > 0
                 ? Array.from({ length: emptySlots }).map((_, idx) => (
                     <EmptySlotPill
@@ -1463,7 +1089,7 @@ function RowSection({
                           hoveredClassCell?.rowId === activeRow.id &&
                             hoveredClassCell?.dateISO === dateISO &&
                             "opacity-100",
-                          dragState.dragging && "opacity-0 pointer-events-none",
+                          dragging && "opacity-0 pointer-events-none",
                         )}
                     />
                   )
@@ -1480,20 +1106,16 @@ function RowSection({
                   // Only the color/dash style changes now.
                   className={cx(
                     "h-full w-full min-h-[48px] rounded-lg border-2 bg-white/95 px-2 py-0.5 shadow-sm dark:bg-slate-950",
-                    hasHighlightedViolation
-                      ? "border-rose-500 dark:border-rose-400"
-                      : showQualified
-                        ? "border-slate-900 dark:border-slate-100"
-                        : "border-slate-200 dark:border-slate-700",
+                    showQualified
+                      ? "border-slate-900 dark:border-slate-100"
+                      : "border-slate-200 dark:border-slate-700",
                   )}
                   style={
-                    activeRow.blockColor
-                      ? { backgroundColor: activeRow.blockColor }
-                      : undefined
+                    sectionFill ? { backgroundColor: sectionFill } : undefined
                   }
                 >
                   {(() => {
-                    const textColors = getContrastTextColor(activeRow.blockColor);
+                    const textColors = getContrastTextColor(sectionFill);
                     return (
                       <div className={cx("flex flex-col gap-0.5 text-[10px] font-semibold", textColors.primary)}>
                         <span className="truncate">
@@ -1535,6 +1157,8 @@ function LocationSeparatorRow({
   locationColumnTimeMetaByKey,
   holidayDates,
   holidayNameByDate,
+  tint,
+  locationName,
 }: {
   columns: {
     date: Date;
@@ -1551,7 +1175,20 @@ function LocationSeparatorRow({
   locationColumnTimeMetaByKey?: Map<string, { label?: string; mixed: boolean }>;
   holidayDates?: Set<string>;
   holidayNameByDate?: Record<string, string>;
+  /** Colored location: light ground + the location name on a chip. */
+  tint?: LocationRowTint;
+  locationName?: string;
 }) {
+  const tintLabel =
+    tint && locationName ? (
+      <span
+        className="inline-block max-w-full truncate rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase leading-3 tracking-wide"
+        style={{ backgroundColor: tint.chip, color: tint.ink }}
+        title={locationName}
+      >
+        {locationName}
+      </span>
+    ) : null;
   // Check if any column has a location-specific time label for this location
   const hasAnyTimeLabel =
     locationId &&
@@ -1562,7 +1199,18 @@ function LocationSeparatorRow({
       return meta?.label && !meta.mixed;
     });
 
-  // If no time labels to show, just render the simple separator line
+  // If no time labels to show, just render the simple separator line —
+  // for a colored location a tinted band that names it.
+  if (!hasAnyTimeLabel && tint) {
+    return (
+      <div
+        className="row flex items-center border-t-2 border-slate-300 px-3 py-1 dark:border-slate-700 sm:px-4"
+        style={{ gridColumn: "1 / -1", backgroundColor: tint.ground }}
+      >
+        {tintLabel}
+      </div>
+    );
+  }
   if (!hasAnyTimeLabel) {
     return (
       <div
@@ -1575,8 +1223,17 @@ function LocationSeparatorRow({
   // Render a row with time labels for each column
   return (
     <>
-      {/* Left header cell - empty */}
-      <div className="row border-t-2 border-r-2 border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900" />
+      {/* Left header cell - empty (a colored location shows its name here) */}
+      {tint ? (
+        <div
+          className="row flex items-center border-t-2 border-r-2 border-slate-300 px-2 py-0.5 dark:border-slate-700"
+          style={{ backgroundColor: tint.ground }}
+        >
+          {tintLabel}
+        </div>
+      ) : (
+        <div className="row border-t-2 border-r-2 border-slate-300 bg-white dark:border-slate-700 dark:bg-slate-900" />
+      )}
       {/* Time label cells for each column */}
       {columns.map((column, index) => {
         const key = locationId
@@ -1606,6 +1263,7 @@ function LocationSeparatorRow({
             )}
             style={{
               borderRightStyle: isDayDivider ? "solid" : "dashed",
+              ...(tint && !isHoliday && !isWeekend ? { backgroundColor: tint.ground } : null),
             }}
           >
             {timeLabel}

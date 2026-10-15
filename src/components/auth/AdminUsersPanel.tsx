@@ -15,7 +15,8 @@ import {
   type UserStateExport,
 } from "../../api/client";
 import { cx } from "../../lib/classNames";
-import { buildRunLog, downloadTextFile, serverRunToHistoryEntry } from "../../lib/runLog";
+import { downloadTextFile } from "../../lib/download";
+import { buildRunLog, serverRunToHistoryEntry } from "../../lib/runLog";
 import { useConfirm } from "../ui/ConfirmDialog";
 
 type AdminUsersPanelProps = {
@@ -236,17 +237,7 @@ export default function AdminUsersPanel({
       const payload = await exportUserState(user.username);
       const exportedDate = payload.exportedAt?.slice(0, 10) ?? "export";
       const fileName = `schedule-export-${user.username}-${exportedDate}.json`;
-      const blob = new Blob([JSON.stringify(payload, null, 2)], {
-        type: "application/json",
-      });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = fileName;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.URL.revokeObjectURL(url);
+      downloadTextFile(fileName, JSON.stringify(payload, null, 2), "application/json");
     } catch {
       setError("Could not export user.");
     } finally {
@@ -254,7 +245,8 @@ export default function AdminUsersPanel({
     }
   };
 
-  const importSummary = useMemo(() => {
+  // Plain computation, not a hook: this runs after the `!isAdmin` early return.
+  const importSummary = (() => {
     if (!importPayload || !importFileName) {
       return "No import file selected. New users start from the default configuration.";
     }
@@ -268,7 +260,7 @@ export default function AdminUsersPanel({
       return `Loaded ${importFileName} ${source}${exportedAt}.`;
     }
     return `Loaded ${importFileName}.`;
-  }, [importPayload, importFileName]);
+  })();
 
   return (
     <div className="mx-auto max-w-4xl px-6 pb-12">

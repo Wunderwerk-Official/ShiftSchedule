@@ -1,5 +1,5 @@
-import { render, screen, fireEvent, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { act, render, screen, fireEvent, within } from "@testing-library/react";
+import { describe, expect, it, vi } from "vitest";
 import AgentActivityPanel from "./AgentActivityPanel";
 import type { AgentActivityData } from "../../api/client";
 
@@ -46,6 +46,34 @@ describe("AgentActivityPanel full-text dialog", () => {
     // Escape closes it.
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByText(/END-MARKER/)).toBeNull();
+  });
+
+  it("does not claim 'Copied' when copying the full text fails", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockRejectedValue(new Error("insecure context")) },
+      configurable: true,
+    });
+    Object.defineProperty(document, "execCommand", { value: vi.fn(() => false), configurable: true });
+    try {
+      render(
+        <AgentActivityPanel
+          events={[
+            ev({ kind: "stage", stage: "improve" }),
+            ev({ kind: "thought", text: LONG, reasoning: true }),
+          ]}
+        />,
+      );
+      fireEvent.click(screen.getByRole("checkbox", { name: "Include model text" }));
+      fireEvent.click(screen.getByRole("button", { name: /show full text/i }));
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+      });
+      expect(screen.queryByText("Copied ✓")).toBeNull();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+    } finally {
+      Reflect.deleteProperty(navigator, "clipboard");
+      Reflect.deleteProperty(document, "execCommand");
+    }
   });
 
   it("keeps short thoughts inline without an opener", () => {

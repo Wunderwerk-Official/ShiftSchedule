@@ -1,8 +1,8 @@
 import AssignmentLockButton from "./AssignmentLockButton";
 import { cx } from "../../lib/classNames";
-import { memo, useMemo, useRef, useState, useLayoutEffect } from "react";
-import type { DragEventHandler, MouseEventHandler } from "react";
-import type { AvailabilitySegment } from "../../lib/schedule";
+import { memo, useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
+import type { CSSProperties, DragEventHandler, MouseEventHandler } from "react";
+import type { PersonPillStyle } from "./teamColors";
 
 /**
  * Abbreviate a name to fit in limited space.
@@ -101,14 +101,45 @@ function abbreviateName(
   return result;
 }
 
+/**
+ * Color by: Person — one order per column: "First Last" → "First L." → the
+ * initials circle alone. "F. Last" / "F. L." are skipped: the circle next to
+ * the name already carries the initials (and mixing "S. Klein" with "Felix W."
+ * in one column reads unevenly).
+ */
+const PERSON_INITIALS_ONLY_LEVEL = 2;
+/**
+ * Color by: Person — "First L." that does not fit is cut with an ellipsis
+ * ("Sophie…") as long as this much room is left next to the circle (about
+ * four letters). Only below it does the circle stand alone: in the narrow
+ * team columns many names miss by a few pixels, and a lone circle left most
+ * of the pill blank. Known limit: two people in one cell with the same first
+ * name and surname initial ("Sophie Mü." / "Sophie Me.") can both read
+ * "Sophie…"; the full name on hover (and usually the person color) tells
+ * them apart. Still better than the two identical "SM" circles shown before.
+ */
+const PERSON_MIN_NAME_PX = 30;
+
+// Text widths via a shared canvas: lets "Color by: Person" pick its
+// abbreviation in one pass instead of one re-render per level. Null where
+// canvas text metrics are unavailable (jsdom): the stepwise check runs then.
+let measureContext: CanvasRenderingContext2D | null | undefined;
+function measureText(text: string, font: string): number | null {
+  if (measureContext === undefined) {
+    const jsdom = typeof navigator !== "undefined" && navigator.userAgent.includes("jsdom");
+    measureContext = jsdom ? null : (document.createElement("canvas").getContext("2d") ?? null);
+  }
+  if (!measureContext) return null;
+  measureContext.font = font;
+  return measureContext.measureText(text).width;
+}
+
 type AssignmentPillProps = {
   name: string;
   /** Other names in the same cell, used to ensure unique abbreviations */
   siblingNames?: string[];
   /** Unique key for violation line drawing: `${rowId}__${dateISO}__${clinicianId}` */
   assignmentKey?: string;
-  timeLabel?: string;
-  timeSegments?: AvailabilitySegment[];
   showNoEligibilityWarning?: boolean;
   showIneligibleWarning?: boolean;
   isHighlighted?: boolean;
@@ -125,13 +156,19 @@ type AssignmentPillProps = {
   onDragStart?: DragEventHandler<HTMLDivElement>;
   onDragEnd?: DragEventHandler<HTMLDivElement>;
   onClick?: MouseEventHandler<HTMLDivElement>;
+  /** Team "Color by: Person" (plan §2.9). Absent = the default section look, unchanged. */
+  personStyle?: PersonPillStyle;
+  /**
+   * The person linked to the current account ("That's me"): a 2 px outline in
+   * both color modes (SPEC E7). Never set while no account is linked.
+   */
+  isMe?: boolean;
 };
 
 function AssignmentPillImpl({
   name,
   siblingNames,
   assignmentKey,
-  timeSegments,
   showNoEligibilityWarning,
   showIneligibleWarning,
   isHighlighted = false,
@@ -146,11 +183,20 @@ function AssignmentPillImpl({
   onDragStart,
   onDragEnd,
   onClick,
+  personStyle,
+  isMe = false,
 }: AssignmentPillProps) {
   // Abbreviation logic: measure if name fits, progressively abbreviate if not
   const nameRef = useRef<HTMLSpanElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const initialsRef = useRef<HTMLSpanElement>(null);
+  const hasInitials = Boolean(personStyle);
+  // Color by: Person ends with the initials circle alone (the name is only
+  // read out); the section look ends with "FL" initials as text.
+  const maxAbbreviationLevel = hasInitials ? PERSON_INITIALS_ONLY_LEVEL : 4;
   const [abbreviationLevel, setAbbreviationLevel] = useState(0);
+  // Bumped when the row width changes (person mode): measure again.
+  const [layoutVersion, setLayoutVersion] = useState(0);
 
   const displayName = useMemo(
     () => abbreviateName(name, abbreviationLevel, siblingNames),
@@ -165,38 +211,84 @@ function AssignmentPillImpl({
 
     // Reset to full name first
     setAbbreviationLevel(0);
-  }, [name]);
+  }, [name, hasInitials]);
+
+  // Color by: Person — the grid may settle its column widths after the
+  // first measurement (scope switch, resize): start over when the row width
+  // changes, so names never stay cut off. The default look keeps its
+  // one-shot measurement.
+  useEffect(() => {
+    const containerEl = containerRef.current;
+    if (!hasInitials || !containerEl || typeof ResizeObserver === "undefined") return;
+    let lastWidth = containerEl.clientWidth;
+    const observer = new ResizeObserver(() => {
+      if (containerEl.clientWidth === lastWidth) return;
+      lastWidth = containerEl.clientWidth;
+      setAbbreviationLevel(0);
+      setLayoutVersion((version) => version + 1);
+    });
+    observer.observe(containerEl);
+    return () => observer.disconnect();
+  }, [hasInitials]);
+
+  // Color by: Person — the first level whose name fits next to the circle,
+  // measured in one pass (all pills read layout in the same commit).
+  const siblingKey = siblingNames?.join("|");
+  const [measuredInOnePass, setMeasuredInOnePass] = useState(false);
+  useLayoutEffect(() => {
+    const nameEl = nameRef.current;
+    const containerEl = containerRef.current;
+    if (!hasInitials || !nameEl || !containerEl) return;
+    const font = window.getComputedStyle(nameEl).font;
+    const available = containerEl.clientWidth - (initialsRef.current?.offsetWidth ?? 0) - 4;
+    let level = 0;
+    for (; level < PERSON_INITIALS_ONLY_LEVEL; level += 1) {
+      const width = measureText(abbreviateName(name, level, siblingNames), font);
+      if (width === null) return;
+      if (width <= available) break;
+    }
+    if (level === PERSON_INITIALS_ONLY_LEVEL && available >= PERSON_MIN_NAME_PX) {
+      level -= 1; // "First L." with an ellipsis
+    }
+    setMeasuredInOnePass(true);
+    setAbbreviationLevel(level);
+    // siblingKey stands for siblingNames (a new array on every grid render).
+  }, [name, siblingKey, hasInitials, layoutVersion]);
 
   useLayoutEffect(() => {
     const nameEl = nameRef.current;
     const containerEl = containerRef.current;
-    if (!nameEl || !containerEl) return;
+    if (!nameEl || !containerEl || (hasInitials && measuredInOnePass)) return;
 
     // Use requestAnimationFrame to ensure layout is computed
     const rafId = requestAnimationFrame(() => {
-      const isOverflowing = nameEl.scrollWidth > containerEl.clientWidth;
-      if (isOverflowing && abbreviationLevel < 4) {
+      // The initials circle (Color by: Person) shares the line with the name;
+      // the lock badge's room is reserved as pill padding (outside the row).
+      const initialsWidth = initialsRef.current ? initialsRef.current.offsetWidth + 4 : 0;
+      const isOverflowing = nameEl.scrollWidth + initialsWidth > containerEl.clientWidth;
+      // Color by: Person keeps "First L." with an ellipsis while it has room.
+      const keepEllipsis =
+        hasInitials &&
+        abbreviationLevel === PERSON_INITIALS_ONLY_LEVEL - 1 &&
+        containerEl.clientWidth - initialsWidth >= PERSON_MIN_NAME_PX;
+      if (isOverflowing && abbreviationLevel < maxAbbreviationLevel && !keepEllipsis) {
         setAbbreviationLevel((prev) => prev + 1);
       }
     });
 
     return () => cancelAnimationFrame(rafId);
-  }, [displayName, abbreviationLevel]);
+    // hasInitials: switching "Color by" changes the room for the name.
+  }, [displayName, abbreviationLevel, maxAbbreviationLevel, hasInitials, layoutVersion, measuredInOnePass]);
 
   const isAbbreviated = abbreviationLevel > 0;
+  const initialsOnly = hasInitials && abbreviationLevel >= PERSON_INITIALS_ONLY_LEVEL;
+  const showLockBadge = isManual || (isLocked && !onToggleLock);
   const showHighlight = isHighlighted && !isDragging;
   const showViolation = isViolation && !isDragging;
   const showDragFocus = isDragFocus;
   const hasWarning = showNoEligibilityWarning || showIneligibleWarning;
-  const hasSegments = Boolean(timeSegments?.length);
-  const segmentFreeClass = showViolation || showHighlight
-    ? "bg-rose-100/80 dark:bg-rose-900/40"
-    : showDragFocus
-      ? "bg-sky-200 dark:bg-sky-700/60"
-      : "bg-sky-50 dark:bg-sky-900/40";
-  const segmentTakenClass = "bg-white dark:bg-slate-900";
   // Border width is kept constant across all states (see className below:
-  // `border-2` on the outer div). Previously this switched between `border`
+  // `border-2` on the outer div; `border` throughout in person mode). Previously this switched between `border`
   // (default) and `border-2` (violation/drag-focus), and the 1px delta
   // shifted every row underneath when hovering a violating pill.
   const toneClass = showViolation || showHighlight
@@ -209,6 +301,22 @@ function AssignmentPillImpl({
     : showDragFocus
       ? "bg-sky-200 dark:bg-sky-700/60"
       : "bg-sky-50 dark:bg-sky-900/40";
+  // Color by: Person — light fill, strong border, ink text. Violation,
+  // highlight and drag focus keep their signal colors; inline styles leave
+  // the default classes (and so the default look) untouched.
+  const personColorStyle: CSSProperties | undefined =
+    personStyle && !showViolation && !showHighlight && !showDragFocus
+      ? {
+          backgroundColor: personStyle.color.light,
+          borderColor: personStyle.color.strong,
+          color: personStyle.color.ink,
+        }
+      : undefined;
+  // SPEC C5.13: 1 px border, 20 px initials circle 3 px from the edge (same
+  // 24 px height as the default pill); room on the right for the lock badge.
+  const personPaddingClass = personStyle
+    ? cx("py-px pl-0.5", onToggleLock ? null : showLockBadge ? "pr-5" : "pr-1.5")
+    : "px-1.5 py-0.5";
   return (
     <div
       data-assignment-pill="true"
@@ -217,13 +325,19 @@ function AssignmentPillImpl({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onClick}
+      style={personColorStyle}
       // No `select-none` here: Safari/WebKit refuses to start dragstart on an
       // element whose -webkit-user-select is `none` (Chrome ignores that).
       // Text selection on the visible content is still prevented by the inner
       // wrapper's `select-none` below. See index.css for the matching CSS-side
       // safeguards (-webkit-user-drag: element + cursor: grab).
       className={cx(
-        "group/pill relative w-full overflow-visible rounded-xl border-2 px-1.5 py-0.5 text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
+        "group/pill relative w-full overflow-visible rounded-xl text-[11px] font-normal leading-4",
+        // Constant per look (see toneClass): 1 px in person mode (SPEC C5.13).
+        personStyle ? "border" : "border-2",
+        // The white inner hairline would glow on the deep dark-mode person fills.
+        !personColorStyle && "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
+        personPaddingClass,
         // Hover z must EXCEED the static z of warning pills (500): the
         // eligibility tooltip lives inside this pill's stacking context, so
         // at equal z a warning pill later in the DOM (e.g. directly below)
@@ -233,42 +347,50 @@ function AssignmentPillImpl({
         (showViolation || showHighlight) &&
           "ring-2 ring-rose-200/80 dark:ring-rose-500/40",
         toneClass,
-        hasSegments ? "bg-transparent" : toneBgClass,
-        !hasSegments &&
-          (showViolation || showHighlight
-            ? "hover:border-rose-300 hover:bg-rose-100/80 dark:hover:border-rose-500/60 dark:hover:bg-rose-900/40"
-            : showDragFocus
-              ? "hover:border-slate-900 hover:bg-sky-200"
-              : "hover:border-sky-300 hover:bg-sky-100 dark:hover:border-sky-400/60 dark:hover:bg-sky-900/60"),
+        toneBgClass,
+        showViolation || showHighlight
+          ? "hover:border-rose-300 hover:bg-rose-100/80 dark:hover:border-rose-500/60 dark:hover:bg-rose-900/40"
+          : showDragFocus
+            ? "hover:border-slate-900 hover:bg-sky-200"
+            : "hover:border-sky-300 hover:bg-sky-100 dark:hover:border-sky-400/60 dark:hover:bg-sky-900/60",
         onToggleLock && "min-h-7 pr-6",
+        isMe && "outline outline-2 outline-offset-1 outline-slate-900 dark:outline-slate-100",
         className,
       )}
     >
       <div className="pointer-events-none relative z-10 select-none overflow-hidden rounded-[inherit]">
-        {hasSegments ? (
-          <div className="pointer-events-none absolute inset-0 z-0 flex divide-x divide-slate-200/80 dark:divide-slate-700/80">
-            {timeSegments?.map((segment, index) => (
-              <div
-                key={`${segment.label}-${index}`}
-                className={cx(
-                  "flex-1",
-                  segment.kind === "taken" ? segmentTakenClass : segmentFreeClass,
-                )}
-              />
-            ))}
-          </div>
-        ) : null}
         <div className="relative z-10 flex flex-col items-center gap-0.5">
           <div
             ref={containerRef}
-            className="flex w-full items-center justify-center gap-1 overflow-hidden"
+            className={cx(
+              "flex w-full items-center gap-1 overflow-hidden",
+              // Left-aligned in person mode: a centered row clips the initials.
+              personStyle ? "min-w-0 justify-start" : "justify-center",
+            )}
+            title={personStyle && isAbbreviated ? name : undefined}
           >
+            {personStyle ? (
+              <span
+                ref={initialsRef}
+                aria-hidden="true"
+                className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold leading-none"
+                style={{
+                  backgroundColor: personStyle.color.strong,
+                  color: personStyle.color.onStrong,
+                }}
+              >
+                {personStyle.initials}
+              </span>
+            ) : null}
             <span
               ref={nameRef}
-              className="whitespace-nowrap text-center"
-              title={isAbbreviated ? name : undefined}
+              className={cx(
+                personStyle ? "min-w-0 truncate" : "whitespace-nowrap text-center",
+                initialsOnly && "sr-only",
+              )}
+              title={!personStyle && isAbbreviated ? name : undefined}
             >
-              {displayName}
+              {initialsOnly ? name : displayName}
             </span>
           </div>
         </div>
@@ -278,7 +400,7 @@ function AssignmentPillImpl({
           <AssignmentLockButton name={name} locked={isLocked} onToggle={onToggleLock} />
         </span>
       ) : null}
-      {isManual || (isLocked && !onToggleLock) ? (
+      {showLockBadge ? (
         // Lock badge: manual assignment, the planner never moves it. Same
         // circular badge language as the warning dot below, but in a neutral
         // tone (no signal color). Kept fully inside the pill so it can't be
@@ -343,22 +465,9 @@ function arraysShallowEqual<T>(
   return true;
 }
 
-function segmentsEqual(
-  a: AvailabilitySegment[] | undefined,
-  b: AvailabilitySegment[] | undefined,
-): boolean {
-  if (a === b) return true;
-  if (!a || !b) return a === b;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i].kind !== b[i].kind || a[i].label !== b[i].label) return false;
-  }
-  return true;
-}
-
 /**
  * Pills are rendered hundreds at a time in the schedule grid. Any state
- * change in the parent (e.g. setDragState during a drag) would otherwise
+ * change in the parent (e.g. the drag state during a drag) would otherwise
  * re-render every single pill, compounded by each pill's own
  * useLayoutEffect → rAF → setState abbreviation loop. Skipping re-renders
  * for pills whose data didn't change is what makes drag feel snappy.
@@ -386,8 +495,11 @@ function arePillPropsEqual(
     prev.isDragFocus === next.isDragFocus &&
     prev.draggable === next.draggable &&
     prev.className === next.className &&
-    arraysShallowEqual(prev.siblingNames, next.siblingNames) &&
-    segmentsEqual(prev.timeSegments, next.timeSegments)
+    prev.personStyle?.color.strong === next.personStyle?.color.strong &&
+    prev.personStyle?.color.light === next.personStyle?.color.light &&
+    prev.personStyle?.initials === next.personStyle?.initials &&
+    prev.isMe === next.isMe &&
+    arraysShallowEqual(prev.siblingNames, next.siblingNames)
   );
 }
 

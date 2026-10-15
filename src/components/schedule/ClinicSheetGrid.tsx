@@ -3,7 +3,7 @@ import AssignmentLockButton from "./AssignmentLockButton";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import { cx } from "../../lib/classNames";
-import type { RenderedAssignment } from "../../lib/schedule";
+import { sortAssignmentsBySurname, type RenderedAssignment } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getLuminance } from "../../lib/shiftRows";
 import {
@@ -12,6 +12,8 @@ import {
   buildRowKindById,
   buildShiftIntervalsByRowId,
   canDropAssignment,
+  DRAG_MIME,
+  readDragPayload,
   type DragPayload,
   type SlotOptionClinician,
 } from "../../lib/clinicianSlotOptions";
@@ -36,7 +38,6 @@ import ClinicianPickerPopover from "./ClinicianPickerPopover";
 const SHEET_FONT_FAMILY = '"Arial", "Helvetica Neue", Helvetica, sans-serif';
 const DAY_COLUMN_WIDTH = "minmax(252px, 1fr)";
 const LABEL_COLUMN_WIDTH = "minmax(150px, 190px)";
-const DRAG_MIME = "application/x-schedule-cell";
 
 // The Excel sheet lists people by surname only. Use the last name token and
 // fall back to an initial + surname when two people in the same cell collide.
@@ -86,21 +87,6 @@ const formatSheetDate = (date: Date) => {
   return `${day}.${month}.${date.getFullYear()}`;
 };
 
-const sortAssignments = (
-  assignments: RenderedAssignment[],
-  getClinicianName: (id: string) => string,
-) =>
-  assignments.length > 1
-    ? [...assignments].sort((a, b) => {
-        const nameA = getClinicianName(a.clinicianId);
-        const nameB = getClinicianName(b.clinicianId);
-        const surnameA = nameA.trim().split(/\s+/).slice(-1)[0] ?? nameA;
-        const surnameB = nameB.trim().split(/\s+/).slice(-1)[0] ?? nameB;
-        const bySurname = surnameA.localeCompare(surnameB);
-        return bySurname !== 0 ? bySurname : nameA.localeCompare(nameB);
-      })
-    : assignments;
-
 type ClinicSheetGridProps = {
   model: ClinicSheetModel;
   assignmentMap: Map<string, RenderedAssignment[]>;
@@ -113,7 +99,6 @@ type ClinicSheetGridProps = {
   getIsQualified: (clinicianId: string, rowId: string) => boolean;
   clinicians?: SlotOptionClinician[];
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
-  getHasTimeConflict?: (clinicianId: string, dateISO: string, rowId: string) => boolean;
   enforceSameLocationPerDay?: boolean;
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
@@ -143,7 +128,6 @@ export default function ClinicSheetGrid({
   getIsQualified,
   clinicians = [],
   getIsOnRestDay,
-  getHasTimeConflict,
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
@@ -210,27 +194,13 @@ export default function ClinicSheetGrid({
     };
   }, [dragging, onRemoveAssignment]);
 
-  const readDragPayload = (event: ReactDragEvent): DragPayload | null => {
-    const raw = event.dataTransfer.getData(DRAG_MIME);
-    if (!raw) return null;
-    try {
-      const payload = JSON.parse(raw) as DragPayload;
-      if (!payload?.rowId || !payload.dateISO || !payload.assignmentId || !payload.clinicianId) {
-        return null;
-      }
-      return payload;
-    } catch {
-      return null;
-    }
-  };
-
   // Shared drop handling for slot areas and pool cells: drops from another
   // day (or onto an incompatible slot) remove the assignment, drops on the
   // source cell are a no-op, valid same-day drops move.
   const handleCellDrop = (event: ReactDragEvent, targetRowId: string, dateISO: string) => {
     event.preventDefault();
     event.stopPropagation();
-    const payload = readDragPayload(event);
+    const payload = readDragPayload(event.dataTransfer);
     setDragging(null);
     if (!payload) return;
     if (payload.dateISO !== dateISO) {
@@ -291,7 +261,6 @@ export default function ClinicSheetGrid({
         assignedIntervalsByDate,
         unknownIntervalsByDate,
         getIsOnRestDay,
-        getHasTimeConflict,
       })
     : [];
   const pickerDateLabel = pickerState.dateISO
@@ -360,7 +329,7 @@ export default function ClinicSheetGrid({
   };
 
   const renderAreaCell = (row: ClinicSheetRow, area: ClinicSheetArea, day: ClinicSheetDay) => {
-    const assignments = sortAssignments(
+    const assignments = sortAssignmentsBySurname(
       assignmentMap.get(`${area.slotId}__${day.dateISO}`) ?? [],
       getClinicianName,
     );
@@ -457,7 +426,7 @@ export default function ClinicSheetGrid({
     isLastDay: boolean,
     rowBorders: string,
   ) => {
-    const assignments = sortAssignments(
+    const assignments = sortAssignmentsBySurname(
       assignmentMap.get(`${poolRow.id}__${day.dateISO}`) ?? [],
       getClinicianName,
     );
@@ -542,7 +511,7 @@ export default function ClinicSheetGrid({
                           const isCell = target?.closest?.('[data-schedule-cell="true"]');
                           if (isCell) return;
                           e.preventDefault();
-                          const payload = readDragPayload(e);
+                          const payload = readDragPayload(e.dataTransfer);
                           if (payload) {
                             onRemoveAssignment?.(payload);
                           }

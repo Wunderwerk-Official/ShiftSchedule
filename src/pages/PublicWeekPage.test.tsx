@@ -120,4 +120,24 @@ describe("PublicWeekPage", () => {
     });
     expect(document.querySelector("[data-schedule-grid]")).toBeNull();
   });
+
+  it("shows a temporary error, not 'Link invalid', when loading fails without a 404", async () => {
+    vi.mocked(getPublicWebWeek).mockRejectedValue(new Error("Failed to fetch"));
+    render(<PublicWeekPage token="tok" theme="light" />);
+    await waitFor(() => {
+      expect(screen.getByText("Could not load the schedule. Please try again later.")).toBeTruthy();
+    });
+    expect(screen.queryByText("Link invalid or expired.")).toBeNull();
+  });
+
+  it("shows 'Link invalid or expired.' for a 404", async () => {
+    vi.mocked(getPublicWebWeek).mockRejectedValue(
+      Object.assign(new Error("Not found"), { status: 404 }),
+    );
+    render(<PublicWeekPage token="tok" theme="light" />);
+    await waitFor(() => {
+      expect(screen.getByText("Link invalid or expired.")).toBeTruthy();
+    });
+    expect(screen.queryByText(/Could not load the schedule/)).toBeNull();
+  });
 });

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { SolverAgentDebug, SolverDebugInfo, SolverRunDetail } from "../../api/client";
 import { agentReviewNotice, heuristicFallbackNotice } from "../../lib/solverOutcome";
@@ -100,4 +100,60 @@ it("retains the last successful first-choice model after later unavailability wi
   expect(notice).toContain("Last successful model: Flash.");
   expect(notice).toContain("35B (model_unavailable)");
   expect(notice).not.toContain("Automatically switched");
+});
+
+const plainRun: SolverRunDetail = { id: "run-err", status: "finished", has_result: true,
+  start_iso: "2026-01-05", end_iso: "2026-01-05", attempt: 1, created_at: "2026-01-05T10:00:00Z",
+  result: { startISO: "2026-01-05", endISO: "2026-01-05", assignments: [], notes: [] } };
+
+const renderModal = (overrides: Partial<Parameters<typeof SolverInfoModal>[0]> = {}) =>
+  render(<SolverInfoModal isOpen onClose={vi.fn()} serverRuns={[plainRun]}
+    onApplyRun={vi.fn()} onDiscardRun={vi.fn()} onRefreshRuns={vi.fn()}
+    onFetchRunDetail={vi.fn().mockResolvedValue(plainRun)} onSendFeedback={vi.fn()} {...overrides} />);
+
+it("shows an error and keeps the text when sending feedback fails", async () => {
+  renderModal({ onSendFeedback: vi.fn().mockRejectedValue(new Error("500")) });
+  fireEvent.click(screen.getByTitle(/Write a comment about this run/));
+  const textarea = screen.getByPlaceholderText(/What should the admin know/);
+  fireEvent.change(textarea, { target: { value: "Dr. A is missing on Monday" } });
+  fireEvent.click(screen.getByText("Send to admin"));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Sending the comment failed");
+  expect(textarea).toHaveValue("Dr. A is missing on Monday");
+});
+
+it("shows the error in the failing run's card and clears it on Cancel", async () => {
+  const otherRun: SolverRunDetail = { ...plainRun, id: "run-ok", start_iso: "2026-02-02", end_iso: "2026-02-02" };
+  renderModal({ serverRuns: [plainRun, otherRun], onSendFeedback: vi.fn().mockRejectedValue(new Error("500")) });
+  const errCard = screen.getByTestId("run-card-run-err");
+  const okCard = screen.getByTestId("run-card-run-ok");
+  fireEvent.click(within(errCard).getByTitle(/Write a comment about this run/));
+  fireEvent.change(within(errCard).getByPlaceholderText(/What should the admin know/), {
+    target: { value: "Dr. A is missing on Monday" },
+  });
+  fireEvent.click(within(errCard).getByText("Send to admin"));
+  expect(await within(errCard).findByRole("alert")).toHaveTextContent("Sending the comment failed");
+  expect(within(okCard).queryByRole("alert")).not.toBeInTheDocument();
+
+  fireEvent.click(within(errCard).getByText("Cancel"));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+});
+
+it("shows an error when a run's details cannot be loaded", async () => {
+  renderModal({ onFetchRunDetail: vi.fn().mockRejectedValue(new Error("502")) });
+  fireEvent.click(screen.getByTitle("Show run details (stats, changes, log)."));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Loading the run failed");
+  // Still on the info view with the run list.
+  expect(screen.getByTitle("Show run details (stats, changes, log).")).toBeInTheDocument();
+});
+
+it("shows an error when the run log download fails", async () => {
+  renderModal({ onFetchRunDetail: vi.fn().mockRejectedValue(new Error("502")) });
+  fireEvent.click(screen.getByTitle(/Download the full run log/));
+  expect(await screen.findByRole("alert")).toHaveTextContent("Downloading the log failed");
+});
+
+it("explains that the weights only affect the classic CP-SAT optimizer", () => {
+  renderModal();
+  fireEvent.click(screen.getByText("Optimization Weights"));
+  expect(screen.getByText(/ignores these weights/)).toBeVisible();
 });

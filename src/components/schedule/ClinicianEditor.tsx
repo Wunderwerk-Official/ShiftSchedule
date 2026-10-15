@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { cx } from "../../lib/classNames";
-import type { PreferredWorkingTimes, WorkPattern } from "../../api/client";
-import {
-  DEFAULT_PREFERRED_WORKING_TIMES,
-  normalizePreferredWorkingTimes,
-} from "../../lib/clinicianPreferences";
+import type {
+  PreferredWorkingTime,
+  PreferredWorkingTimes,
+  WorkPattern,
+} from "../../api/client";
+import { normalizePreferredWorkingTimes } from "../../lib/clinicianPreferences";
+import { parseTimeToMinutes } from "../../lib/time";
 import WorkPatternEditor from "./WorkPatternEditor";
 import CustomSelect from "./CustomSelect";
 import CustomNumberInput from "./CustomNumberInput";
@@ -99,7 +101,10 @@ export default function ClinicianEditor({
     clinician.planningWishes ?? "",
   );
   const [timeWarnings, setTimeWarnings] = useState<Record<string, string>>({});
-  const suppressPreferredWorkingTimesUpdate = useRef(true);
+  // The object this editor last emitted; when the page passes it straight
+  // back, the prop sync below must not re-normalize (and thereby reset)
+  // values the user is still editing.
+  const lastEmittedPreferredWorkingTimes = useRef<PreferredWorkingTimes | null>(null);
   const vacationPanelRef = useRef<HTMLDivElement | null>(null);
   const eligibleIds = clinician.qualifiedClassIds;
   const eligibleRows = eligibleIds
@@ -131,48 +136,34 @@ export default function ClinicianEditor({
   ] as const;
   type PreferredWorkingDayId = (typeof preferredWorkingDays)[number]["id"];
 
-  const parseTimeToMinutes = (value: string) => {
-    const match = value.trim().match(/^(\d{1,2}):(\d{2})$/);
-    if (!match) return null;
-    const hours = Number(match[1]);
-    const minutes = Number(match[2]);
-    if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-    if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-    return hours * 60 + minutes;
+  const preferredWorkingTimeWarning = (value: PreferredWorkingTime) => {
+    if (value.requirement === "none") return null;
+    const startMinutes = parseTimeToMinutes(value.startTime);
+    const endMinutes = parseTimeToMinutes(value.endTime);
+    if (startMinutes === null || endMinutes === null) return "Invalid time format.";
+    if (endMinutes <= startMinutes) return "End time must be after start time.";
+    return null;
   };
 
-  const clearTimeWarning = (dayId: PreferredWorkingDayId) => {
+  // Apply a change to one day, emit it and validate it synchronously against
+  // the new value. Invalid values are kept (and flagged) so the user can
+  // finish editing.
+  const applyPreferredWorkingDay = (
+    dayId: PreferredWorkingDayId,
+    patch: Partial<PreferredWorkingTime>,
+  ) => {
+    const next: PreferredWorkingTimes = {
+      ...preferredWorkingTimes,
+      [dayId]: { ...preferredWorkingTimes[dayId], ...patch },
+    };
+    lastEmittedPreferredWorkingTimes.current = next;
+    setPreferredWorkingTimes(next);
+    onUpdatePreferredWorkingTimes?.(clinician.id, next);
+    const warning = preferredWorkingTimeWarning(next[dayId]);
     setTimeWarnings((prev) => {
-      if (!(dayId in prev)) return prev;
       const { [dayId]: _unused, ...rest } = prev;
-      return rest;
+      return warning ? { ...rest, [dayId]: warning } : rest;
     });
-  };
-
-  const validatePreferredWorkingTime = (dayId: PreferredWorkingDayId) => {
-    const value = preferredWorkingTimes[dayId];
-    if (value.requirement === "none") {
-      clearTimeWarning(dayId);
-      commitPreferredWorkingTimes();
-      return;
-    }
-    const startMinutes = parseTimeToMinutes(value.startTime ?? "");
-    const endMinutes = parseTimeToMinutes(value.endTime ?? "");
-    if (startMinutes === null || endMinutes === null) {
-      setTimeWarnings((prev) => ({
-        ...prev,
-        [dayId]: "Invalid time format.",
-      }));
-    } else if (endMinutes <= startMinutes) {
-      setTimeWarnings((prev) => ({
-        ...prev,
-        [dayId]: "End time must be after start time.",
-      }));
-    } else {
-      clearTimeWarning(dayId);
-    }
-    // Always commit - let the user keep their values
-    commitPreferredWorkingTimes();
   };
 
   useEffect(() => {
@@ -202,33 +193,17 @@ export default function ClinicianEditor({
     setWorkingHoursTolerance(clinician.workingHoursToleranceHours ?? 5);
   }, [clinician.id, clinician.workingHoursToleranceHours]);
   useEffect(() => {
+    // Our own edit coming back through the page: local state is already it.
+    if (clinician.preferredWorkingTimes === lastEmittedPreferredWorkingTimes.current) return;
     setPreferredWorkingTimes(
       normalizePreferredWorkingTimes(clinician.preferredWorkingTimes),
     );
-    suppressPreferredWorkingTimesUpdate.current = true;
   }, [clinician.id, clinician.preferredWorkingTimes]);
   useEffect(() => {
     setTimeWarnings({});
+    // A different clinician: what we emitted belongs to the previous one.
+    lastEmittedPreferredWorkingTimes.current = null;
   }, [clinician.id]);
-  useEffect(() => {
-    if (suppressPreferredWorkingTimesUpdate.current) {
-      suppressPreferredWorkingTimesUpdate.current = false;
-      return;
-    }
-    onUpdatePreferredWorkingTimes?.(clinician.id, preferredWorkingTimes);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preferredWorkingTimes, clinician.id]);
-
-  const updatePreferredWorkingTimes = (
-    updater: (prev: PreferredWorkingTimes) => PreferredWorkingTimes,
-  ) => {
-    setPreferredWorkingTimes((prev) => updater(prev));
-  };
-
-  const commitPreferredWorkingTimes = (next?: PreferredWorkingTimes) => {
-    const payload = next ?? preferredWorkingTimes;
-    setPreferredWorkingTimes(payload);
-  };
 
   return (
     <div>
@@ -591,17 +566,7 @@ export default function ClinicianEditor({
                 <div className="flex items-center gap-1">
                   <CustomTimePicker
                     value={value.startTime ?? "07:00"}
-                    onChange={(time) => {
-                      updatePreferredWorkingTimes((prev) => ({
-                        ...prev,
-                        [day.id]: {
-                          ...prev[day.id],
-                          startTime: time,
-                        },
-                      }));
-                      // Validate after a short delay to let state update
-                      setTimeout(() => validatePreferredWorkingTime(day.id), 0);
-                    }}
+                    onChange={(time) => applyPreferredWorkingDay(day.id, { startTime: time })}
                     disabled={isInactive}
                     hasError={!!timeWarnings[day.id]}
                     className="w-[72px]"
@@ -609,17 +574,7 @@ export default function ClinicianEditor({
                   <span className="text-[11px] font-semibold text-slate-400">–</span>
                   <CustomTimePicker
                     value={value.endTime ?? "17:00"}
-                    onChange={(time) => {
-                      updatePreferredWorkingTimes((prev) => ({
-                        ...prev,
-                        [day.id]: {
-                          ...prev[day.id],
-                          endTime: time,
-                        },
-                      }));
-                      // Validate after a short delay to let state update
-                      setTimeout(() => validatePreferredWorkingTime(day.id), 0);
-                    }}
+                    onChange={(time) => applyPreferredWorkingDay(day.id, { endTime: time })}
                     disabled={isInactive}
                     hasError={!!timeWarnings[day.id]}
                     className="w-[72px]"
@@ -634,19 +589,14 @@ export default function ClinicianEditor({
                     <button
                       key={option.id}
                       type="button"
-                      onClick={() => {
-                        updatePreferredWorkingTimes((prev) => ({
-                          ...prev,
-                          [day.id]: {
-                            ...prev[day.id],
-                            requirement: option.id as
-                              | "none"
-                              | "preference"
-                              | "mandatory",
-                          },
-                        }));
-                        if (option.id === "none") clearTimeWarning(day.id);
-                      }}
+                      onClick={() =>
+                        applyPreferredWorkingDay(day.id, {
+                          requirement: option.id as
+                            | "none"
+                            | "preference"
+                            | "mandatory",
+                        })
+                      }
                       className={cx(
                         "rounded-full border px-2 py-1 text-[11px] font-semibold",
                         value.requirement === option.id

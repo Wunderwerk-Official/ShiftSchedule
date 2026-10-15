@@ -30,9 +30,12 @@ export default function MonthNavigator({
     }
   };
 
-  const handleSelectDate = (date: Date) => {
+  // Use the row's first day in the displayed month, not the week's Monday:
+  // the first row's Monday often lies in the previous month, which would
+  // navigate there.
+  const handleSelectDate = (_weekStart: Date, firstDayInMonth: Date) => {
     if (onGoToDate) {
-      onGoToDate(date);
+      onGoToDate(firstDayInMonth);
     }
   };
 

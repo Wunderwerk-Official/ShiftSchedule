@@ -9,7 +9,7 @@ import type {
 } from "../../api/client";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { calculateSolverLiveStats } from "../../lib/solverStats";
-import type { SolverSettingsForStats } from "../../lib/solverStats";
+import type { SolverLiveStats, SolverSettingsForStats } from "../../lib/solverStats";
 import AgentActivityPanel from "./AgentActivityPanel";
 import ConstraintPulse from "./ConstraintPulse";
 
@@ -22,9 +22,7 @@ export type LiveSolution = {
 
 type SolverOverlayProps = {
   isVisible: boolean;
-  progress: { current: number; total: number } | null;
   elapsedMs: number;
-  totalAllowedMs?: number; // Optional: runs have no wall-clock limit since v1.43
   onMinimize?: () => void; // Send the run to the background (calendar stays usable)
   solveRange: { startISO: string; endISO: string } | null;
   displayedRange: { startISO: string; endISO: string };
@@ -247,25 +245,7 @@ function LiveSolutionChart({ solutions, elapsedMs }: { solutions: LiveSolution[]
 
 
 // Type for stats history entry - exported for use in history
-export type StatsHistoryEntry = {
-  time_ms: number;
-  filledSlots: number;
-  openSlots: number;
-  nonConsecutiveShifts: number;
-  peopleWeeksWithinHours: number;
-  totalPeopleWeeksWithTarget: number;
-  totalRequiredSlots: number;
-  locationChanges: number;
-  totalAssignments: number;
-  sectionPreferenceMatches: number;
-  totalClassAssignments: number;
-  timeWindowFits: number;
-  totalAssignmentsWithTimeWindows: number;
-  onCallRestViolations: number;
-  workingHoursDeviationMinutes: number;
-  preferenceRankScore: number;
-  maxPreferenceRankScore: number;
-};
+export type StatsHistoryEntry = { time_ms: number } & SolverLiveStats;
 
 // Stats chart for a single metric - same size as main solution chart
 // Supports fixed Y-axis range via fixedMin/fixedMax to avoid misleading auto-scaling
@@ -516,32 +496,13 @@ function SolverDashboard({
   statsHistory,
   liveStats,
   elapsedMs,
-  totalAllowedMs,
   solverMode,
   onClose,
 }: {
   liveSolutions: LiveSolution[];
   statsHistory: StatsHistoryEntry[];
-  liveStats: {
-    filledSlots: number;
-    totalRequiredSlots: number;
-    openSlots: number;
-    nonConsecutiveShifts: number;
-    peopleWeeksWithinHours: number;
-    totalPeopleWeeksWithTarget: number;
-    locationChanges: number;
-    totalAssignments: number;
-    sectionPreferenceMatches: number;
-    totalClassAssignments: number;
-    timeWindowFits: number;
-    totalAssignmentsWithTimeWindows: number;
-    onCallRestViolations: number;
-    workingHoursDeviationMinutes: number;
-    preferenceRankScore: number;
-    maxPreferenceRankScore: number;
-  } | null;
+  liveStats: SolverLiveStats | null;
   elapsedMs: number;
-  totalAllowedMs?: number;
   solverMode?: SolverMode;
   onClose: () => void;
 }) {
@@ -561,9 +522,7 @@ function SolverDashboard({
           <div className="flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-700">
             <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
             <span className="text-xs font-medium tabular-nums text-slate-600 dark:text-slate-300">
-              {totalAllowedMs
-                ? `${formatDuration(elapsedMs)} / ${formatDuration(totalAllowedMs)}`
-                : formatDuration(elapsedMs)}
+              {formatDuration(elapsedMs)}
             </span>
           </div>
         </div>
@@ -686,9 +645,7 @@ function SolverDashboard({
 
 export default function SolverOverlay({
   isVisible,
-  progress,
   elapsedMs,
-  totalAllowedMs,
   onMinimize,
   solveRange,
   displayedRange,
@@ -716,11 +673,21 @@ export default function SolverOverlay({
     }
   }, [isVisible]);
 
-  // Find the calendar container when visible or on mount
+  // Find the calendar container while visible. No dependency array on
+  // purpose: the calendar grid is remounted on settings / layout / plan-scope
+  // switches, and a stale container is detached and invisible. Re-resolve
+  // whenever the .calendar-scroll element changes (the overlay re-renders
+  // every 100 ms via elapsedMs anyway).
+  const scrollElRef = useRef<Element | null>(null);
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible) {
+      scrollElRef.current = null;
+      return;
+    }
     // Find the parent of .calendar-scroll which has position:relative
     const scrollEl = document.querySelector('.calendar-scroll');
+    if (scrollEl === scrollElRef.current) return;
+    scrollElRef.current = scrollEl;
     const container = scrollEl?.parentElement;
     // Small calendars (few template rows) clip the modal: the overlay is
     // bounded by the container, so panels and chart end up behind a scrollbar
@@ -730,28 +697,21 @@ export default function SolverOverlay({
     } else {
       setCalendarContainer(null);
     }
-  }, [isVisible]);
+  });
 
   // Cache for incremental stats computation
-  // Key: solution_num, Value: computed stats entry
-  const statsCache = useRef<Map<number, StatsHistoryEntry>>(new Map());
-  const lastSolveRangeKey = useRef<string | null>(null);
+  // Key: solution object (one per SSE event), Value: computed stats entry.
+  // solution_num restarts at 1 for every run, so it is not a safe key.
+  const statsCache = useRef(new WeakMap<LiveSolution, StatsHistoryEntry>());
 
   // Build stats history incrementally - only compute stats for new solutions
   const statsHistory = useMemo(() => {
     if (!solveRange) return [];
 
-    // If solve range changed, clear cache
-    const solveRangeKey = `${solveRange.startISO}-${solveRange.endISO}`;
-    if (lastSolveRangeKey.current !== solveRangeKey) {
-      statsCache.current.clear();
-      lastSolveRangeKey.current = solveRangeKey;
-    }
-
     const history: StatsHistoryEntry[] = [];
     for (const solution of liveSolutions) {
       // Check if we already computed stats for this solution
-      const cached = statsCache.current.get(solution.solution_num);
+      const cached = statsCache.current.get(solution);
       if (cached) {
         history.push(cached);
       } else {
@@ -779,7 +739,7 @@ export default function SolverOverlay({
           ...stats,
         };
         // Cache it for future renders
-        statsCache.current.set(solution.solution_num, entry);
+        statsCache.current.set(solution, entry);
         history.push(entry);
       }
     }
@@ -787,28 +747,7 @@ export default function SolverOverlay({
   }, [solveRange, liveSolutions, scheduleRows, clinicians, holidays, existingAssignments, solverSettings]);
 
   // Calculate live stats for the current best solution (last entry in history)
-  const liveStats = useMemo(() => {
-    if (statsHistory.length === 0) return null;
-    const last = statsHistory[statsHistory.length - 1];
-    return {
-      filledSlots: last.filledSlots,
-      totalRequiredSlots: last.totalRequiredSlots,
-      openSlots: last.openSlots,
-      nonConsecutiveShifts: last.nonConsecutiveShifts,
-      peopleWeeksWithinHours: last.peopleWeeksWithinHours,
-      totalPeopleWeeksWithTarget: last.totalPeopleWeeksWithTarget,
-      locationChanges: last.locationChanges,
-      totalAssignments: last.totalAssignments,
-      sectionPreferenceMatches: last.sectionPreferenceMatches,
-      totalClassAssignments: last.totalClassAssignments,
-      timeWindowFits: last.timeWindowFits,
-      totalAssignmentsWithTimeWindows: last.totalAssignmentsWithTimeWindows,
-      onCallRestViolations: last.onCallRestViolations,
-      workingHoursDeviationMinutes: last.workingHoursDeviationMinutes,
-      preferenceRankScore: last.preferenceRankScore,
-      maxPreferenceRankScore: last.maxPreferenceRankScore,
-    };
-  }, [statsHistory]);
+  const liveStats = statsHistory.length > 0 ? statsHistory[statsHistory.length - 1] : null;
 
   // Check if the displayed week overlaps with the solve range
   const hasOverlap =
@@ -822,8 +761,8 @@ export default function SolverOverlay({
     : null;
 
   // If no calendar container found (e.g., settings view is open), render as fixed overlay
-  const portalTarget = calendarContainer ?? document.body;
-  const isFixedOverlay = !calendarContainer;
+  const portalTarget = calendarContainer?.isConnected ? calendarContainer : document.body;
+  const isFixedOverlay = portalTarget === document.body;
 
   return createPortal(
     <div className={isFixedOverlay ? "fixed inset-0 z-30 flex items-center justify-center" : "absolute inset-0 z-30 flex items-center justify-center"}>
@@ -838,11 +777,6 @@ export default function SolverOverlay({
         <div
           className="flex flex-col items-center gap-1"
           role="progressbar"
-          aria-valuenow={
-            totalAllowedMs && solverMode !== "agent"
-              ? Math.round(Math.min(1, elapsedMs / totalAllowedMs) * 100)
-              : undefined
-          }
           aria-label="Solver progress"
         >
           <div className="flex items-baseline gap-3">
@@ -856,9 +790,7 @@ export default function SolverOverlay({
               )}
             </h3>
             <span className="text-sm font-medium tabular-nums text-slate-500 dark:text-slate-400">
-              {totalAllowedMs
-                ? `${formatDuration(elapsedMs)} / ${formatDuration(totalAllowedMs)}`
-                : formatDuration(elapsedMs)}
+              {formatDuration(elapsedMs)}
             </span>
           </div>
           {dateRangeLabel && (
@@ -961,7 +893,6 @@ export default function SolverOverlay({
             statsHistory={statsHistory}
             liveStats={liveStats}
             elapsedMs={elapsedMs}
-            totalAllowedMs={totalAllowedMs}
             solverMode={solverMode}
             onClose={() => setDashboardOpen(false)}
           />

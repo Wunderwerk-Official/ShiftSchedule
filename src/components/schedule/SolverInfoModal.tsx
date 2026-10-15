@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import type { SolverRunDetail, SolverRunSummary, SolverSettings } from "../../api/client";
 import { cx } from "../../lib/classNames";
+import { copyTextToClipboard } from "../../lib/clipboard";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import { formatFeedDate } from "../../lib/agentActivity";
 import { heuristicFallbackNotice } from "../../lib/solverOutcome";
@@ -127,29 +128,6 @@ const formatDateTime = (timestamp: number) => {
   return `${day}.${month}. ${hours}:${minutes}`;
 };
 
-const copyTextToClipboard = async (text: string): Promise<boolean> => {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch {
-    // Clipboard API needs a secure context; fall back to the classic
-    // hidden-textarea trick so copying also works over plain http.
-    try {
-      const textarea = document.createElement("textarea");
-      textarea.value = text;
-      textarea.style.position = "fixed";
-      textarea.style.opacity = "0";
-      document.body.appendChild(textarea);
-      textarea.select();
-      const ok = document.execCommand("copy");
-      document.body.removeChild(textarea);
-      return ok;
-    } catch {
-      return false;
-    }
-  }
-};
-
 function GearIcon({ className }: { className?: string }) {
   return (
     <svg
@@ -195,40 +173,6 @@ function BackIcon({ className }: { className?: string }) {
         clipRule="evenodd"
       />
     </svg>
-  );
-}
-
-// Card wrapper for dashboard panels
-function DashboardCard({
-  title,
-  children,
-  className = "",
-  accentColor,
-}: {
-  title: string;
-  children: React.ReactNode;
-  className?: string;
-  accentColor?: string;
-}) {
-  return (
-    <div
-      className={`flex flex-col rounded-xl border border-slate-200 bg-white shadow-sm dark:border-slate-700 dark:bg-slate-800 ${className}`}
-    >
-      <div className="flex items-center gap-2 border-b border-slate-100 px-4 py-3 dark:border-slate-700">
-        {accentColor && (
-          <div
-            className="h-2 w-2 rounded-full"
-            style={{ backgroundColor: accentColor }}
-          />
-        )}
-        <h3 className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-          {title}
-        </h3>
-      </div>
-      <div className="flex flex-1 items-center justify-center p-4">
-        {children}
-      </div>
-    </div>
   );
 }
 
@@ -342,6 +286,10 @@ export default function SolverInfoModal({
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackBusy, setFeedbackBusy] = useState(false);
   const [feedbackSentFor, setFeedbackSentFor] = useState<string | null>(null);
+  // Failure of a run action (feedback, detail, log), shown in that run's card.
+  const [actionError, setActionError] = useState<{ runId: string; message: string } | null>(
+    null,
+  );
   const logCopiedTimerRef = useRef<number | null>(null);
   useEffect(() => {
     return () => {
@@ -359,11 +307,12 @@ export default function SolverInfoModal({
     logCopiedTimerRef.current = window.setTimeout(() => setLogCopied(false), 2000);
   };
   const handleDownloadServerRunLog = async (runId: string) => {
+    setActionError(null);
     try {
       const detail = await onFetchRunDetail(runId);
       handleDownloadRunLog(serverRunToHistoryEntry(detail));
     } catch {
-      // Best-effort: the next click retries.
+      setActionError({ runId, message: "Downloading the log failed - please try again." });
     }
   };
 
@@ -377,6 +326,7 @@ export default function SolverInfoModal({
   // Open a run's detail view from its server record; per-solution stats
   // exist only when this tab watched the run live.
   const handleOpenRunDetail = async (runId: string) => {
+    setActionError(null);
     setBusyRunId(runId);
     try {
       const detail = await onFetchRunDetail(runId);
@@ -385,7 +335,7 @@ export default function SolverInfoModal({
       setSelectedEntry(entry);
       setView("detail");
     } catch {
-      // Best-effort: the next click retries.
+      setActionError({ runId, message: "Loading the run failed - please try again." });
     } finally {
       setBusyRunId(null);
     }
@@ -394,6 +344,7 @@ export default function SolverInfoModal({
   const handleSendFeedback = async (runId: string) => {
     const comment = feedbackText.trim();
     if (!comment) return;
+    setActionError(null);
     setFeedbackBusy(true);
     try {
       await onSendFeedback(runId, comment);
@@ -405,6 +356,7 @@ export default function SolverInfoModal({
       }, 3000);
     } catch {
       // Keep the text so the user can retry.
+      setActionError({ runId, message: "Sending the comment failed - please try again." });
     } finally {
       setFeedbackBusy(false);
     }
@@ -416,6 +368,7 @@ export default function SolverInfoModal({
       setView("info");
       setSelectedEntry(null);
       setDebugExpanded(false);
+      setActionError(null);
       void onRefreshRuns();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -500,7 +453,7 @@ export default function SolverInfoModal({
                 {/* Layman description */}
                 <div className="flex flex-col gap-3 text-sm text-slate-600 dark:text-slate-300">
                   <p>
-                    The automated planner uses an optimization algorithm to find the best
+                    The automated planner is an AI agent that searches for the best
                     possible shift assignments for your team. It considers:
                   </p>
                   <ul className="ml-4 list-disc space-y-1.5 text-slate-500 dark:text-slate-400">
@@ -511,8 +464,8 @@ export default function SolverInfoModal({
                     <li>Fair distribution of workload across the team</li>
                   </ul>
                   <p>
-                    Planning runs as an AI agent that builds each day the way an
-                    experienced human planner does: on-call duties and scarce slots
+                    The agent builds each day the way an experienced human
+                    planner does: on-call duties and scarce slots
                     are staffed first, every clinician is placed with a contiguous
                     block of work (no short stints, no 24-hour double duties), hours
                     are balanced towards people behind on their yearly target, and
@@ -563,6 +516,7 @@ export default function SolverInfoModal({
                       return (
                       <div
                         key={run.id}
+                        data-testid={`run-card-${run.id}`}
                         className="flex flex-col rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"
                       >
                         <div className="flex items-center justify-between gap-3 px-3 py-2.5">
@@ -647,6 +601,7 @@ export default function SolverInfoModal({
                               onClick={() => {
                                 setFeedbackFor(feedbackFor === run.id ? null : run.id);
                                 setFeedbackText("");
+                                setActionError(null);
                               }}
                               title="Write a comment about this run - it is sent to the admin together with a reference to the run's log."
                               className={cx(
@@ -714,6 +669,7 @@ export default function SolverInfoModal({
                                 onClick={() => {
                                   setFeedbackFor(null);
                                   setFeedbackText("");
+                                  setActionError(null);
                                 }}
                                 className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
                               >
@@ -729,6 +685,14 @@ export default function SolverInfoModal({
                               </button>
                             </div>
                           </div>
+                        )}
+                        {actionError?.runId === run.id && (
+                          <p
+                            role="alert"
+                            className="border-t border-slate-200 px-3 py-2 text-xs text-rose-600 dark:border-slate-700 dark:text-rose-300"
+                          >
+                            {actionError.message}
+                          </p>
                         )}
                       </div>
                       );
@@ -760,7 +724,7 @@ export default function SolverInfoModal({
                   {weightsExpanded && (
                     <div className="mt-1 rounded-xl border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-800">
                       <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-                        Higher weights give more priority to that objective. Default values work well for most cases.
+                        Only used by the classic CP-SAT optimizer (API/benchmarks). AI planning ranks plans by a fixed priority ladder and ignores these weights.
                       </p>
                       <div className="grid grid-cols-2 gap-x-4 gap-y-2">
                         {(Object.keys(WEIGHT_LABELS) as WeightKey[]).map((key) => {

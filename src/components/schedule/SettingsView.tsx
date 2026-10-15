@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useState, type ChangeEvent } from "react";
 import {
   buttonAdd,
   buttonDanger,
@@ -9,38 +9,18 @@ import {
 import { cx } from "../../lib/classNames";
 import { Location, WorkplaceRow } from "../../data/mockData";
 import type {
-  AgentChatTestResult,
-  AgentSettings,
-  AgentSettingsUpdate,
   Holiday,
   SolverSettings,
   WeeklyCalendarTemplate,
 } from "../../api/client";
-import {
-  agentChatTest,
-  agentModelCheck,
-  fetchAgentSettings,
-  updateAgentSettings,
-} from "../../api/client";
-import { AGENT_MODEL_OPTIONS, formatCostUSD } from "../../lib/llmPricing";
-import { modelSelectionNotice } from "../../lib/runLog";
-
-// Known self-hosted model choices; availability and fallback order are
-// resolved by the backend. Other IDs remain available as custom choices.
-// Qwen/Qwen3.8-27B was removed on 2026-10-06: the endpoint no longer serves it.
-const SELF_HOSTED_MODEL_PRESETS = [
-  "nvidia/Qwen3.8-Flash-Next-NVFP4",
-  "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4",
-];
-
-// Drop the "org/" prefix (Qwen/, unsloth/, …) for a compact picker label.
-const presetLabel = (id: string) => id.split("/").pop() ?? id;
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
+import AgentSettingsPanel from "./AgentSettingsPanel";
 import WeeklyTemplateBuilder from "./WeeklyTemplateBuilder";
 import CustomSelect from "./CustomSelect";
 import CustomNumberInput from "./CustomNumberInput";
 import CustomDatePicker from "./CustomDatePicker";
 import DatabaseHealthCheck from "./DatabaseHealthCheck";
+import ToggleSwitch from "./ToggleSwitch";
 import { useConfirm } from "../ui/ConfirmDialog";
 
 type ScheduleSnapshotImportResult = {
@@ -62,6 +42,7 @@ type SettingsViewProps = {
   onRenamePool: (rowId: string, nextName: string) => void;
   onAddLocation: (name: string) => void;
   onRenameLocation: (locationId: string, nextName: string) => void;
+  onSetLocationColor?: (locationId: string, color: string | null) => void;
   onRemoveLocation: (locationId: string) => void;
   onReorderLocations: (nextOrder: string[]) => void;
   onAddClinician: (name: string, workingHoursPerWeek?: number) => void;
@@ -95,6 +76,7 @@ export default function SettingsView({
   onRenamePool,
   onAddLocation,
   onRenameLocation,
+  onSetLocationColor,
   onRemoveLocation,
   onReorderLocations,
   onAddClinician,
@@ -115,169 +97,6 @@ export default function SettingsView({
   isAdmin = false,
 }: SettingsViewProps) {
   const confirm = useConfirm();
-  // Global agent settings (admin-chosen provider/model + per-account budget).
-  const [agentSettings, setAgentSettings] = useState<AgentSettings | null>(null);
-  const [agentSettingsError, setAgentSettingsError] = useState<string | null>(null);
-  // Local editing state for the self-hosted endpoint + API keys. Key inputs
-  // always start empty — the stored values never come back from the server.
-  const [openaiBaseUrlInput, setOpenaiBaseUrlInput] = useState("");
-  const [openaiModelInput, setOpenaiModelInput] = useState("");
-  const settingsSaveTailRef = useRef<Promise<unknown>>(Promise.resolve());
-  const settingsSaveErrorRef = useRef<Error | null>(null);
-  const modelGenerationRef = useRef(0);
-  const modelCheckControllerRef = useRef<AbortController | null>(null);
-  const chatTestControllerRef = useRef<AbortController | null>(null);
-  const settingsMountedRef = useRef(true);
-  const invalidateModelChecks = () => {
-    modelGenerationRef.current += 1;
-    modelCheckControllerRef.current?.abort();
-    chatTestControllerRef.current?.abort();
-    setModelCheck(null);
-    setChatTestPending(false);
-    setChatTestEntries([]);
-    setChatTestError(null);
-  };
-  useEffect(() => {
-    settingsMountedRef.current = true;
-    return () => {
-      settingsMountedRef.current = false;
-      modelGenerationRef.current += 1;
-      modelCheckControllerRef.current?.abort();
-      chatTestControllerRef.current?.abort();
-    };
-  }, []);
-  // Responsiveness check of a freshly selected self-hosted model: verifies
-  // the endpoint serves it and answers a 1-token completion.
-  const [modelCheck, setModelCheck] = useState<
-    { status: "checking" } | { status: "ok"; latency?: number } | { status: "error"; message: string } | null
-  >(null);
-  const applyOpenaiModel = async (model: string) => {
-    setOpenaiModelInput(model);
-    const save = applyAgentSettings({ openai_model: model });
-    const generation = modelGenerationRef.current;
-    const saved = await save;
-    if (!saved || generation !== modelGenerationRef.current || !settingsMountedRef.current) return;
-    if (!model.trim()) {
-      setModelCheck(null);
-      return;
-    }
-    setModelCheck({ status: "checking" });
-    const controller = new AbortController();
-    modelCheckControllerRef.current = controller;
-    try {
-      const result = await agentModelCheck(model.trim(), controller.signal);
-      if (generation !== modelGenerationRef.current || !settingsMountedRef.current) return;
-      setModelCheck(
-        result.ok
-          ? { status: "ok", latency: result.latency_seconds }
-          : { status: "error", message: result.error ?? "Model did not respond." },
-      );
-    } catch (err) {
-      if (controller.signal.aborted || generation !== modelGenerationRef.current) return;
-      setModelCheck({
-        status: "error",
-        message: err instanceof Error ? err.message : "Model check failed.",
-      });
-    }
-  };
-  const [openaiKeyInput, setOpenaiKeyInput] = useState("");
-  const [anthropicKeyInput, setAnthropicKeyInput] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    fetchAgentSettings()
-      .then((settings) => {
-        if (cancelled) return;
-        setAgentSettings(settings);
-        setOpenaiBaseUrlInput(settings.openai_base_url ?? "");
-        setOpenaiModelInput(settings.openai_model ?? "");
-      })
-      .catch(() => {
-        if (!cancelled) setAgentSettingsError("Could not load AI agent settings.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-  const applyAgentSettings = async (patch: AgentSettingsUpdate) => {
-    invalidateModelChecks();
-    const queued = settingsSaveTailRef.current.then(() => updateAgentSettings(patch));
-    settingsSaveTailRef.current = queued.then(() => undefined, () => undefined);
-    try {
-      setAgentSettingsError(null);
-      const updated = await queued;
-      settingsSaveErrorRef.current = null;
-      if (settingsMountedRef.current) {
-        setAgentSettingsError(null);
-        setAgentSettings((prev) => prev ? { ...prev, ...updated } : prev);
-      }
-      return updated;
-    } catch {
-      settingsSaveErrorRef.current = new Error("Could not save AI agent settings. Save them successfully before testing the model.");
-      if (settingsMountedRef.current) setAgentSettingsError(settingsSaveErrorRef.current.message);
-      return null;
-    }
-  };
-  // Admin model test: a direct chat with the configured model, kept only in
-  // memory. Each reply carries latency / token-throughput measurements.
-  type ChatTestEntry =
-    | { role: "user"; content: string }
-    | { role: "assistant"; content: string; reasoning: string | null; result: AgentChatTestResult };
-  const [chatTestEntries, setChatTestEntries] = useState<ChatTestEntry[]>([]);
-  const [chatTestInput, setChatTestInput] = useState("");
-  const [chatTestPending, setChatTestPending] = useState(false);
-  const [chatTestElapsed, setChatTestElapsed] = useState(0);
-  const [chatTestError, setChatTestError] = useState<string | null>(null);
-  useEffect(() => {
-    if (!chatTestPending) return;
-    const startedAt = Date.now();
-    setChatTestElapsed(0);
-    const id = window.setInterval(
-      () => setChatTestElapsed(Math.floor((Date.now() - startedAt) / 1000)),
-      1000,
-    );
-    return () => window.clearInterval(id);
-  }, [chatTestPending]);
-  const sendChatTest = async () => {
-    const content = chatTestInput.trim();
-    if (!content || chatTestPending) return;
-    const history = [...chatTestEntries, { role: "user" as const, content }];
-    setChatTestEntries(history);
-    setChatTestInput("");
-    setChatTestError(null);
-    setChatTestPending(true);
-    const generation = modelGenerationRef.current;
-    const controller = new AbortController();
-    chatTestControllerRef.current = controller;
-    try {
-      await settingsSaveTailRef.current;
-      if (generation !== modelGenerationRef.current || controller.signal.aborted) return;
-      if (settingsSaveErrorRef.current) throw settingsSaveErrorRef.current;
-      const result = await agentChatTest(
-        history.map((entry) => ({ role: entry.role, content: entry.content })),
-        controller.signal,
-      );
-      if (generation !== modelGenerationRef.current || controller.signal.aborted) return;
-      if (result.error) {
-        setChatTestError([result.error, modelSelectionNotice(result.model_selection)].filter(Boolean).join(" "));
-      } else {
-        setChatTestEntries((prev) => [
-          ...prev,
-          {
-            role: "assistant",
-            content: result.text ?? "(empty response)",
-            reasoning: result.reasoning,
-            result,
-          },
-        ]);
-      }
-    } catch (err) {
-      if (generation === modelGenerationRef.current && !controller.signal.aborted) {
-        setChatTestError(err instanceof Error ? err.message : "Model test failed.");
-      }
-    } finally {
-      if (generation === modelGenerationRef.current) setChatTestPending(false);
-    }
-  };
   const [newClinicianName, setNewClinicianName] = useState("");
   const [newClinicianHours, setNewClinicianHours] = useState("");
   const [showNewClinician, setShowNewClinician] = useState(false);
@@ -320,70 +139,19 @@ export default function SettingsView({
   const holidaysForYear = holidays
     .filter((holiday) => holiday.dateISO.startsWith(holidayYearPrefix))
     .sort((a, b) => a.dateISO.localeCompare(b.dateISO));
+  // The date picker always yields "DD.MM.YYYY"; returns the ISO date or null.
   const parseHolidayDate = (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return null;
-    const dotMatch = trimmed.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
-    if (dotMatch) {
-      const [, dayRaw, monthRaw, yearRaw] = dotMatch;
-      const day = Number(dayRaw);
-      const month = Number(monthRaw);
-      const year = Number(yearRaw);
-      if (!Number.isFinite(day) || !Number.isFinite(month) || !Number.isFinite(year)) {
-        return null;
-      }
-      const date = new Date(Date.UTC(year, month - 1, day));
-      if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month) {
-        return null;
-      }
-      return `${yearRaw.padStart(4, "0")}-${monthRaw.padStart(2, "0")}-${dayRaw.padStart(
-        2,
-        "0",
-      )}`;
+    const match = value.trim().match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/);
+    if (!match) return null;
+    const [, dayRaw, monthRaw, yearRaw] = match;
+    const day = Number(dayRaw);
+    const month = Number(monthRaw);
+    const year = Number(yearRaw);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month) {
+      return null;
     }
-    const textMatch = trimmed.match(
-      /^(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]{3,9})\s*,?\s+(\d{4})$/,
-    );
-    if (textMatch) {
-      const [, dayRaw, monthRaw, yearRaw] = textMatch;
-      const monthKey = monthRaw.toLowerCase();
-      const monthMap: Record<string, number> = {
-        jan: 1,
-        january: 1,
-        feb: 2,
-        february: 2,
-        mar: 3,
-        march: 3,
-        apr: 4,
-        april: 4,
-        may: 5,
-        jun: 6,
-        june: 6,
-        jul: 7,
-        july: 7,
-        aug: 8,
-        august: 8,
-        sep: 9,
-        sept: 9,
-        september: 9,
-        oct: 10,
-        october: 10,
-        nov: 11,
-        november: 11,
-        dec: 12,
-        december: 12,
-      };
-      const month = monthMap[monthKey];
-      const day = Number(dayRaw);
-      const year = Number(yearRaw);
-      if (!month || !Number.isFinite(day) || !Number.isFinite(year)) return null;
-      const date = new Date(Date.UTC(year, month - 1, day));
-      if (date.getUTCFullYear() !== year || date.getUTCMonth() + 1 !== month) {
-        return null;
-      }
-      return `${yearRaw}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    }
-    return null;
+    return `${yearRaw}-${monthRaw.padStart(2, "0")}-${dayRaw.padStart(2, "0")}`;
   };
   const formatHolidayDate = (dateISO: string) => {
     const [year, month, day] = dateISO.split("-");
@@ -512,6 +280,7 @@ export default function SettingsView({
               onRemoveSection={onRemoveSection}
               onAddLocation={onAddLocation}
               onRenameLocation={onRenameLocation}
+              onSetLocationColor={onSetLocationColor}
               onRemoveLocation={onRemoveLocation}
               onReorderLocations={onReorderLocations}
             />
@@ -601,30 +370,16 @@ export default function SettingsView({
                   When multiple shifts per day, all must share the same location.
                 </div>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={solverSettings.enforceSameLocationPerDay}
-                onClick={() =>
+              <ToggleSwitch
+                label="Enforce same location per day"
+                checked={solverSettings.enforceSameLocationPerDay}
+                onToggle={() =>
                   onChangeSolverSettings({
                     ...solverSettings,
                     enforceSameLocationPerDay: !solverSettings.enforceSameLocationPerDay,
                   })
                 }
-                className={cx(
-                  "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
-                  solverSettings.enforceSameLocationPerDay
-                    ? "bg-emerald-500"
-                    : "bg-slate-300 dark:bg-slate-700",
-                )}
-              >
-                <span
-                  className={cx(
-                    "inline-block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform",
-                    solverSettings.enforceSameLocationPerDay && "translate-x-[22px]",
-                  )}
-                />
-              </button>
+              />
             </div>
             <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <div>
@@ -635,432 +390,18 @@ export default function SettingsView({
                   Prevents new gaps: assignments must be consecutive at the same location.
                 </div>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={solverSettings.preferContinuousShifts}
-                onClick={() =>
+              <ToggleSwitch
+                label="Enforce continuous shifts"
+                checked={solverSettings.preferContinuousShifts}
+                onToggle={() =>
                   onChangeSolverSettings({
                     ...solverSettings,
                     preferContinuousShifts: !solverSettings.preferContinuousShifts,
                   })
                 }
-                className={cx(
-                  "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
-                  solverSettings.preferContinuousShifts
-                    ? "bg-emerald-500"
-                    : "bg-slate-300 dark:bg-slate-700",
-                )}
-              >
-                <span
-                  className={cx(
-                    "inline-block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform",
-                    solverSettings.preferContinuousShifts && "translate-x-[22px]",
-                  )}
-                />
-              </button>
+              />
             </div>
-            <div className="flex flex-col gap-3 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
-              {isAdmin ? (
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      AI provider
-                    </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400">
-                      Anthropic (paid API), or a self-hosted OpenAI-compatible
-                      endpoint such as vLLM. Applies to every planning run, for all users.
-                    </div>
-                  </div>
-                  <CustomSelect
-                    className="w-80"
-                    value={agentSettings?.provider ?? "anthropic"}
-                    onChange={(value) =>
-                      void applyAgentSettings({ provider: value as "anthropic" | "openai" })
-                    }
-                    options={[
-                      { value: "anthropic", label: "Anthropic (Claude)" },
-                      { value: "openai", label: "Self-hosted / OpenAI-compatible (vLLM, …)" },
-                    ]}
-                  />
-                </div>
-              ) : null}
-              <div className="flex flex-wrap items-center justify-between gap-4">
-                <div>
-                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    AI agent model
-                  </div>
-                  <div className="text-xs text-slate-500 dark:text-slate-400">
-                    {isAdmin
-                      ? agentSettings?.provider === "openai"
-                        ? "Model name served by your endpoint (e.g. meta-llama/Llama-3.3-70B-Instruct)."
-                        : "Claude model used by every planning run, for all users. Costs are rough estimates — the exact cost of each run shows in the solver history (gear icon)."
-                      : "Set by your administrator and used for every planning run."}
-                  </div>
-                </div>
-                {isAdmin && agentSettings?.provider !== "openai" ? (
-                  <CustomSelect
-                    className="w-80"
-                    value={agentSettings?.model ?? AGENT_MODEL_OPTIONS[0].id}
-                    onChange={(value) => void applyAgentSettings({ model: value })}
-                    options={AGENT_MODEL_OPTIONS.map((option) => ({
-                      value: option.id,
-                      label: `${option.label} — ${option.description} · ${option.approxRunCost}`,
-                    }))}
-                  />
-                ) : isAdmin ? (
-                  <div className="flex w-80 flex-col gap-1">
-                    <CustomSelect
-                      className="w-80"
-                      value={
-                        SELF_HOSTED_MODEL_PRESETS.includes(openaiModelInput)
-                          ? openaiModelInput
-                          : "__custom__"
-                      }
-                      onChange={(value) => {
-                        if (value === "__custom__") return;
-                        void applyOpenaiModel(value);
-                      }}
-                      options={[
-                        ...SELF_HOSTED_MODEL_PRESETS.map((id) => ({
-                          value: id,
-                          label: presetLabel(id),
-                        })),
-                        { value: "__custom__", label: "Custom model name…" },
-                      ]}
-                    />
-                    {!SELF_HOSTED_MODEL_PRESETS.includes(openaiModelInput) && (
-                      <input
-                        type="text"
-                        value={openaiModelInput}
-                        onChange={(event) => { invalidateModelChecks(); setOpenaiModelInput(event.target.value); }}
-                        onBlur={() => void applyOpenaiModel(openaiModelInput)}
-                        placeholder="model name on your endpoint"
-                        className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                      />
-                    )}
-                    {modelCheck && (
-                      <div
-                        className={
-                          modelCheck.status === "error"
-                            ? "text-xs text-rose-600 dark:text-rose-400"
-                            : "text-xs text-slate-400 dark:text-slate-500"
-                        }
-                      >
-                        {modelCheck.status === "checking"
-                          ? "Checking model responsiveness…"
-                          : modelCheck.status === "ok"
-                            ? `Model responds${modelCheck.latency ? ` (${modelCheck.latency}s)` : ""} ✓`
-                            : `Model not usable: ${modelCheck.message}`}
-                      </div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="rounded-full border border-slate-200 px-3 py-1 text-sm font-medium text-slate-700 dark:border-slate-700 dark:text-slate-200">
-                    {AGENT_MODEL_OPTIONS.find((o) => o.id === agentSettings?.effective_model)
-                      ?.label ??
-                      agentSettings?.effective_model ??
-                      "…"}
-                  </div>
-                )}
-              </div>
-              {agentSettings?.provider === "openai" && (agentSettings.model_fallback_order?.length ?? 0) > 1 && (
-                <p className="text-xs text-slate-500 dark:text-slate-400" title={agentSettings.model_fallback_order!.join(" → ")}>
-                  If a model is unavailable, planning and chat tests use: {agentSettings.model_fallback_order!.map(presetLabel).join(" → ")}. The responsiveness check tests only the selected model.
-                </p>
-              )}
-              {isAdmin && agentSettings?.provider === "openai" ? (
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      Endpoint base URL
-                    </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400">
-                      OpenAI-compatible server, e.g. http://10.0.0.5:8000/v1 for vLLM
-                      (start vLLM with --enable-auto-tool-choice and a tool-call parser).
-                    </div>
-                  </div>
-                  <input
-                    type="text"
-                    value={openaiBaseUrlInput}
-                    onChange={(event) => { invalidateModelChecks(); setOpenaiBaseUrlInput(event.target.value); }}
-                    onBlur={() => {
-                      if (openaiBaseUrlInput !== (agentSettings?.openai_base_url ?? "")) {
-                        void applyAgentSettings({ openai_base_url: openaiBaseUrlInput });
-                      }
-                    }}
-                    placeholder="http://host:8000/v1"
-                    className="w-80 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                  />
-                </div>
-              ) : null}
-              {isAdmin && agentSettings?.provider === "openai" ? (
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      Verify TLS certificate
-                    </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400">
-                      Switch off only for self-signed certificates on a trusted
-                      internal network (https:// endpoints without a public CA).
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    role="switch"
-                    aria-checked={agentSettings?.openai_verify_tls !== false}
-                    onClick={() =>
-                      void applyAgentSettings({
-                        openai_verify_tls: !(agentSettings?.openai_verify_tls !== false),
-                      })
-                    }
-                    className={cx(
-                      "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
-                      agentSettings?.openai_verify_tls !== false
-                        ? "bg-emerald-500"
-                        : "bg-slate-300 dark:bg-slate-700",
-                    )}
-                  >
-                    <span
-                      className={cx(
-                        "inline-block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform",
-                        agentSettings?.openai_verify_tls !== false && "translate-x-[22px]",
-                      )}
-                    />
-                  </button>
-                </div>
-              ) : null}
-              {isAdmin ? (
-                <div className="flex flex-wrap items-center justify-between gap-4">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      {agentSettings?.provider === "openai"
-                        ? "Endpoint API key (optional)"
-                        : "Anthropic API key"}
-                    </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400">
-                      {agentSettings?.provider === "openai"
-                        ? agentSettings?.openai_api_key_set
-                          ? "A key is stored. Most self-hosted servers don't need one."
-                          : "Most self-hosted servers don't need one — leave empty."
-                        : agentSettings?.anthropic_api_key_set
-                          ? "A key is stored in the app settings and overrides the server .env."
-                          : agentSettings?.anthropic_env_key_present
-                            ? "Currently using the key from the server .env. Enter one here to override it."
-                            : "No key configured yet — agent runs fall back to the draft plan."}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="password"
-                      value={
-                        agentSettings?.provider === "openai" ? openaiKeyInput : anthropicKeyInput
-                      }
-                      onChange={(event) =>
-                        agentSettings?.provider === "openai"
-                          ? setOpenaiKeyInput(event.target.value)
-                          : setAnthropicKeyInput(event.target.value)
-                      }
-                      placeholder={
-                        (agentSettings?.provider === "openai"
-                          ? agentSettings?.openai_api_key_set
-                          : agentSettings?.anthropic_api_key_set)
-                          ? "•••••••• (stored)"
-                          : "paste key"
-                      }
-                      autoComplete="off"
-                      className="w-56 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    />
-                    <button
-                      type="button"
-                      disabled={
-                        !(agentSettings?.provider === "openai" ? openaiKeyInput : anthropicKeyInput)
-                      }
-                      onClick={() => {
-                        if (agentSettings?.provider === "openai") {
-                          void applyAgentSettings({ openai_api_key: openaiKeyInput }).then((saved) => {
-                            if (!saved) return;
-                            setOpenaiKeyInput("");
-                            setAgentSettings((prev) =>
-                              prev ? { ...prev, openai_api_key_set: true } : prev,
-                            );
-                          });
-                        } else {
-                          void applyAgentSettings({ anthropic_api_key: anthropicKeyInput }).then(
-                            (saved) => {
-                              if (!saved) return;
-                              setAnthropicKeyInput("");
-                              setAgentSettings((prev) =>
-                                prev ? { ...prev, anthropic_api_key_set: true } : prev,
-                              );
-                            },
-                          );
-                        }
-                      }}
-                      className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-40 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                    >
-                      Save key
-                    </button>
-                  </div>
-                </div>
-              ) : null}
-              {isAdmin ? (
-                <div className="flex flex-col gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      Model connection test
-                    </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400">
-                      Chat directly with the configured model to check that the endpoint
-                      works and how fast it generates. Replies show latency and token
-                      throughput{agentSettings?.provider === "openai"
-                        ? "."
-                        : "; Anthropic test messages count toward the AI budget."}
-                    </div>
-                  </div>
-                  {chatTestEntries.length > 0 && (
-                    <div className="flex max-h-72 flex-col gap-2 overflow-y-auto rounded-lg bg-slate-50 p-2 dark:bg-slate-950/40">
-                      {chatTestEntries.map((entry, index) =>
-                        entry.role === "user" ? (
-                          <div key={index} className="self-end rounded-lg bg-indigo-500/90 px-3 py-1.5 text-xs text-white">
-                            {entry.content}
-                          </div>
-                        ) : (
-                          <div key={index} className="self-start max-w-full">
-                            {entry.reasoning ? (
-                              <details className="mb-1 rounded-lg border border-violet-200 bg-violet-50/60 px-2 py-1 dark:border-violet-900 dark:bg-violet-950/30">
-                                <summary className="cursor-pointer text-[11px] font-medium text-violet-500 dark:text-violet-300">
-                                  Reasoning
-                                </summary>
-                                <div className="mt-1 whitespace-pre-wrap text-xs text-slate-500 dark:text-slate-400">
-                                  {entry.reasoning}
-                                </div>
-                              </details>
-                            ) : null}
-                            <div className="rounded-lg bg-white px-3 py-1.5 text-xs text-slate-700 shadow-sm dark:bg-slate-800 dark:text-slate-200">
-                              <span className="whitespace-pre-wrap">{entry.content}</span>
-                            </div>
-                            <div className="mt-0.5 px-1 text-[11px] tabular-nums text-slate-400 dark:text-slate-500">
-                              Model: {entry.result.model}{" · "}
-                              {entry.result.duration_seconds}s
-                              {" · "}
-                              {entry.result.input_tokens} in / {entry.result.output_tokens} out
-                              {entry.result.tokens_per_second !== null &&
-                                ` · ${entry.result.tokens_per_second} tok/s`}
-                              {entry.result.cache_read_input_tokens > 0 &&
-                                ` · ${entry.result.cache_read_input_tokens} cached`}
-                              {entry.result.cost_usd !== null &&
-                                entry.result.cost_usd > 0 &&
-                                ` · ${formatCostUSD(entry.result.cost_usd) ?? ""}`}
-                            </div>
-                            {modelSelectionNotice(entry.result.model_selection) && (
-                              <p className="mt-1 px-1 text-xs text-slate-500 dark:text-slate-400">{modelSelectionNotice(entry.result.model_selection)}</p>
-                            )}
-                          </div>
-                        ),
-                      )}
-                    </div>
-                  )}
-                  {chatTestPending && (
-                    <div className="text-xs text-slate-400 dark:text-slate-500">
-                      Waiting for the model… ({chatTestElapsed}s)
-                      {chatTestElapsed > 30 &&
-                        " — slow self-hosted reasoning models can take minutes; the reply will show the measured speed."}
-                    </div>
-                  )}
-                  {chatTestError && (
-                    <div className="text-xs text-rose-600 dark:text-rose-400">{chatTestError}</div>
-                  )}
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={chatTestInput}
-                      onChange={(event) => setChatTestInput(event.target.value)}
-                      onKeyDown={(event) => {
-                        if (event.key === "Enter") void sendChatTest();
-                      }}
-                      placeholder="Type a test message…"
-                      className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                    />
-                    <button
-                      type="button"
-                      disabled={chatTestPending || !chatTestInput.trim()}
-                      onClick={() => void sendChatTest()}
-                      className="rounded-lg bg-indigo-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-600 disabled:opacity-40"
-                    >
-                      Send
-                    </button>
-                    {chatTestEntries.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setChatTestEntries([]);
-                          setChatTestError(null);
-                        }}
-                        className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
-                      >
-                        Clear
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ) : null}
-              {/* Budget + spend only exist for the metered Anthropic API —
-                  self-hosted runs cost nothing per token and are never
-                  limited, so hide the whole block for provider "openai". */}
-              {agentSettings?.provider !== "openai" ? (
-                <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-3 dark:border-slate-800">
-                  <div>
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                      AI budget per user
-                    </div>
-                    <div className="text-xs text-slate-500 dark:text-slate-400">
-                      {isAdmin
-                        ? "Maximum cumulative AI cost per account (USD — Anthropic bills in USD). Once reached, planning falls back to the draft plan until you raise the budget."
-                        : `Your usage: ${formatCostUSD(agentSettings?.spent_usd ?? 0) ?? "$0.00"} of ${formatCostUSD(agentSettings?.budget_usd ?? 0) ?? "…"} used. When the budget is reached, planning falls back to the draft plan.`}
-                    </div>
-                  </div>
-                  {isAdmin ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm text-slate-500 dark:text-slate-400">$</span>
-                      <input
-                        type="number"
-                        min={0}
-                        step={0.5}
-                        value={agentSettings?.budget_usd ?? 5}
-                        onChange={(event) => {
-                          const value = Number(event.target.value);
-                          if (Number.isFinite(value) && value >= 0) {
-                            void applyAgentSettings({ budget_usd: value });
-                          }
-                        }}
-                        className="w-24 rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm text-slate-700 focus:border-indigo-300 focus:outline-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
-                      />
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {isAdmin && agentSettings?.provider !== "openai" && agentSettings?.usage?.length ? (
-                <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
-                  <div className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">
-                    AI spend by user
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    {agentSettings.usage.map((entry) => (
-                      <span
-                        key={entry.username}
-                        className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-300"
-                      >
-                        {entry.username}: {formatCostUSD(entry.spent_usd) ?? "$0.00"}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              ) : null}
-              {agentSettingsError ? (
-                <div className="text-xs text-rose-600 dark:text-rose-400">{agentSettingsError}</div>
-              ) : null}
-            </div>
+            <AgentSettingsPanel isAdmin={isAdmin} />
             <div className="space-y-3 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <label className="flex flex-wrap items-center gap-3 text-sm font-semibold">
                 Planning quality profile
@@ -1162,31 +503,17 @@ export default function SettingsView({
                   Place people into the Rest Day pool before or after an on-call duty.
                 </div>
               </div>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={solverSettings.onCallRestEnabled}
-                onClick={() =>
+              <ToggleSwitch
+                label="On-call rest days"
+                checked={solverSettings.onCallRestEnabled}
+                onToggle={() =>
                   onChangeSolverSettings({
                     ...solverSettings,
                     onCallRestEnabled: !solverSettings.onCallRestEnabled,
                     onCallRestClassId: onCallRestClassId || solverSettings.onCallRestClassId,
                   })
                 }
-                className={cx(
-                  "relative inline-flex h-6 w-11 items-center rounded-full transition-colors",
-                  solverSettings.onCallRestEnabled
-                    ? "bg-emerald-500"
-                    : "bg-slate-300 dark:bg-slate-700",
-                )}
-              >
-                <span
-                  className={cx(
-                    "inline-block h-5 w-5 translate-x-0.5 rounded-full bg-white shadow transition-transform",
-                    solverSettings.onCallRestEnabled && "translate-x-[22px]",
-                  )}
-                />
-              </button>
+              />
             </div>
             <div
               className={cx(
@@ -1275,7 +602,18 @@ export default function SettingsView({
                   </button>
                   <button
                     type="button"
-                    onClick={() => onRemoveClinician(clinician.id)}
+                    onClick={async () => {
+                      // Removing a person also deletes their assignments in
+                      // all weeks; there is no undo.
+                      const confirmed = await confirm({
+                        title: "Remove person",
+                        message: `Remove ${clinician.name}? Their assignments in all weeks, vacations and preferences are deleted. This cannot be undone.`,
+                        confirmLabel: "Remove",
+                        cancelLabel: "Cancel",
+                        variant: "danger",
+                      });
+                      if (confirmed) onRemoveClinician(clinician.id);
+                    }}
                     className={buttonDanger.base}
                   >
                     Remove

@@ -1,4 +1,5 @@
 import { useState, type FormEvent } from "react";
+import { HttpError } from "../api/client";
 import { cx } from "../lib/classNames";
 
 type LoginPageProps = {
@@ -20,8 +21,14 @@ export default function LoginPage({ onLogin, theme, onToggleTheme }: LoginPagePr
     setSubmitting(true);
     try {
       await onLogin(username.trim(), password);
-    } catch {
-      setError("Login failed. Check your username and password.");
+    } catch (err) {
+      // Only a 401 means wrong credentials; network errors and 5xx (e.g.
+      // during a deploy) must not tell staff their password is wrong.
+      setError(
+        err instanceof HttpError && err.status === 401
+          ? "Login failed. Check your username and password."
+          : "Could not reach the server. Please try again in a moment.",
+      );
     } finally {
       setSubmitting(false);
     }

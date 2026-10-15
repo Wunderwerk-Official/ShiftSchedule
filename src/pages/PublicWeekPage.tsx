@@ -52,9 +52,9 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
   const weekEndISO = useMemo(() => toISODate(addDays(weekStartDate, 6)), [weekStartDate]);
 
   const [data, setData] = useState<PublicWebWeekResponse | null>(null);
-  const [status, setStatus] = useState<"loading" | "ready" | "unpublished" | "invalid">(
-    "loading",
-  );
+  const [status, setStatus] = useState<
+    "loading" | "ready" | "unpublished" | "invalid" | "error"
+  >("loading");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -78,11 +78,9 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
       })
       .catch((err) => {
         if (!alive) return;
-        if ((err as { status?: number }).status === 404) {
-          setStatus("invalid");
-        } else {
-          setStatus("invalid");
-        }
+        // Only a 404 means the token is bad; network/5xx errors (e.g. during a
+        // deploy) are temporary and must not tell the reader the link is dead.
+        setStatus((err as { status?: number }).status === 404 ? "invalid" : "error");
       });
     return () => {
       alive = false;
@@ -120,11 +118,7 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
       ),
     [rows, normalized?.locations, locationsEnabled, normalized?.weeklyTemplate],
   );
-  const visibleScheduleRows = scheduleRows;
-  const calendarRows = useMemo(
-    () => buildCalendarRows(visibleScheduleRows),
-    [visibleScheduleRows],
-  );
+  const calendarRows = useMemo(() => buildCalendarRows(scheduleRows), [scheduleRows]);
   const locationSeparatorRowIds = useMemo(
     () => buildLocationSeparatorRowIds(calendarRows),
     [calendarRows],
@@ -244,6 +238,12 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
         <div className="mx-auto max-w-xl px-6 py-8 text-center">
           <div className="rounded-2xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
             Link invalid or expired.
+          </div>
+        </div>
+      ) : status === "error" ? (
+        <div className="mx-auto max-w-xl px-6 py-8 text-center">
+          <div className="rounded-2xl border border-slate-200 bg-white px-6 py-5 text-sm text-slate-600 shadow-sm dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300">
+            Could not load the schedule. Please try again later.
           </div>
         </div>
       ) : status === "unpublished" ? (

@@ -1,7 +1,8 @@
 // Anthropic model options for the AI agent solver, with list prices used for
 // the cost overview in the solver history. Prices are USD per million tokens
 // (input / output), as published on platform.claude.com — last checked
-// 2026-07. Update here when Anthropic changes pricing.
+// 2026-10. Update here AND in backend/agent_budget.py (MODEL_PRICES) when
+// Anthropic changes pricing; a backend test compares the two tables.
 
 export type AgentModelOption = {
   id: string;
@@ -19,9 +20,9 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     id: "claude-sonnet-5",
     label: "Sonnet 5",
     description: "Balanced quality & cost (default)",
-    inputPerMTok: 3,
-    outputPerMTok: 15,
-    approxRunCost: "≈ $0.50–1.50 per run",
+    inputPerMTok: 2,
+    outputPerMTok: 10,
+    approxRunCost: "≈ $0.35–1.00 per run",
   },
   {
     id: "claude-opus-4-8",

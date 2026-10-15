@@ -1,6 +1,8 @@
 export type ICalEvent = {
   uid: string;
   dateISO: string; // YYYY-MM-DD (all-day event)
+  /** Days the shift runs past midnight (slot endDayOffset); widens DTEND like the server feed. */
+  endDayOffset?: number;
   summary: string;
   description?: string;
 };
@@ -45,7 +47,10 @@ export function buildICalendar({
 
   for (const event of events) {
     const start = toYYYYMMDD(event.dateISO);
-    const end = toYYYYMMDD(addDaysISO(event.dateISO, 1));
+    // DTEND is exclusive: a shift crossing midnight also covers the next day(s),
+    // matching the subscribed feed (backend/ical.py).
+    const extraDays = Math.max(0, Math.min(3, Math.floor(event.endDayOffset ?? 0))) || 0;
+    const end = toYYYYMMDD(addDaysISO(event.dateISO, 1 + extraDays));
     lines.push("BEGIN:VEVENT");
     lines.push(`UID:${escapeText(event.uid)}`);
     lines.push(`DTSTAMP:${dtStamp}`);

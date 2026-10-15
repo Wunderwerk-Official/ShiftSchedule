@@ -2,6 +2,9 @@ import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buttonPrimary, buttonSecondary } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
+import { toISODate } from "../../lib/date";
+// Shares only getSlotDurationMinutes with My plan: My plan counts overlapping own shifts once, this sums every non-pool assignment.
+import { getSlotDurationMinutes } from "../../lib/myPlan";
 import type { Assignment, WeeklyCalendarTemplate } from "../../api/client";
 
 type WorkingHoursOverviewModalProps = {
@@ -21,26 +24,6 @@ const LEFT_COLUMN_WIDTH = 160;
 const TOTAL_COLUMN_WIDTH = 72;
 const ROW_HEIGHT = 28;
 
-// Parse "HH:MM" to minutes since midnight
-function parseTimeToMinutes(time: string | undefined): number | null {
-  if (!time) return null;
-  const [h, m] = time.split(":").map(Number);
-  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-  return h * 60 + m;
-}
-
-// Get duration in minutes for a slot
-function getSlotDurationMinutes(
-  slot: { startTime?: string; endTime?: string; endDayOffset?: number },
-): number {
-  const start = parseTimeToMinutes(slot.startTime);
-  const end = parseTimeToMinutes(slot.endTime);
-  if (start === null || end === null) return 8 * 60; // Default 8 hours
-  const offset = slot.endDayOffset ?? 0;
-  const endWithOffset = end + offset * 24 * 60;
-  return Math.max(0, endWithOffset - start);
-}
-
 // Get the Monday of the week containing a date
 function getWeekStart(date: Date): Date {
   const d = new Date(date);
@@ -49,11 +32,6 @@ function getWeekStart(date: Date): Date {
   d.setDate(diff);
   d.setHours(0, 0, 0, 0);
   return d;
-}
-
-// Format date as ISO string (YYYY-MM-DD)
-function toISODate(date: Date): string {
-  return date.toISOString().split("T")[0];
 }
 
 // Get all weeks in a year, starting Jan 1 and ending Dec 31
@@ -105,6 +83,31 @@ function formatHours(minutes: number): string {
   const hours = minutes / 60;
   if (hours === 0) return "–";
   return hours.toFixed(1).replace(/\.0$/, "");
+}
+
+// Sticky year-total cell: worked minus expected hours for the year.
+function YearlyDiffCell({ yearlyDiff }: { yearlyDiff: number | null }) {
+  let colorClass = "text-slate-500 dark:text-slate-400";
+  if (yearlyDiff !== null) {
+    if (yearlyDiff > 8) {
+      colorClass = "text-rose-600 dark:text-rose-400";
+    } else if (yearlyDiff < -8) {
+      colorClass = "text-amber-600 dark:text-amber-400";
+    } else if (Math.abs(yearlyDiff) <= 8 && yearlyDiff !== 0) {
+      colorClass = "text-emerald-600 dark:text-emerald-400";
+    }
+  }
+  return (
+    <div
+      className={cx(
+        "sticky right-0 z-40 flex items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[10px] font-semibold dark:border-slate-600 dark:bg-slate-800",
+        colorClass,
+      )}
+      style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH, height: ROW_HEIGHT }}
+    >
+      {yearlyDiff !== null ? (yearlyDiff > 0 ? `+${yearlyDiff.toFixed(1)}` : yearlyDiff.toFixed(1)) : "–"}
+    </div>
+  );
 }
 
 export default function WorkingHoursOverviewModal({
@@ -164,58 +167,55 @@ export default function WorkingHoursOverviewModal({
   // Get weeks for selected year
   const weeks = useMemo(() => getWeeksInYear(selectedYear), [selectedYear]);
 
+  // Week index by the week's Monday (YYYY-MM-DD), for O(1) lookups
+  const weekIndexByMonday = useMemo(
+    () => new Map(weeks.map((w, i) => [toISODate(w.weekMonday), i] as const)),
+    [weeks],
+  );
+
   // Find current week index
   const currentWeekIndex = useMemo(() => {
     const today = new Date();
     if (today.getFullYear() !== selectedYear) return -1;
-    const todayStart = getWeekStart(today);
-    return weeks.findIndex(w => toISODate(w.weekMonday) === toISODate(todayStart));
-  }, [weeks, selectedYear]);
+    return weekIndexByMonday.get(toISODate(getWeekStart(today))) ?? -1;
+  }, [weekIndexByMonday, selectedYear]);
 
-  // Calculate working hours per week for all clinicians
+  // Calculate working hours per week for all clinicians. Single pass over
+  // all assignments (the page passes every year's assignments on every
+  // render), and nothing at all while the modal is closed.
   const clinicianWeeklyHours = useMemo(() => {
     const result = new Map<string, Map<number, number>>();
+    if (!open) return result;
 
     for (const clinician of clinicians) {
-      const hoursMap = new Map<number, number>();
+      result.set(clinician.id, new Map<number, number>());
+    }
 
-      // Filter assignments for this clinician
-      const clinicianAssignments = assignments.filter(a => a.clinicianId === clinician.id);
+    for (const assignment of assignments) {
+      // Skip pool assignments (they don't count as working hours)
+      if (assignment.rowId.startsWith("pool-")) continue;
+      const hoursMap = result.get(assignment.clinicianId);
+      if (!hoursMap) continue;
 
-      for (const assignment of clinicianAssignments) {
-        // Skip pool assignments (they don't count as working hours)
-        if (assignment.rowId.startsWith("pool-")) continue;
+      // Parse as local midnight: bare "YYYY-MM-DD" parses as UTC, which
+      // shifts to the previous day in timezones west of UTC once the local
+      // getters below are applied.
+      const assignmentDate = new Date(`${assignment.dateISO}T00:00:00`);
+      if (assignmentDate.getFullYear() !== selectedYear) continue;
 
-        // Parse as local midnight: bare "YYYY-MM-DD" parses as UTC, which
-        // shifts to the previous day in timezones west of UTC once the local
-        // getters below are applied.
-        const assignmentDate = new Date(`${assignment.dateISO}T00:00:00`);
-        if (assignmentDate.getFullYear() !== selectedYear) continue;
+      // Find which week this assignment belongs to (use weekMonday for matching)
+      const weekIndex = weekIndexByMonday.get(toISODate(getWeekStart(assignmentDate)));
+      if (weekIndex === undefined) continue;
 
-        // Find which week this assignment belongs to (use weekMonday for matching)
-        const weekStart = getWeekStart(assignmentDate);
-        const weekIndex = weeks.findIndex(w => toISODate(w.weekMonday) === toISODate(weekStart));
-        if (weekIndex === -1) continue;
+      // Duration from the slot template, default 8 hours
+      const durationMinutes = slotDurationMap.get(assignment.rowId) ?? 8 * 60;
 
-        // Get duration from slot or use default
-        let durationMinutes = 8 * 60; // Default 8 hours
-
-        // Try to find slot duration from template
-        const slotId = assignment.rowId;
-        if (slotDurationMap.has(slotId)) {
-          durationMinutes = slotDurationMap.get(slotId)!;
-        }
-
-        // Add to week total
-        const current = hoursMap.get(weekIndex) ?? 0;
-        hoursMap.set(weekIndex, current + durationMinutes);
-      }
-
-      result.set(clinician.id, hoursMap);
+      // Add to week total
+      hoursMap.set(weekIndex, (hoursMap.get(weekIndex) ?? 0) + durationMinutes);
     }
 
     return result;
-  }, [clinicians, assignments, weeks, selectedYear, slotDurationMap]);
+  }, [open, clinicians, assignments, weekIndexByMonday, selectedYear, slotDurationMap]);
 
   // Calculate yearly totals for all clinicians
   const clinicianYearlyTotals = useMemo(() => {
@@ -452,6 +452,7 @@ export default function WorkingHoursOverviewModal({
                             return (
                               <div
                                 key={week.weekNum}
+                                data-testid={`hours-${clinician.id}-w${week.weekNum}`}
                                 className={cx(
                                   "flex items-center justify-center border-r border-slate-100 text-[11px] dark:border-slate-800",
                                   isCurrentWeek && "bg-sky-50/70 dark:bg-sky-900/20",
@@ -465,6 +466,7 @@ export default function WorkingHoursOverviewModal({
                           })}
                         </div>
                         <div
+                          data-testid={`hours-${clinician.id}-total`}
                           className="sticky right-0 z-40 flex items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[11px] font-semibold text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
                           style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH, height: ROW_HEIGHT }}
                         >
@@ -559,29 +561,7 @@ export default function WorkingHoursOverviewModal({
                               );
                             })}
                           </div>
-                          {(() => {
-                            let colorClass = "text-slate-500 dark:text-slate-400";
-                            if (yearlyDiff !== null) {
-                              if (yearlyDiff > 8) {
-                                colorClass = "text-rose-600 dark:text-rose-400";
-                              } else if (yearlyDiff < -8) {
-                                colorClass = "text-amber-600 dark:text-amber-400";
-                              } else if (Math.abs(yearlyDiff) <= 8 && yearlyDiff !== 0) {
-                                colorClass = "text-emerald-600 dark:text-emerald-400";
-                              }
-                            }
-                            return (
-                              <div
-                                className={cx(
-                                  "sticky right-0 z-40 flex items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[10px] font-semibold dark:border-slate-600 dark:bg-slate-800",
-                                  colorClass,
-                                )}
-                                style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                              >
-                                {yearlyDiff !== null ? (yearlyDiff > 0 ? `+${yearlyDiff.toFixed(1)}` : yearlyDiff.toFixed(1)) : "–"}
-                              </div>
-                            );
-                          })()}
+                          <YearlyDiffCell yearlyDiff={yearlyDiff} />
                         </div>
                       )}
 
@@ -633,29 +613,7 @@ export default function WorkingHoursOverviewModal({
                               });
                             })()}
                           </div>
-                          {(() => {
-                            let colorClass = "text-slate-500 dark:text-slate-400";
-                            if (yearlyDiff !== null) {
-                              if (yearlyDiff > 8) {
-                                colorClass = "text-rose-600 dark:text-rose-400";
-                              } else if (yearlyDiff < -8) {
-                                colorClass = "text-amber-600 dark:text-amber-400";
-                              } else if (Math.abs(yearlyDiff) <= 8 && yearlyDiff !== 0) {
-                                colorClass = "text-emerald-600 dark:text-emerald-400";
-                              }
-                            }
-                            return (
-                              <div
-                                className={cx(
-                                  "sticky right-0 z-40 flex items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[10px] font-semibold dark:border-slate-600 dark:bg-slate-800",
-                                  colorClass,
-                                )}
-                                style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                              >
-                                {yearlyDiff !== null ? (yearlyDiff > 0 ? `+${yearlyDiff.toFixed(1)}` : yearlyDiff.toFixed(1)) : "–"}
-                              </div>
-                            );
-                          })()}
+                          <YearlyDiffCell yearlyDiff={yearlyDiff} />
                         </div>
                       )}
                     </div>

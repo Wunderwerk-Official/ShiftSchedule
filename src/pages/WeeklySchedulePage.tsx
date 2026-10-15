@@ -19,6 +19,15 @@ import WeekNavigator from "../components/schedule/WeekNavigator";
 import MonthNavigator from "../components/schedule/MonthNavigator";
 import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
 import PublishWeeksPopover from "../components/schedule/PublishWeeksPopover";
+import TeamPlanHeader from "../components/schedule/TeamPlanHeader";
+import CalendarPlaceholder from "../components/schedule/CalendarPlaceholder";
+import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
+import MyPlanView, { type TeamPlanTarget } from "../components/myPlan/MyPlanView";
+import { viewStartDate } from "../components/myPlan/viewConfig";
+import { findNextShiftFor, parseISODate } from "../lib/myPlan";
+import { useUserPreferences } from "../lib/userPreferences";
+import { scrollToTeamAssignment } from "./scrollToTeamAssignment";
+import { usePlanScope } from "./usePlanScope";
 import AdminUsersPanel from "../components/auth/AdminUsersPanel";
 import { ChevronLeftIcon, ChevronRightIcon } from "../components/schedule/icons";
 import {
@@ -55,8 +64,6 @@ import {
   type IcalPublishStatus,
   type ScheduleSnapshotExport,
   type AgentActivityData,
-  type AgentMoveItem,
-  type SolverAgentDebug,
   type SolverDebugInfo,
   type SolverMode,
   type SolverRunDetail,
@@ -65,6 +72,7 @@ import {
   type WeeklyCalendarTemplate,
   type WebPublishStatus,
   type SolverRule,
+  type ViewConfig,
 } from "../api/client";
 import SnapshotPopover from "../components/schedule/SnapshotPopover";
 import SolverDebugPanel from "../components/schedule/SolverDebugPanel";
@@ -87,9 +95,13 @@ import { cx } from "../lib/classNames";
 import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
 import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
+import { downloadTextFile } from "../lib/download";
+import { computeOpenSlots } from "../lib/openSlots";
+import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
+import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
 import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
-import { getDayType } from "../lib/dayTypes";
+import { resetSolverAssignments, resetUnfixedAssignments } from "./resetSolverAssignments";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -209,9 +221,7 @@ import {
   buildScheduleRows,
   buildShiftRowId,
   DEFAULT_LOCATION_ID,
-  getAvailableSubShiftId,
   normalizeAppState,
-  normalizeSubShifts,
   type ScheduleRow,
 } from "../lib/shiftRows";
 
@@ -457,11 +467,7 @@ export default function WeeklySchedulePage({
   const [solverPhase, setSolverPhase] = useState<string | null>(null);
   const [agentEvents, setAgentEvents] = useState<AgentActivityData[]>([]);
   const [solverLiveConnected, setSolverLiveConnected] = useState(true);
-  // Unclamped copy for the run-history log: when the user aborts (or applies
-  // the best plan mid-run) the backend's rich response is lost with the
-  // fetch, so the history entry is reconstructed from these live events.
-  // Mode + timeout of the CURRENT run (agent runs raise the timeout, so the
-  // overlay's time budget must reflect the run, not the settings value).
+  // Mode of the CURRENT run (shown in the overlay).
   const [autoPlanRunConfig, setAutoPlanRunConfig] = useState<{
     solverMode: SolverMode;
   } | null>(null);
@@ -501,13 +507,43 @@ export default function WeeklySchedulePage({
   const [hoveredSplitShiftId, setHoveredSplitShiftId] = useState<string | null>(null);
   const ruleViolationsRef = useRef<HTMLDivElement | null>(null);
   const nonConsecutiveShiftsRef = useRef<HTMLDivElement | null>(null);
+  // The popovers render in a portal outside the badges: presses inside them
+  // must not count as "outside" (or their items could never be clicked).
+  const ruleViolationsPopoverRef = useRef<HTMLDivElement | null>(null);
+  const nonConsecutivePopoverRef = useRef<HTMLDivElement | null>(null);
 
   const isMobile = useMediaQuery("(max-width: 640px)");
+  const isDark = theme === "dark";
+  // "My plan" (per-user preferences, never in AppState) and the page scope.
+  const {
+    prefs,
+    loaded: prefsLoaded,
+    update: updatePrefs,
+    flush: flushPrefs,
+  } = useUserPreferences(currentUser.username);
+  const { planScope, setPlanScope, applyView, scopeReady } = usePlanScope({
+    username: currentUser.username,
+    prefs,
+    loaded: prefsLoaded,
+    onUpdatePrefs: updatePrefs,
+    isMobile,
+  });
+  // My plan reads people and assignments from the calendar. Until this
+  // user's state has loaded they are the built-in demo data, and My plan
+  // would call the linked person "no longer in the plan" and offer the demo
+  // people instead: it waits behind the placeholder.
+  const myPlanDataReady = hasLoaded && loadedUserId === currentUser.username;
   useEffect(() => {
     if (!ruleViolationsOpen) return;
     const handleClick = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (!ruleViolationsRef.current || ruleViolationsRef.current.contains(target)) return;
+      if (
+        !ruleViolationsRef.current ||
+        ruleViolationsRef.current.contains(target) ||
+        ruleViolationsPopoverRef.current?.contains(target)
+      ) {
+        return;
+      }
       setRuleViolationsOpen(false);
     };
     document.addEventListener("mousedown", handleClick);
@@ -522,7 +558,13 @@ export default function WeeklySchedulePage({
     if (!nonConsecutiveShiftsOpen) return;
     const handleClick = (event: MouseEvent) => {
       const target = event.target as Node;
-      if (!nonConsecutiveShiftsRef.current || nonConsecutiveShiftsRef.current.contains(target)) return;
+      if (
+        !nonConsecutiveShiftsRef.current ||
+        nonConsecutiveShiftsRef.current.contains(target) ||
+        nonConsecutivePopoverRef.current?.contains(target)
+      ) {
+        return;
+      }
       setNonConsecutiveShiftsOpen(false);
     };
     document.addEventListener("mousedown", handleClick);
@@ -535,9 +577,11 @@ export default function WeeklySchedulePage({
     }
   }, [nonConsecutiveShiftsOpen]);
 
-  // Track elapsed time during solver run
+  // Track elapsed time during solver run. Only the overlay shows it, so the
+  // ticker (a page re-render every 100 ms) pauses while the run is minimized;
+  // reopening the overlay updates the value at once.
   useEffect(() => {
-    if (!autoPlanRunning || !autoPlanStartedAt) {
+    if (!autoPlanRunning || !autoPlanStartedAt || autoPlanMinimized) {
       return;
     }
     const updateElapsed = () => {
@@ -546,7 +590,7 @@ export default function WeeklySchedulePage({
     updateElapsed();
     const intervalId = window.setInterval(updateElapsed, 100);
     return () => window.clearInterval(intervalId);
-  }, [autoPlanRunning, autoPlanStartedAt]);
+  }, [autoPlanRunning, autoPlanStartedAt, autoPlanMinimized]);
 
   // Subscribe to SSE for live solver progress when solver is running
   useEffect(() => {
@@ -628,15 +672,6 @@ export default function WeeklySchedulePage({
       const next = typeof update === "function" ? update(prev) : update;
       if (!next?.locations) return next;
 
-      // Log every update for debugging
-      const prevTotal = prev?.locations?.reduce((s, l) => s + (l.colBands?.length ?? 0), 0) ?? 0;
-      const nextTotal = next.locations.reduce((s, l) => s + (l.colBands?.length ?? 0), 0);
-      if (nextTotal !== prevTotal) {
-        console.log(`[setWeeklyTemplate] colBands: ${prevTotal} -> ${nextTotal}`, {
-          stack: new Error().stack?.split('\n').slice(2, 6).join('\n')
-        });
-      }
-
       // Check for colBand explosion (reduced from 50 to 20)
       const MAX_COLBANDS_PER_DAY = 20;
       let needsSanitization = false;
@@ -679,6 +714,13 @@ export default function WeeklySchedulePage({
       };
     });
   }, []);
+  // Above MAX_TOTAL_COLBANDS the calendar refuses to save (see
+  // buildCurrentStatePayload); the page shows a banner instead of failing silently.
+  const templateColBandCount = useMemo(
+    () => countTemplateColBands(weeklyTemplate),
+    [weeklyTemplate],
+  );
+  const templateTooLarge = templateColBandCount > MAX_TOTAL_COLBANDS;
 
   const classRows = useMemo(() => rows.filter((r) => r.kind === "class"), [rows]);
   const templateSectionIds = useMemo(() => {
@@ -734,6 +776,29 @@ export default function WeeklySchedulePage({
   const clinicianById = useMemo(
     () => new Map(clinicians.map((clinician) => [clinician.id, clinician])),
     [clinicians],
+  );
+  // Team header / grid additions (plan §2.9); all opt-in.
+  const linkedClinicianIndex = prefs.clinicianId
+    ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
+    : -1;
+  const linkedClinician = linkedClinicianIndex >= 0 ? clinicians[linkedClinicianIndex] : null;
+  const personPillStyles = useMemo(
+    () =>
+      prefs.teamColorBy === "person"
+        ? buildPersonPillStyles(clinicians, isDark)
+        : undefined,
+    [prefs.teamColorBy, clinicians, isDark],
+  );
+  // The own outline belongs to "Color by: Person" (plan §2.9): the section look stays as is.
+  const outlinedClinicianId = personPillStyles ? linkedClinician?.id ?? null : null;
+  const locationRowTints = useMemo(
+    () => (locationsEnabled ? buildLocationRowTints(locations, isDark) : undefined),
+    [locations, locationsEnabled, isDark],
+  );
+  // My plan reads the raw assignments; a stable array keeps its plans memoized.
+  const planAssignments = useMemo(
+    () => (planScope === "me" ? Array.from(assignmentMap.values()).flat() : []),
+    [planScope, assignmentMap],
   );
   const holidayDates = useMemo(
     () => new Set(holidays.map((holiday) => holiday.dateISO)),
@@ -807,24 +872,6 @@ export default function WeeklySchedulePage({
     () => buildDayColumns(displayDays, weeklyTemplate, holidayDates, columnTimeMetaByKey),
     [displayDays, weeklyTemplate, holidayDates, columnTimeMetaByKey],
   );
-  const isWeekendOrHoliday = (dateISO: string) => {
-    const date = new Date(`${dateISO}T00:00:00`);
-    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-    return isWeekend || holidayDates.has(dateISO);
-  };
-
-  const downloadTextFile = (filename: string, mimeType: string, content: string) => {
-    const blob = new Blob([content], { type: mimeType });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = filename;
-    document.body.appendChild(link);
-    link.click();
-    link.remove();
-    window.setTimeout(() => URL.revokeObjectURL(url), 0);
-  };
-
   const downloadBlob = (filename: string, blob: Blob) => {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
@@ -856,8 +903,8 @@ export default function WeeklySchedulePage({
     const dateStamp = snapshot.exportedAt.slice(0, 10);
     downloadTextFile(
       `schedule-snapshot-${dateStamp}.json`,
-      "application/json",
       `${JSON.stringify(snapshot, null, 2)}\n`,
+      "application/json",
     );
   };
 
@@ -875,22 +922,10 @@ export default function WeeklySchedulePage({
     );
     const droppedClinicians = assignments.length - filteredByClinician.length;
 
-    const { state: normalized } = normalizeAppState({
-      locations,
-      locationsEnabled,
-      rows,
-      clinicians,
-      assignments: filteredByClinician,
-      minSlotsByRowId,
-      slotOverridesByKey,
-      holidays,
-      holidayCountry,
-      holidayYear,
-      publishedWeekStartISOs,
-      solverSettings,
-      solverRules: solverRulesRef.current,
-      weeklyTemplate,
-    });
+    const normalized = buildCurrentStatePayload(filteredByClinician);
+    if (!normalized) {
+      throw new Error("The current calendar cannot be saved. Fix its template first.");
+    }
 
     const normalizedAssignments = normalized.assignments ?? [];
     const droppedSlots = filteredByClinician.length - normalizedAssignments.length;
@@ -922,22 +957,14 @@ export default function WeeklySchedulePage({
     return out;
   };
 
-  const toRenderedAssignments = () => {
-    const out: Assignment[] = [];
-    for (const list of renderAssignmentMap.values()) {
-      out.push(...list);
-    }
-    return out;
-  };
-
-  // Get existing manual assignments within the solve range for accurate stats display
+  // Get existing protected assignments within the solve range for accurate stats display
   const existingAssignmentsForSolver = useMemo(() => {
     if (!autoPlanDateRange) return [];
     const { startISO, endISO } = autoPlanDateRange;
     const out: Assignment[] = [];
     for (const list of assignmentMap.values()) {
       for (const a of list) {
-        // Only include manual assignments (source !== "solver") within the solve range
+        // Protected assignments (manual/legacy or locked) within the solve range
         if (isProtectedAssignment(a) && a.dateISO >= startISO && a.dateISO <= endISO) {
           out.push(a);
         }
@@ -990,6 +1017,7 @@ export default function WeeklySchedulePage({
         return {
           uid: `${assignment.id}@shift-planner`,
           dateISO: assignment.dateISO,
+          ...(row.endDayOffset ? { endDayOffset: row.endDayOffset } : {}),
           summary,
           ...(description ? { description } : {}),
         };
@@ -1009,7 +1037,7 @@ export default function WeeklySchedulePage({
       calendarName: "Shift Planner (All people)",
       events,
     });
-    downloadTextFile("shift-planner-all.ics", "text/calendar;charset=utf-8", ics);
+    downloadTextFile("shift-planner-all.ics", ics, "text/calendar;charset=utf-8");
   };
 
   const handleDownloadIcalClinician = (
@@ -1037,8 +1065,8 @@ export default function WeeklySchedulePage({
     });
     downloadTextFile(
       `shift-planner-${safeName || clinician.id}.ics`,
-      "text/calendar;charset=utf-8",
       ics,
+      "text/calendar;charset=utf-8",
     );
   };
 
@@ -1219,25 +1247,41 @@ export default function WeeklySchedulePage({
     }
   };
 
-  const renderAssignmentMap = useMemo(
-    () =>
-      buildRenderedAssignmentMap(assignmentMap, clinicians, displayDays, {
-        scheduleRows,
-        solverSettings,
-        holidayDates,
-      }),
-    [assignmentMap, clinicians, displayDays, scheduleRows, solverSettings],
-  );
-
   // Full week rendered assignments for gap detection (uses fullWeekDays, not displayDays)
   const fullWeekRenderAssignmentMap = useMemo(
     () =>
       buildRenderedAssignmentMap(assignmentMap, clinicians, fullWeekDays, {
         scheduleRows,
         solverSettings,
-        holidayDates,
       }),
     [assignmentMap, clinicians, fullWeekDays, scheduleRows, solverSettings],
+  );
+
+  // On the desktop displayDays IS fullWeekDays: reuse that map instead of
+  // building the same one twice.
+  const renderAssignmentMap = useMemo(
+    () =>
+      displayDays === fullWeekDays
+        ? fullWeekRenderAssignmentMap
+        : buildRenderedAssignmentMap(assignmentMap, clinicians, displayDays, {
+            scheduleRows,
+            solverSettings,
+          }),
+    [
+      displayDays,
+      fullWeekDays,
+      fullWeekRenderAssignmentMap,
+      assignmentMap,
+      clinicians,
+      scheduleRows,
+      solverSettings,
+    ],
+  );
+  // One stable array for the overview modals: their memos run before their
+  // `open` check, so a fresh array on every page render recomputed them all.
+  const renderedAssignmentList = useMemo(
+    () => Array.from(renderAssignmentMap.values()).flat(),
+    [renderAssignmentMap],
   );
 
   const isOnVacation = (clinicianId: string, dateISO: string) => {
@@ -1277,7 +1321,6 @@ export default function WeeklySchedulePage({
         ? buildRenderedAssignmentMap(assignmentMap, clinicians, clinicSheetDayDates, {
             scheduleRows,
             solverSettings,
-            holidayDates,
           })
         : new Map<string, RenderedAssignment[]>(),
     [
@@ -1287,7 +1330,6 @@ export default function WeeklySchedulePage({
       clinicSheetDayDates,
       scheduleRows,
       solverSettings,
-      holidayDates,
     ],
   );
   const clinicSheetModel = useMemo(
@@ -1316,25 +1358,6 @@ export default function WeeklySchedulePage({
     const [year, month, day] = dateISO.split("-");
     if (!year || !month || !day) return dateISO;
     return `${day}.${month}.${year}`;
-  };
-
-  const applySolverAssignments = (assignments: Assignment[]) => {
-    if (!assignments.length) return;
-    setAssignmentMap((prev) => {
-      const next = new Map(prev);
-      for (const assignment of assignments) {
-        const key = `${assignment.rowId}__${assignment.dateISO}`;
-        const existing = next.get(key) ?? [];
-        const already = existing.some(
-          (item) =>
-            item.clinicianId === assignment.clinicianId &&
-            item.rowId === assignment.rowId &&
-            item.dateISO === assignment.dateISO,
-        );
-        if (!already) next.set(key, [...existing, assignment]);
-      }
-      return next;
-    });
   };
 
   const buildDateRange = (startISO: string, endISO: string) => {
@@ -1591,7 +1614,7 @@ export default function WeeklySchedulePage({
     setAutoPlanStartedAt(startedAt);
     setAutoPlanProgress({ current: 0, total: dateRange.length });
 
-    // Capture existing manual assignments at the start for stats computation later
+    // Capture existing protected assignments at the start for stats computation later
     const capturedExistingAssignments: Assignment[] = [];
     for (const list of assignmentMap.values()) {
       for (const a of list) {
@@ -1602,30 +1625,14 @@ export default function WeeklySchedulePage({
     }
 
     try {
-      if (hasLoaded && loadedUserId === currentUser.username) {
-        // Sync the CURRENT state to the server unchanged: the run plans
-        // against it server-side (the harness itself treats in-range solver
-        // assignments as replaceable), and nothing is stripped or applied
-        // until the admin applies the run from the inbox - a failed run can
-        // no longer lose the previous plan.
-        const { state: normalized } = normalizeAppState({
-          locations,
-          locationsEnabled,
-          rows,
-          clinicians,
-          assignments: toAssignments(),
-          minSlotsByRowId,
-          slotOverridesByKey,
-          holidays,
-          holidayCountry,
-          holidayYear,
-          publishedWeekStartISOs,
-          solverSettings,
-          solverRules: solverRulesRef.current,
-          weeklyTemplate,
-        });
-        await saveState(normalized);
-      }
+      // Sync the CURRENT state to the server unchanged: the run plans
+      // against it server-side (the harness itself treats in-range solver
+      // assignments as replaceable), and nothing is stripped or applied
+      // until the admin applies the run from the inbox - a failed run can
+      // no longer lose the previous plan.
+      const current = buildCurrentStatePayload();
+      if (!current) throw new Error("The current calendar cannot be saved. Fix its template first.");
+      await saveState(current);
       if (autoPlanRunTokenRef.current !== runToken) return;
       await solveRange(args.startISO, {
         endISO: args.endISO,
@@ -1687,7 +1694,6 @@ export default function WeeklySchedulePage({
   const handleAbortWithoutApplying = () => { void requestRunStop(false); };
   const handleApplySolution = () => { void requestRunStop(true); };
 
-  // Reset only solver-generated assignments (keep manual ones)
   const handleToggleAssignmentLock = useCallback((assignment: AssignmentIdentity) => {
     setAssignmentMap(prev => new Map([...prev].map(([key, list]) => [key,
       list.map(item => item.id === assignment.id && item.rowId === assignment.rowId && item.dateISO === assignment.dateISO && item.source === "solver"
@@ -1695,42 +1701,19 @@ export default function WeeklySchedulePage({
     ])));
   }, []);
 
+  // Reset solver-generated assignments in range; keep protected (manual/legacy
+  // or locked) entries and pool entries. Same rule as applying a solver draft
+  // (backend is_replaced_by_draft), so entries on vacation days go as well.
   const handleResetSolver = (args: { startISO: string; endISO: string }) => {
     setAutoPlanError(null);
-    setAssignmentMap((prev) => {
-      const next = new Map(prev);
-      for (const [key, list] of next.entries()) {
-        const { rowId, dateISO: keyDate } = splitAssignmentKey(key);
-        if (!rowId || !keyDate) continue;
-        if (rowId.startsWith("pool-")) continue;
-        if (keyDate < args.startISO || keyDate > args.endISO) continue;
-        // Keep manual assignments (source === "manual" or undefined/missing) and vacation assignments
-        // Assignments without a source field are treated as manual (legacy data)
-        const filtered = list.filter(
-          (item) => isProtectedAssignment(item) || isOnVacation(item.clinicianId, keyDate)
-        );
-        if (filtered.length === 0) next.delete(key);
-        else next.set(key, filtered);
-      }
-      return next;
-    });
+    setAssignmentMap((prev) => resetSolverAssignments(prev, args));
   };
 
-  // Reset all assignments (both manual and solver-generated, including pool assignments)
+  // Reset unfixed: remove everything in range except locked entries and
+  // manual entries on vacation days (see resetUnfixedAssignments).
   const handleResetAll = (args: { startISO: string; endISO: string }) => {
     setAutoPlanError(null);
-    setAssignmentMap((prev) => {
-      const next = new Map(prev);
-      for (const [key, list] of next.entries()) {
-        const { rowId, dateISO: keyDate } = splitAssignmentKey(key);
-        if (!rowId || !keyDate) continue;
-        if (keyDate < args.startISO || keyDate > args.endISO) continue;
-        const filtered = list.filter((item) => item.locked || isOnVacation(item.clinicianId, keyDate));
-        if (filtered.length === 0) next.delete(key);
-        else next.set(key, filtered);
-      }
-      return next;
-    });
+    setAssignmentMap((prev) => resetUnfixedAssignments(prev, args, isOnVacation));
   };
 
   const addVacationRange = (clinicianId: string, startISO: string, endISO: string) => {
@@ -1802,34 +1785,6 @@ export default function WeeklySchedulePage({
     );
   };
 
-  const getBaseSlotsForDate = (rowId: string, dateISO: string) => {
-    const row = rowById.get(rowId);
-    if (row?.kind === "class") {
-      const dayType = getDayType(dateISO, holidayDates);
-      if (row.dayType && row.dayType !== dayType) return 0;
-      if (typeof row.requiredSlots === "number") return row.requiredSlots;
-    }
-    const minSlots = minSlotsByRowId[rowId] ?? { weekday: 0, weekend: 0 };
-    return isWeekendOrHoliday(dateISO) ? minSlots.weekend : minSlots.weekday;
-  };
-
-  const adjustSlotOverride = (rowId: string, dateISO: string, delta: number) => {
-    const baseSlots = getBaseSlotsForDate(rowId, dateISO);
-    setSlotOverridesByKey((prev) => {
-      const key = `${rowId}__${dateISO}`;
-      const current = prev[key] ?? 0;
-      const nextValue = Math.max(-baseSlots, current + delta);
-      if (nextValue === current) return prev;
-      const next = { ...prev };
-      if (nextValue === 0) {
-        delete next[key];
-      } else {
-        next[key] = nextValue;
-      }
-      return next;
-    });
-  };
-
   const handleAddAssignment = (args: {
     rowId: string;
     dateISO: string;
@@ -1884,7 +1839,6 @@ export default function WeeklySchedulePage({
       const next = new Map(prev);
       if (filtered.length === 0) next.delete(key);
       else next.set(key, filtered);
-      // Note: No longer adding clinician back to Distribution Pool (removed)
       return next;
     });
   };
@@ -1902,14 +1856,20 @@ export default function WeeklySchedulePage({
     assignmentId: string;
     clinicianId: string;
   }) => {
-    setAssignmentMap((prev) => {
-      const fromKey = `${fromRowId}__${dateISO}`;
-      const toKey = `${toRowId}__${dateISO}`;
-      if (fromKey === toKey) return prev;
-      const fromRow = rowById.get(fromRowId);
-      const toRow = rowById.get(toRowId);
-      if (!fromRow || !toRow) return prev;
+    const fromKey = `${fromRowId}__${dateISO}`;
+    const toKey = `${toRowId}__${dateISO}`;
+    if (fromKey === toKey) return;
+    const fromRow = rowById.get(fromRowId);
+    const toRow = rowById.get(toRowId);
+    if (!fromRow || !toRow) return;
+    const isToVacation = toRow.id === VACATION_POOL_ID;
+    const isFromVacation = fromRow.id === VACATION_POOL_ID;
+    // Vacation changes go to setClinicians OUTSIDE the assignment updater:
+    // state updaters must stay pure (StrictMode runs them twice).
+    if (isToVacation) addVacationDay(clinicianId, dateISO);
+    else if (isFromVacation) removeVacationDay(clinicianId, dateISO);
 
+    setAssignmentMap((prev) => {
       const next = new Map(prev);
       const removeAssignment = (key: string, targetId: string) => {
         const list = next.get(key) ?? [];
@@ -1931,18 +1891,11 @@ export default function WeeklySchedulePage({
           else next.set(key, filtered);
         }
       };
-      const isToVacation = toRow.id === VACATION_POOL_ID;
-      const isFromVacation = fromRow.id === VACATION_POOL_ID;
-
       if (isToVacation) {
-        addVacationDay(clinicianId, dateISO);
         removeAssignmentsForDate(clinicianId, dateISO);
         return next;
       }
 
-      if (isFromVacation) {
-        removeVacationDay(clinicianId, dateISO);
-      }
       // Handle dropping to Rest Day pool
       if (toRow.kind === "pool" && toRow.id === REST_DAY_POOL_ID) {
         if (fromRow.kind === "class" || fromRow.id === REST_DAY_POOL_ID) {
@@ -2017,78 +1970,35 @@ export default function WeeklySchedulePage({
     });
   };
 
-  const openSlotsCount = useMemo(() => {
-    const dateISOs = fullWeekDays.map(toISODate);
-    let openSlots = 0;
-      for (const rowId of classShiftRowIds) {
-        const row = rowById.get(rowId);
-        if (!row || row.kind !== "class") continue;
-      for (const d of dateISOs) {
-        const dayType = getDayType(d, holidayDates);
-        const isActive = row.dayType ? row.dayType === dayType : true;
-        if (!isActive) continue;
-        // Use the rendered map (vacation-filtered) so the badge matches the
-        // open slots actually shown in the grid.
-        const cell = fullWeekRenderAssignmentMap.get(`${rowId}__${d}`) ?? [];
-        const baseRequired =
-          typeof row.requiredSlots === "number"
-            ? row.requiredSlots
-            : isWeekendOrHoliday(d)
-              ? (minSlotsByRowId[rowId] ?? { weekday: 0, weekend: 0 }).weekend
-              : (minSlotsByRowId[rowId] ?? { weekday: 0, weekend: 0 }).weekday;
-        const override = slotOverridesByKey[`${rowId}__${d}`] ?? 0;
-        const required = Math.max(0, baseRequired + override);
-        if (required > cell.length) openSlots += required - cell.length;
-      }
-    }
-    return openSlots;
-  }, [
-    fullWeekDays,
-    fullWeekRenderAssignmentMap,
-    classShiftRowIds,
-    minSlotsByRowId,
-    slotOverridesByKey,
-    holidayDates,
-    rowById,
-  ]);
-
-  // Cell targets for the open-slots badge cycling: one entry per calendar
-  // cell that still misses people, day by day through the week.
-  const openSlotTargets = useMemo(() => {
-    const dateISOs = fullWeekDays.map(toISODate);
-    const targets: Array<{ rowId: string; dateISO: string }> = [];
-    for (const d of dateISOs) {
-      for (const rowId of classShiftRowIds) {
-        const row = rowById.get(rowId);
-        if (!row || row.kind !== "class") continue;
-        const dayType = getDayType(d, holidayDates);
-        const isActive = row.dayType ? row.dayType === dayType : true;
-        if (!isActive) continue;
-        const cell = fullWeekRenderAssignmentMap.get(`${rowId}__${d}`) ?? [];
-        const baseRequired =
-          typeof row.requiredSlots === "number"
-            ? row.requiredSlots
-            : isWeekendOrHoliday(d)
-              ? (minSlotsByRowId[rowId] ?? { weekday: 0, weekend: 0 }).weekend
-              : (minSlotsByRowId[rowId] ?? { weekday: 0, weekend: 0 }).weekday;
-        const override = slotOverridesByKey[`${rowId}__${d}`] ?? 0;
-        const required = Math.max(0, baseRequired + override);
-        if (required > cell.length) targets.push({ rowId, dateISO: d });
-      }
-    }
-    return targets;
-  }, [
-    fullWeekDays,
-    fullWeekRenderAssignmentMap,
-    classShiftRowIds,
-    rowById,
-    minSlotsByRowId,
-    slotOverridesByKey,
-    holidayDates,
-  ]);
+  // Open slots of the week, counted on the rendered map (vacation-filtered)
+  // so the badge matches the open slots actually shown in the grid. The
+  // targets (cells that still miss people, day by day) drive the badge cycling.
+  const openSlotInfo = useMemo(
+    () =>
+      computeOpenSlots({
+        dateISOs: fullWeekDays.map(toISODate),
+        rowIds: classShiftRowIds,
+        rowById,
+        cells: fullWeekRenderAssignmentMap,
+        minSlotsByRowId,
+        slotOverridesByKey,
+        holidayDates,
+      }),
+    [
+      fullWeekDays,
+      fullWeekRenderAssignmentMap,
+      classShiftRowIds,
+      rowById,
+      minSlotsByRowId,
+      slotOverridesByKey,
+      holidayDates,
+    ],
+  );
+  const openSlotsCount = openSlotInfo.count;
+  const openSlotTargets = openSlotInfo.targets;
 
   // Badge-click cycling state: each click jumps to the NEXT open slot /
-  // violation. Reset when the week or the target list changes.
+  // violation. Reset when the week changes.
   const openSlotCycleRef = useRef(0);
   const violationCycleRef = useRef(0);
   useEffect(() => {
@@ -2096,10 +2006,19 @@ export default function WeeklySchedulePage({
     violationCycleRef.current = 0;
   }, [currentWeekStartISO]);
 
+  // Jump targets always lie in the displayed week, but on a phone only one
+  // day is rendered: switch the day view to the target first.
+  const revealDate = (dateISO: string) => {
+    if (!displayDays.some((day) => toISODate(day) === dateISO)) {
+      setAnchorDate(new Date(`${dateISO}T00:00:00`));
+    }
+  };
+
   const handleCycleOpenSlots = () => {
     if (openSlotTargets.length === 0) return;
     const target = openSlotTargets[openSlotCycleRef.current % openSlotTargets.length];
     openSlotCycleRef.current += 1;
+    revealDate(target.dateISO);
     scrollToGridCell(target.rowId, target.dateISO);
   };
 
@@ -2111,14 +2030,7 @@ export default function WeeklySchedulePage({
     const targetDateISO = violation.assignmentKeys
       .map(extractDateFromAssignmentKey)
       .find((d): d is string => d !== null);
-    const weekEndISO = toISODate(weekEndInclusive);
-    if (
-      targetDateISO &&
-      (targetDateISO < currentWeekStartISO || targetDateISO > weekEndISO)
-    ) {
-      const [y, m, d] = targetDateISO.split("-").map(Number);
-      setAnchorDate(new Date(y, m - 1, d));
-    }
+    if (targetDateISO) revealDate(targetDateISO);
     scrollToAssignmentKeys(violation.assignmentKeys);
     const firstKey = violation.assignmentKeys[0];
     if (firstKey && targetDateISO) {
@@ -2128,7 +2040,7 @@ export default function WeeklySchedulePage({
   };
 
   // Calculate non-consecutive shifts (gaps) for clinicians in the current week
-  // Uses renderAssignmentMap (not raw assignmentMap) to match what's displayed in the UI
+  // Uses fullWeekRenderAssignmentMap (not raw assignmentMap) to match what's displayed in the UI
   type NonConsecutiveShift = {
     id: string;
     clinicianId: string;
@@ -2140,18 +2052,6 @@ export default function WeeklySchedulePage({
   const nonConsecutiveShifts = useMemo((): NonConsecutiveShift[] => {
     const dateISOs = fullWeekDays.map(toISODate);
     const result: NonConsecutiveShift[] = [];
-
-    // Helper to parse time string to minutes
-    const parseTimeToMinutes = (time: string | undefined): number | null => {
-      if (!time) return null;
-      const match = time.match(/^(\d{1,2}):(\d{2})$/);
-      if (!match) return null;
-      const hours = Number(match[1]);
-      const minutes = Number(match[2]);
-      if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-      if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-      return hours * 60 + minutes;
-    };
 
     // Group assignments by clinician and date using fullWeekRenderAssignmentMap (matches UI, covers full week)
     const assignmentsByClinicianDate = new Map<string, { rowId: string; clinicianId: string }[]>();
@@ -2537,30 +2437,15 @@ export default function WeeklySchedulePage({
   );
 
   // Distributes a normalized AppState into the page's state slices.
-  // Shared by the initial load and snapshot restore so both hydrate
-  // identically (mutates `normalized`'s rows/assignments like the
-  // original load effect did — callers pass a fresh object).
+  // Shared by the initial load, snapshot restore and run apply so all
+  // hydrate identically. (normalizeAppState already guarantees the Rest Day
+  // pool row.)
   const hydrateStateSlices = (normalized: AppState) => {
     adoptSavedState(normalized);
     if (normalized.locations?.length) setLocations(normalized.locations);
     setLocationsEnabled(normalized.locationsEnabled ?? true);
     if (normalized.rows?.length) {
-      const filteredRows = normalized.rows.filter(
-        (row) => row.id !== "pool-not-working",
-      );
-      let nextRows = filteredRows;
-      const hasRestDayPool = nextRows.some((row) => row.id === REST_DAY_POOL_ID);
-      if (!hasRestDayPool) {
-        // Add Rest Day pool at the end if missing
-        nextRows = [...nextRows, {
-          id: REST_DAY_POOL_ID,
-          name: "Rest Day",
-          kind: "pool",
-          dotColorClass: "bg-slate-200",
-        }];
-      }
-      setRows(nextRows);
-      normalized.rows = nextRows;
+      setRows(normalized.rows.filter((row) => row.id !== "pool-not-working"));
     }
     if (normalized.clinicians) {
       setClinicians(
@@ -2574,11 +2459,11 @@ export default function WeeklySchedulePage({
       );
     }
     if (normalized.assignments) {
-      const filteredAssignments = normalized.assignments.filter(
-        (assignment) => assignment.rowId !== "pool-not-working",
+      setAssignmentMap(
+        buildAssignmentMap(
+          normalized.assignments.filter((assignment) => assignment.rowId !== "pool-not-working"),
+        ),
       );
-      setAssignmentMap(buildAssignmentMap(filteredAssignments));
-      normalized.assignments = filteredAssignments;
     }
     if (normalized.minSlotsByRowId) setMinSlotsByRowId(normalized.minSlotsByRowId);
     if (normalized.slotOverridesByKey) {
@@ -2668,32 +2553,16 @@ export default function WeeklySchedulePage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasLoaded, loadedUserId, currentUser.username]);
 
-  // The exact payload the debounced auto-save persists — also the basis
-  // for named snapshots, so a snapshot always equals what is on screen
-  // (the server's stored row can lag by the 500ms debounce). Returns null
-  // when the colBand-explosion guard refuses to serialize corrupted state.
-  const buildCurrentStatePayload = (): AppState | null => {
-    // SAFEGUARD: Check for colBand explosion before saving
-    // With 20 max per day × 8 day types × 5 locations = 800 theoretical max
-    // Using 300 as a sanity check (allows 2-3 locations with reasonable usage)
-    const totalColBands = weeklyTemplate?.locations?.reduce(
-      (sum, loc) => sum + (loc.colBands?.length ?? 0),
-      0
-    ) ?? 0;
-    if (totalColBands > 300) {
-      console.error(
-        `[WeeklySchedulePage] BLOCKING SAVE - colBand explosion detected: ${totalColBands} total colBands (max: 300)`,
-        { stack: new Error().stack }
-      );
-      return null; // Don't save corrupted state
-    }
-
-    const { state: normalized } = normalizeAppState({
+  // The complete AppState of this screen, normalized. Every save path builds
+  // its payload here, so a new state field cannot be forgotten in one copy
+  // (the server would drop it on the next save of that path).
+  const buildStatePayload = (assignments: Assignment[] = toAssignments()): AppState =>
+    normalizeAppState({
       locations,
       locationsEnabled,
       rows,
       clinicians,
-      assignments: toAssignments(),
+      assignments,
       minSlotsByRowId,
       slotOverridesByKey,
       holidays,
@@ -2703,11 +2572,26 @@ export default function WeeklySchedulePage({
       solverSettings,
       solverRules: solverRulesRef.current,
       weeklyTemplate,
-    });
-    return normalized;
+    }).state;
+
+  // The exact payload the debounced auto-save persists — also the basis
+  // for named snapshots, so a snapshot always equals what is on screen
+  // (the server's stored row can lag by the 500ms debounce). `assignments`
+  // replaces the on-screen ones (snapshot import). Returns null when the
+  // colBand-explosion guard refuses to serialize corrupted state.
+  const buildCurrentStatePayload = (assignments?: Assignment[]): AppState | null => {
+    // SAFEGUARD: Check for colBand explosion before saving (the page shows
+    // the templateTooLarge banner meanwhile).
+    if (templateTooLarge) {
+      console.error(
+        `[WeeklySchedulePage] BLOCKING SAVE - colBand explosion detected: ${templateColBandCount} total colBands (max: ${MAX_TOTAL_COLBANDS})`,
+        { stack: new Error().stack }
+      );
+      return null; // Don't save corrupted state
+    }
+    return buildStatePayload(assignments);
   };
 
-  // Flush pending edits and pause autosave while replacing calendar state.
   const handleSaveSnapshot = async (name: string) => {
     const payload = buildCurrentStatePayload();
     if (!payload) {
@@ -2718,12 +2602,21 @@ export default function WeeklySchedulePage({
     await createSnapshot(name, payload);
   };
 
+  // Flush pending edits and pause autosave while replacing calendar state.
   const handleRestoreSnapshot = async (snapshotId: string) => {
     pauseCalendarSaving();
     try {
-      const current = buildCurrentStatePayload();
-      if (!current) throw new Error("The current calendar cannot be saved.");
-      const saved = await saveState(current);
+      let saved: AppState | null = null;
+      if (templateTooLarge) {
+        // The on-screen calendar cannot be saved; restoring is a way out.
+        // Let queued saves land, then the server backs up its last saved
+        // calendar (currentState null) instead of the screen.
+        await flushStateSaves();
+      } else {
+        const current = buildCurrentStatePayload();
+        if (!current) throw new Error("The current calendar cannot be saved.");
+        saved = await saveState(current);
+      }
       const restored = await restoreSnapshot(snapshotId, saved);
       const { state: normalized } = normalizeAppState(restored);
       hydrateStateSlices(normalized);
@@ -2735,10 +2628,12 @@ export default function WeeklySchedulePage({
 
   useEffect(() => {
     if (!hasLoaded || loadedUserId !== currentUser.username || calendarTransitionRef.current || saveError) return;
-    const normalized = buildCurrentStatePayload();
-    if (!normalized) return;
+    // Build (normalize) the payload only when the debounce fires, not on
+    // every key press; the closure still holds this render's state.
     const handle = window.setTimeout(() => {
       if (calendarTransitionRef.current) return;
+      const normalized = buildCurrentStatePayload();
+      if (!normalized) return;
       saveState(normalized).catch((err) => {
         setSaveError(err instanceof Error ? err.message : "Changes could not be saved.");
       });
@@ -2816,22 +2711,36 @@ export default function WeeklySchedulePage({
           next.set(key, list);
         }
       }
-      console.log(
-        `[WeeklySchedulePage] Cleaned up ${prev.size - next.size} orphaned assignment(s)`,
-      );
       return next;
     });
   }, [weeklyTemplate, poolRows]);
 
   const handleLogout = async () => {
+    const ownCalendarLoaded = hasLoaded && loadedUserId === currentUser.username;
+    // An oversized template cannot be saved (buildCurrentStatePayload);
+    // ask instead of blocking sign-out and stopping autosave via saveError.
+    if (
+      ownCalendarLoaded &&
+      templateTooLarge &&
+      !window.confirm(
+        "The calendar cannot be saved while the weekly template has too many columns. " +
+          "Sign out anyway? Changes since the last save are lost.",
+      )
+    ) {
+      return;
+    }
     pauseCalendarSaving();
     try {
-      if (hasLoaded && loadedUserId === currentUser.username) {
+      if (ownCalendarLoaded) {
+        // null only while the template is too large (confirmed above).
         const current = buildCurrentStatePayload();
-        if (!current) throw new Error("The current calendar cannot be saved.");
-        await saveState(current);
+        if (current) await saveState(current);
       }
       await flushStateSaves();
+      // Pending preference changes too, while the token is still valid
+      // (onLogout clears it). Best effort: never rejects, and a hanging
+      // request holds sign-out for 3 s at most (one already sent keeps its token).
+      await Promise.race([flushPrefs(), new Promise((resolve) => window.setTimeout(resolve, 3000))]);
       onLogout();
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : "Changes could not be saved before signing out.");
@@ -2928,287 +2837,6 @@ export default function WeeklySchedulePage({
     );
   };
 
-  const handleChangeClassLocation = (rowId: string, locationId: string) => {
-    setRows((prev) =>
-      prev.map((row) => (row.id === rowId ? { ...row, locationId } : row)),
-    );
-  };
-
-  const handleToggleLocationsEnabled = () => {
-    setLocationsEnabled((prev) => {
-      const next = !prev;
-      if (!next) {
-        setRows((currentRows) =>
-          currentRows.map((row) =>
-            row.kind === "class" && row.locationId !== DEFAULT_LOCATION_ID
-              ? { ...row, locationId: DEFAULT_LOCATION_ID }
-              : row,
-          ),
-        );
-      }
-      return next;
-    });
-  };
-
-  const handleRenameSubShift = (
-    rowId: string,
-    subShiftId: string,
-    nextName: string,
-  ) => {
-    setRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== rowId || row.kind !== "class") return row;
-        return {
-          ...row,
-          subShifts: (row.subShifts ?? []).map((shift) =>
-            shift.id === subShiftId ? { ...shift, name: nextName } : shift,
-          ),
-        };
-      }),
-    );
-  };
-
-  const handleUpdateSubShiftStartTime = (
-    rowId: string,
-    subShiftId: string,
-    nextStartTime: string,
-  ) => {
-    setRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== rowId || row.kind !== "class") return row;
-        return {
-          ...row,
-          subShifts: (row.subShifts ?? []).map((shift) =>
-            shift.id === subShiftId ? { ...shift, startTime: nextStartTime } : shift,
-          ),
-        };
-      }),
-    );
-  };
-
-  const handleUpdateSubShiftEndTime = (
-    rowId: string,
-    subShiftId: string,
-    nextEndTime: string,
-  ) => {
-    setRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== rowId || row.kind !== "class") return row;
-        return {
-          ...row,
-          subShifts: (row.subShifts ?? []).map((shift) =>
-            shift.id === subShiftId ? { ...shift, endTime: nextEndTime } : shift,
-          ),
-        };
-      }),
-    );
-  };
-
-  const handleUpdateSubShiftEndDayOffset = (
-    rowId: string,
-    subShiftId: string,
-    nextOffset: number,
-  ) => {
-    const safeOffset = Math.min(3, Math.max(0, Math.floor(nextOffset)));
-    setRows((prev) =>
-      prev.map((row) => {
-        if (row.id !== rowId || row.kind !== "class") return row;
-        return {
-          ...row,
-          subShifts: (row.subShifts ?? []).map((shift) =>
-            shift.id === subShiftId ? { ...shift, endDayOffset: safeOffset } : shift,
-          ),
-        };
-      }),
-    );
-  };
-
-  const handleSetSubShiftCount = (rowId: string, nextCount: number) => {
-    const row = classRows.find((item) => item.id === rowId);
-    if (!row) return;
-    const currentShifts = normalizeSubShifts(row.subShifts);
-    const usedShiftIds = new Set(currentShifts.map((shift) => shift.id));
-    const clampedCount = Math.min(3, Math.max(1, Math.floor(nextCount)));
-    if (currentShifts.length === clampedCount) return;
-
-    const parseTime = (value: string | undefined) => {
-      if (!value) return null;
-      const match = value.match(/^(\d{1,2}):(\d{2})$/);
-      if (!match) return null;
-      const hours = Number(match[1]);
-      const minutes = Number(match[2]);
-      if (!Number.isFinite(hours) || !Number.isFinite(minutes)) return null;
-      if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
-      return hours * 60 + minutes;
-    };
-    const formatTime = (totalMinutes: number) => {
-      const clamped = ((totalMinutes % (24 * 60)) + 24 * 60) % (24 * 60);
-      const hours = Math.floor(clamped / 60);
-      const minutes = clamped % 60;
-      return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}`;
-    };
-    const getDefaultStart = (order: number) => 8 * 60 + (order - 1) * 8 * 60;
-
-    const nextShifts = Array.from({ length: clampedCount }, (_, index) => {
-      const order = (index + 1) as 1 | 2 | 3;
-      const existing = currentShifts.find((shift) => shift.order === order);
-      if (existing) return existing;
-      const id = getAvailableSubShiftId(usedShiftIds, order);
-      usedShiftIds.add(id);
-      const prev = currentShifts.find((shift) => shift.order === order - 1);
-      const startMinutes =
-        (prev && parseTime(prev.endTime)) ??
-        parseTime(prev?.startTime) ??
-        getDefaultStart(order);
-      const endMinutes = startMinutes + 8 * 60;
-      return {
-        id,
-        name: `Shift ${order}`,
-        order,
-        startTime: formatTime(startMinutes),
-        endTime: formatTime(endMinutes),
-        endDayOffset: 0,
-      };
-    });
-
-    const removedShiftIds = currentShifts
-      .filter((shift) => shift.order > clampedCount)
-      .map((shift) => shift.id);
-    const fallbackShiftId = nextShifts[nextShifts.length - 1]?.id ?? "s1";
-    const fallbackShiftRowId = buildShiftRowId(rowId, fallbackShiftId);
-    const removedShiftRowIds = removedShiftIds.map((id) => buildShiftRowId(rowId, id));
-
-    setRows((prev) =>
-      prev.map((item) =>
-        item.id === rowId && item.kind === "class"
-          ? { ...item, subShifts: nextShifts }
-          : item,
-      ),
-    );
-
-    if (removedShiftRowIds.length > 0) {
-      setAssignmentMap((prev) => {
-        const next = new Map<string, Assignment[]>();
-        for (const [key, list] of prev.entries()) {
-          const { rowId: keyRowId, dateISO: keyDate } = splitAssignmentKey(key);
-          if (!keyRowId || !keyDate) continue;
-          if (!removedShiftRowIds.includes(keyRowId)) {
-            next.set(key, list);
-            continue;
-          }
-          const moved = list.map((assignment) => ({
-            ...assignment,
-            rowId: fallbackShiftRowId,
-          }));
-          const fallbackKey = `${fallbackShiftRowId}__${keyDate}`;
-          const existing = next.get(fallbackKey) ?? [];
-          next.set(fallbackKey, [...existing, ...moved]);
-        }
-        return next;
-      });
-    }
-
-    setMinSlotsByRowId((prev) => {
-      const next = { ...prev };
-      for (const removed of removedShiftRowIds) {
-        delete next[removed];
-      }
-      for (const shift of nextShifts) {
-        const shiftRowId = buildShiftRowId(rowId, shift.id);
-        if (!next[shiftRowId]) {
-          next[shiftRowId] = { weekday: 0, weekend: 0 };
-        }
-      }
-      return next;
-    });
-
-    setSlotOverridesByKey((prev) => {
-      const next: Record<string, number> = { ...prev };
-      for (const key of Object.keys(prev)) {
-        const { rowId: keyRowId, dateISO: keyDate } = splitAssignmentKey(key);
-        if (!keyRowId || !keyDate) continue;
-        if (!removedShiftRowIds.includes(keyRowId)) continue;
-        const fallbackKey = `${fallbackShiftRowId}__${keyDate}`;
-        next[fallbackKey] = (next[fallbackKey] ?? 0) + (next[key] ?? 0);
-        delete next[key];
-      }
-      return next;
-    });
-  };
-
-  const handleRemoveSubShift = (rowId: string, subShiftId: string) => {
-    const row = classRows.find((item) => item.id === rowId);
-    if (!row) return;
-    const currentShifts = normalizeSubShifts(row.subShifts);
-    if (currentShifts.length <= 1) return;
-    const remaining = currentShifts.filter((shift) => shift.id !== subShiftId);
-    if (remaining.length === currentShifts.length || remaining.length === 0) return;
-
-    const nextShifts = remaining
-      .sort((a, b) => a.order - b.order)
-      .map((shift, index) => ({
-        ...shift,
-        order: (index + 1) as 1 | 2 | 3,
-      }));
-
-    const removedShiftRowId = buildShiftRowId(rowId, subShiftId);
-    const fallbackShiftId = nextShifts[nextShifts.length - 1]?.id ?? "s1";
-    const fallbackShiftRowId = buildShiftRowId(rowId, fallbackShiftId);
-
-    setRows((prev) =>
-      prev.map((item) =>
-        item.id === rowId && item.kind === "class"
-          ? { ...item, subShifts: nextShifts }
-          : item,
-      ),
-    );
-
-    setAssignmentMap((prev) => {
-      const next = new Map<string, Assignment[]>();
-      for (const [key, list] of prev.entries()) {
-        const { rowId: keyRowId, dateISO: keyDate } = splitAssignmentKey(key);
-        if (!keyRowId || !keyDate) continue;
-        if (keyRowId !== removedShiftRowId) {
-          next.set(key, list);
-          continue;
-        }
-        const moved = list.map((assignment) => ({
-          ...assignment,
-          rowId: fallbackShiftRowId,
-        }));
-        const fallbackKey = `${fallbackShiftRowId}__${keyDate}`;
-        const existing = next.get(fallbackKey) ?? [];
-        next.set(fallbackKey, [...existing, ...moved]);
-      }
-      return next;
-    });
-
-    setMinSlotsByRowId((prev) => {
-      const next = { ...prev };
-      delete next[removedShiftRowId];
-      for (const shift of nextShifts) {
-        const shiftRowId = buildShiftRowId(rowId, shift.id);
-        if (!next[shiftRowId]) {
-          next[shiftRowId] = { weekday: 0, weekend: 0 };
-        }
-      }
-      return next;
-    });
-
-    setSlotOverridesByKey((prev) => {
-      const next: Record<string, number> = { ...prev };
-      for (const key of Object.keys(prev)) {
-        const { rowId: keyRowId, dateISO: keyDate } = splitAssignmentKey(key);
-        if (!keyRowId || !keyDate) continue;
-        if (keyRowId !== removedShiftRowId) continue;
-        const fallbackKey = `${fallbackShiftRowId}__${keyDate}`;
-        next[fallbackKey] = (next[fallbackKey] ?? 0) + (next[key] ?? 0);
-        delete next[key];
-      }
-      return next;
-    });
-  };
-
   const handleAddLocation = (name: string) => {
     const slug = name
       .toLowerCase()
@@ -3222,6 +2850,14 @@ export default function WeeklySchedulePage({
     setLocations((prev) =>
       prev.map((location) =>
         location.id === locationId ? { ...location, name: nextName } : location,
+      ),
+    );
+  };
+
+  const handleSetLocationColor = (locationId: string, color: string | null) => {
+    setLocations((prev) =>
+      prev.map((location) =>
+        location.id === locationId ? { ...location, color } : location,
       ),
     );
   };
@@ -3427,6 +3063,7 @@ export default function WeeklySchedulePage({
         {ruleViolationsOpen
           ? createPortal(
               <div
+                ref={ruleViolationsPopoverRef}
                 className="fixed z-[1100] w-80 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                 style={{ top: popoverPosition.top, right: popoverPosition.right }}
               >
@@ -3442,27 +3079,13 @@ export default function WeeklySchedulePage({
                         setActiveRuleViolationId((current) =>
                           current === violation.id ? null : violation.id,
                         );
-                        // Figure out which week the violation lives in. If
-                        // it's outside the currently displayed week range,
-                        // swing the calendar to the target date first, then
-                        // wait a bit longer before scrolling so the newly
-                        // rendered pill is actually in the DOM.
+                        // On a phone, show the violation's day first;
+                        // scrollToAssignmentKeys polls via rAF until the
+                        // pill appears in the DOM (up to 1s).
                         const targetDateISO = violation.assignmentKeys
                           .map(extractDateFromAssignmentKey)
                           .find((d): d is string => d !== null);
-                        const weekEndISO = toISODate(weekEndInclusive);
-                        const outOfView =
-                          targetDateISO !== undefined &&
-                          (targetDateISO < currentWeekStartISO ||
-                            targetDateISO > weekEndISO);
-                        if (outOfView && targetDateISO) {
-                          const [y, m, d] = targetDateISO.split("-").map(Number);
-                          setAnchorDate(new Date(y, m - 1, d));
-                        }
-                        // scrollToAssignmentKeys now polls via rAF until the
-                        // pill appears in the DOM (up to 1s), so callers no
-                        // longer need to guess how long the re-render will
-                        // take.
+                        if (targetDateISO) revealDate(targetDateISO);
                         scrollToAssignmentKeys(violation.assignmentKeys);
                       }}
                       onMouseEnter={() => setHoveredRuleViolationId(violation.id)}
@@ -3527,6 +3150,7 @@ export default function WeeklySchedulePage({
         {nonConsecutiveShiftsOpen
           ? createPortal(
               <div
+                ref={nonConsecutivePopoverRef}
                 className="fixed z-[1100] w-80 rounded-xl border border-slate-200 bg-white p-3 text-xs text-slate-700 shadow-lg dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                 style={{ top: nonConsecutivePopoverPosition.top, right: nonConsecutivePopoverPosition.right }}
               >
@@ -3540,19 +3164,8 @@ export default function WeeklySchedulePage({
                       type="button"
                       onClick={() => {
                         setActiveSplitShiftId((prev) => (prev === shift.id ? null : shift.id));
-                        // Same out-of-view jump as rule violations above.
-                        const targetDateISO = shift.assignmentKeys
-                          .map(extractDateFromAssignmentKey)
-                          .find((d): d is string => d !== null);
-                        const weekEndISO = toISODate(weekEndInclusive);
-                        const outOfView =
-                          targetDateISO !== undefined &&
-                          (targetDateISO < currentWeekStartISO ||
-                            targetDateISO > weekEndISO);
-                        if (outOfView && targetDateISO) {
-                          const [y, m, d] = targetDateISO.split("-").map(Number);
-                          setAnchorDate(new Date(y, m - 1, d));
-                        }
+                        // Same jump as for rule violations above.
+                        revealDate(shift.dateISO);
                         scrollToAssignmentKeys(shift.assignmentKeys);
                       }}
                       onMouseEnter={() => setHoveredSplitShiftId(shift.id)}
@@ -3628,6 +3241,33 @@ export default function WeeklySchedulePage({
     });
   };
 
+  // "Show in team plan" from a My-plan shift: team scope at that date, then
+  // the grid scrolls to the person's pill and pulses it.
+  const handleShowInTeam = (target: TeamPlanTarget) => {
+    setAnchorDate(parseISODate(target.dateISO));
+    setPlanScope("team");
+    scrollToTeamAssignment(target);
+  };
+  // Saved views from the team header open at their relative start (SPEC R17).
+  const applySavedView = (view: ViewConfig) => {
+    applyView(view);
+    const start = viewStartDate(view, new Date(), () => {
+      if (!linkedClinician) return null;
+      const assignments = Array.from(assignmentMap.values()).flat();
+      const source = { scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings };
+      return findNextShiftFor(source, linkedClinician.id, new Date())?.shift.dateISO ?? null;
+    });
+    if (start) setAnchorDate(start);
+  };
+  const teamHeaderProps = {
+    isMobile,
+    prefs,
+    onUpdatePrefs: updatePrefs,
+    onScopeChange: setPlanScope,
+    onApplyView: applySavedView,
+    me: linkedClinician ? { name: linkedClinician.name, index: linkedClinicianIndex } : null,
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
       <TopBar
@@ -3659,6 +3299,12 @@ export default function WeeklySchedulePage({
             {hasLoaded && <button type="button" className="underline" onClick={() => { retryStateSaves(); setSaveError(null); }}>Retry saving</button>}
             <button type="button" className="underline" onClick={() => window.location.reload()}>Reload saved calendar</button>
           </div>
+        </div>
+      )}
+      {templateTooLarge && (
+        <div role="alert" className="border-b border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          The weekly template has {templateColBandCount} columns in total (max {MAX_TOTAL_COLBANDS}).
+          Changes are not saved until columns or locations are removed or a snapshot is restored.
         </div>
       )}
       {slotCollisions.length > 0 && (
@@ -3715,39 +3361,63 @@ export default function WeeklySchedulePage({
 
       {viewMode === "calendar" ? (
         <>
-          {isClinicSheet && clinicSheetModel ? (
+          {!scopeReady || (planScope === "me" && !myPlanDataReady) ? (
+            <CalendarPlaceholder />
+          ) : planScope === "me" ? (
+            <MyPlanView
+              scheduleRows={scheduleRows}
+              assignments={planAssignments}
+              clinicians={clinicians}
+              locations={locations}
+              holidays={holidays}
+              publishedWeekStartISOs={publishedWeekStartISOs}
+              solverSettings={solverSettings}
+              anchorDate={anchorDate}
+              onAnchorDateChange={setAnchorDate}
+              isMobile={isMobile}
+              isDark={isDark}
+              prefs={prefs}
+              onUpdatePrefs={updatePrefs}
+              prefsLoaded={prefsLoaded}
+              currentScope={planScope}
+              onScopeChange={setPlanScope}
+              onShowInTeam={handleShowInTeam}
+            />
+          ) : isClinicSheet && clinicSheetModel ? (
             <ClinicSheetGrid
               model={clinicSheetModel}
               assignmentMap={clinicSheetAssignmentMap}
               rows={calendarRows}
               header={
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <MonthNavigator
-                      variant="card"
-                      month={monthStart}
-                      onPrevMonth={() =>
-                        setAnchorDate((d) => addMonths(startOfMonth(d), -1))
-                      }
-                      onNextMonth={() =>
-                        setAnchorDate((d) => addMonths(startOfMonth(d), 1))
-                      }
-                      onToday={() => {
-                        setAnchorDate(new Date());
-                        scrollToDateColumn(toISODate(new Date()));
-                      }}
-                      onGoToDate={(date) => setAnchorDate(date)}
-                    />
+                <TeamPlanHeader {...teamHeaderProps}>
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <MonthNavigator
+                        variant="card"
+                        month={monthStart}
+                        onPrevMonth={() =>
+                          setAnchorDate((d) => addMonths(startOfMonth(d), -1))
+                        }
+                        onNextMonth={() =>
+                          setAnchorDate((d) => addMonths(startOfMonth(d), 1))
+                        }
+                        onToday={() => {
+                          setAnchorDate(new Date());
+                          scrollToDateColumn(toISODate(new Date()));
+                        }}
+                        onGoToDate={(date) => setAnchorDate(date)}
+                      />
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <PublishWeeksPopover
+                        monthStart={monthStart}
+                        publishedWeekStartISOs={publishedWeekStartISOs}
+                        onSetWeekPublished={handleSetWeekPublished}
+                        onSetWeeksPublished={handleSetWeeksPublished}
+                      />
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <PublishWeeksPopover
-                      monthStart={monthStart}
-                      publishedWeekStartISOs={publishedWeekStartISOs}
-                      onSetWeekPublished={handleSetWeekPublished}
-                      onSetWeeksPublished={handleSetWeeksPublished}
-                    />
-                  </div>
-                </div>
+                </TeamPlanHeader>
               }
               getClinicianName={(id) => clinicianNameById.get(id) ?? "Unknown"}
               getIsQualified={(clinicianId, rowId) => {
@@ -3782,40 +3452,42 @@ export default function WeeklySchedulePage({
             holidayDates={holidayDates}
             holidayNameByDate={holidayNameByDate}
             header={
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  {isMobile ? (
-                    <MobileDayNavigator
-                      date={anchorDate}
-                      onPrevDay={() => setAnchorDate((d) => addDays(d, -1))}
-                      onNextDay={() => setAnchorDate((d) => addDays(d, 1))}
-                      onToday={() => {
-                        setAnchorDate(new Date());
-                        scrollToDateColumn(toISODate(new Date()));
-                      }}
-                    />
-                  ) : (
-                    <WeekNavigator
-                      variant="card"
-                      rangeStart={weekStart}
-                      rangeEndInclusive={weekEndInclusive}
-                      onPrevWeek={() => setAnchorDate((d) => addWeeks(d, -1))}
-                      onNextWeek={() => setAnchorDate((d) => addWeeks(d, 1))}
-                      onToday={() => {
-                        setAnchorDate(new Date());
-                        scrollToDateColumn(toISODate(new Date()));
-                      }}
-                      onGoToDate={(date) => setAnchorDate(date)}
-                    />
-                  )}
+              <TeamPlanHeader {...teamHeaderProps} showColorBy>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    {isMobile ? (
+                      <MobileDayNavigator
+                        date={anchorDate}
+                        onPrevDay={() => setAnchorDate((d) => addDays(d, -1))}
+                        onNextDay={() => setAnchorDate((d) => addDays(d, 1))}
+                        onToday={() => {
+                          setAnchorDate(new Date());
+                          scrollToDateColumn(toISODate(new Date()));
+                        }}
+                      />
+                    ) : (
+                      <WeekNavigator
+                        variant="card"
+                        rangeStart={weekStart}
+                        rangeEndInclusive={weekEndInclusive}
+                        onPrevWeek={() => setAnchorDate((d) => addWeeks(d, -1))}
+                        onNextWeek={() => setAnchorDate((d) => addWeeks(d, 1))}
+                        onToday={() => {
+                          setAnchorDate(new Date());
+                          scrollToDateColumn(toISODate(new Date()));
+                        }}
+                        onGoToDate={(date) => setAnchorDate(date)}
+                      />
+                    )}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    {openSlotsBadge}
+                    {nonConsecutiveShiftsBadge}
+                    {ruleViolationsBadge}
+                    {publishToggle}
+                  </div>
                 </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {openSlotsBadge}
-                  {nonConsecutiveShiftsBadge}
-                  {ruleViolationsBadge}
-                  {publishToggle}
-                </div>
-              </div>
+              </TeamPlanHeader>
             }
             separatorBeforeRowIds={poolsSeparatorId ? [poolsSeparatorId] : []}
             locationSeparatorRowIds={locationSeparatorRowIds}
@@ -3846,9 +3518,20 @@ export default function WeeklySchedulePage({
               onToggleAssignmentLock={handleToggleAssignmentLock}
             onMoveWithinDay={handleMoveWithinDay}
             onCellClick={() => {}}
+            personPillStyles={personPillStyles}
+            myClinicianId={outlinedClinicianId}
+            locationRowTints={locationRowTints}
           />
           )}
-          <div className="mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10">
+          {/* Planning panels belong to the team plan: hidden (but kept
+              mounted, so their inputs survive) while My plan is shown or
+              the start view is not known yet. */}
+          <div
+            className={cx(
+              "mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10",
+              (planScope === "me" || !scopeReady) && "hidden",
+            )}
+          >
             <div className="flex flex-col gap-6">
               {coverageWarning ? (
                 <div className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200">
@@ -3995,6 +3678,7 @@ export default function WeeklySchedulePage({
             }}
             onAddLocation={handleAddLocation}
             onRenameLocation={handleRenameLocation}
+            onSetLocationColor={handleSetLocationColor}
             onRemoveLocation={handleRemoveLocation}
             onReorderLocations={handleReorderLocations}
             solverSettings={solverSettings}
@@ -4136,7 +3820,7 @@ export default function WeeklySchedulePage({
           name: row.name,
           color: row.blockColor ?? null,
         }))}
-        assignments={toRenderedAssignments()}
+        assignments={renderedAssignmentList}
         weeklyTemplate={weeklyTemplate}
         onSelectClinician={(clinicianId) => openClinicianEditor(clinicianId, "vacations")}
         onCreateVacationRange={addVacationRange}
@@ -4152,7 +3836,7 @@ export default function WeeklySchedulePage({
         open={workingHoursOverviewOpen}
         onClose={() => setWorkingHoursOverviewOpen(false)}
         clinicians={clinicians}
-        assignments={toRenderedAssignments()}
+        assignments={renderedAssignmentList}
         weeklyTemplate={weeklyTemplate}
       />
 
@@ -4307,7 +3991,6 @@ export default function WeeklySchedulePage({
       <SolverOverlay
         isVisible={autoPlanRunning && !autoPlanMinimized}
         onMinimize={() => setAutoPlanMinimized(true)}
-        progress={autoPlanProgress}
         elapsedMs={autoPlanElapsedMs}
         solveRange={autoPlanDateRange}
         displayedRange={{

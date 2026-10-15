@@ -1,7 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import WorkingHoursOverviewModal from "./WorkingHoursOverviewModal";
 import type { Assignment, WeeklyCalendarTemplate } from "../../api/client";
+import { toISODate } from "../../lib/date";
+import { getSlotDurationMinutes } from "../../lib/myPlan";
 
 // Test the getWeeksInYear logic by checking the rendered output
 describe("WorkingHoursOverviewModal", () => {
@@ -298,48 +300,16 @@ describe("Week calculation logic", () => {
   });
 });
 
-// Tests for hours calculation
+// Tests for hours calculation (the modal uses the shared My plan rule)
 describe("Hours calculation", () => {
   it("calculates slot duration from start and end time", () => {
     // 08:00 to 16:00 = 8 hours = 480 minutes
-    function getSlotDurationMinutes(slot: { startTime?: string; endTime?: string }): number {
-      const parseTime = (time: string | undefined): number | null => {
-        if (!time) return null;
-        const [h, m] = time.split(":").map(Number);
-        if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-        return h * 60 + m;
-      };
-
-      const start = parseTime(slot.startTime);
-      const end = parseTime(slot.endTime);
-      if (start === null || end === null) return 8 * 60;
-      return Math.max(0, end - start);
-    }
-
     expect(getSlotDurationMinutes({ startTime: "08:00", endTime: "16:00" })).toBe(480);
     expect(getSlotDurationMinutes({ startTime: "09:00", endTime: "17:00" })).toBe(480);
     expect(getSlotDurationMinutes({ startTime: "06:00", endTime: "14:00" })).toBe(480);
   });
 
   it("handles overnight shifts with day offset", () => {
-    function getSlotDurationMinutes(
-      slot: { startTime?: string; endTime?: string; endDayOffset?: number }
-    ): number {
-      const parseTime = (time: string | undefined): number | null => {
-        if (!time) return null;
-        const [h, m] = time.split(":").map(Number);
-        if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-        return h * 60 + m;
-      };
-
-      const start = parseTime(slot.startTime);
-      const end = parseTime(slot.endTime);
-      if (start === null || end === null) return 8 * 60;
-      const offset = slot.endDayOffset ?? 0;
-      const endWithOffset = end + offset * 24 * 60;
-      return Math.max(0, endWithOffset - start);
-    }
-
     // 22:00 to 06:00 next day = 8 hours = 480 minutes
     expect(
       getSlotDurationMinutes({ startTime: "22:00", endTime: "06:00", endDayOffset: 1 })
@@ -352,20 +322,6 @@ describe("Hours calculation", () => {
   });
 
   it("uses default 8 hours when times are missing", () => {
-    function getSlotDurationMinutes(slot: { startTime?: string; endTime?: string }): number {
-      const parseTime = (time: string | undefined): number | null => {
-        if (!time) return null;
-        const [h, m] = time.split(":").map(Number);
-        if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-        return h * 60 + m;
-      };
-
-      const start = parseTime(slot.startTime);
-      const end = parseTime(slot.endTime);
-      if (start === null || end === null) return 8 * 60;
-      return Math.max(0, end - start);
-    }
-
     expect(getSlotDurationMinutes({})).toBe(480);
     expect(getSlotDurationMinutes({ startTime: "08:00" })).toBe(480);
     expect(getSlotDurationMinutes({ endTime: "16:00" })).toBe(480);
@@ -393,4 +349,81 @@ describe("formatHours", () => {
     expect(formatHours(450)).toBe("7.5"); // 7.5 hours
     expect(formatHours(510)).toBe("8.5"); // 8.5 hours
   });
+});
+
+describe("Weekly hours aggregation (rendered)", () => {
+  const year = new Date().getFullYear();
+  const template: WeeklyCalendarTemplate = {
+    version: 4,
+    blocks: [{ id: "block-1", sectionId: "section-1", requiredSlots: 1 }],
+    locations: [
+      {
+        locationId: "loc-1",
+        rowBands: [],
+        colBands: [],
+        slots: [
+          { id: "day", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "08:00", endTime: "16:00" },
+          { id: "night", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "17:00", endTime: "08:00", endDayOffset: 1 },
+        ],
+      },
+    ],
+  };
+  const assignments: Assignment[] = [
+    // Counted: week 1 (contains Jan 1) and week 2 (Jan 8 is always in week 2)
+    { id: "a1", rowId: "day", dateISO: `${year}-01-01`, clinicianId: "clin-1" },
+    { id: "a2", rowId: "night", dateISO: `${year}-01-08`, clinicianId: "clin-1" },
+    // Ignored: other years, pool rows, unknown clinicians
+    { id: "a3", rowId: "day", dateISO: `${year - 1}-12-31`, clinicianId: "clin-1" },
+    { id: "a4", rowId: "day", dateISO: `${year + 1}-01-01`, clinicianId: "clin-1" },
+    { id: "a5", rowId: "pool-rest-day", dateISO: `${year}-01-02`, clinicianId: "clin-1" },
+    { id: "a6", rowId: "day", dateISO: `${year}-01-02`, clinicianId: "ghost" },
+  ];
+
+  it("sums slot durations per week and year for the selected year only", () => {
+    render(
+      <WorkingHoursOverviewModal
+        open
+        onClose={() => {}}
+        clinicians={[{ id: "clin-1", name: "Dr. Night" }]}
+        assignments={assignments}
+        weeklyTemplate={template}
+      />,
+    );
+    expect(screen.getByTestId("hours-clin-1-w1")).toHaveTextContent("8");
+    expect(screen.getByTestId("hours-clin-1-w2")).toHaveTextContent("15");
+    expect(screen.getByTestId("hours-clin-1-w3")).toHaveTextContent("–");
+    expect(screen.getByTestId("hours-clin-1-total")).toHaveTextContent("23");
+  });
+
+  // Pins that week keys stay consistent across time zones: Monday and Sunday
+  // of a week land in that week, wherever the browser runs.
+  it.each(["Europe/Berlin", "America/New_York", "Pacific/Auckland"])(
+    "keeps Monday and Sunday shifts in the same week in %s",
+    (timeZone) => {
+      // Node applies a runtime change of TZ to all later Date operations.
+      vi.stubEnv("TZ", timeZone);
+      try {
+        const jan8 = new Date(year, 0, 8); // always in week 2
+        const monday = new Date(year, 0, 8 - ((jan8.getDay() + 6) % 7));
+        const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+        render(
+          <WorkingHoursOverviewModal
+            open
+            onClose={() => {}}
+            clinicians={[{ id: "clin-tz", name: "Dr. Zone" }]}
+            assignments={[
+              { id: "m", rowId: "day", dateISO: toISODate(monday), clinicianId: "clin-tz" },
+              { id: "s", rowId: "day", dateISO: toISODate(sunday), clinicianId: "clin-tz" },
+            ]}
+            weeklyTemplate={template}
+          />,
+        );
+        expect(screen.getByTestId("hours-clin-tz-w1")).toHaveTextContent("–");
+        expect(screen.getByTestId("hours-clin-tz-w2")).toHaveTextContent("16");
+        expect(screen.getByTestId("hours-clin-tz-w3")).toHaveTextContent("–");
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 });

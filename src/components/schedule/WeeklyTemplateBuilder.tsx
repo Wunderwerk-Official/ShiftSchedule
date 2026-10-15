@@ -24,6 +24,7 @@ import type {
 } from "../../api/client";
 import CustomTimePicker from "./CustomTimePicker";
 import ColorPickerPopover from "./ColorPickerPopover";
+import LocationColorPicker from "./LocationColorPicker";
 import CustomSelect from "./CustomSelect";
 import { getContrastTextColor } from "../../lib/shiftRows";
 import { BLOCK_COLOR_OPTIONS } from "../../lib/colorPalette";
@@ -38,6 +39,8 @@ type WeeklyTemplateBuilderProps = {
   onRemoveSection?: (sectionId: string) => void;
   onAddLocation: (name: string) => void;
   onRenameLocation: (locationId: string, nextName: string) => void;
+  /** Light ground tint of a location (My plan days, team row labels); null = none. */
+  onSetLocationColor?: (locationId: string, color: string | null) => void;
   onRemoveLocation: (locationId: string) => void;
   onReorderLocations: (nextOrder: string[]) => void;
 };
@@ -49,90 +52,26 @@ const createId = (prefix: string) => {
   return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 };
 
-// Maximum colBands allowed per dayType to prevent infinite loop explosions
-// Reduced from 50 to 20 - no practical use case needs more than 20 columns per day
-const MAX_COLBANDS_PER_DAY = 20;
+// The colBand cap (max 20 per day type) is enforced where the template is
+// stored: the page's setWeeklyTemplate wrapper and normalizeTemplateColBands.
 
-// Debug logging for colBand mutations
-const logColBandChange = (
-  source: string,
-  locations: WeeklyTemplateLocation[],
-  prevLocations?: WeeklyTemplateLocation[],
-) => {
-  const countByDay = new Map<string, number>();
-  let total = 0;
-  for (const loc of locations) {
-    for (const cb of loc.colBands ?? []) {
-      const key = cb.dayType ?? "unknown";
-      countByDay.set(key, (countByDay.get(key) ?? 0) + 1);
-      total += 1;
-    }
+// Added to the delete dialogs for blocks, rows, columns and locations (the
+// slot dialog and the Copy Day warning say the same in their own words):
+// normalizeAppState drops every assignment whose slot no longer exists, in all weeks.
+const PLANNED_SHIFTS_DELETED =
+  "All shifts planned in them, including past weeks, are deleted.";
+
+// Position of a fixed popover: below its anchor, or above it when there is no
+// room below, kept 8px inside the viewport.
+const placePopover = (anchor: DOMRect, panel: HTMLElement) => {
+  const padding = 8;
+  const maxLeft = Math.max(padding, window.innerWidth - panel.offsetWidth - padding);
+  const left = Math.min(Math.max(anchor.left, padding), maxLeft);
+  let top = anchor.bottom + padding;
+  if (top + panel.offsetHeight > window.innerHeight - padding) {
+    top = anchor.top - panel.offsetHeight - padding;
   }
-  const prevTotal = prevLocations
-    ? prevLocations.reduce((sum, loc) => sum + (loc.colBands?.length ?? 0), 0)
-    : 0;
-
-  if (total > 100 || (prevLocations && total > prevTotal * 2)) {
-    console.error(
-      `[WeeklyTemplateBuilder] COLBAND EXPLOSION DETECTED in ${source}!`,
-      {
-        total,
-        prevTotal,
-        byDay: Object.fromEntries(countByDay),
-        stack: new Error().stack,
-      }
-    );
-  } else if (prevLocations && total !== prevTotal) {
-    console.log(
-      `[WeeklyTemplateBuilder] colBand change in ${source}:`,
-      { prev: prevTotal, next: total, byDay: Object.fromEntries(countByDay) }
-    );
-  }
-  return { total, countByDay };
-};
-
-// Safeguard: limit colBands per dayType
-const sanitizeLocations = (
-  locations: WeeklyTemplateLocation[],
-  source: string,
-): WeeklyTemplateLocation[] => {
-  let needsSanitization = false;
-
-  // Check if any dayType exceeds the limit
-  for (const loc of locations) {
-    const countByDay = new Map<string, number>();
-    for (const cb of loc.colBands ?? []) {
-      const day = cb.dayType ?? "unknown";
-      countByDay.set(day, (countByDay.get(day) ?? 0) + 1);
-    }
-    for (const [day, count] of countByDay) {
-      if (count > MAX_COLBANDS_PER_DAY) {
-        console.error(
-          `[WeeklyTemplateBuilder] BLOCKING colBand explosion in ${source}! ` +
-          `Location ${loc.locationId} has ${count} colBands for ${day} (max: ${MAX_COLBANDS_PER_DAY})`,
-          { stack: new Error().stack }
-        );
-        needsSanitization = true;
-        break;
-      }
-    }
-    if (needsSanitization) break;
-  }
-
-  if (!needsSanitization) return locations;
-
-  // Sanitize: keep only first MAX_COLBANDS_PER_DAY per dayType
-  return locations.map((loc) => {
-    const countByDay = new Map<string, number>();
-    const filteredColBands = loc.colBands.filter((cb) => {
-      const day = cb.dayType ?? "unknown";
-      const current = countByDay.get(day) ?? 0;
-      if (current >= MAX_COLBANDS_PER_DAY) return false;
-      countByDay.set(day, current + 1);
-      return true;
-    });
-    return { ...loc, colBands: filteredColBands };
-  });
+  return { top: Math.max(top, padding), left };
 };
 
 const formatTime = (value?: string) => {
@@ -167,32 +106,11 @@ export default function WeeklyTemplateBuilder({
   onRemoveSection,
   onAddLocation,
   onRenameLocation,
+  onSetLocationColor,
   onRemoveLocation,
   onReorderLocations,
 }: WeeklyTemplateBuilderProps) {
   const confirm = useConfirm();
-
-  // Track previous locations for logging (using ref to avoid dependency issues)
-  const prevLocationsRef = useRef<WeeklyTemplateLocation[]>(template.locations ?? []);
-  useEffect(() => {
-    prevLocationsRef.current = template.locations ?? [];
-  }, [template.locations]);
-
-  // Wrap onChange to add logging and sanitization
-  // IMPORTANT: This must NOT depend on template.locations to avoid infinite loops
-  const safeOnChange = useMemo(() => {
-    return (nextTemplate: WeeklyCalendarTemplate, source: string) => {
-      let nextLocations = nextTemplate.locations ?? [];
-
-      // Log the change (using ref for prev to avoid dependency)
-      logColBandChange(source, nextLocations, prevLocationsRef.current);
-
-      // Sanitize to prevent explosion
-      nextLocations = sanitizeLocations(nextLocations, source);
-
-      onChange({ ...nextTemplate, locations: nextLocations });
-    };
-  }, [onChange]);
 
   const classRows = useMemo(
     () => rows.filter((row) => row.kind === "class"),
@@ -286,7 +204,7 @@ export default function WeeklyTemplateBuilder({
     ].sort(
       (a, b) => (order.get(a.locationId) ?? 0) - (order.get(b.locationId) ?? 0),
     );
-    safeOnChange({ ...template, locations: nextLocations }, "updateTemplateLocation");
+    onChange({ ...template, locations: nextLocations });
   };
 
   useEffect(() => {
@@ -314,19 +232,7 @@ export default function WeeklyTemplateBuilder({
     if (!activeSlotId || !slotEditorAnchor) return;
     const panel = slotEditorRef.current;
     if (!panel) return;
-    const width = panel.offsetWidth;
-    const height = panel.offsetHeight;
-    const padding = 8;
-    const maxLeft = Math.max(padding, window.innerWidth - width - padding);
-    const left = Math.min(Math.max(slotEditorAnchor.left, padding), maxLeft);
-    let top = slotEditorAnchor.bottom + padding;
-    if (top + height > window.innerHeight - padding) {
-      top = slotEditorAnchor.top - height - padding;
-    }
-    if (top < padding) {
-      top = padding;
-    }
-    setSlotEditorPosition({ top, left });
+    setSlotEditorPosition(placePopover(slotEditorAnchor, panel));
   }, [activeSlotId, slotEditorAnchor, slotEditorMode]);
 
   useEffect(() => {
@@ -358,19 +264,7 @@ export default function WeeklyTemplateBuilder({
     if (!activeAddCell || !addCellAnchor) return;
     const panel = addCellRef.current;
     if (!panel) return;
-    const width = panel.offsetWidth;
-    const height = panel.offsetHeight;
-    const padding = 8;
-    const maxLeft = Math.max(padding, window.innerWidth - width - padding);
-    const left = Math.min(Math.max(addCellAnchor.left, padding), maxLeft);
-    let top = addCellAnchor.bottom + padding;
-    if (top + height > window.innerHeight - padding) {
-      top = addCellAnchor.top - height - padding;
-    }
-    if (top < padding) {
-      top = padding;
-    }
-    setAddCellPosition({ top, left });
+    setAddCellPosition(placePopover(addCellAnchor, panel));
   }, [activeAddCell, addCellAnchor]);
 
   useEffect(() => {
@@ -380,7 +274,6 @@ export default function WeeklyTemplateBuilder({
 
   const updateAllLocations = (
     updater: (location: WeeklyTemplateLocation) => WeeklyTemplateLocation,
-    source: string = "updateAllLocations",
   ) => {
     const order = new Map(locations.map((loc, index) => [loc.id, index]));
     const nextLocations = locations.map((loc) => {
@@ -393,7 +286,7 @@ export default function WeeklyTemplateBuilder({
     nextLocations.sort(
       (a, b) => (order.get(a.locationId) ?? 0) - (order.get(b.locationId) ?? 0),
     );
-    safeOnChange({ ...template, locations: nextLocations }, source);
+    onChange({ ...template, locations: nextLocations });
   };
 
   const sharedColumnCounts = useMemo(() => {
@@ -486,7 +379,7 @@ export default function WeeklyTemplateBuilder({
       };
     });
 
-    safeOnChange({ ...template, locations: nextLocations }, "handleCopyDay");
+    onChange({ ...template, locations: nextLocations });
     setCopyDayModalOpen(false);
     setCopyConfirmed(false);
 
@@ -502,8 +395,8 @@ export default function WeeklyTemplateBuilder({
   // depend on sharedColumnCounts to avoid infinite loops - it only ensures minimum
   // structure exists, not column count synchronization across locations.
   //
-  // CRITICAL: This effect MUST NOT trigger itself. We use onChange directly (not
-  // safeOnChange) and carefully check if an update is actually needed.
+  // CRITICAL: This effect MUST NOT trigger itself, so it carefully checks
+  // whether an update is actually needed.
   useEffect(() => {
     // First pass: check if any updates are needed at all
     let needsUpdate = false;
@@ -540,8 +433,6 @@ export default function WeeklyTemplateBuilder({
 
     // CRITICAL: Exit early if no update needed to prevent infinite loops
     if (!needsUpdate) return;
-
-    console.log("[WeeklyTemplateBuilder] syncLocationsUseEffect: update needed");
 
     // Shared column count per dayType (max across existing locations, min 1):
     // new locations and missing dayTypes must be seeded with the SAME number
@@ -602,15 +493,12 @@ export default function WeeklyTemplateBuilder({
       (a, b) => (order.get(a.locationId) ?? 0) - (order.get(b.locationId) ?? 0),
     );
 
-    // Use onChange directly (not safeOnChange) to avoid dependency loop
-    // The sanitization is still applied by safeOnChange wrapper in parent
     onChange({ ...template, locations: nextLocations });
   }, [locations, template, onChange]);
 
   const updateBlocks = (updater: (blocks: TemplateBlock[]) => TemplateBlock[]) => {
     const nextBlocks = updater(blocks);
     if (nextBlocks === blocks) return;
-    // updateBlocks doesn't modify locations, so we can use onChange directly
     onChange({ ...template, blocks: nextBlocks });
   };
 
@@ -654,7 +542,7 @@ export default function WeeklyTemplateBuilder({
   const handleDeleteBlock = async (blockId: string) => {
     const confirmed = await confirm({
       title: "Delete Block",
-      message: "Delete this block? Any placed slots using it will be removed from the grid.",
+      message: `Delete this block? Any placed slots using it will be removed from the grid. ${PLANNED_SHIFTS_DELETED}`,
       confirmLabel: "Delete",
       variant: "danger",
     });
@@ -663,14 +551,14 @@ export default function WeeklyTemplateBuilder({
     }
     const block = blockById.get(blockId);
     const nextBlocks = blocks.filter((item) => item.id !== blockId);
-    safeOnChange({
+    onChange({
       ...template,
       blocks: nextBlocks,
       locations: template.locations.map((location) => ({
         ...location,
         slots: location.slots.filter((slot) => slot.blockId !== blockId),
       })),
-    }, "handleDeleteBlock");
+    });
     if (
       block &&
       !nextBlocks.some((item) => item.sectionId === block.sectionId)
@@ -813,10 +701,17 @@ export default function WeeklyTemplateBuilder({
         };
       }
       return location;
-    }, "handleSlotDrop");
+    });
   };
 
-  const handleDeleteSlot = (locationId: string, slotId: string) => {
+  const handleDeleteSlot = async (locationId: string, slotId: string) => {
+    const confirmed = await confirm({
+      title: "Remove slot",
+      message: "Remove this slot? All shifts planned in it, including past weeks, are deleted.",
+      confirmLabel: "Remove",
+      variant: "danger",
+    });
+    if (!confirmed) return;
     updateTemplateLocation(locationId, (location) => ({
       ...location,
       slots: location.slots.filter((slot) => slot.id !== slotId),
@@ -900,7 +795,7 @@ export default function WeeklyTemplateBuilder({
       }
       if (added.length === 0) return location;
       return { ...location, colBands: [...location.colBands, ...added] };
-    }, "handleAddColBand");
+    });
   };
 
   const handleDeleteColBand = (dayType: DayType, bandIndex: number) => {
@@ -920,9 +815,8 @@ export default function WeeklyTemplateBuilder({
         colBands: [...otherBands, ...normalizedDay],
         slots: location.slots.filter((slot) => slot.colBandId !== target.id),
       };
-    }, "handleDeleteColBand");
+    });
   };
-
 
   const renderBlockCard = (
     block: TemplateBlock,
@@ -1254,6 +1148,31 @@ export default function WeeklyTemplateBuilder({
     return map;
   }, [headerLocation, sharedColumnCounts]);
 
+  // "Delete Column" (shown above the first row, or in the "Add row" row of a
+  // location without rows): an empty column goes at once, one with slots
+  // after a confirmation while the column is highlighted.
+  const requestDeleteColumn = async (dayType: DayType, colIndex: number) => {
+    const dayBands = headerColBandsByDay.get(dayType) ?? [];
+    if (dayBands.length <= 1) {
+      window.alert("Each day needs at least one column.");
+      return;
+    }
+    if (!hasSlotsInColumn(dayType, colIndex)) {
+      handleDeleteColBand(dayType, colIndex);
+      return;
+    }
+    setPendingDeleteColumn({ dayType, index: colIndex });
+    const confirmed = await confirm({
+      title: "Delete Column",
+      message: `Delete this column? Any slots in this column will be removed. ${PLANNED_SHIFTS_DELETED}`,
+      confirmLabel: "Delete",
+      variant: "danger",
+    });
+    setPendingDeleteColumn(null);
+    if (!confirmed) return;
+    handleDeleteColBand(dayType, colIndex);
+  };
+
   const gridColumns = visibleDayTypes.reduce(
     (sum, dayType) => sum + Math.max(sharedColumnCounts.get(dayType) ?? 0, 1),
     0,
@@ -1460,6 +1379,13 @@ export default function WeeklyTemplateBuilder({
                           onRenameLocation(location.id, event.target.value)
                         }
                       />
+                      {onSetLocationColor ? (
+                        <LocationColorPicker
+                          value={location.color ?? null}
+                          onChange={(color) => onSetLocationColor(location.id, color)}
+                          label={`Location color for ${location.name || "location"}`}
+                        />
+                      ) : null}
                       <button
                         type="button"
                         onClick={async () => {
@@ -1470,7 +1396,7 @@ export default function WeeklyTemplateBuilder({
                           setPendingDeleteLocationId(location.id);
                           const confirmed = await confirm({
                             title: "Delete Location",
-                            message: "Delete this location and all of its rows/slots?",
+                            message: `Delete this location and all of its rows/slots? ${PLANNED_SHIFTS_DELETED}`,
                             confirmLabel: "Delete",
                             variant: "danger",
                           });
@@ -1535,7 +1461,7 @@ export default function WeeklyTemplateBuilder({
                                 if (hasSlots) {
                                   const confirmed = await confirm({
                                     title: "Delete Row",
-                                    message: "Delete this row? Any slots in this row will be removed.",
+                                    message: `Delete this row? Any slots in this row will be removed. ${PLANNED_SHIFTS_DELETED}`,
                                     confirmLabel: "Delete",
                                     variant: "danger",
                                   });
@@ -1712,37 +1638,9 @@ export default function WeeklyTemplateBuilder({
                                           : prev,
                                       )
                                     }
-                                    onClick={async (event) => {
+                                    onClick={(event) => {
                                       event.stopPropagation();
-                                      const dayBands =
-                                        headerColBandsByDay.get(dayType) ?? [];
-                                      if (dayBands.length <= 1) {
-                                        window.alert(
-                                          "Each day needs at least one column.",
-                                        );
-                                        return;
-                                      }
-                                      const hasEntries = hasSlotsInColumn(
-                                        dayType,
-                                        colIndex,
-                                      );
-                                      if (!hasEntries) {
-                                        handleDeleteColBand(dayType, colIndex);
-                                        return;
-                                      }
-                                      setPendingDeleteColumn({
-                                        dayType,
-                                        index: colIndex,
-                                      });
-                                      const confirmed = await confirm({
-                                        title: "Delete Column",
-                                        message: "Delete this column? Any slots in this column will be removed.",
-                                        confirmLabel: "Delete",
-                                        variant: "danger",
-                                      });
-                                      setPendingDeleteColumn(null);
-                                      if (!confirmed) return;
-                                      handleDeleteColBand(dayType, colIndex);
+                                      void requestDeleteColumn(dayType, colIndex);
                                     }}
                                   >
                                     Delete Column
@@ -1789,7 +1687,7 @@ export default function WeeklyTemplateBuilder({
                                       type="button"
                                       onClick={(event) => {
                                         event.stopPropagation();
-                                        handleDeleteSlot(location.id, slot.id);
+                                        void handleDeleteSlot(location.id, slot.id);
                                       }}
                                       className="rounded-full border border-slate-200 bg-white px-1 text-[10px] font-semibold text-rose-500 shadow-sm hover:text-rose-600 dark:border-slate-700 dark:bg-slate-900"
                                       aria-label="Remove slot"
@@ -1880,37 +1778,9 @@ export default function WeeklyTemplateBuilder({
                                   isColumnHovered ? "opacity-100" : "opacity-0",
                                 )}
                                 data-testid={`delete-column-${dayType}-${colIndex}`}
-                                onClick={async (event) => {
+                                onClick={(event) => {
                                   event.stopPropagation();
-                                  const dayBands =
-                                    headerColBandsByDay.get(dayType) ?? [];
-                                  if (dayBands.length <= 1) {
-                                    window.alert(
-                                      "Each day needs at least one column.",
-                                    );
-                                    return;
-                                  }
-                                  const hasEntries = hasSlotsInColumn(
-                                    dayType,
-                                    colIndex,
-                                  );
-                                  if (!hasEntries) {
-                                    handleDeleteColBand(dayType, colIndex);
-                                    return;
-                                  }
-                                  setPendingDeleteColumn({
-                                    dayType,
-                                    index: colIndex,
-                                  });
-                                  const confirmed = await confirm({
-                                    title: "Delete Column",
-                                    message: "Delete this column? Any slots in this column will be removed.",
-                                    confirmLabel: "Delete",
-                                    variant: "danger",
-                                  });
-                                  setPendingDeleteColumn(null);
-                                  if (!confirmed) return;
-                                  handleDeleteColBand(dayType, colIndex);
+                                  void requestDeleteColumn(dayType, colIndex);
                                 }}
                               >
                                 Delete Column
@@ -2128,7 +1998,9 @@ export default function WeeklyTemplateBuilder({
             {!isDayEmpty(copyTargetDay) && (
               <div className="mt-4 rounded-lg bg-amber-50 p-3 dark:bg-amber-900/30">
                 <p className="text-sm text-amber-800 dark:text-amber-200">
-                  The target day has existing content that will be overwritten.
+                  The target day has existing content that will be overwritten. All
+                  shifts planned in the target day&apos;s slots, including past weeks,
+                  are deleted.
                 </p>
                 <label className="mt-2 flex items-center gap-2 text-sm text-amber-700 dark:text-amber-300">
                   <input

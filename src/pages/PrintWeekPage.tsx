@@ -118,11 +118,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     () => buildScheduleRows(rows, locations, locationsEnabled, weeklyTemplate),
     [rows, locations, locationsEnabled, weeklyTemplate],
   );
-  const visibleScheduleRows = scheduleRows;
-  const calendarRows = useMemo(
-    () => buildCalendarRows(visibleScheduleRows),
-    [visibleScheduleRows],
-  );
+  const calendarRows = useMemo(() => buildCalendarRows(scheduleRows), [scheduleRows]);
   const locationSeparatorRowIds = useMemo(
     () => buildLocationSeparatorRowIds(calendarRows),
     [calendarRows],
@@ -140,12 +136,6 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     [weekDays, weeklyTemplate, holidayDates, columnTimeMetaByKey],
   );
   const rowById = useMemo(() => new Map(scheduleRows.map((row) => [row.id, row])), [scheduleRows]);
-
-  const isWeekendOrHoliday = (dateISO: string) => {
-    const date = new Date(`${dateISO}T00:00:00`);
-    const isWeekend = date.getDay() === 0 || date.getDay() === 6;
-    return isWeekend || holidayDates.has(dateISO);
-  };
 
   const renderAssignmentMap = useMemo(
     () =>

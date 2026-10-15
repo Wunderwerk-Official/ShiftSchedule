@@ -9,13 +9,8 @@ const assertOk = async (res, label) => {
   throw new Error(`${label} failed: ${res.status}${detail}`);
 };
 
-const toISODate = (date) => date.toISOString().slice(0, 10);
-const addDays = (date, days) => {
-  const next = new Date(date);
-  next.setUTCDate(next.getUTCDate() + days);
-  return next;
-};
-
+// Read-only: health, login, state, run inbox. It never starts a solver run
+// (that would be a real, machine-exclusive CP-SAT run on the target system).
 const run = async () => {
   const healthRes = await fetch(`${API_BASE}/health`);
   await assertOk(healthRes, "Health check");
@@ -43,28 +38,12 @@ const run = async () => {
   await assertOk(stateRes, "Get state");
   console.log("State fetch ok.");
 
-  const today = new Date();
-  const startISO = toISODate(today);
-  const endISO = toISODate(addDays(today, 6));
-  const solveRes = await fetch(`${API_BASE}/v1/solve/week`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      startISO,
-      endISO,
-      only_fill_required: true,
-    }),
+  const runsRes = await fetch(`${API_BASE}/v1/solve/runs`, {
+    headers: { Authorization: `Bearer ${token}` },
   });
-  await assertOk(solveRes, "Solve week");
-  const solveData = await solveRes.json();
-  console.log(
-    `Solve ok: ${solveData.assignments?.length ?? 0} assignments, notes: ${
-      solveData.notes?.length ?? 0
-    }.`,
-  );
+  await assertOk(runsRes, "List runs");
+  const runsData = await runsRes.json();
+  console.log(`Run inbox ok: ${runsData.runs?.length ?? 0} runs.`);
 };
 
 run().catch((err) => {
