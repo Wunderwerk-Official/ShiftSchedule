@@ -206,6 +206,17 @@ def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
             ON calendar_snapshots(username) WHERE kind = 'auto_backup'
         """
     )
+    # Per-login UI preferences ("My plan" view, saved views, start page);
+    # deliberately outside app_state so they never touch calendar revisions.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_preferences (
+            username TEXT PRIMARY KEY,
+            data TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(app_state)").fetchall()]
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE app_state ADD COLUMN updated_at TEXT")

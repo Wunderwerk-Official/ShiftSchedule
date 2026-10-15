@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer
 
 RowKind = Literal["class", "pool"]
 Role = Literal["admin", "user"]
@@ -46,6 +46,27 @@ class TokenResponse(BaseModel):
 class Location(BaseModel):
     id: str
     name: str
+    # Presentation-only tint "#RRGGBB" (normalized in state.py, ignored by the
+    # planning fingerprint). Must be declared: pydantic drops unknown fields.
+    color: Optional[str] = None
+
+    @field_validator("color", mode="before")
+    @classmethod
+    def _non_string_color_is_unset(cls, value: Any) -> Any:
+        # A malformed color must never block a calendar save with a 422.
+        return value if isinstance(value, str) else None
+
+    # No return annotation: pydantic would use it as the serialization schema
+    # and collapse the OpenAPI output of Location to a bare object.
+    @model_serializer(mode="wrap")
+    def _omit_unset_color(self, handler):
+        # Leave the dump of an uncolored location byte-identical to before the
+        # field existed, so stored calendars keep their revision and open tabs
+        # do not get a spurious 409 after a deploy.
+        data = handler(self)
+        if data.get("color") is None:
+            data.pop("color", None)
+        return data
 
 
 class SubShift(BaseModel):
@@ -335,3 +356,57 @@ class IcalPublishStatus(BaseModel):
 class WebPublishStatus(BaseModel):
     published: bool
     token: Optional[str] = None
+
+
+# Per-user UI preferences (GET/PUT /v1/me/preferences). Stored per login,
+# never in AppState: they describe how one person looks at the plan.
+PlanScope = Literal["team", "me"]
+PlanRange = Literal["day", "week", "month"]
+Orientation = Literal["top", "left"]  # "top" = dates on top (days are columns)
+ColorBy = Literal["section", "person"]
+MAX_SAVED_VIEWS = 12
+
+
+class ViewConfig(BaseModel):
+    """One complete, date-free view; views always open at the current anchor."""
+    scope: PlanScope = "team"
+    range: PlanRange = "week"
+    orientation: Orientation = "top"
+    colorBy: ColorBy = "section"  # only meaningful for scope="team"
+
+
+class SavedView(ViewConfig):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
+    id: str = Field(min_length=1, max_length=64)
+    name: str = Field(min_length=1, max_length=60)
+
+
+class OrientationByRange(BaseModel):
+    # A model instead of Dict[PlanRange, ...] so partial input keeps defaults.
+    day: Orientation = "top"
+    week: Orientation = "top"
+    month: Orientation = "top"
+
+
+class UserPreferences(BaseModel):
+    version: int = Field(default=1, ge=1)
+    clinicianId: Optional[str] = Field(default=None, max_length=200)  # "I am …"
+    orientationByRange: OrientationByRange = Field(default_factory=OrientationByRange)
+    myPlanRange: PlanRange = "week"
+    teamColorBy: ColorBy = "section"
+    savedViews: List[SavedView] = Field(default_factory=list, max_length=MAX_SAVED_VIEWS)
+    startViewDesktop: Optional[ViewConfig] = None
+    startViewMobile: Optional[ViewConfig] = None
+
+    @field_validator("clinicianId", mode="before")
+    @classmethod
+    def _blank_clinician_is_unset(cls, value: Any) -> Any:
+        return None if isinstance(value, str) and not value.strip() else value
+
+    @field_validator("savedViews")
+    @classmethod
+    def _unique_view_ids(cls, views: List[SavedView]) -> List[SavedView]:
+        if len({view.id for view in views}) != len(views):
+            raise ValueError("Saved view ids must be unique.")
+        return views

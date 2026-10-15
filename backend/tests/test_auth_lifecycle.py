@@ -77,6 +77,7 @@ def seed_owned_data(username):
                      (f"change-{username}", username, now, now))
         conn.execute("INSERT INTO calendar_snapshots VALUES (?, ?, 'private snapshot', 'named', '{}', ?, ?)",
                      (f"snapshot-{username}", username, now, now))
+        conn.execute("INSERT INTO user_preferences VALUES (?, ?, ?)", (username, "{}", now))
 
 
 def owned_rows(username):
@@ -85,6 +86,7 @@ def owned_rows(username):
         for table, column in [("app_state", "id")] + [(table, "username") for table in (
             "users", "ical_publications", "ical_clinician_publications", "web_publications",
             "agent_spend", "solver_runs", "run_feedback", "schedule_changes", "calendar_snapshots",
+            "user_preferences",
         )]:
             result[table] = [dict(row) for row in conn.execute(
                 f"SELECT * FROM {table} WHERE {column} = ?", (username,)).fetchall()]
@@ -261,10 +263,11 @@ def test_delete_stops_a_live_solver_process_and_prevents_new_account_artifacts(t
 
 @pytest.mark.parametrize("operation", [
     "read_state", "save_state", "list_snapshots", "create_snapshot", "restore_snapshot",
-    "rename_snapshot", "delete_snapshot", "apply_run",
+    "rename_snapshot", "delete_snapshot", "apply_run", "get_preferences", "put_preferences",
 ])
 def test_stale_authenticated_request_cannot_access_replacement_data(operation):
-    from backend import snapshots, solver_runs, state_routes
+    from backend import preferences, snapshots, solver_runs, state_routes
+    from backend.models import UserPreferences
     from backend.run_apply import apply_stored_run, planning_fingerprint
     from backend.state import _save_state
     from .conftest import make_app_state
@@ -291,6 +294,8 @@ def test_stale_authenticated_request_cannot_access_replacement_data(operation):
             meta.id, snapshots.SnapshotRenameRequest(name="stale"), old_user),
         "delete_snapshot": lambda: snapshots.delete_snapshot(meta.id, old_user),
         "apply_run": lambda: apply_stored_run("same", "new-run", force=True, allow_partial=True, account_user=old_user),
+        "get_preferences": lambda: preferences.get_preferences(old_user),
+        "put_preferences": lambda: preferences.put_preferences(UserPreferences(myPlanRange="day"), old_user),
     }
     with pytest.raises(HTTPException) as error:
         calls[operation]()

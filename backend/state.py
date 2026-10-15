@@ -84,8 +84,24 @@ def _parse_shift_row_id(row_id: str) -> tuple[str, Optional[str]]:
     return class_id, sub_shift_id or None
 
 
+_HEX_COLOR_RE = re.compile(r"#[0-9A-Fa-f]{6}")
+
+
+def _normalize_location_color(value: Optional[str]) -> Optional[str]:
+    """Keep only "#RRGGBB" (uppercased); anything else means "no tint".
+
+    No trimming, same rule as the frontend's normalizeLocationColor.
+    """
+    return value.upper() if value and _HEX_COLOR_RE.fullmatch(value) else None
+
+
 def _ensure_locations(locations: List[Location]) -> List[Location]:
-    by_id = {loc.id: loc for loc in locations if loc.id}
+    by_id: Dict[str, Location] = {}
+    for loc in locations:
+        if not loc.id:
+            continue
+        color = _normalize_location_color(loc.color)
+        by_id[loc.id] = loc if color == loc.color else loc.model_copy(update={"color": color})
     if DEFAULT_LOCATION_ID not in by_id:
         by_id[DEFAULT_LOCATION_ID] = Location(
             id=DEFAULT_LOCATION_ID, name=DEFAULT_LOCATION_NAME

@@ -6,6 +6,8 @@ export type RowKind = "class" | "pool";
 export type Location = {
   id: string;
   name: string;
+  /** Light "#RRGGBB" ground tint for My plan / team rows; null or absent = no tint. */
+  color?: string | null;
 };
 
 export type SubShift = {
@@ -1408,4 +1410,65 @@ export async function exportWeeksPdf(startISO: string, weeks: number, revision?:
     await throwWithDetail(res, `Failed to export PDF: ${res.status}`);
   }
   return res.blob();
+}
+
+// Per-user UI preferences ("My plan" view, saved views, start pages). Stored
+// server-side per account in their own table, NOT in AppState, so they never
+// touch the calendar revision. Mirrors backend/models.py::UserPreferences.
+export type PlanScope = "team" | "me";
+export type PlanRange = "day" | "week" | "month";
+/** "top" = date on top (days are columns), "left" = date on the left (days are rows). */
+export type Orientation = "top" | "left";
+export type ColorBy = "section" | "person";
+
+export type ViewConfig = {
+  scope: PlanScope;
+  range: PlanRange;
+  orientation: Orientation;
+  /** Only meaningful for scope "team". */
+  colorBy: ColorBy;
+};
+
+export type SavedView = ViewConfig & {
+  id: string;
+  name: string;
+};
+
+export type UserPreferences = {
+  version: number;
+  /** "I am …": the clinician this account is linked to. */
+  clinicianId: string | null;
+  orientationByRange: Record<PlanRange, Orientation>;
+  myPlanRange: PlanRange;
+  teamColorBy: ColorBy;
+  /** At most 12 (backend limit). */
+  savedViews: SavedView[];
+  startViewDesktop: ViewConfig | null;
+  startViewMobile: ViewConfig | null;
+};
+
+export async function getUserPreferences(): Promise<UserPreferences> {
+  const res = await fetch(`${API_BASE}/v1/me/preferences`, {
+    headers: buildHeaders(),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    await throwWithDetail(res, `Failed to load preferences: ${res.status}`);
+  }
+  return res.json();
+}
+
+export async function saveUserPreferences(
+  prefs: UserPreferences,
+): Promise<UserPreferences> {
+  const res = await fetch(`${API_BASE}/v1/me/preferences`, {
+    method: "PUT",
+    headers: buildHeaders(),
+    body: JSON.stringify(prefs),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    await throwWithDetail(res, `Failed to save preferences: ${res.status}`);
+  }
+  return res.json();
 }

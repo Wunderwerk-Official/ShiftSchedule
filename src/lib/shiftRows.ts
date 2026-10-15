@@ -226,11 +226,24 @@ export function normalizeSubShifts(subShifts?: SubShift[]): SubShift[] {
   return normalized.sort((a, b) => a.order - b.order).slice(0, 3);
 }
 
+// Location.color is presentation only: keep a valid "#RRGGBB" (uppercased,
+// like backend/state.py), drop anything else so "no tint" is always absent.
+// Unchanged locations keep their object identity.
+function normalizeLocationColor(location: Location): Location {
+  const { color, ...rest } = location;
+  if (color === undefined) return location;
+  if (typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color)) {
+    const upper = color.toUpperCase();
+    return upper === color ? location : { ...rest, color: upper };
+  }
+  return rest;
+}
+
 export function ensureLocations(locations?: Location[]): Location[] {
   const next = new Map<string, Location>();
   for (const location of locations ?? []) {
     if (!location?.id) continue;
-    next.set(location.id, location);
+    next.set(location.id, normalizeLocationColor(location));
   }
   if (!next.has(DEFAULT_LOCATION_ID)) {
     next.set(DEFAULT_LOCATION_ID, {
@@ -784,7 +797,11 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
     changed = true;
   }
   const locations = ensureLocations(state.locations);
-  if (!state.locations || state.locations.length !== locations.length) {
+  if (
+    !state.locations ||
+    state.locations.length !== locations.length ||
+    locations.some((location, index) => location !== state.locations?.[index])
+  ) {
     changed = true;
   }
   const locationIdSet = new Set(locations.map((loc) => loc.id));

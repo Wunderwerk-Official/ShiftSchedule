@@ -60,6 +60,15 @@ def test_fixing_during_run_survives_apply_and_changes_fingerprint():
     assert combined[0].locked
 
 
+def test_location_color_is_presentation_only_for_the_fingerprint():
+    state = make_app_state()
+    before = planning_fingerprint(state)
+    state.locations[0].color = '#E9EEF5'
+    assert planning_fingerprint(state) == before
+    state.locations[0].name = 'Renamed'
+    assert planning_fingerprint(state) != before
+
+
 def test_harness_keeps_locked_solver_duty_as_context():
     fixed = make_assignment('fixed', 'slot-a__mon', MON, 'clin-1', 'solver').model_copy(update={'locked': True})
     state = make_app_state(assignments=[fixed])

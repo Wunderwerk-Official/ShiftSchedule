@@ -165,7 +165,8 @@ def _delete_account_data(conn: sqlite3.Connection, username: str) -> None:
     conn.execute("DELETE FROM run_feedback WHERE username = ? OR run_id IN "
                  "(SELECT id FROM solver_runs WHERE username = ?)", (username, username))
     for table in ("calendar_snapshots", "schedule_changes", "solver_runs", "agent_spend",
-                  "ical_publications", "ical_clinician_publications", "web_publications"):
+                  "ical_publications", "ical_clinician_publications", "web_publications",
+                  "user_preferences"):
         conn.execute(f"DELETE FROM {table} WHERE username = ?", (username,))
     conn.execute("DELETE FROM app_state WHERE id = ?", (username,))
 

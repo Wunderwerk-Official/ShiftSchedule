@@ -23,6 +23,9 @@ def planning_fingerprint(state: AppState) -> str:
     data = state.model_dump(exclude={"revision", "publishedWeekStartISOs",
                                      "holidayCountry", "holidayYear"})
     data["solverSettings"].pop("scheduleLayout", None)
+    # Location colors are presentation only: recoloring never stales a run.
+    for location in data["locations"]:
+        location.pop("color", None)
     return "v2:" + hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 

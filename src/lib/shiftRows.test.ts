@@ -77,6 +77,23 @@ describe("ensureLocations", () => {
     const result = ensureLocations(locations);
     expect(result.some((loc) => loc.id === "loc-1")).toBe(true);
   });
+
+  it("keeps valid location colors (uppercased) and drops invalid ones", () => {
+    const plain = { id: "loc-plain", name: "Plain" };
+    const valid = { id: "loc-valid", name: "Mitte", color: "#E9EEF5" };
+    const result = ensureLocations([
+      plain,
+      valid,
+      { id: "loc-lower", name: "Nord", color: "#eedfc4" },
+      { id: "loc-bad", name: "Bad", color: "red" },
+      { id: "loc-null", name: "None", color: null },
+    ]);
+    expect(result[0]).toBe(plain);
+    expect(result[1]).toBe(valid);
+    expect(result[2]).toEqual({ id: "loc-lower", name: "Nord", color: "#EEDFC4" });
+    expect(result[3]).toEqual({ id: "loc-bad", name: "Bad" });
+    expect(result[4]).toEqual({ id: "loc-null", name: "None" });
+  });
 });
 
 describe("normalizeAppState", () => {
@@ -138,6 +155,21 @@ describe("normalizeAppState", () => {
     },
     holidays: [],
     ...overrides,
+  });
+
+  it("keeps a valid location color through normalization and drops an invalid one", () => {
+    const { state: normalized } = normalizeAppState(
+      makeMinimalState({
+        locations: [
+          { id: "loc-default", name: "Default", color: "#e9eef5" },
+          { id: "loc-nord", name: "Nord", color: "#12345" },
+        ],
+      }),
+    );
+    expect(normalized.locations).toEqual([
+      { id: "loc-default", name: "Default", color: "#E9EEF5" },
+      { id: "loc-nord", name: "Nord" },
+    ]);
   });
 
   describe("deprecated pool removal", () => {
