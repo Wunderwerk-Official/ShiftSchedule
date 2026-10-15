@@ -81,6 +81,7 @@ describe("formatting", () => {
     const [part2] = plan.days[3].segments;
     const night = plan.shifts.get(part1.shiftId)!;
     expect(formatSegmentHint(part1, night)).toBe("→ until Thu 08:00");
+    expect(formatSegmentHint(part1, night, "vertical")).toBe("↓ Thu until 08:00");
     expect(formatSegmentHint(part2, night)).toBe("↳ Nachtdienst · until 08:00");
     expect(formatShiftTimeRange(night)).toBe("17:00 → Thu 08:00");
     expect(formatShiftWhen(night)).toBe("Wed 14 Oct, 17:00 → Thu 15 Oct, 08:00 · 15.0 h");

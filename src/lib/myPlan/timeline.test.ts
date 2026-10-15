@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { REST_DAY_POOL_ID } from "../schedule";
 import { DEFAULT_LOCATION_ID } from "../shiftRows";
+import { sumHours } from "./hours";
 import { buildPersonPlan } from "./timeline";
 import { ASSIGNMENTS, assign, LOCATIONS, makeSource } from "./testFixtures";
 import type { PlanSource } from "./types";
@@ -198,5 +199,93 @@ describe("buildPersonPlan — edges", () => {
     expect(oct26.published).toBe(false);
     expect(plan.shifts.get(oct26.segments[0].shiftId)?.published).toBe(false);
     expect(plan.days.at(-1)).toMatchObject({ dateISO: "2026-11-01", holidayName: "Allerheiligen" });
+  });
+});
+
+describe("buildPersonPlan — overlaps, rest conflicts, two locations", () => {
+  it("counts overlapping time once, to the longer shift (SPEC R4)", () => {
+    const source = makeSource({ assignments: [...ASSIGNMENTS, assign("lh", "demo", "2026-10-15")] });
+    const plan = week42(source);
+    const thu = dayOf(plan, "2026-10-15");
+    const demos = plan.shifts.get(thu.segments[1].shiftId)!;
+    expect(demos).toMatchObject({ hours: 0.5, countedHours: 0 });
+    expect(thu.hours).toBeNull();
+    expect(sumHours(plan, "2026-10-12", "2026-10-18")).toBe(53);
+    // Without overlap a shift counts fully.
+    expect(dayOf(plan, "2026-10-12").hours).toBe(9);
+  });
+
+  it("drops a derived on-call rest day where a shift starts (SPEC R3)", () => {
+    const source = makeSource({
+      assignments: [
+        ...ASSIGNMENTS.filter((a) => a.rowId !== REST_DAY_POOL_ID),
+        assign("lh", "angio", "2026-10-15"),
+      ],
+      solverSettings: {
+        enforceSameLocationPerDay: true,
+        onCallRestEnabled: true,
+        onCallRestClassId: "nacht",
+        onCallRestDaysBefore: 0,
+        onCallRestDaysAfter: 1,
+        preferContinuousShifts: true,
+      },
+    });
+    expect(dayOf(week42(source), "2026-10-15").absences).toEqual([]);
+  });
+
+  it("starts an explicit rest day after the work of that day", () => {
+    const source = makeSource({ assignments: [...ASSIGNMENTS, assign("lh", "kon", "2026-10-15")] });
+    expect(dayOf(week42(source), "2026-10-15").absences).toEqual([
+      { kind: "rest", dateISO: "2026-10-15", startMin: 480, label: "ND-Frei" },
+    ]);
+    const late = makeSource({ assignments: [...ASSIGNMENTS, assign("lh", "zus", "2026-10-15")] });
+    expect(dayOf(week42(late), "2026-10-15").absences[0]).toMatchObject({ startMin: 1320 });
+  });
+
+  it("splits the ground between two locations at the middle of the gap (SPEC R9)", () => {
+    const source = makeSource({
+      assignments: [...ASSIGNMENTS, assign("lh", "kon", "2026-10-13"), assign("lh", "zus", "2026-10-13")],
+    });
+    const tue = dayOf(week42(source), "2026-10-13");
+    expect(tue.startLocationIds).toEqual(["mitte", "nord"]);
+    expect(tue.tintBands.map((band) => [band.startMin, band.endMin, band.tint?.ground])).toEqual([
+      [0, 480, "#E9EEF5"], // FB 07:30–08:00 Mitte, touching CT at Nord → split at 08:00
+      [480, 1005, "#EEDFC4"], // Nord until 16:30, Zusatzdienst 17:00 → split at 16:45
+      [1005, 1440, "#E9EEF5"],
+    ]);
+    // The single tint is the colored location with the most hours.
+    expect(tue.tint?.ground).toBe("#EEDFC4");
+    expect(dayOf(week42(source), "2026-10-12").tintBands).toEqual([]);
+  });
+
+  it("titles a role section by the row bands it is placed in", () => {
+    const base = makeSource();
+    const NIGHT = "Nachtdienst 17:00–08:00";
+    const moves: Record<string, [string, string]> = {
+      "mitte-nacht": ["mitte-nacht", NIGHT],
+      // Hintergrund OA sits in two foreign bands (night + weekend LKE/DL): a role section.
+      "mitte-ruf": ["mitte-nacht", NIGHT],
+      "mitte-lke": ["mitte-lke", "LKE/DL"],
+      "mitte-rufwe": ["mitte-lke", "LKE/DL"],
+      // MRT spät next to MRT only (one foreign band) keeps its own name.
+      "mitte-mrt": ["mitte-mrt", "MRT"],
+      "mitte-mrts": ["mitte-mrt", "MRT"],
+      "mitte-angio": ["mitte-angio", "Row 1"],
+    };
+    const scheduleRows = base.scheduleRows.map((row) => {
+      const move = row.rowBandId ? moves[row.rowBandId] : undefined;
+      return move ? { ...row, rowBandId: move[0], rowBandLabel: move[1] } : row;
+    });
+    const source = { ...base, scheduleRows };
+    const jonas = week42(source, "jw");
+    const wed = jonas.shifts.get(dayOf(jonas, "2026-10-14").segments[0].shiftId)!;
+    expect(wed).toMatchObject({ title: "Nachtdienst", role: "Hintergrund OA", shortLabel: "Nacht" });
+    const lena = week42(source);
+    const night = lena.shifts.get(dayOf(lena, "2026-10-14").segments[0].shiftId)!;
+    expect(night.title).toBe("Nachtdienst");
+    expect(night.role).toBeUndefined();
+    expect(week42(source, "pr").shifts.get("pr:mrts:2026-10-12")?.title).toBe("MRT spät");
+    // A generic band label ("Row 1") names no section: the section title stays.
+    expect(lena.shifts.get("lh:angio:2026-10-16")?.title).toBe("Angiographie");
   });
 });

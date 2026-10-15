@@ -19,12 +19,18 @@ export type BlockColors = {
   secondaryText: string;
 };
 
+/** Ground, chip and chip text of a location tint in one theme. */
+export type LocationTone = { ground: string; chip: string; ink: string };
+
 /**
- * Location tint: light ground for the day, darker chip, chip text. Light mode
- * only for the ground: in dark mode paint it at ~15 % opacity (`${ground}26`)
- * under the usual light text, or skip it; chip + ink work on any surface.
+ * Location tint: light ground for the day, darker chip, chip text; `dark`
+ * holds the dark-mode set (SPEC B7: deep ground, mid chip, light ink). Pick
+ * the theme's set with tintTone(tint, isDark).
  */
-export type LocationTint = { ground: string; chip: string; ink: string };
+export type LocationTint = LocationTone & { dark: LocationTone };
+
+/** Theme-resolved person color: circle/border, pill fill, pill text, initials text. */
+export type PersonTone = { strong: string; light: string; ink: string; onStrong: string };
 
 /** Everything the plan builders read; pass the page's normalized state slices. */
 export type PlanSource = {
@@ -46,10 +52,18 @@ export type PlanShift = {
   rowId: string;
   /** Start day; the whole shift (and its hours) belongs to this day. */
   dateISO: string;
-  /** Section name without times ("MRT 08:00–17:00" → "MRT"). */
+  /**
+   * Section name without times ("MRT 08:00–17:00" → "MRT"). A slot of a role
+   * section placed in another section's row band (clinic sheet: "Oberärzte"
+   * in the "Nachtdienst" row) is titled by that band ("Nachtdienst").
+   */
   title: string;
-  /** ≤ 6 characters, derived from the title. */
+  /** The slot's own section when the title comes from the row band ("Oberärzte"). */
+  role?: string;
+  /** ≤ 6 characters, derived from the title ("Konv.", "Nacht", "CT-Int"). */
   shortLabel: string;
+  /** ≤ 5 characters for the narrowest cells (phone week columns, phone month chips). */
+  compactLabel: string;
   /** Template block label, when set ("Arbeitsplatz 1"). */
   slotLabel?: string;
   sectionId?: string;
@@ -62,6 +76,12 @@ export type PlanShift = {
   endMin: number;
   /** Gross slot duration in hours (no break deduction), counted on the start day. */
   hours: number;
+  /**
+   * Hours this shift adds to day/week sums (SPEC R4): time overlapping a
+   * longer own shift counts only once, to the longer one. Set for the
+   * plan's own shifts by buildPersonPlan; read via countedHours().
+   */
+  countedHours?: number;
   kind: ShiftKind;
   colors: BlockColors;
   /** Week of the start day is published. */
@@ -97,6 +117,9 @@ export type PlanAbsence = {
   label: string;
 };
 
+/** Part of a day's ground with one location tint (minutes 0..1440 within the day). */
+export type TintBand = { startMin: number; endMin: number; tint: LocationTint | null };
+
 export type PlanDay = {
   dateISO: string;
   /** Local midnight. */
@@ -116,9 +139,21 @@ export type PlanDay = {
   startLocationId?: string;
   /** Distinct locations of shifts starting this day, in start order (none if locations are off). */
   startLocationIds: string[];
-  /** Ground tint of startLocationId; null when there is none or it has no color. */
+  /**
+   * Ground tint of the day: the colored start location with the most hours
+   * (else none). Null when no start location has a color.
+   */
   tint: LocationTint | null;
-  /** Hours of shifts starting this day; null when nothing starts this day. */
+  /**
+   * Days with shifts at two or more locations (SPEC R9): the ground split at
+   * the middle of the gap between them, covering 0..1440 in order; a band of
+   * an uncolored location has tint null. Empty for one location or none.
+   */
+  tintBands: TintBand[];
+  /**
+   * Counted hours of shifts starting this day (overlaps with a longer own
+   * shift removed, SPEC R4); null when nothing (countable) starts this day.
+   */
   hours: number | null;
   /** Only the continuation of an earlier shift is on this day. */
   isContinuationOnly: boolean;

@@ -1,6 +1,11 @@
-import { LOCATION_COLOR_OPTIONS, PERSON_COLORS, type PersonColor } from "../colorPalette";
+import {
+  LOCATION_COLOR_OPTIONS,
+  PERSON_COLORS,
+  PERSON_ON_STRONG,
+  type PersonColor,
+} from "../colorPalette";
 import { getLuminance } from "../shiftRows";
-import type { BlockColors, LocationTint } from "./types";
+import type { BlockColors, LocationTint, LocationTone, PersonTone } from "./types";
 
 // Block, duty, absence and location colors for "My plan" (SPEC B4–B7).
 // Section blocks keep the existing pastel `blockColor` as fill; border and
@@ -141,16 +146,67 @@ export function deriveBlockColors(fill?: string | null): BlockColors {
   return colors;
 }
 
+const darkBlockColorCache = new Map<string, BlockColors>();
+
+/**
+ * Dark-mode block colors for a section fill (SPEC B4 dark column): a deep,
+ * desaturated fill of the same hue, a light border (≥ 3:1 against the dark
+ * card) and light text (≥ 7:1, secondary ≥ 4.5:1) instead of the raw pastel.
+ */
+export function deriveDarkBlockColors(fill?: string | null): BlockColors {
+  const base = normalizeHex(fill) ?? FALLBACK_FILL;
+  const cached = darkBlockColorCache.get(base);
+  if (cached) return cached;
+  const hsl = hexToHsl(base);
+  const s = Math.min(hsl.s, 0.35);
+  const darkFill = hslToHex({ h: hsl.h, s, l: 0.22 });
+  const card = "#0F172A";
+  let border = hslToHex({ h: hsl.h, s: Math.min(hsl.s, 0.4), l: 0.58 });
+  for (let l = 0.58; contrastRatio(border, card) < 3 && l < 0.95; l += 0.02) {
+    border = hslToHex({ h: hsl.h, s: Math.min(hsl.s, 0.4), l });
+  }
+  const colors: BlockColors = {
+    fill: darkFill,
+    border,
+    text: lightInk(hsl, darkFill, 7),
+    secondaryText: (() => {
+      const secondary = hslToHex({ h: hsl.h, s: Math.min(hsl.s, 0.3), l: 0.76 });
+      return contrastRatio(secondary, darkFill) >= 4.5 ? secondary : WHITE;
+    })(),
+  };
+  darkBlockColorCache.set(base, Object.freeze(colors));
+  return colors;
+}
+
+// Dark-mode set of a custom location color, in the scheme of the presets
+// (SPEC B7): deep ground, mid chip, light ink (≥ 7:1 on the chip, else white).
+function darkLocationTone(hsl: Hsl): LocationTone {
+  const s = Math.min(hsl.s, 0.4);
+  const chip = hslToHex({ h: hsl.h, s: Math.min(s, 0.3), l: 0.27 });
+  const ink = hslToHex({ h: hsl.h, s: Math.max(s, 0.45), l: 0.88 });
+  return {
+    ground: hslToHex({ h: hsl.h, s: Math.min(s, 0.35), l: 0.16 }),
+    chip,
+    ink: contrastRatio(ink, chip) >= 7 ? ink : WHITE,
+  };
+}
+
+/** The theme's ground / chip / ink of a location tint. */
+export function tintTone(tint: LocationTint, isDark: boolean): LocationTone {
+  return isDark ? tint.dark : tint;
+}
+
 /**
  * Tint for a Location.color: one of LOCATION_COLOR_OPTIONS, or for a custom
  * hex a slightly darker chip and an ink with ≥ 5.5:1 against the chip where
- * reachable (light ink on dark chips; always ≥ 4.5:1). Null = no tint.
+ * reachable (light ink on dark chips; always ≥ 4.5:1). Both carry a dark-mode
+ * set (`dark`). Null = no tint.
  */
 export function locationTint(color?: string | null): LocationTint | null {
   const ground = normalizeHex(color);
   if (!ground) return null;
   const preset = LOCATION_COLOR_OPTIONS.find((option) => option.color === ground);
-  if (preset) return { ground, chip: preset.chip, ink: preset.ink };
+  if (preset) return { ground, chip: preset.chip, ink: preset.ink, dark: preset.dark };
   const hsl = hexToHsl(ground);
   const chip = hslToHex({ ...hsl, l: Math.max(0, hsl.l - 0.08) });
   const ink =
@@ -161,7 +217,7 @@ export function locationTint(color?: string | null): LocationTint | null {
           0.3,
           (hex) => contrastRatio(hex, chip) >= 5.5,
         );
-  return { ground, chip, ink };
+  return { ground, chip, ink, dark: darkLocationTone(hsl) };
 }
 
 /** Person color by clinician list index; repeats after 16. */
@@ -169,4 +225,20 @@ export function personColor(index: number): PersonColor {
   const count = PERSON_COLORS.length;
   const i = Number.isFinite(index) ? Math.trunc(index) : 0;
   return PERSON_COLORS[((i % count) + count) % count];
+}
+
+/**
+ * Person colors for the theme (SPEC B8): light mode = strong circle with
+ * white initials, light fill, ink text; dark mode = the `dark` tokens with
+ * dark initials. Use for team pills and every initials avatar.
+ */
+export function personTone(index: number, isDark = false): PersonTone {
+  const color = personColor(index);
+  const tone = isDark ? color.dark : color;
+  return {
+    strong: tone.strong,
+    light: tone.light,
+    ink: tone.ink,
+    onStrong: isDark ? PERSON_ON_STRONG.dark : PERSON_ON_STRONG.light,
+  };
 }

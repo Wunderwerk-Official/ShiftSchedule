@@ -1,5 +1,7 @@
-import { localDateTime } from "./dates";
-import type { PersonPlan, PlanShift } from "./types";
+import { toISODate } from "../date";
+import { addDaysISO, localDateTime } from "./dates";
+import { buildPersonPlan } from "./timeline";
+import type { PersonPlan, PlanShift, PlanSource } from "./types";
 
 export type NextShift = {
   shift: PlanShift;
@@ -39,4 +41,22 @@ export function findNextShift(
     };
   }
   return null;
+}
+
+/** findNextShift on a plan of its own (today … today + horizon), e.g. for "open at next shift". */
+export function findNextShiftFor(
+  source: PlanSource,
+  clinicianId: string,
+  now: Date,
+  horizonDays = DEFAULT_HORIZON_DAYS,
+): NextShift | null {
+  const todayISO = toISODate(now);
+  const plan = buildPersonPlan({
+    ...source,
+    clinicianId,
+    fromISO: todayISO,
+    toISO: addDaysISO(todayISO, horizonDays),
+    todayISO,
+  });
+  return findNextShift(plan, now, horizonDays);
 }

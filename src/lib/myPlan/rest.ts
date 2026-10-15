@@ -64,25 +64,36 @@ function describeAbsence(plan: PersonPlan, absence: PlanAbsence): string {
  * "Fri 16 Oct · Angio 08:00", "Thu 15 Oct · MRT 08:00 (directly after)" (after
  * a night), "Thu 15 Oct · Rest Day from 08:00",
  * "Mon 19 Oct – Fri 23 Oct · Vacation" (absence label = pool row name);
- * null when nothing follows in the plan.
+ * null when nothing follows in the plan. A shift that lies entirely within
+ * this one is skipped (a meeting during a night, Demos 07:15–07:45 before its
+ * 08:00 end), so the night names its rest day; one that starts during it but
+ * runs past its end ("MRT spät 11:00" during MRT until 16:30) still follows.
  */
 export function nextAfter(plan: PersonPlan, shift: PlanShift): string | null {
   let nextShift: PlanShift | null = null;
   for (const other of plan.shifts.values()) {
-    if (other.id === shift.id || startOf(other, shift.dateISO) <= shift.startMin) continue;
+    if (
+      other.id === shift.id ||
+      startOf(other, shift.dateISO) <= shift.startMin ||
+      endOf(other, shift.dateISO) <= shift.endMin
+    ) {
+      continue;
+    }
     if (!nextShift || startOf(other, shift.dateISO) < startOf(nextShift, shift.dateISO)) {
       nextShift = other;
     }
   }
+  const absenceStartOf = (absence: PlanAbsence) =>
+    dayDiff(shift.dateISO, absence.dateISO) * MINUTES_PER_DAY + absence.startMin;
+  // An all-day absence still follows when it begins during the shift but
+  // outlasts it (vacation on the day a night ends); it counts from the end.
   const nextAbsence = plan.absences.find(
     (absence) =>
-      dayDiff(shift.dateISO, absence.dateISO) * MINUTES_PER_DAY + absence.startMin >
-      shift.startMin,
+      absenceStartOf(absence) > shift.startMin &&
+      (dayDiff(shift.dateISO, absence.dateISO) + 1) * MINUTES_PER_DAY > shift.endMin,
   );
   const shiftStart = nextShift ? startOf(nextShift, shift.dateISO) : Infinity;
-  const absenceStart = nextAbsence
-    ? dayDiff(shift.dateISO, nextAbsence.dateISO) * MINUTES_PER_DAY + nextAbsence.startMin
-    : Infinity;
+  const absenceStart = nextAbsence ? Math.max(absenceStartOf(nextAbsence), shift.endMin) : Infinity;
   if (nextAbsence && absenceStart <= shiftStart) return describeAbsence(plan, nextAbsence);
   if (!nextShift) return null;
   const direct = shiftStart === shift.endMin ? " (directly after)" : "";

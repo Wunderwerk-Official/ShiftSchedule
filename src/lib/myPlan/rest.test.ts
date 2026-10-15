@@ -59,6 +59,46 @@ describe("restBefore / nextAfter (SPEC D4)", () => {
     )!;
     expect(nextAfter(withMrt, night)).toBe("Thu 15 Oct · MRT 08:00 (directly after)");
   });
+
+  it("skips what starts during the shift: a meeting before the night ends is not 'next'", () => {
+    // Demos 07:15–07:45 on Thu runs inside the night (until 08:00).
+    const source = makeSource({ assignments: [...ASSIGNMENTS, assign("lh", "demo", "2026-10-15")] });
+    const withDemos = buildPersonPlan({ ...source, clinicianId: "lh", ...WEEK_42 });
+    const night = [...withDemos.shifts.values()].find(
+      (s) => s.title === "Nachtdienst" && s.dateISO === "2026-10-14",
+    )!;
+    expect(nextAfter(withDemos, night)).toBe("Thu 15 Oct · ND-Frei from 08:00");
+    // Without the rest day, the next shift after the night's end follows (not Demos).
+    const restId = assign("lh", REST_DAY_POOL_ID, "2026-10-15").id;
+    const noRest = makeSource({
+      assignments: [...ASSIGNMENTS.filter((a) => a.id !== restId), assign("lh", "demo", "2026-10-15")],
+    });
+    const plain = buildPersonPlan({ ...noRest, clinicianId: "lh", ...WEEK_42 });
+    const plainNight = [...plain.shifts.values()].find(
+      (s) => s.title === "Nachtdienst" && s.dateISO === "2026-10-14",
+    )!;
+    expect(nextAfter(plain, plainNight)).toBe("Fri 16 Oct · Angiographie 08:00");
+  });
+
+  it("still names a shift that starts during this one and runs past its end", () => {
+    // MRT spät 11:00–20:00 overlaps Monday's MRT (until 16:30) but outlasts it.
+    const source = makeSource({ assignments: [...ASSIGNMENTS, assign("lh", "mrts", "2026-10-12")] });
+    const withLate = buildPersonPlan({ ...source, clinicianId: "lh", ...WEEK_42 });
+    const mrt = [...withLate.shifts.values()].find((s) => s.title === "MRT" && s.dateISO === "2026-10-12")!;
+    expect(nextAfter(withLate, mrt)).toBe("MRT spät 11:00");
+  });
+
+  it("names a vacation that starts on the morning a night ends from its first day", () => {
+    const lkeId = assign("lh", "lke", "2026-10-18").id;
+    const source = makeSource({
+      assignments: [...ASSIGNMENTS.filter((a) => a.id !== lkeId), assign("lh", "nacht", "2026-10-18")],
+    });
+    const withNight = buildPersonPlan({ ...source, clinicianId: "lh", ...WEEK_42 });
+    const sundayNight = [...withNight.shifts.values()].find(
+      (s) => s.title === "Nachtdienst" && s.dateISO === "2026-10-18",
+    )!;
+    expect(nextAfter(withNight, sundayNight)).toBe("Mon 19 Oct – Fri 23 Oct · Urlaub/FzA");
+  });
 });
 
 describe("findNextShift", () => {

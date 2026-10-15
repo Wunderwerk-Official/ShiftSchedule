@@ -10,14 +10,17 @@ import {
   parseISODate,
   weekStartISO,
 } from "./dates";
+import { countedHours, withCountedHours } from "./hours";
 import { collectShifts, createPlanContext, isOnVacation, type PlanContext } from "./shifts";
 import type {
+  LocationTint,
   PersonPlan,
   PlanAbsence,
   PlanDay,
   PlanSegment,
   PlanShift,
   PlanSource,
+  TintBand,
 } from "./types";
 
 // Builds one person's plan for a visible date range. Shifts are read from a
@@ -39,11 +42,9 @@ export function buildPersonPlan(input: PersonPlanInput): PersonPlan {
   const ctx = createPlanContext(input);
   const contextFrom = addDaysISO(input.fromISO, -CONTEXT_DAYS);
   const contextTo = addDaysISO(input.toISO, CONTEXT_DAYS);
-  const shiftList = collectShifts(ctx, {
-    fromISO: contextFrom,
-    toISO: contextTo,
-    clinicianId: input.clinicianId,
-  });
+  const shiftList = withCountedHours(
+    collectShifts(ctx, { fromISO: contextFrom, toISO: contextTo, clinicianId: input.clinicianId }),
+  );
   const absences = buildAbsences(ctx, input.clinicianId, contextFrom, contextTo, shiftList);
   const absencesByDate = new Map<string, PlanAbsence[]>();
   for (const absence of absences) {
@@ -68,13 +69,13 @@ function relativeSpan(shift: PlanShift, dateISO: string) {
   return { start: offset + shift.startMin, end: offset + shift.endMin };
 }
 
-// Minute at which the continuation of earlier shifts ends on this day (0 = none).
-function continuationEnd(shifts: PlanShift[], dateISO: string): number {
+// Minute at which the day's own work ends (continuations and shifts of the
+// day, capped at midnight); 0 = no work that day.
+function workEnd(shifts: PlanShift[], dateISO: string): number {
   let end = 0;
   for (const shift of shifts) {
-    if (shift.dateISO >= dateISO) continue;
     const span = relativeSpan(shift, dateISO);
-    if (span.end > 0) end = Math.max(end, Math.min(span.end, MINUTES_PER_DAY));
+    if (span.start < MINUTES_PER_DAY && span.end > 0) end = Math.max(end, Math.min(span.end, MINUTES_PER_DAY));
   }
   return end;
 }
@@ -113,6 +114,10 @@ function buildAbsences(
   const explicitVacation = new Set(
     ownAssignments.filter((a) => a.rowId === VACATION_POOL_ID).map((a) => a.dateISO),
   );
+  const explicitRest = new Set(
+    ownAssignments.filter((a) => a.rowId === REST_DAY_POOL_ID).map((a) => a.dateISO),
+  );
+  const shiftStartDays = new Set(shifts.map((shift) => shift.dateISO));
   const labelOf = (rowId: string, fallback: string) => ctx.rowById.get(rowId)?.name || fallback;
   const absences: PlanAbsence[] = [];
   for (const dateISO of dates) {
@@ -124,10 +129,16 @@ function buildAbsences(
         label: labelOf(VACATION_POOL_ID, "Vacation"),
       });
     } else if (rendered.get(`${REST_DAY_POOL_ID}__${dateISO}`)?.length) {
+      // SPEC R3: a rest day never sits next to work of the same day. A derived
+      // on-call rest day is dropped where a shift starts; an explicit one
+      // starts after the day's work (a night continuation, or the shift).
+      if (!explicitRest.has(dateISO) && shiftStartDays.has(dateISO)) continue;
+      const startMin = workEnd(shifts, dateISO);
+      if (startMin >= MINUTES_PER_DAY) continue;
       absences.push({
         kind: "rest",
         dateISO,
-        startMin: continuationEnd(shifts, dateISO),
+        startMin,
         label: labelOf(REST_DAY_POOL_ID, "Rest day"),
       });
     }
@@ -189,6 +200,50 @@ function buildSegments(shifts: PlanShift[], dateISO: string): PlanSegment[] {
   return assignLanes(segments);
 }
 
+// The colored start location with the most counted hours (first on ties).
+function dayTint(
+  starting: PlanShift[],
+  locationIds: string[],
+  tintOf: (locationId: string) => LocationTint | null,
+): LocationTint | null {
+  let best: { tint: LocationTint; hours: number } | null = null;
+  for (const locationId of locationIds) {
+    const tint = tintOf(locationId);
+    if (!tint) continue;
+    const hours = starting
+      .filter((shift) => shift.locationId === locationId)
+      .reduce((sum, shift) => sum + countedHours(shift), 0);
+    if (!best || hours > best.hours) best = { tint, hours };
+  }
+  return best?.tint ?? null;
+}
+
+// SPEC R9: consecutive runs of shifts at one location; the ground changes at
+// the middle of the gap between two runs (at the next start when they touch
+// or overlap).
+function tintBands(
+  starting: PlanShift[],
+  tintOf: (locationId: string) => LocationTint | null,
+): TintBand[] {
+  const runs: Array<{ locationId: string; start: number; end: number }> = [];
+  for (const shift of starting) {
+    if (!shift.locationId || !shift.locationName) continue;
+    const last = runs[runs.length - 1];
+    const end = Math.min(shift.endMin, MINUTES_PER_DAY);
+    if (last && last.locationId === shift.locationId) last.end = Math.max(last.end, end);
+    else runs.push({ locationId: shift.locationId, start: shift.startMin, end });
+  }
+  const bands: TintBand[] = [];
+  let from = 0;
+  runs.forEach((run, index) => {
+    const next = runs[index + 1];
+    const to = next ? (run.end <= next.start ? Math.round((run.end + next.start) / 2) : next.start) : MINUTES_PER_DAY;
+    if (to > from) bands.push({ startMin: from, endMin: to, tint: tintOf(run.locationId) });
+    from = Math.max(from, to);
+  });
+  return bands.some((band) => band.tint) ? bands : [];
+}
+
 function buildDay(
   ctx: PlanContext,
   dateISO: string,
@@ -209,7 +264,8 @@ function buildDay(
     ),
   ];
   const startLocationId = startLocationIds[0];
-  const minutes = starting.reduce((sum, shift) => sum + shift.hours * 60, 0);
+  const minutes = Math.round(starting.reduce((sum, shift) => sum + countedHours(shift) * 60, 0));
+  const tintOf = (locationId: string) => locationTint(ctx.locationById.get(locationId)?.color);
   return {
     dateISO,
     date,
@@ -222,8 +278,9 @@ function buildDay(
     absences,
     startLocationId,
     startLocationIds,
-    tint: startLocationId ? locationTint(ctx.locationById.get(startLocationId)?.color) : null,
-    hours: starting.length ? Math.round(minutes) / 60 : null,
+    tint: dayTint(starting, startLocationIds, tintOf),
+    tintBands: startLocationIds.length > 1 ? tintBands(starting, tintOf) : [],
+    hours: starting.length && minutes > 0 ? minutes / 60 : null,
     isContinuationOnly: segments.length > 0 && starting.length === 0,
     isFree: segments.length === 0 && absences.length === 0,
   };

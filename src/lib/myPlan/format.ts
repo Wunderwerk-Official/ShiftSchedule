@@ -81,18 +81,28 @@ export function formatShiftWhen(shift: PlanShift): string {
 }
 
 /**
- * Caption of a split overnight segment: part 1 "→ until Thu 08:00",
+ * Caption of a split overnight segment (SPEC R1): part 1 "→ until Thu 08:00"
+ * where time runs right, "↓ Thu until 08:00" (continues down into Thursday,
+ * short enough for a week column) where it runs down;
  * part 2 "↳ Night duty · until 08:00"; null for unsplit segments.
  */
-export function formatSegmentHint(segment: PlanSegment, shift: PlanShift): string | null {
+export function formatSegmentHint(
+  segment: PlanSegment,
+  shift: PlanShift,
+  axis: "vertical" | "horizontal" = "horizontal",
+): string | null {
   if (segment.cutStart) {
     const until = segment.cutEnd
       ? formatWeekdayTime(shift.dateISO, shift.endMin)
       : formatTime(shift.endMin);
     return `↳ ${shift.title} · until ${until}`;
   }
-  if (segment.cutEnd) return `→ until ${formatWeekdayTime(shift.dateISO, shift.endMin)}`;
-  return null;
+  if (!segment.cutEnd) return null;
+  if (axis === "vertical") {
+    const endISO = addDaysISO(shift.dateISO, Math.floor(shift.endMin / MINUTES_PER_DAY));
+    return `↓ ${formatWeekday(endISO)} until ${formatTime(shift.endMin)}`;
+  }
+  return `→ until ${formatWeekdayTime(shift.dateISO, shift.endMin)}`;
 }
 
 /** "Wed, 14 Oct 2026" (day), "Week 42 · 12–18 Oct 2026" (ISO week), "October 2026" (month). */
