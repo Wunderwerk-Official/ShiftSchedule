@@ -110,12 +110,16 @@ FOR each day D in date_range (Monday → Sunday):
     retry_count = 0
     day_solved = false
 
+    best_attempt = []
+
     WHILE retry_count < MAX_DAY_RETRIES AND NOT day_solved:
-        result = TRY_FILL_DAY(D, retry_count)
+        result, attempt = TRY_FILL_DAY(D, retry_count)
+        IF COUNT(attempt) > COUNT(best_attempt):
+            best_attempt = attempt
 
         IF result == SUCCESS:
             day_solved = true
-            COMMIT assignments for day D
+            COMMIT attempt for day D
             UPDATE clinicians' weekly/yearly hour counters
         ELSE:
             retry_count++
@@ -123,9 +127,13 @@ FOR each day D in date_range (Monday → Sunday):
                 BACKTRACK: reset day D to manual assignments only
             ELSE:
                 LOG warning: "Day D could not be fully filled after MAX_DAY_RETRIES attempts"
-                MARK remaining slots as unfilled
+                RESET day D to manual assignments, then COMMIT best_attempt
+                (the attempt with the most assignments; its gaps stay unfilled)
                 CONTINUE to next day
 ```
+
+Every attempt is a complete partial plan (see Step 2.3), so the best attempt
+keeps as many slots filled as that greedy pass could manage.
 
 ---
 
@@ -171,28 +179,52 @@ FOR slots with SAME criticality_score:
 5. **On-call rest days**: If on-call rest is enabled and doctor is assigned to on-call on nearby days (within configured offset), doctor is NOT eligible on rest days
 6. **Same location per day** (if enabled): If doctor is already assigned to a different location on day D, they are NOT eligible for slots at other locations
 7. **Hour limit**: Doctor's weekly hours (including this potential assignment) would not exceed `workingHoursPerWeek + workingHoursToleranceHours`
+8. **Continuous shifts** (if `preferContinuousShifts` is enabled): the assignment must not create a second, separate work block for the doctor on day D
+
+Slots whose end is not after their start (for example 20:00–08:00 saved
+without "+1 day") are not scheduled at all: the implementation skips them when
+it expands the template and adds one warning per slot ("… skipped … missing
++1d?"), because the validator rejects such a slot as an unknown slot.
 
 **Step 2.3: Fill Slots in Priority Order**
 
 ```
+blocked = 0
+skipped = 0
+
 FOR each slot S in prioritized unfilled_slots:
-    eligible_doctors = FILTER_ELIGIBLE_DOCTORS(S, day D)
+    IF slot S is already filled (e.g. by consecutive filling):
+        CONTINUE
+
+    eligible_doctors = FILTER_ELIGIBLE_DOCTORS(S, day D)   // re-checked now
 
     IF eligible_doctors is EMPTY:
-        RETURN FAILURE  // Cannot fill this day, need to backtrack
+        IF S had no eligible doctor at the start of the day:
+            COUNT S as unfillable   // stays open, does not trigger a retry
+        ELSE:
+            blocked++               // earlier choices blocked it
+        CONTINUE                    // keep filling the remaining slots
 
     ranked_doctors = RANK_DOCTORS_BY_DEFICIT(eligible_doctors, retry_count)
+    IF ranked_doctors is EMPTY:     // all skipped by the retry offset
+        skipped++
+        CONTINUE
 
-    FOR each doctor DOC in ranked_doctors:
-        // Try to assign DOC to slot S
-        ASSIGN(DOC, slot S, day D)
-        UPDATE DOC.current_week_hours
+    DOC = ranked_doctors[0]
+    ASSIGN(DOC, slot S, day D)
+    UPDATE DOC.current_week_hours
 
-        // Try to fill consecutive slots at same location for DOC
-        FILL_CONSECUTIVE_SLOTS(DOC, slot S, day D)
+    // Try to fill consecutive slots at same location for DOC
+    FILL_CONSECUTIVE_SLOTS(DOC, slot S, day D)
 
-        BREAK  // Move to next unfilled slot
+IF blocked > 0 OR skipped > 0:
+    RETURN FAILURE   // reported at the end: the retry loop backtracks
+RETURN SUCCESS       // unfillable slots are reported as a warning
 ```
+
+A blocked slot does not end the attempt. Before v1.64 the implementation
+returned at the first blocked slot and left every later slot of that attempt
+open, even slots that other doctors could still fill.
 
 **Step 2.4: Rank Doctors by Multi-Criteria Priority**
 
@@ -300,7 +332,11 @@ FUNCTION FILL_CONSECUTIVE_SLOTS(doctor, initial_slot, day):
 
 ### Phase 4: Backtracking Logic
 
-When a day cannot be filled (some slot has no eligible doctors), the algorithm **backtracks** by trying alternative doctor choices for earlier slots.
+When an attempt ends with blocked slots (slots that had eligible doctors at
+the start of the day but none left after earlier choices), the algorithm
+**backtracks** by trying alternative doctor choices for earlier slots. The
+blocked slot is marked and filling continues; the failure is reported at the
+end of the attempt (Step 2.3).
 
 ```
 FUNCTION TRY_FILL_DAY(day, retry_count):
@@ -323,8 +359,8 @@ FUNCTION TRY_FILL_DAY(day, retry_count):
 This explores different solution paths by making different greedy choices at each slot.
 
 **Failure Handling:**
-- If all retries fail, mark remaining slots as unfilled
-- Log a warning with details (which slots, how many retries)
+- If all retries fail, keep the attempt with the most assignments; its gaps stay unfilled
+- Log a warning per retry and a final "could not fully fill after N attempts" warning
 - Continue to the next day (don't abort the entire week)
 
 ---
@@ -594,7 +630,9 @@ Let's walk through a simplified example to illustrate the algorithm.
 - Wait! Bob was assigned to Slot A (08:00-12:00), and Slot B is also 08:00-12:00 (same time)
 - This is a **time conflict**, Bob cannot take Slot B
 - Eligible: [] (Alice conflicts, Bob conflicts)
-- **FAILURE**: Cannot fill Slot B
+- Slot B is **blocked** (it had eligible doctors at the start of the day);
+  filling would continue with any remaining slots, and the attempt is
+  reported as a failure at the end
 
 **Step 6**: Backtrack (retry_count = 1)
 - Reset Monday to manual assignments only (none in this case)

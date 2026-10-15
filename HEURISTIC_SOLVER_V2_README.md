@@ -2,7 +2,7 @@
 
 ## Overview
 
-The heuristic solver has been completely rewritten to exactly match the specification in `human-heuristic-solver.md`. The new implementation (`backend/heuristic/solver_v2.py`) follows the documented algorithm step-by-step.
+The heuristic solver has been completely rewritten to follow the specification in `human-heuristic-solver.md`. The implementation (`backend/heuristic/solver_v2.py`) follows the documented algorithm; where the two differ, the code and the specification's current text (updated in v1.64 for blocked slots and zero-duration slots) win over the pseudocode below.
 
 ## What Changed
 
@@ -41,10 +41,11 @@ ytd_deficit = ytd_expected - ytd_hours_worked
 for each day in date_range:
     for retry in range(MAX_DAY_RETRIES):  # Default: 5
         reset_day_to_manual_only()
-        success = fill_day_with_prioritized_slots(retry_count)
+        success, attempt = fill_day_with_prioritized_slots(retry_count)
+        keep attempt if it has more assignments than the best so far
         if success:
             break
-    # If all retries fail, continue to next day with warnings
+    # If all retries fail: re-apply the best attempt, warn, next day
 ```
 
 ### Phase 2: Slot Criticality & Doctor Ranking
@@ -62,10 +63,22 @@ shuffle_ties_randomly(seed=42)
 
 # 2.3: Fill slots
 for slot in prioritized_slots:
+    eligible = filter_eligible_doctors(slot)   # re-checked
+    if not eligible:
+        if criticality == 0: unfillable += 1   # no candidate from the start
+        else: blocked += 1                     # blocked by earlier choices
+        continue                               # keep filling (since v1.64)
     ranked = rank_doctors_by_deficit(eligible, slot, retry_count)
+    if not ranked: skipped += 1; continue      # retry offset skipped all
     assign(ranked[0], slot)  # Top-ranked doctor
     fill_consecutive_slots_if_enabled()
+return not (blocked or skipped)                # failure triggers a retry
 ```
+
+Before v1.64 a blocked slot returned failure at once and left every later
+slot of that attempt open. Slots whose end is not after their start (e.g.
+20:00–08:00 without "+1 day") are skipped while expanding the template, with
+one warning per slot, because the validator rejects them.
 
 ### Phase 3: Consecutive Slot Filling
 ```python
@@ -98,15 +111,16 @@ def reset_day_to_manual_only(day, clinicians, manual_map):
         recalculate_current_week_hours(clinician)
 ```
 
-## Eligibility Criteria (7 checks)
+## Eligibility Criteria (8 checks)
 
 1. **Qualification**: `slot.section_id in clinician.qualified_sections`
 2. **Vacation**: `not clinician.is_on_vacation(date)`
 3. **Time Overlap**: `not clinician.has_time_overlap(date, slot)`
 4. **Mandatory Time Window**: `slot fits within preferredWorkingTimes[weekday] if requirement="mandatory"`
-5. **On-Call Rest Days**: `date not in clinician.rest_days`
+5. **On-Call Rest Days**: `not clinician.is_in_on_call_rest_window(date, ...)`, checked live against every on-call assignment (also ones placed earlier in the run); an on-call slot additionally needs the surrounding rest days to be free (`has_any_work_near`)
 6. **Same Location Per Day**: `clinician.location[date] == slot.location or not yet assigned` (if enforced)
 7. **Hour Limit**: `current_week_hours + slot.hours <= contract_hours + tolerance`
+8. **Continuous Shifts**: `not clinician.would_create_gap(date, slot)` (only while `preferContinuousShifts` is on)
 
 ## Doctor Ranking (4 levels)
 
@@ -129,7 +143,7 @@ class HeuristicConfig:
     MAX_DAY_RETRIES = 5  # Number of backtracking attempts per day
     ENABLE_CONSECUTIVE_FILLING = True  # Chain slots at same location
     RANDOM_SEED = 42  # For reproducible tie-breaking
-    RESPECT_MANUAL_ASSIGNMENTS = True  # Always preserve manual assignments
+# Manual assignments are always preserved; there is no switch for it.
 ```
 
 ## Integration
@@ -183,10 +197,10 @@ if payload.resolved_mode() == "heuristic":  # solver_mode wins over legacy use_h
 
 ## Known Limitations
 
-1. **No "Distribute All" mode**: Focuses on filling required slots only
+1. **"Distribute All" is limited** (since v1.61): after mandatory staffing it only adds the permitted optional capacity, preserving fixed and already planned duties
 2. **Local optima**: Greedy approach may miss better global solutions
 3. **Day-boundary effects**: Does not optimize across multiple days simultaneously
-4. **No continuity constraints**: Does not enforce "one continuous block per day" (can be added if needed)
+4. **Continuity only via the setting**: one continuous block per day is enforced only while `preferContinuousShifts` is on (`would_create_gap`)
 
 ## Next Steps
 
@@ -201,33 +215,15 @@ if payload.resolved_mode() == "heuristic":  # solver_mode wins over legacy use_h
 - `backend/heuristic/solver_v2.py` (new file, 600+ lines)
 - `backend/solver.py` (updated to use v2)
 
-## Files NOT Modified (old v1 remains for reference)
+## Old v1 solver (removed)
 
-- `backend/heuristic/solver.py` (old band/pattern approach)
-- `backend/heuristic/models.py` (Band, Pattern, etc.)
-- `backend/heuristic/utils.py` (band classification, etc.)
-- `backend/heuristic/phases/` (all phase modules)
-
-## Migration Path
-
-To switch back to old solver:
-```python
-# In backend/solver.py line 343:
-from .heuristic.solver import heuristic_solve_range  # Old v1
-# from .heuristic.solver_v2 import heuristic_solve_range_v2  # New v2
-```
-
-To remove old solver (after v2 is confirmed working):
-```bash
-rm -rf backend/heuristic/phases/
-rm backend/heuristic/models.py
-rm backend/heuristic/utils.py
-rm backend/heuristic/solver.py
-mv backend/heuristic/solver_v2.py backend/heuristic/solver.py
-```
+The v1 band/pattern solver (`backend/heuristic/solver.py`, `models.py`,
+`utils.py`, `phases/`) has been removed; `backend/heuristic/` now contains
+only `__init__.py` and `solver_v2.py`. The former "switch back" and
+"remove old solver" instructions no longer apply.
 
 ---
 
-**Status**: ✅ Implementation complete and ready for testing
-**Matches MD**: ✅ Follows `human-heuristic-solver.md` exactly
-**Backward compatible**: ✅ Old v1 solver still available
+**Status**: v2 is the only heuristic solver (`solver_mode: "heuristic"`, and
+the seed/fallback for agent runs). This file is a historical implementation
+summary; the specification is `human-heuristic-solver.md`.

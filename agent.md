@@ -15,9 +15,10 @@ Where to look first
 - Backend normalization + persistence: `backend/state.py`, `backend/db.py`
 - CP-SAT Solver: `backend/solver.py`
 - Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
-- **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 12.
+- **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 6.5.
 - Solver live stats: `src/lib/solverStats.ts`
-- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`
+- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `model-settings`, `my-plan`, `team-page`
+- My plan (v1.64): `src/components/myPlan/MyPlanView.tsx`, pure model `src/lib/myPlan/`, preferences `src/lib/userPreferences.ts` + `backend/preferences.py`
 - API client: `src/api/client.ts`
 - Settings UI: `src/components/schedule/SettingsView.tsx`
 
@@ -49,10 +50,11 @@ Top bar
 - Title is clickable and returns to calendar view.
 - Button order (left → right): Settings, Help, Theme toggle, User avatar.
 - Settings/Help buttons turn into a highlighted **Back** state when active.
-- Open slots badge lives in the schedule card header (green when all slots filled).
+- Open slots badge lives in the schedule card header (always yellow; clicking it jumps to the next open slot; on a phone it first switches the day view to that slot's day). Counting lives in `src/lib/openSlots.ts` (`computeOpenSlots`).
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Color by" (classic grid only), start-page star and Views menu. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
 - On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
@@ -82,12 +84,12 @@ Cells
 - Each active class cell shows a small panel with the section name and time at the top; open slots and assignments render inside that panel.
 - Multiple clinician pills per cell, sorted by surname.
 - Empty slots shown as gray dashed pills based on the template required count per day type (fallback to legacy min slots); plus/minus badges are gray; label is not bold.
-- Drag and drop is same-day only; invalid drops (wrong day or outside the grid) snap back instantly.
+- Drag and drop is same-day only. A drop on another day, on an inactive cell or on a slot whose time clashes with another shift of the person REMOVES the assignment (no snap-back; known limitation), a drop on its own cell is a no-op, and a malformed drag payload (e.g. a cross-tab drop) is ignored (`readDragPayload` in `src/lib/clinicianSlotOptions.ts`, shared by both grids).
 - Drag/drop does not block rule-violating placements (same-day location mix, multiple shifts); solver enforces rules but manual overrides are allowed and shown in red. Overlap within the same day is blocked by drag/drop (uses time intervals).
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
-- Clinician Picker: clicking an open slot shows a popover with eligible clinicians; warnings show "Already in slot" (priority) or "Not qualified".
-- Eligible target cells for a dragged clinician use a pale green background (consistent with the green "Open Slots" badge when count is 0).
+- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
+- While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
 - Warning tooltips show only when hovering the icon itself.
@@ -109,7 +111,7 @@ Pills
 - Distribution Pool pills show only the remaining free time segments.
 - Rule-violation pills render in red automatically.
 - While dragging a clinician, all other pills for the same clinician on the same day turn darker blue with a black outline; the dragged pill uses the same style.
-- Smoke test (API): `API_BASE=http://127.0.0.1:8000 ADMIN_USERNAME=admin ADMIN_PASSWORD=<pass> node scripts/smoke-api.mjs`
+- Smoke test (API): `API_BASE=http://127.0.0.1:8000 ADMIN_USERNAME=admin ADMIN_PASSWORD=<pass> node scripts/smoke-api.mjs` — read-only since v1.64 (health, login, state, run inbox); it no longer calls the removed `POST /v1/solve/week` and never starts a solver run.
 
 ---
 
@@ -137,6 +139,7 @@ Locations
 - Manage locations inside the calendar template (top-left "+ Location" button).
 - Location order uses a dropdown; names are edited inline.
 - Delete location (confirm) is allowed even for the default location; the next location becomes the new default (`loc-default`) and slot locationIds are updated.
+- Location color (v1.64, optional): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: slate, sand, sage, lilac, or none). Stored as `Location.color` (`#RRGGBB`); presentation only — tints the location's rows in the team grid and the days in My plan, and is excluded from the planning fingerprint.
 
 Pools
 - Rename pool rows (Rest Day, Vacation). No deletion.
@@ -149,10 +152,10 @@ Slots / Template integrity
 - Invalid slot assignments are repaired on load:
   - If a slot references a block/section that no longer exists or the slot dayType does not match the assignment date's dayType, the assignment is removed (since Distribution Pool was deprecated).
   - This is enforced in both frontend normalization (`src/lib/shiftRows.ts`) and backend normalization (`backend/state.py`).
-- ColBand explosion safeguard: max 50 colBands per day type (MAX_COLBANDS_PER_DAY). If exceeded, extra colBands are blocked and logged. Safeguard is enforced in:
+- ColBand explosion safeguard: max 20 colBands per day type (`MAX_COLBANDS_PER_DAY`, duplicated in the two files below and in `backend/state_routes.py`, which only uses it for the health check — keep them in sync). Extra colBands are dropped (truncated) and logged. Safeguard is enforced in:
   - `src/lib/shiftRows.ts` (normalizeTemplateColBands)
-  - `src/components/schedule/WeeklyTemplateBuilder.tsx` (sanitizeLocations)
-  - `src/pages/WeeklySchedulePage.tsx` (setWeeklyTemplate wrapper blocks saves over 500 total colBands)
+  - `src/pages/WeeklySchedulePage.tsx` (the setWeeklyTemplate wrapper truncates per day; every builder change goes through it — the builder's own copy of the sanitizer was removed in v1.64)
+- Total limit: above `MAX_TOTAL_COLBANDS` = 300 colBands summed over all locations (`src/lib/templateLimits.ts`), `buildCurrentStatePayload` refuses to save (console.error). Since v1.64 the page shows an amber banner instead of failing silently; sign-out asks before discarding unsaved changes, importing a schedule snapshot is refused, and restoring a calendar snapshot stays possible (it backs up the last saved calendar, not the screen).
 - **Slot collision detection**: Multiple sections sharing the same `rowBandId + dayType + colBandOrder` causes only one section to be visible in the calendar UI while others are hidden but still exist in the database. This is a critical configuration error.
   - Detection: `slotCollisions` useMemo in `WeeklySchedulePage.tsx` identifies collisions by grouping classShiftRows by `locationId__rowBandId__dayType__colBandOrder` and flagging groups with multiple different `sectionId` values.
   - Warning banner: A prominent red banner appears below the top bar when collisions are detected, showing:
@@ -163,7 +166,7 @@ Slots / Template integrity
   - Fix: Ensure each section has its own row band in the Weekly Template Builder.
 
 Clinicians
-- List with Add Clinician and Edit buttons (Add uses a dashed, full-width button below the list).
+- List with Add Clinician, Edit and Remove buttons (Add uses a dashed, full-width button below the list). Remove asks for confirmation since v1.64: it deletes the person's assignments in all weeks, vacations and preferences, without undo.
 - Editing uses the same modal as clicking a pill in the calendar.
 - Optional working hours per week field (contract hours).
 
@@ -196,7 +199,7 @@ Holidays
 - Year selector with stepper buttons.
 - Country picker with flag emoji (top EU countries + CH, LU), alphabetical.
 - "Load Holidays" fetches from https://date.nager.at/api/v3/PublicHolidays.
-- Add holidays manually; list shows DD.MM.YYYY dates (input accepts DD.MM.YYYY or ISO).
+- Add holidays manually; list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form).
 - Add Holiday button is a dashed, full-width button below the list and opens an inline add panel.
 - Holidays behave like weekends in solver + min slot logic and show in the calendar header.
 
@@ -236,7 +239,8 @@ Solver Settings
 - **Click-to-scroll for split shifts**: Clicking a split shift item in the popover scrolls to and highlights the relevant pills with connection lines.
 - Automated planning runs the week solver over the selected date range in one call and shows an ETA based on the last run's per-day duration.
 - **Optimization weights**: Collapsible section in the Solver Info modal (gear icon) allows configuring objective weights:
-  - Coverage (1000), Slack (1000), Total Assignments (100), Slot Priority (10), Time Window (5), Section Preference (1), Working Hours (1).
+  - Coverage (1000), Slack (1000), Total Assignments (100), Slot Priority (10), Time Window (20), Section Preference (10), Working Hours (3), Minimum Daily Hours (5), YTD Balance (5). Defaults: `backend/models.py::SolverSettings`, which backend normalization applies (the CP-SAT objective reads `solverSettings` directly, no second default table); mirrored in `src/components/schedule/SolverInfoModal.tsx` (`DEFAULT_WEIGHTS`) and, since v1.64, in the frontend fallback `src/data/mockData.ts::defaultSolverSettings`.
+  - Only the CP-SAT path (`solver_mode="cpsat"`, API/benchmarks) reads these weights (`scoring.score_plan` was removed in v1.64); AI planning ranks plans by its lexicographic quality tuple and ignores them. The weights section in the modal says so.
   - "Total Assignments" and "Slot Priority" are only active in "Distribute All" mode (visually dimmed with amber description).
   - Each weight has an info tooltip explaining its effect in layman's terms.
   - "Reset to defaults" button restores all weights to their default values.
@@ -249,7 +253,7 @@ Testing
   - Resets state before each test and restores original state after the suite.
   - Env: `E2E_USERNAME`, `E2E_PASSWORD`, `PLAYWRIGHT_API_URL`, `PLAYWRIGHT_BASE_URL`.
   - Defaults to `testuser` / `sdjhfl34-wfsdfwsd2` when `E2E_USERNAME`/`E2E_PASSWORD` are unset.
-  - `test:e2e` script includes `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=mac15-arm64` for Apple Silicon.
+  - `test:e2e` script includes `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=mac15-arm64`, which only works on Apple Silicon. On Linux, Intel Macs and Windows run `npx playwright test` directly (CI does).
   - Default non-admin test user for local E2E: `testuser` / `sdjhfl34-wfsdfwsd2` (set `ENABLE_E2E_TEST_USER=0` to disable creation, do not use in production).
   - In sandboxed runs, Playwright may need escalated permissions to access `localhost:8000` and launch Chromium (otherwise EPERM/permission-denied errors).
   - Diagnostics on failure: console, page errors, failed requests, >=400 responses, screenshot, HTML snapshot, and trace (see `e2e/fixtures.ts`).
@@ -282,9 +286,6 @@ Dev server restart
 - Kill existing servers via `lsof -nP -iTCP:8000 -sTCP:LISTEN` and `lsof -nP -iTCP:5173 -sTCP:LISTEN`, then `kill <pid>`.
 - Start backend: `python3 -m uvicorn backend.main:app --reload --host 127.0.0.1 --port 8000 > logs/dev-backend.log 2>&1 &`
 - Start frontend: `npm run dev -- --host 127.0.0.1 --port 5173 > logs/dev-frontend.log 2>&1 &`
-- In this sandbox, use `setopt NO_BG_NICE` when starting background jobs to avoid `nice(5) failed` errors.
-- Health checks from within the sandbox can fail with “Operation not permitted”; verify from the browser instead.
-- Reason: background jobs may be auto-niced; the sandbox blocks `nice(5)`, so disable background niceness before launching servers.
 
 Vacation Overview
 - Open via the Vacation Planner panel in the main schedule view.
@@ -335,7 +336,7 @@ iCal download (frontend-only)
   - A date range filter (Start/End) shown/entered as `DD.MM.YYYY` (empty = all dates)
 - Implementation details:
   - Only section assignments are exported (pool rows are ignored).
-  - Events are all-day (`DTSTART;VALUE=DATE` / `DTEND;VALUE=DATE` with end = +1 day).
+  - Events are all-day (`DTSTART;VALUE=DATE` / `DTEND;VALUE=DATE`, DTEND exclusive). Since v1.64 DTEND is start + 1 + the slot's `endDayOffset` days (capped at +3), so an overnight duty also blocks the next day, as in the subscribed feed (`backend/ical.py`); before, the download always used start + 1.
   - Range parsing accepts `DD.MM.YYYY` (and also `YYYY-MM-DD`), swaps Start/End if reversed, and disables download on invalid input.
 - Files: `src/lib/ical.ts`, `src/components/schedule/IcalExportModal.tsx`, wiring in `src/pages/WeeklySchedulePage.tsx`.
 
@@ -346,7 +347,8 @@ Subscribable iCal feed (cryptic URL)
 - Backend stores tokens in SQLite:
   - `ical_publications` (one token per user, all clinicians).
   - `ical_clinician_publications` (one token per clinician per user).
-- Public endpoint (no JWT): `GET /v1/ical/{token}.ics`
+- Public endpoint (no JWT): `GET /v1/ical/{token}.ics` (`HEAD` also answered since v1.64, with the same validators)
+  - `Content-Disposition: inline; filename="shift-planner-<owner>.ics"; filename*=UTF-8''…` — the plain `filename` falls back to `shift-planner.ics` when the account name is not printable ASCII (non-Latin-1 names used to cause a 500)
   - Returns `text/calendar; charset=utf-8`
   - Only section assignments are included (pool rows ignored)
   - Only weeks listed in `publishedWeekStartISOs` are included
@@ -360,7 +362,7 @@ Known issues / fixes
   - HTTP caching: sets `ETag` + `Last-Modified` and supports conditional GET (returns 304 when unchanged)
 - Authenticated endpoints (JWT required):
   - `GET /v1/ical/publish` (status, includes all + per-clinician URLs when published)
-  - `POST /v1/ical/publish` (enable links; keeps existing tokens)
+  - `POST /v1/ical/publish` (enable links; keeps existing tokens; idempotent since v1.64 — it no longer touches `updated_at`, so opening the Export modal does not reset subscribers' cache validators)
   - `POST /v1/ical/publish/rotate` (new tokens for all + clinicians; old URLs become 404)
   - `DELETE /v1/ical/publish` (unpublish; URL becomes 404)
 - Subscription UI behavior:
@@ -381,7 +383,7 @@ Public web view (share link)
 - Backend table: `web_publications` (one token per user; rotation invalidates old link).
 - Auth endpoints:
   - `GET /v1/web/publish` (status)
-  - `POST /v1/web/publish` (enable)
+  - `POST /v1/web/publish` (enable; idempotent since v1.64 — republishing keeps the token and the week ETag/Last-Modified)
   - `POST /v1/web/publish/rotate` (new token)
   - `DELETE /v1/web/publish` (disable)
 - Public data endpoint: `GET /v1/web/{token}/week?start=YYYY-MM-DD`
@@ -447,6 +449,7 @@ type RowKind = "class" | "pool";
 type Location = {
   id: string;
   name: string;
+  color?: string | null; // v1.64: "#RRGGBB" tint, presentation only; omitted from dumps when unset
 };
 
 type SubShift = {
@@ -562,11 +565,40 @@ type SolverSettings = {
   weightSlack?: number;              // default 1000
   weightTotalAssignments?: number;   // default 100 (Distribute All only)
   weightSlotPriority?: number;       // default 10 (Distribute All only)
-  weightTimeWindow?: number;         // default 5
-  weightSectionPreference?: number;  // default 1
-  weightWorkingHours?: number;       // default 1
+  weightTimeWindow?: number;         // default 20
+  weightSectionPreference?: number;  // default 10
+  weightWorkingHours?: number;       // default 3
+  weightMinimumDailyHours?: number;  // default 5
+  weightYtdBalance?: number;         // default 5
+  // further fields (scheduleLayout, agent*) — see src/api/client.ts
 };
 ```
+
+Per-user UI preferences (v1.64) — NOT part of AppState
+```ts
+// GET/PUT /v1/me/preferences; table user_preferences(username, data, updated_at)
+// backend/models.py::UserPreferences, mirrored in src/api/client.ts
+type PlanScope = "team" | "me";
+type PlanRange = "day" | "week" | "month";
+type Orientation = "top" | "left";          // "top" = dates on top (days are columns)
+type ColorBy = "section" | "person";
+type ViewConfig = { scope: PlanScope; range: PlanRange; orientation: Orientation; colorBy: ColorBy };
+type ViewStartAt = "today" | "nextShift" | "weekStart";  // relative anchor, never a date
+type SavedView = ViewConfig & { id: string /* 1-64 */; name: string /* 1-60 */; startAt: ViewStartAt /* default "today" */ };
+type UserPreferences = {
+  version: number;                          // 1
+  clinicianId: string | null;               // "I am …" link (max 200 chars, blank = null)
+  orientationByRange: Record<PlanRange, Orientation>;        // computers; default all "top"
+  orientationByRangeMobile: Record<PlanRange, Orientation>;  // phones; default week "left" (agenda)
+  myPlanRange: PlanRange;                   // computers; default "week"
+  myPlanRangeMobile: PlanRange;             // phones; default "week"
+  teamColorBy: ColorBy;                     // default "section"
+  savedViews: SavedView[];                  // max 12, unique ids
+  startViewDesktop: ViewConfig | null;      // start page on computers (no startAt)
+  startViewMobile: ViewConfig | null;       // start page on phones (no startAt)
+};
+```
+- Saving preferences never changes the calendar revision or a planning fingerprint; the row is deleted together with the account. An unreadable stored row is ignored (defaults returned) instead of locking the user out.
 
 Slot IDs
 - Section assignments use TemplateSlot ids (Assignment.rowId = TemplateSlot.id); pool rows continue using their plain pool IDs.
@@ -578,7 +610,7 @@ Slot IDs
 ## 5) Scheduling Logic (Frontend)
 - Vacation override: for each date, if clinician is on vacation, they appear in Vacation pool and their section assignment is suppressed.
 - Multiple shifts per day are always allowed; time overlap detection prevents assigning the same clinician to overlapping shift intervals.
-- Rest Day Pool (pool-rest-day): if on-call rest days are enabled, clinicians assigned to the on-call section are placed into Rest Day on the configured days before/after (fallback to Reserve if Rest Day is missing).
+- Rest Day Pool (pool-rest-day): if on-call rest days are enabled, clinicians assigned to the on-call section are placed into Rest Day on the configured days before/after (the Rest Day pool is always present after normalization; there is no fallback).
 - Assignments stored in a map (rowId + dateISO -> list of assignments); section rows use template slot ids.
 - Drag and drop only within the same day; manual overrides are allowed even if they violate solver rules.
 - Clicking a section slot cell increments the per-day slot override for that slot id (adds an "Open Slot"); remove via the minus badge.
@@ -591,19 +623,22 @@ Slot IDs
 
 ## 6) Solver (Backend)
 
-Two solver implementations exist. The frontend can select which to use via `useHeuristic` toggle.
+Three solver modes exist, selected by `solver_mode` in the request: `cpsat` (API default), `heuristic`, `agent`. The UI always sends `agent`; cpsat/heuristic remain API-only (benchmarks, arena, fallback). `use_heuristic` is legacy.
 
 ### CP-SAT Solver (default) — `backend/solver.py`
 Endpoint:
 - `POST /v1/solve/range` (range solver; accepts `startISO` and optional `endISO`)
 Payload:
 ```json
-{ "startISO": "YYYY-MM-DD", "only_fill_required": true|false, "use_heuristic": false }
+{ "startISO": "YYYY-MM-DD", "endISO": "YYYY-MM-DD", "only_fill_required": true,
+  "solver_mode": "cpsat" | "heuristic" | "agent", "agent_strategy": "day_by_day" | "repair",
+  "timeout_seconds": 60 }
 ```
+`endISO` is optional: cpsat/heuristic default to 7 days (resolved and stored on the run); agent solves only `startISO`; `solver_mode` defaults to `cpsat` when omitted (`use_heuristic` is legacy); `agent_strategy` only applies to `agent` (default `day_by_day`).
 
 Behavior
-- Considers all clinicians not on vacation; manual assignments are treated as fixed.
-- Includes a 1-day context window on both ends for rest-day constraints; rest rules only enforce inside the selected range and emit a warning note if boundary days are already assigned.
+- Considers all clinicians not on vacation; protected (manual or locked/fixed) assignments are kept, unlocked in-range solver assignments are replaced.
+- Includes a context window of max(3, onCallRestDaysBefore, onCallRestDaysAfter) days on both ends (`_context_pad`; the rest days count only when on-call rest is enabled, otherwise it is a fixed 3). A new on-call slot is forbidden when its rest window would hit manual work on a context day; a warning note is emitted if boundary days are already assigned.
 - Hard constraints:
   - Qualification required.
   - Vacation overrides assignment.
@@ -613,6 +648,8 @@ Behavior
   - "Enforce same location per day" blocks mixing locations on the same day.
   - On-call rest days: if enabled, clinicians assigned to the selected on-call section must be unassigned on the configured days before/after.
   - Enforce continuous shifts: each clinician/day has at most one continuous block (or existing manual blocks).
+  - Mandatory preferred working-time windows.
+  - ISO-week hours cap (`_add_weekly_hours_caps`): contract hours + tolerance per ISO week, counting fixed work outside the range; an existing overload must not grow.
 - Targets template slot ids; order weights follow location order + row band order + column band order.
 - Qualification + preference checks use slot.sectionId (the parent section).
 - Objective (weighted minimization):
@@ -620,16 +657,19 @@ Behavior
   - **Slack** (w=1000): Minimize unfilled required slots.
   - **Total Assignments** (w=100, Distribute All only): Maximize total assignments.
   - **Slot Priority** (w=10, Distribute All only): Prefer earlier slots in template order.
-  - **Time Window** (w=5): Respect clinician preferred working hours.
-  - **Section Preference** (w=1): Assign clinicians to their preferred sections.
-  - **Working Hours** (w=1): Balance hours to target ± tolerance.
-- Sub-scores are computed after solving and returned in `debugInfo.sub_scores` (slots_filled, slots_unfilled, total_assignments, preference_score, time_window_score, hours_penalty).
+  - **Time Window** (w=20): Respect clinician preferred working hours.
+  - **Section Preference** (w=10): Assign clinicians to their preferred sections.
+  - **Working Hours** (w=3): Balance hours to target ± tolerance.
+  - **Minimum Daily Hours** (w=5): Penalize daily assignments shorter than the derived minimum.
+  - **YTD Balance** (w=5): Bias toward clinicians behind on year-to-date hours.
+  - Defaults live in `backend/models.py::SolverSettings`.
+- Sub-scores are computed after solving and returned in `debugInfo.sub_scores` (slots_filled, slots_unfilled, total_assignments, preference_score, time_window_score, hours_penalty, ytd_balance_bonus).
 - Gap-based early stopping: once optimality gap drops below 5%, allows 20s grace period then stops.
 
 ### Heuristic Solver v2 — `backend/heuristic/solver_v2.py`
 - Alternative fast solver activated by `"solver_mode": "heuristic"` (legacy `use_heuristic: true` still works; `solver_mode` wins).
 - Uses a greedy multi-phase approach instead of constraint programming.
-- Phases: bottleneck pre-assignment → greedy slot filling → local improvement.
+- Phases: bottleneck pre-assignment → day-by-day filling with retries and consecutive filling → optional capacity only in Distribute all mode (after mandatory staffing). There is no local-improvement phase.
 - Respects the same constraints as CP-SAT (qualification, vacation, overlap, same-location, on-call rest, continuity).
 - Produces solutions faster but may not be as optimal as CP-SAT.
 - Documentation: `HEURISTIC_SOLVER_V2_README.md`, `human-heuristic-solver.md`.
@@ -659,7 +699,7 @@ Timeouts:
 
 Week-by-week fallback:
 - If full-range solver fails for >14 day ranges, automatically retries solving each week individually.
-- Each week uses 60s timeout.
+- The remaining time budget is split across the remaining weeks (`week_timeout = remaining / weeks_left`).
 - Returns partial results if some weeks succeed and others fail.
 - Notes include timing info for each week solved.
 
@@ -678,10 +718,11 @@ Subprocess architecture (force abort):
 - Abort is OWNER-SCOPED: without `run_id` it targets the caller's own active run; with `run_id` only the run's owner (or an admin) may abort it. Foreign/unknown ids uniformly report `no_solver_running`.
 - This enables instant abort even when the solver is stuck without finding new solutions.
 - Run tracking: `_active_runs` (username → `_RunHandle` with process, per-run mp cancel event, per-run `abort_requested`) under `_registry_lock`. At most ONE run per user; different users' AGENT runs execute concurrently (global cap `MAX_CONCURRENT_SOLVES`, env, default 4 — set to 1 to restore single-slot admission). Legacy cpsat/heuristic modes stay machine-exclusive (require empty registry, block all other starts).
-- Subprocess cleanup: `atexit` handler and aggressive cleanup function (`_cleanup_solver_processes`) ensure subprocesses are killed on backend restart/crash. Uses `terminate()` first, then `kill()` after 2s timeout.
+- Subprocess cleanup: `atexit` handler and aggressive cleanup function (`_cleanup_solver_processes`) ensure subprocesses are killed on backend restart/crash. Uses `terminate()` first, then `kill()` after 2s timeout. There is no startup sweep (the pgrep-based `_cleanup_orphaned_solver_processes` was removed in v1.64; an orphaned worker exits on its own once the parent's heartbeat stops).
+- Overshoot watchdog (only when the request sets `timeout_seconds`): the soft stop sets the cancel event `RUN_OVERSHOOT_SOFT_SECONDS` (60 s) past the budget; the hard stop `RUN_OVERSHOOT_HARD_SECONDS` (120 s) past it now SIGKILLs the worker once (`terminate()` was a no-op because the worker's SIGTERM handler only sets the cancel event), waits up to 5 s for it and reads its queue with a bounded drain (`_drain_dead_worker_queue`, `RUN_QUEUE_DRAIN_TIMEOUT_SECONDS` = 10 s), so a torn queue message cannot leave a run `running`. A killed agent run reports no usage, so its LLM spend up to the kill is not charged (known trade-off).
 
 SSE live updates (real-time progress):
-- Endpoint: `GET /v1/solve/progress?token=<jwt>` (Server-Sent Events stream).
+- Endpoint: `GET /v1/solve/progress` (SSE format over an authenticated fetch stream; `Authorization: Bearer <jwt>` header — bearer credentials never go into URLs, there is no `?token=`).
 - Events:
   - `connected`: Initial connection confirmation.
   - `start`: Solver started with `{startISO, endISO, timeout_seconds}`.
@@ -703,8 +744,9 @@ Solver overlay (SolverOverlay.tsx):
   - Live solution chart: SVG line chart showing objective value over time (log scale, inverted so better scores appear higher).
   - Elapsed/total time counter (X:XX / Y:XX format, e.g., "0:45 / 1:00").
   - Action buttons:
-    - "Abort" (rose/red) - always visible, discards any solutions found.
-    - "Apply Solution" (indigo/blue) - only shown after solutions found, applies current best solution.
+    - "Run in background" - hides the overlay; the run continues server-side and a badge stays in the corner.
+    - "Stop run" (rose/red) - always visible; the calendar stays untouched, a partial result lands in the run inbox.
+    - "Apply best plan" (indigo/blue) - only shown after solutions found; stops the run and applies the best plan so far.
     - "Details" button - opens full-screen dashboard with all graphs.
 - Full-screen dashboard (SolverDashboard):
   - Opens via "Details" button, renders as full-viewport overlay via portal to `document.body` (z-[1100]).
@@ -722,7 +764,7 @@ Agent activity display (v1.57):
 - Every agent event carries its stage and current planning context, so the bounded client buffer and reconnects cannot reset the stage. Stable sequence ids preserve feed row identity.
 - Search receipts distinguish partial/cached searches from checked results; zero options is never presented as proven infeasibility. Draft changes indicate when an earlier best snapshot is retained. Coverage is labelled as the best saved draft.
 - Model text is optional, with complete text in a keyboard-accessible dialog. The chronological history only scrolls on an explicit “Jump to latest” click.
-- EventSource reconnects after transient failures; the overlay marks the view as potentially stale while disconnected. The stream does not replay missed history.
+- The fetch stream (`src/api/client.ts`) reconnects with exponential backoff (max 30 s) and stops after 6 consecutive failures or on 401/403/404; the overlay marks the view as potentially stale while disconnected. The stream does not replay missed history.
 - Browser replays: `e2e/agent-activity.spec.ts` checks long streams, run isolation, reconnects, mobile layout and model text; no real model calls or calendar writes.
 - Stats include both solver-generated and existing manual assignments in the solve range for accurate filled slots display.
 - Accepts optional `solverSettings` parameter (passed from WeeklySchedulePage) for on-call rest violation tracking.
@@ -730,11 +772,11 @@ Agent activity display (v1.57):
 
 Automated Shift Planning panel (frontend):
 - Timeframe: "Current week" and "Today" quick buttons; custom date pickers (DD.MM.YYYY) for start/end displayed inline with dash separator.
-- Strategy: "Fill open slots" (only fills required slots) or "Distribute all" (assigns all available clinicians).
-- Run button triggers solver.
-- Reset button opens a dropdown panel with two options:
-  - "Reset Solver Only": Removes only assignments created by the automated planner (source === "solver"); keeps manual assignments.
-  - "Reset All": Removes all assignments in the selected timeframe, including both manual and solver-generated ones.
+- No strategy toggle any more (removed on admin request, 2026-07): every run fills required slots only (`only_fill_required=true`); Distribute-all stays available through the API.
+- Run button starts an AI planning run (`solver_mode: "agent"`); the result waits in the run inbox (Solver info modal) until it is applied or discarded.
+- Reset button opens a dropdown panel with two options (rules in `src/pages/resetSolverAssignments.ts`, unit-tested):
+  - "Reset Solver Only" (`resetSolverAssignments`): in the timeframe, removes every unlocked solver entry of a section row, including entries on the clinician's vacation days (hidden in the grid) — the same rule as applying a stored draft (`backend/assignment_policy.py::is_replaced_by_draft`). Keeps manual/legacy and locked (fixed) entries, pool entries and everything outside the timeframe. Before v1.64 it also kept unlocked solver entries on vacation days.
+  - "Reset Unfixed" (`resetUnfixedAssignments`): in the timeframe, removes every entry (pool rows included) except locked ones and manual/legacy ones on the clinician's vacation days. Unlocked solver entries on vacation days go too (before v1.64 every entry on a vacation day was kept), so it always removes at least what "Reset Solver Only" removes. Vacation ranges themselves live on the clinician and are untouched.
 - Reset panel auto-positions: opens above the button when there's insufficient space below (viewport-aware).
 
 Custom date picker component (`CustomDatePicker.tsx`):
@@ -761,12 +803,12 @@ All return `list[Violation]`; `validate_assignments()` aggregates them into a
   (`endDayOffset > 0`) by placing intervals on an absolute minute axis
 - `validate_same_location_per_day` — only when `enforceSameLocationPerDay`
 - `validate_on_call_rest` — only when `onCallRestEnabled`; checks N days before
-  and M days after each on-call slot (back-to-back on-call is allowed)
+  and M days after each on-call slot (any other assignment in that window is a violation, including a second on-call slot; the heuristic blocks it too)
 - `validate_mandatory_windows` — slots must fit inside `preferredWorkingTimes`
   entries whose requirement is `mandatory` (`preference` entries are soft)
 - `validate_weekly_hours` — per ISO week, assigned hours ≤ contract + tolerance
-  (hard, matching heuristic v2; CP-SAT treats hours as a soft penalty, so a
-  CP-SAT plan may legitimately flag here)
+  (hard, matching heuristic v2 and, since v1.61, the CP-SAT ISO-week cap
+  `_add_weekly_hours_caps`, which also counts fixed work outside the range)
 - `validate_split_shifts` — one contiguous work block per clinician/day when
   `preferContinuousShifts` is on (adjacent slots merge)
 - `validate_capacity` — per slot instance, count ≤ `requiredSlots` + override
@@ -786,7 +828,7 @@ is "no NEW violations", not "zero violations".
 ### What it does NOT check
 Soft objectives: coverage counts, section preferences, time-window
 *preferences*, working-hours balance below the hard cap, YTD balance, minimum
-daily hours. Scoring lives in `backend/scoring.py` (see §6.6).
+daily hours. Plan statistics (`plan_stats`, `open_slots`) live in `backend/scoring.py`; the agent's quality tuple is built on them (see §6.6). The weighted objective exists only inside the CP-SAT model.
 
 ### Design rules
 - **No imports from `solver.py`** — the small helpers (time parsing, slot
@@ -824,7 +866,7 @@ else:
 - Calendar safety: `backend/tests/test_agent_workflow_safety.py`,
   `src/lib/stateSaveQueue.test.ts`, and `e2e/agent-apply.spec.ts` cover stale saves,
   apply validation/confirmation/rollback, empty aborts, and premature day completion.
-`backend/tests/test_validation.py` — 41 cases, run with
+`backend/tests/test_validation.py` — run with
 `pytest backend/tests/test_validation.py`. Tests use the conftest factories
 EXCEPT for multi-location scenarios, which build `AppState` manually (because
 `make_app_state` creates a single `WeeklyTemplateLocation`).
@@ -833,18 +875,24 @@ EXCEPT for multi-location scenarios, which build `AppState` manually (because
 - **`qualified_class_ids=[]` in `make_clinician()` is ignored** — the factory
   does `qualified_class_ids or ["section-a"]`, so empty-list falls back to the
   default. Use `["section-nonexistent"]` to force a qualification violation.
-- **`_slot_interval()` returns `None` for missing start/end** or zero-duration
-  slots. This is intentional — the solver would silently clamp to 0 duration,
-  but the validator surfaces it via `VIOLATION_UNKNOWN_SLOT` through
-  `validate_references`. If future behaviour change is needed (e.g. tolerate
-  missing start time), update both the validator and `_build_slot_interval` in
-  `solver.py` together.
+- **`_slot_interval()` returns `None` only when the end is not after the
+  start** (e.g. 20:00–08:00 saved without "+1 day"). Missing times get the same
+  defaults as `solver._build_slot_interval` (08:00, +8 h). The validator then
+  reports such a slot as `VIOLATION_UNKNOWN_SLOT` via `validate_references`.
+  Since v1.64 heuristic v2 skips these slots too (`_expand_slots_to_instances`,
+  one "Slot … skipped … (missing +1d?)" warning per slot), so its output keeps
+  passing the validator; CP-SAT still clamps them to zero duration and may
+  fill them (open follow-up: auto "+1 day" or a UI warning). The UI does not
+  prevent the input. If this rule changes, update the validator,
+  `_build_slot_interval` and the heuristic together.
 - **New constraints must land in three places.** Any constraint added to the
-  CP-SAT solver or heuristic v2 must also be added to `validation.py` (and, if
-  it affects the objective, `scoring.py`) — the agent solver's guardrails are
-  only as complete as the validator. The seed-parity tests in
-  `backend/tests/test_scoring.py` catch drift: heuristic output must always
-  pass `validate_assignments`.
+  CP-SAT solver or heuristic v2 must also be added to `validation.py` — the
+  agent solver's guardrails are only as complete as the validator. A new
+  quality metric goes into `scoring.plan_stats` (and the agent's quality tuple
+  if it should gate plans); there is no weighted scorer to keep in sync any
+  more. The seed-parity test in `backend/tests/test_scoring.py` catches drift:
+  heuristic output must pass `validate_assignments` and fill more slots than
+  the empty plan (`plan_stats(...).filled_slots`).
 
 ---
 
@@ -867,12 +915,25 @@ a monitor thread, and returns the run id immediately. The monitor relays
 progress to SSE, persists the outcome (`finished`/`aborted`/`failed`) with
 the full result JSON, and removes the run from the per-user registry
 (runs of different users execute concurrently; a user never has two
-overlapping runs). Nothing is applied to the
+overlapping runs). A plan salvaged from the last streamed solution (user
+abort, watchdog kill, or — since v1.64 — a worker that died without a
+result, note "Solver process ended unexpectedly (exit code N)") is stored
+as `aborted`, never `finished`, so applying it asks for confirmation
+(`409 partial_result`). Before the run starts, `solve_range` rejects an
+unparseable, non-canonical (not `YYYY-MM-DD`) or reversed range with 422,
+before any run row or process exists (v1.64). Nothing is applied to the
 schedule automatically: the result waits in the RUN INBOX until the admin
-applies it (`POST /v1/solve/runs/{id}/apply` — atomic server-side apply
-with the same semantics the frontend used: in-range solver assignments are
-replaced, manual entries and vacationing clinicians' rows survive) or
-discards it. `GET /v1/solve/runs` lists the inbox; a run interrupted by a
+applies it (`POST /v1/solve/runs/{id}/apply` — atomic server-side apply:
+unlocked in-range solver assignments of section rows are replaced,
+including rows hidden by a clinician's vacation; manual/legacy, locked and
+pool entries and everything outside the range survive —
+`assignment_policy.is_replaced_by_draft`, also used by the CP-SAT/heuristic
+pre-solve filter and matching the agent harness and "Reset Solver Only")
+or discards it. Discard is a conditional update (`solver_runs.discard_run`):
+only `finished`, `aborted` or already `discarded` runs can be discarded,
+anything else (e.g. applied from another tab, failed) returns
+`409 "Run is <status> and cannot be discarded."`; a running run still gets
+`409 "Abort the run first."`. `GET /v1/solve/runs` lists the inbox; a run interrupted by a
 backend restart/deploy is restarted once on startup
 (`recover_interrupted_runs`, note in the run) and marked `crashed`
 otherwise. There is NO wall-clock limit by default (admin decision):
@@ -892,8 +953,8 @@ it remains for the arena benchmarks and explicit API calls):
    per-day `solution` events are muted; phases are forwarded).
 2. **Loop**: the LLM gets a compact problem digest and the inspection/move
    tools; it improves a working copy until it stops, the iteration budget
-   runs out, or the wall clock (`timeout_seconds`, default 300s for agent
-   mode) expires.
+   runs out, or an explicit `timeout_seconds` expires (none by default —
+   interactive runs end on the iteration budget or an abort).
 3. **Finalize**: the best snapshot is returned — never worse than the seed.
 
 **day_by_day**: the LLM builds the range from scratch the way a human
@@ -933,8 +994,9 @@ planner works, with four extra tools (`get_day_priorities`,
    (`AGENT_FALLBACK_SEED`).
 
 The iteration budget follows the admin rule **total slot instances × 10**
-(floor 10), computed per solve; it supersedes `AGENT_MAX_ITERATIONS`, which
-remains only as config plumbing. Any LLM failure (missing key, API error,
+(floor 10), computed per solve; `AGENT_MAX_ITERATIONS` is no longer read at
+all since v1.64 (`AgentConfig.max_iterations` is a placeholder that every
+solve overwrites; the arena's `--max-iterations` flag has no effect either). Any LLM failure (missing key, API error,
 refusal) degrades to the seed/heuristic plan with a note; it never surfaces
 as a 500 once a plan exists.
 
@@ -951,8 +1013,9 @@ swaps (YTD fairness, admin instructions — goals the tuple doesn't measure)
 survive into the final plan instead of being overridden by an old snapshot.
 `encode_quality` maps the tuple to a saturated scalar ONLY for the live chart
 and run history (`seed_score`/`best_score` in `debugInfo.agent`); it gates
-nothing. `score_plan` in `scoring.py` still exists for the CP-SAT path and
-its tests, but the agent no longer sees or optimizes a score.
+nothing. The agent never sees or optimizes a weighted score
+(`scoring.score_plan`/`PlanScore` had no production caller and were removed
+in v1.64).
 
 ### Tools (`backend/agent/tools.py`) — full reference
 
@@ -1022,9 +1085,11 @@ when a reply is cut off mid-tool-call, and tool results themselves carry
 next actions, rescue/balance application rules, time-budget cuts).
 
 ### Scoring (`backend/scoring.py`)
-Pure-Python replica of the CP-SAT objective (same `SolverSettings` weights,
-minimized scale) over a precomputed `ScoringContext`, plus `plan_stats` and
-`open_slots`. Reuses the pure helpers from `solver.py` (slot contexts,
+Deterministic plan statistics over a precomputed `ScoringContext`:
+`plan_stats` (filled/open slots, split shifts, short days, preference and
+time-window fits, …) and `open_slots`. No weighted score: the CP-SAT
+objective is built in `solver.py` only (v1.64 removed the unused Python
+replica). Reuses the pure helpers from `solver.py` (slot contexts,
 intervals, YTD) so slot expansion cannot drift. Soft `SolverRule` violations
 are reported by the validator and surfaced to the agent, but do not gate
 acceptance.
@@ -1033,7 +1098,16 @@ acceptance.
 The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
 `ProviderResponse` + `LLMProvider.complete`). Implementations:
 - `AnthropicProvider` — official `anthropic` SDK; prompt-caching breakpoint on
-  the system block, adaptive thinking, no sampling params. Key resolution:
+  the system block, adaptive thinking, no sampling params. Since v1.64 it
+  sends `thinking.display: "summarized"` to models whose default is
+  `"omitted"` (Opus 4.7+, Sonnet 5+, Haiku 5.x, Fable/Mythos; Opus/Sonnet 4.6
+  already summarize, Haiku 4.5 gets no thinking parameter), so the reasoning
+  feed is no longer empty; an empty reply is replayed as a non-empty text
+  block (the API rejects empty assistant content), and any other
+  `AnthropicError` becomes a non-retryable error response instead of
+  crashing the run. An unexpected exception from any adapter is turned into
+  an error response by the harness (type name in the note, traceback in the
+  server log), so the best plan so far is kept. Key resolution:
   admin-stored key (Settings → Solver) wins over `ANTHROPIC_API_KEY` env.
 - `OpenAICompatibleProvider` — official `openai` SDK against any
   OpenAI-compatible endpoint (self-hosted vLLM, llama.cpp, TGI, or OpenAI
@@ -1057,8 +1131,8 @@ the solve payload, its debug dumps, or any API response (the settings API
 returns set/unset booleans only). The per-user AI budget applies to the
 Anthropic provider only — self-hosted runs are free and never blocked by it.
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
-`AGENT_MAX_TOKENS`; `AGENT_MAX_ITERATIONS` is superseded by the
-slot-instances × 10 budget rule) — the spawn subprocess inherits it.
+`AGENT_MAX_TOKENS`; `AGENT_MAX_ITERATIONS` is ignored, the budget is the
+slot-instances × 10 rule) — the spawn subprocess inherits it.
 The model is an ADMIN-ONLY global setting (default `claude-sonnet-5`) stored
 in the `agent_settings` table and managed via `GET/PUT /v1/agent/settings`
 (`backend/agent_budget.py`); the solve endpoint injects it into the payload
@@ -1066,8 +1140,10 @@ in the `agent_settings` table and managed via `GET/PUT /v1/agent/settings`
 it) where it overrides `AGENT_MODEL`. The old per-user
 `solverSettings.agentModel` is ignored. Every account also has a cumulative
 AI budget (default $5, admin-settable): each run's cost is computed from its
-token counts (pricing table mirrored from `src/lib/llmPricing.ts` — update
-both together) and recorded in `agent_spend`; once over budget the harness
+token counts (`agent_budget.MODEL_PRICES`, mirrored from
+`src/lib/llmPricing.ts` — update both together;
+`test_backend_prices_match_the_frontend_table` fails on drift; Sonnet 5 is
+$2/$10 per MTok since v1.64) and recorded in `agent_spend`; once over budget the harness
 returns the heuristic draft with an explanatory note
 (`payload.agent_budget_exhausted`, also server-injected). The frontend planning panel always
 sends `solver_mode: "agent"` — the CP-SAT solver remains available through
@@ -1077,7 +1153,7 @@ gives the percent of a clinician's year-to-date target hours worked up to a
 given day (working copy included, vacations credited); candidates are sorted
 most-behind first and the `get_ytd_progress` tool exposes the roster.
 Candidates can be fetched for up to 8 slots per call (`slot_keys`), old tool
-results are compacted to a stub once the history exceeds ~120K chars (chunked,
+results are compacted to a stub once the history exceeds ~60K chars (`TOOL_HISTORY_BUDGET_CHARS`; chunked,
 cache-friendly — see `harness._compact_tool_history`), and every run records
 `debugInfo.agent.summary` + `.moves` (real names) for the run review in the
 solver history. `plan_stats.short_days` counts clinician-days below the
@@ -1103,6 +1179,13 @@ with a foreign objective scale, which shows up as a full-height "jump".
   (improvement, rejection, provider errors, budgets, abort, determinism)
 - `backend/tests/test_agent_integration.py` — through POST `/v1/solve/range`
   with the real subprocess; includes the `use_heuristic` regression guard
+- `backend/tests/test_agent_anthropic_provider.py`, `test_agent_retry.py` —
+  Anthropic adapter (empty replies, thinking display per model, SDK errors)
+  and provider exceptions inside a run (v1.64)
+- `backend/tests/test_solver_monitor.py` — monitor end states (watchdog kill,
+  salvage as `aborted`, torn queue message, spend recorded once);
+  `backend/tests/test_solver_run_endpoints.py` — 422 ranges, discard 409s,
+  vacation-hidden solver rows replaced on apply (v1.64)
 
 ---
 
@@ -1111,7 +1194,11 @@ State reads and saves return a content-based `revision`. `POST /v1/state` must e
 the revision of the state being edited; stale or missing revisions fail with 409.
 The frontend serializes saves in `StateSaveQueue`, pauses editing/autosave during
 apply and restore, and displays persistent save failures. Do not retry conflicts
-by attaching a newly fetched revision to old local data.
+by attaching a newly fetched revision to old local data. `_load_state` saves the
+normalized blob whenever normalization changes anything, flagged or not (v1.64),
+so the revision a GET returns always equals the stored one; before, a silent
+normalization (e.g. `7:30` → `07:30`) made every later save of that calendar
+fail with 409.
 
 Agent runs capture an immutable input snapshot plus a fingerprint of all planning
 inputs, including roster, vacations, template, rules, holidays and boundary/history
@@ -1157,12 +1244,12 @@ Note: `solverRules` is legacy and not used by the current UI/solver, but remains
 State normalization on load
 - Ensures `locations` exists (adds loc-default).
 - Ensures section rows have `locationId` and `subShifts` (defaults to 08:00–16:00, endDayOffset 0).
-- `locationsEnabled` is legacy; if false in older data, normalization forces default location usage and sets it back to true.
+- `locationsEnabled` is legacy; if false in older data, normalization keeps it false and maps slots to the default location.
 - Generates/normalizes `weeklyTemplate` v4; if missing, builds a default template from sections + sub-shifts (slot ids use legacy shiftRowIds).
 - Filters assignments + slot overrides to existing template slot ids (and pool rows).
-- Template slot assignment ids (e.g. `slot-1`) are preserved during normalization in both frontend and backend.
+- Template slot assignment ids (e.g. `slot-1`) are preserved during normalization in both frontend and backend. Migrated day-type slot ids (`<section>::s2__mon`) are kept as they are (not remapped to `s1`, v1.64) and follow their date's day type when a holiday is added or removed (`_follow_date_day_type` / `followDateDayType`; dropped when the new day type has no such slot). A slot whose column already fits the date keeps its assignment even if its id suffix names another day (e.g. after it was dragged into another day's column). Slot-override keys with a stale sub-shift fall back to the class's fallback sub-shift deterministically.
 - Ensures `solverSettings` defaults, clamps on-call rest day values, and fixes invalid on-call class ids.
-- Ensures the Rest Day pool exists (pool-rest-day), inserted after Reserve Pool.
+- Ensures the Rest Day pool exists (pool-rest-day); it is appended if missing.
 
 Default state (clean database)
 - Default state is loaded from `backend/default_state.json` file.
@@ -1188,11 +1275,16 @@ Endpoints
 - `DELETE /auth/users/{username}` (admin only)
 - `GET /v1/state`
 - `POST /v1/state`
-- `POST /v1/solve/range` (accepts `use_heuristic` to switch solver engine)
+- `POST /v1/solve/range` (`solver_mode`: cpsat | heuristic | agent; legacy `use_heuristic`)
 - `POST /v1/solve/abort` (abort solver; `?force=true` kills subprocess immediately)
-- `GET /v1/solve/progress` (SSE stream for live solver updates; requires `?token=<jwt>`)
+- `GET /v1/solve/progress` (SSE stream for live solver updates; `Authorization: Bearer` header, no query token)
 - `GET /v1/state/health` (database health check)
 - `GET /v1/state/inspect/week` (database inspector)
+- `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots)
+- `GET /v1/me/preferences`, `PUT /v1/me/preferences` (per-user UI preferences for My plan; outside AppState, 32 KB body cap → 413)
+- `GET /v1/solve/runs`, `GET /v1/solve/runs/{id}`, `POST /v1/solve/runs/{id}/apply|discard|feedback` (run inbox)
+- `GET|PUT /v1/agent/settings`, `POST /v1/agent/chat-test`, `POST /v1/agent/model-check` (AI planning settings; `PUT /v1/agent/settings`, `chat-test` and `model-check` are admin only)
+- `GET /v1/admin/solver-runs[/{id}]`, `GET /v1/admin/run-feedback`, `DELETE /v1/admin/run-feedback/{id}`, `GET /v1/admin/schedule-changes` (admin only)
 - `GET /v1/ical/publish`
 - `POST /v1/ical/publish`
 - `POST /v1/ical/publish/rotate`
@@ -1212,15 +1304,16 @@ Endpoints
 - JWT auth; frontend stores token in `localStorage` key `authToken`.
 - Admin user is created on startup if `ADMIN_USERNAME`/`ADMIN_PASSWORD` are set and the user does not already exist.
 - Set `ADMIN_PASSWORD_RESET=true` to force-reset the admin password on startup (useful for local dev DBs).
-- Creating a user in the admin panel seeds the new user with the default state from `backend/default_state.json` (not the admin's state).
-- Login is case-sensitive (`admin` is lowercase).
+- Creating a user in the admin panel seeds the new user with the default state from `backend/default_state.json` (not the admin's state), or with the imported state; since v1.64 account and start state are written in one transaction (`_create_user(..., initial_state=...)`).
+- An admin cannot disable or demote their own account (`PATCH /auth/users/{username}` → 400 "Cannot disable or demote yourself."; v1.64); self-deletion was already blocked.
+- Usernames are case-insensitive: login strips and lowercases them (`admin` is stored lowercase).
 - Login screen includes show/hide password toggle.
 
 ---
 
 ## 9) Running Locally (Step-by-step)
 Prereqs
-- Python 3.9+
+- Python 3.10–3.12 (CI 3.11; production image Ubuntu 22.04 Python 3.10). Not 3.13: the pinned `ortools==9.11.4210` has no wheels for it. 3.9 fails at import (PEP 604 unions).
 - Node 20+ (22 used in CI and the frontend image)
 
 **Quick start (Claude Code agent)**
@@ -1230,17 +1323,19 @@ To start fresh with a clean database:
 lsof -ti:8000 | xargs kill -9 2>/dev/null
 lsof -ti:5173 | xargs kill -9 2>/dev/null
 
-# Delete database for fresh start (optional)
-rm /Users/danieltruhn/Workspace/ShiftSchedule/schedule.db
+# Delete database for fresh start (optional; run from the repo root)
+rm schedule.db
 
-# Start backend (env vars inline - IMPORTANT: must be on same line or exported first)
-ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 &
+# Start backend (env vars inline - IMPORTANT: must be on same line or exported first).
+# Bound to 127.0.0.1 because the placeholder JWT_SECRET is public; for LAN access
+# use --host 0.0.0.0 only with a generated secret (openssl rand -base64 48).
+ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000 &
 
 # Start frontend
 npm run dev -- --host 0.0.0.0 --port 5173 &
 ```
 - Default admin credentials: `admin` / `<ADMIN_PASSWORD>`
-- Database location: `/Users/danieltruhn/Workspace/ShiftSchedule/schedule.db` (project root, not `backend/`)
+- Database location: `schedule.db` in the directory you start uvicorn from (repo root in these steps; override with `SCHEDULE_DB_PATH`)
 
 **Common pitfalls**
 1. **Admin password mismatch**: The admin user is created on first backend startup with the password from `ADMIN_PASSWORD`. If you delete the database and restart with a different password, or if the database already exists with a different password, login will fail.
@@ -1252,13 +1347,13 @@ npm run dev -- --host 0.0.0.0 --port 5173 &
    - Wrong: `python3 -m uvicorn backend.main:app ...` (no env vars)
    - Right: `ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> python3 -m uvicorn backend.main:app ...`
 
-3. **Database location**: The database is at project root (`schedule.db`), not `backend/schedule.db`.
+3. **Database location**: `SCHEDULE_DB_PATH` (default `schedule.db`, relative to the working directory), not `backend/schedule.db`.
 
 Auth env (required for login):
 ```bash
 export ADMIN_USERNAME=admin
 export ADMIN_PASSWORD=<ADMIN_PASSWORD>   # local dev password
-export JWT_SECRET=change-me-too
+export JWT_SECRET=change-me-too   # public placeholder: localhost only, generate one for any LAN/remote host
 ```
 
 Step 1: install backend deps
@@ -1273,7 +1368,7 @@ npm install
 
 Step 3: start backend (Terminal 1)
 ```bash
-ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
+ADMIN_USERNAME=admin ADMIN_PASSWORD=<ADMIN_PASSWORD> JWT_SECRET=change-me-too python3 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
 ```
 
 Step 4: start frontend (Terminal 2)
@@ -1285,13 +1380,8 @@ Step 5: open the app
 - http://localhost:5173
 - Login: `admin` / `<ADMIN_PASSWORD>`
 
-Codex CLI sandbox note (local dev)
-- You may see `operation not permitted` when binding to ports (8000/5173) if the sandbox disallows it.
-- Fix: rerun the start commands with escalated permissions, or use a Python `subprocess.Popen(..., start_new_session=True)` wrapper to launch in the background.
-- Also avoid `nohup` in this environment; it can trigger permission errors.
-
 If a port is already in use
-- The backend has a startup check that errors if port 8000 is already in use, with a message like: "Port 8000 is already in use by another process."
+- The backend has a startup check that errors if the port it is started with (`--port`, else `BACKEND_PORT`, else 8000) is already in use.
 - Kill existing processes: `lsof -ti:8000 | xargs kill -9` and `lsof -ti:5173 | xargs kill -9`
 - Backend: pick another port, then set `VITE_API_URL` for the frontend:
 ```bash
@@ -1305,7 +1395,7 @@ If the UI says "Solver service is not responding"
 - Ensure `VITE_API_URL` matches the backend host/port.
 - If backend logs show 401 on `/v1/solve`, the auth token is invalid (often after a JWT secret change). Log out/in.
 - If backend logs show a validation error for `solverSettings` fields, restart the backend so the updated models load.
-- If using a non-localhost host (LAN or remote), set CORS explicitly:
+- If using a non-localhost host (LAN or remote), set CORS explicitly (and use a generated `JWT_SECRET`, not the placeholder):
 ```bash
 CORS_ALLOW_ORIGINS=http://my-host:5173 python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000
 ```
@@ -1352,11 +1442,30 @@ Frontend
 - `src/components/schedule/SolverOverlay.tsx` (live solver progress overlay with chart and abort/apply)
 - `src/components/schedule/SolverDebugPanel.tsx` (debug info visualization after solve completes)
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
-- `src/components/schedule/AutomatedPlanningPanel.tsx` (solver control panel with date range and strategy)
+- `src/components/schedule/AutomatedPlanningPanel.tsx` (planning panel: date range, Run, Reset Solver Only / Reset Unfixed)
+- `src/components/schedule/AgentSettingsPanel.tsx` (v1.64, extracted from SettingsView: AI provider/model, endpoint, API keys, model check, chat test, budget)
+- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan, Color by, start-page star, Views)
+- `src/components/schedule/teamColors.ts` (v1.64: "Color by: Person" pill styles and location row tints for the classic grid)
+- `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder)
+- `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while the start view is resolved)
+- `src/components/ui/ConfirmDialog.tsx` (confirm dialog; Enter acts on the focused button)
 - `src/api/client.ts`
 - `src/lib/shiftRows.ts` (weeklyTemplate normalization, colBand safeguards, legacy shiftRowId helpers)
 - `src/lib/schedule.ts` (rendered assignment map, time intervals, Rest Day pool logic)
 - `src/lib/solverStats.ts` (live solver stats calculation: coverage, preferences, time windows, on-call rest, working hours)
+- `src/lib/myPlan/` (v1.64, pure and tested: one person's plan — shifts split at midnight, previous-day nights, start-day hours, overlap lanes, rest/vacation bands, location tint, coworkers, next shift, rest before, month sheet, colors, labels; public API in `index.ts`)
+- `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker`, `LinkClinicianCard`, `SavedViewsMenu`, `StartPageStar`, `NextUpChip`)
+- `src/lib/userPreferences.ts` (`useUserPreferences`: loads `/v1/me/preferences`, optimistic updates, debounced save, never PUTs before a successful GET, flushes on pagehide)
+- `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS`, person palette `PERSON_COLORS`)
+- `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan, start view applied once, `scopeReady`)
+- `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
+- `src/pages/resetSolverAssignments.ts` (v1.64: Reset Solver Only / Reset Unfixed rules)
+- `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
+- `src/lib/templateLimits.ts` (v1.64: `MAX_TOTAL_COLBANDS` = 300, `countTemplateColBands`)
+- `src/lib/time.ts` (v1.64: the one strict `parseTimeToMinutes`)
+- `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
+- `src/lib/clipboard.ts` (v1.64: `copyTextToClipboard`, reports success)
+- `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
@@ -1372,8 +1481,17 @@ Backend
 - `backend/publication.py` (tokens + caching helpers)
 - `backend/solver.py` (CP-SAT solver endpoint + logic)
 - `backend/heuristic/solver_v2.py` (heuristic solver v2 implementation)
-- `backend/heuristic/models.py` (heuristic solver data models)
 - `backend/state_routes.py` (health + state endpoints + database inspection)
+- `backend/preferences.py` (v1.64: `GET/PUT /v1/me/preferences`, 32 KB cap)
+- `backend/assignment_policy.py` (`is_protected_assignment`, `is_replaced_by_draft` — what a stored draft replaces)
+- `backend/run_apply.py` (stored-run apply, planning fingerprint), `backend/solver_runs.py` (run table, statuses, `discard_run`)
+- `backend/scoring.py` (`plan_stats`, `open_slots`), `backend/validation.py` (hard-constraint validator)
+- `backend/snapshots.py` (calendar snapshots)
+- `backend/agent_budget.py` (agent settings, chat test, model check, spend)
+- `backend/schedule_changes.py` (schedule change log, admin endpoint)
+- `backend/account_lifecycle.py` (account generation/identity checks)
+- `backend/request_logging.py` (redacted access logging)
+- `backend/ical.py` (ICS generation for subscription feeds)
 - `backend/requirements.txt`
 - `backend/schedule.db`
 
@@ -1392,54 +1510,19 @@ Database Inspector
 - HTML5 drag-and-drop does not work on mobile; touch DnD would require a new library or alternate UX.
 - If you change the solver API, update `src/api/client.ts` and `WeeklySchedulePage.tsx`.
 - Legacy row id `pool-not-working` is filtered out on load.
-- **Versioning (mandatory):** `src/version.ts` holds `APP_VERSION` (string, starts at `"1.00"`) and `APP_BUILD` (integer, starts at `0`), rendered as a subtle `v1.00 (0)` badge at the bottom-right of the app (`App.tsx::VersionBadge`). Bump BOTH on every delivered iteration — version `+0.01`, build `+1` — so the owner can verify which build a deployment runs.
+- **Versioning (mandatory):** `src/version.ts` holds `APP_VERSION` (string, starts at `"1.00"`) and `APP_BUILD` (integer, starts at `0`), rendered as a subtle `v1.00 (0)` badge at the bottom-right of the app (`App.tsx::VersionBadge`; hidden on phones since v1.64, where it covered plan content). Bump BOTH on every delivered iteration — version `+0.01`, build `+1` — so the owner can verify which build a deployment runs.
 
 ---
 
-## 13) Current Hetzner Deployment (Domain, default)
-- Server IP: `46.224.114.183`
-- SSH user: `root`
-- Path: `/opt/shiftschedule`
-- Stack: `docker compose up -d --build` (uses `docker-compose.yml` + Caddy).
-- Frontend: `https://shiftplanner.wunderwerk.ai`
-- Backend: `https://shiftplanner.wunderwerk.ai/api`
-- Data lives in the `backend_data` volume; you can update only the frontend without touching the DB.
-- Typical frontend update: rsync repo to `/opt/shiftschedule`, then `docker compose build frontend` and `up -d frontend`.
-
-### Remote setup checklist (smooth deploy)
-- Ensure `/opt/shiftschedule/.env` exists before running compose. If you use `rsync --delete`, exclude `.env` or recreate it after sync.
-- Required `.env` values for domain setup:
-  - `DOMAIN=shiftplanner.wunderwerk.ai`
-  - `LETSENCRYPT_EMAIL=daniel.truhn@gmail.com`
-  - `ADMIN_USERNAME=admin`
-  - `ADMIN_PASSWORD=<ADMIN_PASSWORD>`
-  - `JWT_SECRET=change-me-too`
-  - `JWT_EXPIRE_MINUTES=720` (avoid empty string; backend crashes on startup)
-- `PUBLIC_BASE_URL` is set in `docker-compose.yml` as `https://${DOMAIN}/api` (don’t leave it blank).
-- If login fails and you need a forced reset, set `ADMIN_PASSWORD_RESET=true` in `.env` and restart backend, then remove/disable it after login works.
-- iCal subscription endpoints require `/api` proxying in the frontend nginx config; otherwise `/api/v1/ical/*.ics` returns HTML and Apple Calendar rejects it.
-- Domain stack uses Caddy on ports 80/443; stop the IP-only stack first to avoid port conflicts.
-- After deploy, always verify:
-  - `curl -s -o /dev/null -w "%{http_code}" https://shiftplanner.wunderwerk.ai` (expect 200)
-  - `curl -s -o /dev/null -w "%{http_code}" https://shiftplanner.wunderwerk.ai/api/health` (expect 200)
-- Before deploy, run `npm run build` locally to catch TypeScript build errors that unit/E2E tests may not cover.
-
-## 14) IP-only Deployment (optional)
-- Stack: `docker compose -f docker-compose.ip.yml up -d --build`
-- Frontend: `http://46.224.114.183`
-- Backend: `http://46.224.114.183:8000`
-- IP-only stack binds port 80 directly; it conflicts with Caddy, so only run one stack at a time.
-- `.env` required for domain setup:
-  - `DOMAIN=shiftplanner.wunderwerk.ai`
-  - `LETSENCRYPT_EMAIL=daniel.truhn@gmail.com`
-  - `ADMIN_USERNAME=admin`
-  - `ADMIN_PASSWORD=<prod password>`
-  - `JWT_SECRET=<prod secret>`
-  - `JWT_EXPIRE_MINUTES=720` (avoid empty string)
-- Caddy handles TLS + `/api` proxying. Frontend uses `VITE_API_URL=/api` so no extra env needed.
-- `PUBLIC_BASE_URL` is set in `docker-compose.yml` as `https://${DOMAIN}/api` (don’t leave it blank).
-- If admin login fails after switching stacks, the existing DB user may still have the old password. Reset via:
-  - `docker compose exec -T backend python - << 'PY' ...` (update `users` table in `/data/schedule.db`).
+## 13) Deployment
+See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
+- **Production** is the Proxmox LXC behind `https://shiftplanner.truhn.ai`: job `deploy-truhn`, repo `/opt/app`, stack `docker-compose.proxied.yml` (frontend on `127.0.0.1:5000`, host nginx terminates TLS), data volume `app_backend_data`. Access: `ssh -J dtruhn@49.13.89.75:4444 root@10.10.10.6`.
+- The old Hetzner server (`46.224.114.183`, `/opt/shiftschedule`, `docker-compose.yml` + Caddy, `shiftplanner.wunderwerk.ai`) is a **redirect host** since 2026-07: Caddy answers with a 301 to `https://shiftplanner.truhn.ai{uri}`. The `deploy` job still rebuilds it; expect 301, not 200, from that domain.
+- CI (`.github/workflows/ci-cd.yml`): backend pytest on Python 3.11 (benchmark excluded); frontend on Node 22 with typecheck, Vitest, `npm run build` and the critical Playwright specs. Deploys fetch the tested commit by SHA (`git reset --hard` on the LXC, `git checkout --detach` on Hetzner) and run `scripts/deploy-compose.sh <compose file>` (build → close planning admission → wait up to 90 min for running plans → replace containers or stop without replacing). The Hetzner job then force-recreates `caddy`. Markdown-only pushes do not deploy.
+- Manual fallback: use `scripts/deploy-compose.sh`, never a bare `docker compose up -d --build` (skips the drain and kills running plans).
+- Never use the `.env.example` placeholders (`JWT_SECRET=change-me-too`): production accepts any non-empty secret. Generate with `openssl rand -base64 48`. Keep `JWT_EXPIRE_MINUTES` non-empty (`docker-compose.yml` and `docker-compose.ip.yml` have no default; `int("")` crashes the backend).
+- `PUBLIC_BASE_URL` is set by the domain/proxied compose files to `https://${DOMAIN}/api`. iCal endpoints rely on the frontend nginx proxying `/api` (see `nginx.conf`).
+- `docker-compose.ip.yml` (IP-only, ports 80/8000) is legacy and not used in production; it conflicts with Caddy on port 80.
 
 ## v1.55 — planning workflow and optional quality experiments
 
@@ -1666,7 +1749,8 @@ Database Inspector
   planned range: budget `max(60 s, 10 s × days)` (`audit_time_budget`, also
   the cap of the 10 % reserve carved out of timed runs), repair ceiling two
   per day up to 48, and a repair now re-checks only the days it can
-  influence (its ISO week plus the adjacent days; the balanced profile
+  influence (its ISO week plus the adjacent days — widened to the on-call
+  rest window when that rule is on since v1.64; the balanced profile
   still re-checks everything because it scores range-wide averages) while
   completed checks elsewhere are carried to the new revision. Measured on
   the arena fixture, 28 days: before 55 s and 0 of 28 days verified (every
@@ -1687,3 +1771,342 @@ Database Inspector
   workflow's report line, lists all workflow inputs and the 7-day cap, and
   corrects the account of the 2026-09-22 NVFP4 smoke run (exit 137 from a
   concurrent deploy, verified stable afterwards).
+
+## v1.64 — My plan (individual view) and code review fixes
+
+### My plan
+
+- **Team | My plan.** The calendar card has a new first header row
+  (`src/components/schedule/TeamPlanHeader.tsx`, classic grid and clinic
+  sheet): `PlanScopeSwitch` on the left; "Color by" (classic grid only),
+  start-page star and Views menu on the right, in the same places as in the
+  My plan header. The anchor date is shared by both scopes. Scope is page
+  state (`src/pages/usePlanScope.ts`): it starts as Team, and the stored start
+  view of the current device class (`startViewDesktop` / `startViewMobile`) is
+  applied once after the preferences load; later preference changes and late
+  loads never switch the view under the user. Until the start view is known
+  (at most `START_VIEW_WAIT_MS` = 1 s) the card shows `CalendarPlaceholder`
+  instead of painting the team grid and swapping it. Without a start view the
+  team grid looks as before apart from the new header row. In scope "My plan"
+  the planning panels below the calendar are hidden but stay mounted. The My
+  plan bundle is lazy-loaded, so team-only sessions never download it.
+- **My plan view** (`src/components/myPlan/MyPlanView.tsx`, pure model in
+  `src/lib/myPlan/`, public API in `index.ts`): day, week or month
+  (`RangeSwitch`), each with the date on top or on the left
+  (`OrientationSwitch`; month: calendar / list, day: time runs down / right).
+  Range and orientation per range are remembered per device class
+  (`myPlanRange` + `orientationByRange` on computers, `myPlanRangeMobile` +
+  `orientationByRangeMobile` on phones, where the week defaults to the agenda,
+  date on the left). Shifts are the person's section assignments with slot
+  times; hours are the gross slot duration (8 h when a time is missing,
+  `getSlotDurationMinutes`, also used by the working-hours overview) counted on
+  the start day, and overlapping own shifts count once. Overnight shifts
+  belong to their start day and are split at midnight (both parts share one
+  shift id); a night that started the day before the range is loaded too.
+  Vacation and rest days (exactly as the team grid shows them, including
+  on-call rest) render as bands; days without work show "free" in published
+  weeks, unpublished weeks show "Draft – not published". The day ground is
+  tinted by the location where a shift starts (split when two locations).
+- **Header and detail.** Period navigator, "Next up" chip (running or next own
+  shift within 14 days, countdown, click opens that day), person picker
+  (chevron next to the switch; "You are viewing the plan of X" banner, the
+  browser title names the person), Views menu and start-page star. Clicking a
+  shift opens the detail (desktop popover, phone bottom sheet, inline card in
+  day views): time, hours, location/section, coworkers ("Working with you":
+  same duty / same time at location / others at location), rest before, next
+  entry, published/draft status and "Show in team plan" (switches to Team at
+  that date, scrolls to the person's pill and pulses it,
+  `src/pages/scrollToTeamAssignment.ts`). Keyboard (outside inputs, no
+  modifier, no open modal): T / W / M day, week, month · H today · O
+  orientation · P team plan · N / Shift+N next / previous shift · ? help toast.
+- **"I am" link.** Without a linked clinician (or if it no longer exists) My
+  plan shows "Who are you in the plan?" with an "I am" select and "That's
+  me"; the choice is stored as `clinicianId` in the preferences. Viewing
+  someone else's plan is page state only.
+- **Saved views and start pages.** A saved view stores scope, range,
+  orientation, colorBy and an "Open at" anchor `startAt` (today, next shift,
+  week start) — never a fixed date; max 12, unique ids. Applying a view from
+  either header moves the anchor accordingly. The star makes the current view
+  the start page of this device class; start pages carry no `startAt` and keep
+  the current anchor.
+- **Team additions (opt-in).** "Color by: Section | Person" (`teamColorBy`,
+  classic grid only): Person gives every clinician a color from
+  `PERSON_COLORS` (by list order, 16 colors, repeating), section blocks turn
+  neutral, and the linked person's own pills get an outline. Section is the
+  default and looks as before. Locations with a color tint their row labels
+  and their location separator row in the classic grid
+  (`src/components/schedule/teamColors.ts`); uncolored locations and the
+  clinic sheet keep their look.
+- **Per-user preferences** (`backend/preferences.py`, model
+  `backend/models.py::UserPreferences`, hook `src/lib/userPreferences.ts`):
+  `GET/PUT /v1/me/preferences`, one JSON row per login in the new table
+  `user_preferences` (created by `CREATE TABLE IF NOT EXISTS` at startup).
+  Outside AppState, so saving never changes the calendar revision or a
+  planning fingerprint. PUT bodies over 32 KB get 413 (after authentication,
+  so anonymous requests get 401). A PUT stores only the top-level keys it
+  names (null or `[]` clears one, an object such as `orientationByRange` is
+  replaced whole) and returns the merged document, so the hook sends only the
+  keys changed since its last successful save and a tab cannot undo another
+  device's changes to other keys. Deleted with the account. An unreadable
+  stored row returns defaults instead of locking the user out. The hook
+  updates optimistically, saves debounced (600 ms) and serialized, never PUTs
+  before a successful GET (a failed load cannot overwrite stored views),
+  skips no-op updates, and flushes on pagehide, when the tab is hidden and on
+  unmount; opening the app writes nothing unless the start view differs from
+  the stored range/orientation.
+- **`Location.color`** (`#RRGGBB`, presets slate/sand/sage/lilac in
+  `LOCATION_COLOR_OPTIONS`, set with `LocationColorPicker` in the template
+  builder): part of the shared calendar but presentation only. Normalized
+  (uppercased; anything else means no tint) in `backend/state.py` and
+  `normalizeAppState`; a non-string value never blocks a save with 422;
+  omitted from the dump when unset (existing calendars keep their revision)
+  and excluded from the planning fingerprint (`backend/run_apply.py`).
+- Tests: `backend/tests/test_user_preferences.py`,
+  `backend/tests/test_state_preferences.py`, `src/lib/myPlan/*.test.ts`,
+  `src/lib/userPreferences.test.ts`, `src/pages/usePlanScope.test.ts`,
+  `src/components/myPlan/*.test.tsx`, `TeamPlanHeader.test.tsx`,
+  `LocationColorPicker.test.tsx`, `e2e/my-plan.spec.ts`.
+
+### Behaviour changes (users and admins can notice these)
+
+- **Applying a stored draft and the CP-SAT/heuristic pre-solve filter now
+  replace unlocked solver entries on a clinician's vacation days** (one rule,
+  `backend/assignment_policy.py::is_replaced_by_draft`, matching the agent
+  harness). Such entries are hidden in the grid; before, they survived apply
+  and blocked agent drafts or left invisible gaps. Manual/legacy, locked and
+  pool entries still survive.
+- **Reset Solver Only** also removes unlocked solver entries on vacation days
+  (same rule). **Reset Unfixed** removes them too; on vacation days it now
+  keeps only locked and manual/legacy entries (before: every entry on a
+  vacation day). Rules in `src/pages/resetSolverAssignments.ts`.
+- `POST /v1/solve/runs/{id}/discard` only discards `finished`/`aborted` runs
+  (idempotent for `discarded`); anything else returns 409 ("Run is applied and
+  cannot be discarded."), so a discard can no longer overwrite an apply from
+  another tab.
+- `POST /v1/solve/range` returns 422 "Invalid date range." for unparseable,
+  non-`YYYY-MM-DD` or reversed ranges (before: HTTP 500 or a run that failed
+  at once). No upper limit on the range length.
+- A plan salvaged from a worker that died without a result is stored as
+  `aborted` with "Solver process ended unexpectedly (exit code N)", so apply
+  asks for confirmation; before it was `finished`. The overshoot watchdog's
+  hard stop now really ends the worker (SIGKILL).
+- Heuristic v2 no longer abandons a day attempt at the first slot that became
+  unfillable through earlier choices: it marks it blocked, keeps filling and
+  reports failure at the end, so retries still run and the best attempt keeps
+  more slots filled. Slots whose end is not after their start (e.g.
+  20:00–08:00 without "+1 day") are skipped with a warning instead of
+  producing an `UNKNOWN_SLOT` violation and blocking the next day; CP-SAT
+  still fills them.
+- **Sonnet 5 is priced at $2 / $10 per MTok** (`agent_budget.MODEL_PRICES`,
+  `src/lib/llmPricing.ts`; was $3 / $15). Earlier runs were charged about
+  50 % too much against the per-user AI budget; stored `agent_spend` is not
+  corrected, so admins may raise budgets. The run history recomputes costs
+  from tokens, so past runs now show the lower price there.
+- On Sonnet 5, Opus 4.7+, Haiku 5.x and Fable/Mythos, Claude's reasoning now
+  appears in the live feed and run log (`thinking.display: "summarized"`;
+  their API default is `"omitted"`, which left the feed empty), see §6.6.
+- Assignments on migrated sub-shift slot ids (`<section>::s2__mon`) are no
+  longer moved to `s1` on load (backend and frontend in lockstep), and
+  overrides fall back deterministically. Such an assignment now follows its
+  date's day type when a holiday is added or removed (to `…::s2__holiday`
+  when that slot exists, otherwise it is dropped as before). Assignments that
+  were already moved to `s1` by earlier versions are not moved back.
+- Confirm dialogs: Enter on a focused "Cancel" cancels (before: Enter always
+  confirmed). Removing a person in Settings asks for confirmation (all
+  weeks' assignments, vacations and preferences are deleted); the template's
+  slot "x" always asks, and the block/row/column/location dialogs say that
+  shifts planned in them, including past weeks, are deleted.
+- The local `.ics` download blocks the following day(s) for overnight shifts
+  (DTEND = start + 1 + `endDayOffset`, capped at +3), like the subscribed feed.
+- The month picker navigates to the clicked row's first day in the displayed
+  month (before: the row's Monday, which jumped to the previous month).
+- AI budget field saves on blur/Enter only; an empty or invalid value restores
+  the stored budget (before: clearing the field saved $0 for everyone at
+  once) and budget edits no longer reset the model check or chat test.
+  "Custom model name…" opens the text field even while a preset is active.
+- A 502 or network error while checking the session keeps the user signed in
+  and offers Retry / Go to sign in (before: any failure cleared the token, so
+  a 502 during a deploy restart signed everyone out); only 401/403 clear it. The login page distinguishes wrong
+  credentials (401) from an unreachable server, and the public week link
+  shows "Could not load the schedule" instead of "invalid or expired" on
+  network/5xx errors.
+- A weekly template with more than 300 column bands shows a banner (saves
+  stay refused); sign-out asks first, snapshot import is refused, snapshot
+  restore works.
+- Admins get 400 "Cannot disable or demote yourself." for their own account;
+  creating a user saves account and start state in one transaction.
+- Re-publishing iCal or web links no longer touches `updated_at`, so opening
+  the Export modal does not reset subscribers' cache validators; the public
+  feed answers `HEAD`; usernames outside Latin-1 no longer cause a 500 on the
+  feed (download filename falls back to `shift-planner.ics`).
+- Smaller UI fixes: rule-violation and split-shift popover items are
+  clickable; on a phone the open-slots badge and those popovers switch the
+  day view to the target day; dragging a person out of the Rest Day row
+  removes the stored entry; a same-day move out of a slot without a valid
+  time is allowed; preferred working times keep the picked time and opening
+  the editor no longer autosaves; Escape while renaming a snapshot only
+  cancels the rename; "Copied ✓" only after a successful copy; an empty PDF
+  start date disables "Export PDF"; run-inbox errors (feedback, details, log
+  download) show inside the affected run card; the version badge is hidden
+  on phones.
+- `AGENT_MAX_ITERATIONS` is no longer read (the compose files still pass it;
+  harmless). `scripts/smoke-api.mjs` is read-only (no solver run).
+
+### Code review fixes (by area)
+
+- **Backend solver/runs** (`solver.py`, `solver_runs.py`, `run_apply.py`,
+  `assignment_policy.py`): shared `is_replaced_by_draft`; watchdog SIGKILL
+  once + 5 s reap + bounded queue drain (`_drain_dead_worker_queue`);
+  removed the import-time pgrep/SIGKILL sweep `_cleanup_orphaned_solver_processes`
+  (it never matched spawn children but could kill unrelated processes);
+  salvaged plans stored `aborted`; 422 date validation; `abort_solver` is a
+  plain `def` (thread pool, no event-loop blocking); weights read straight
+  from `SolverSettings` (`DEFAULT_WEIGHT_*`/`get_weight` removed);
+  `_add_on_call_rest_constraints` returns early when off and reports the
+  boundary conflict (45-line post-solve loop removed, output unchanged);
+  conditional `discard_run`; dead code removed (`SolverTimer.summary`,
+  `MockUser`, `_solve_range_impl_subprocess`, the worker's `_load_state`
+  fallback, `_RunHandle.mode`, `_range_fingerprint`, unused parameters).
+  Tests: `test_solver_monitor.py`, `test_solver_run_endpoints.py`, on-call
+  rest boundary tests in `test_solver.py`.
+- **Heuristic and scoring** (`heuristic/solver_v2.py`, `scoring.py`): blocked
+  slots no longer end the attempt (`blocked_count`); zero-duration slots
+  skipped with one warning per slot, implicit-overnight checks use `<`;
+  `is_on_vacation` compares ISO strings (a malformed vacation date no longer
+  crashes); dead code and stale docstrings removed (weekly reset without
+  effect, `preferred_sections`, unused `config`/`source` parameters, the
+  `_assign_doctor_to_slot` wrapper; eligibility is 8 criteria incl.
+  continuity); `score_plan`/`PlanScore` and unused context fields removed,
+  their tests ported to `plan_stats`.
+- **Agent** (`agent/*.py`, `agent_budget.py`): Anthropic adapter (empty
+  replies, summarized thinking for Opus 4.7+/Sonnet 5+/Haiku 5.x/Fable,
+  other `AnthropicError`s non-retryable, `(empty)` placeholder); harness turns
+  adapter exceptions into error responses and keeps the best plan;
+  final-audit repairs start no follow-up search (the audit re-checks itself);
+  re-check window widened to the on-call rest window (up to 7 days); the
+  final range review handles truncated replies (tool results + up to two
+  nudges) and names error/refusal details; replaced-assignment filter is one
+  pass (was quadratic); the unsolved overview reuses the quality metrics;
+  shared helpers (`restore_best`, `_fmt_span`, `ABORT_NOTE`, `_roster_lines`,
+  `_range_error`, tolerance/week-cap helpers); the LLM sees S-codes and
+  section names instead of raw slot/section ids in violations and
+  `get_clinician_summary`; `suggest_day_blocks`/`suggest_balance_moves`
+  descriptions and both system prompts describe the `apply_proposal` flow and
+  candidates without a proposal id correctly; `get_ytd_progress` rejects
+  invalid dates and normalizes compact ISO dates; `AGENT_MAX_ITERATIONS`
+  dropped from `from_env`; default model/provider defined once
+  (`agent/config.py`); Sonnet 5 price plus a backend/frontend price-table
+  parity test. The model-visible text changed (tool descriptions, prompts,
+  violation messages): the prompt cache misses once after deploy, and arena
+  results before and after are not strictly comparable.
+- **Core, auth, publication** (`state.py`, `state_routes.py`, `auth.py`,
+  `account_lifecycle.py`, `publication.py`, `web.py`, `ical*.py`, `pdf.py`,
+  `models.py`): `_load_state` persists any normalization difference so the
+  revision it returns always equals the stored one (before, a silent
+  normalization made every save fail with 409); `connection` is required in
+  the publication lookups and the dead write branch that could recreate a
+  deleted account's state is gone; deterministic sub-shift fallback for
+  overrides, migrated day-type slot ids kept (`_is_day_type_slot_id`) and
+  following the date's day type (`_follow_date_day_type`); the default
+  sub-shift gets `endDayOffset: 0` (normalization is idempotent);
+  `state_routes` uses `state._get_day_type`; `_get_current_user` reuses
+  `_extract_bearer_token`; atomic `create_user`; self-disable/demote guard;
+  `user_preferences` cleared on account deletion and a schema-introspection
+  test checks every per-user table; iCal `Content-Disposition` with
+  `filename*`, `HEAD` route, idempotent `publish_ical`/`publish_web`, fast
+  path in `_fold_ical_line`, early return without published weeks; shared
+  `_new_token`, `_compute_etag`/`_public_cache_headers`/`_not_modified`
+  (ETags bit-identical, pinned by a test) and `_render_pdf`; PDF timeouts and
+  render failures are logged; dead helpers/models removed
+  (`get_account_generation`, `_load_raw_state_blob`, `_resolve_shift_row`,
+  `SolverDebugCheckpoint`, `IcalPublishRequest`).
+- **Frontend page** (`WeeklySchedulePage.tsx`): one `buildStatePayload` for
+  every save path (autosave, snapshot import, run start — the run start now
+  also passes the colBand guard); autosave normalizes only when the debounce
+  fires; ~330 lines of dead handlers removed; popover clicks no longer count
+  as "outside"; the 100 ms run ticker pauses while the overlay is minimized;
+  a stable rendered-assignment list for the overview modals and no duplicate
+  map on desktop; `computeOpenSlots` (`src/lib/openSlots.ts`); one
+  `revealDate` jump helper (phones switch to the target day);
+  vacation updates moved out of the assignment state updater; local `.ics`
+  `endDayOffset`; reset rules in `resetSolverAssignments.ts`; template-limit
+  banner and guarded sign-out/restore; My plan integration.
+- **Frontend grid** (`ScheduleGrid.tsx`, `ClinicSheetGrid.tsx`,
+  `AssignmentPill.tsx`, `clinicianSlotOptions.ts`, `schedule.ts`):
+  `ConfirmDialog` Enter fix; month picker; `ClinicianPickerPopover` no
+  longer pulls focus back into its search field on parent re-renders;
+  `SnapshotPopover` Escape and `restoreDisabled`; unknown-interval counts
+  per clinician (`canDropAssignment`); shared
+  `DRAG_MIME`/`readDragPayload` (malformed payloads ignored) and
+  `sortAssignmentsBySurname`; the dragover state shim, dead props and
+  always-false branches removed; Rest Day entries keep their stored ids in
+  `buildRenderedAssignmentMap` (dead pool bookkeeping removed); drag/drop and
+  picker tests.
+- **Frontend settings** (`SettingsView.tsx`, `AgentSettingsPanel.tsx`,
+  `ClinicianEditor.tsx`, `WeeklyTemplateBuilder.tsx`, `AdminUsersPanel.tsx`):
+  remove-person confirmation; AI settings extracted into
+  `AgentSettingsPanel` (its chat timer no longer re-renders the whole
+  settings page), budget field and custom model name fixed;
+  preferred-working-times editor rewritten without the timer/suppress-ref
+  mechanism (no emit on mount, own times shown again after switching
+  clinicians); slot removal confirmation and honest delete dialogs; the
+  builder's duplicate colBand sanitizer and console logging removed;
+  unreachable month-name parser in `parseHolidayDate` removed; hook order fix
+  in `AdminUsersPanel`; shared `ToggleSwitch`.
+- **Frontend planning UI** (`SolverOverlay.tsx`, `SolverInfoModal.tsx`,
+  `IcalExportModal.tsx`, `WorkingHoursOverviewModal.tsx`,
+  `VacationOverviewModal.tsx`, `AgentActivityPanel.tsx`): live stats cache
+  keyed by solution object (a second run over the same range no longer shows
+  old numbers); the overlay re-finds a remounted calendar container (falls
+  back to a fixed overlay); `liveStats` is the last history entry; run-card
+  errors; weights section says it only affects CP-SAT; PDF start validation;
+  hours aggregation skipped while closed and done in one pass with the
+  shared hours rule; dead `visibleYear` scroll listener and `DashboardCard`
+  removed; `copyTextToClipboard` reports failure.
+- **Frontend lib/pages/app**: `App.tsx` session check (401/403 vs transient);
+  `login()` no longer triggers the session-expired handler on wrong
+  credentials; `LoginPage`/`PublicWeekPage` error messages; `mockData.ts`
+  re-exports the API types and uses the backend weight defaults; one strict
+  `parseTimeToMinutes` (`src/lib/time.ts`); `buildTimeMeta` shared by both
+  column-time builders; print pages without dead code and with stable week
+  arrays; DB inspector ignores stale week responses; animated numbers
+  continue from the shown value; `downloadTextFile` in `src/lib/download.ts`;
+  section block colors derived from `BLOCK_COLOR_SWATCH_OPTIONS` (a backend
+  test checks them against `backend/state.py`).
+- **Infra/tests**: CI runs `e2e/my-plan.spec.ts` and `e2e/team-page.spec.ts`
+  in addition to the four earlier specs; `scripts/smoke-api.mjs` no longer
+  calls the removed `POST /v1/solve/week`.
+
+### Deploy and data notes
+
+- Schema change is additive only (`user_preferences`); no existing table or
+  calendar is migrated. Uncolored locations serialize exactly as before.
+- A calendar whose stored JSON differs from its normalized form is re-saved
+  once on its first load after the deploy (same content the app already
+  showed; its revision then matches what clients get). This replaces the
+  earlier behaviour where such a calendar failed every save with 409.
+- Not addressed in this release (known): an invalid drop still removes the
+  assignment instead of snapping back; the LLM spend of stopped, killed or
+  crashed agent runs is still not charged; no login throttling; a discard
+  that gets 409 shows the generic "try again" notice instead of the server's
+  reason; CP-SAT still fills zero-duration slots; the legacy v<4 template
+  migration in `_normalize_state` still carries dead code.
+- After deploy, run the admin "Model connection test" (Settings → Solver)
+  once on Sonnet 5: the new `thinking.display` request field has only been
+  checked against the installed SDK, not the live API.
+
+### Documentation
+
+- DEPLOY.md, NOTES.md and §13 name the LXC (`shiftplanner.truhn.ai`) as
+  production and the Hetzner server as redirect host; CI/deploy steps match
+  `ci-cd.yml` (Node 22, build + Playwright incl. `my-plan`/`team-page`, SHA
+  checkout + `deploy-compose.sh`). Corrected stale statements on optimizer
+  weights (20/10/3 plus Minimum Daily Hours and YTD Balance), the SSE
+  progress stream (Authorization header, no `?token=`), the agent wall clock
+  (none by default), the tool-history budget (~60K chars), colBand limits
+  (20 per day type, save refused above 300), case-insensitive usernames, the
+  local Python range (3.10–3.12), apply/reset semantics, the planning panel
+  (no strategy toggle), overlay buttons, drop behaviour, the validator's
+  zero-duration rule, scoring (`plan_stats` only) and the heuristic's
+  blocked-slot handling (`human-heuristic-solver.md`,
+  `HEURISTIC_SOLVER_V2_README.md`).

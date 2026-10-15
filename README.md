@@ -4,8 +4,11 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 
 ## Features
 - Weekly schedule view with drag-and-drop within the same day
+- "My plan" individual view next to the team plan (Team | My plan switch): one person's shifts as day, week or month, with the date on top or on the left, overnight shifts split at midnight, absences, coworkers per shift, and location tints
+- Per-user preferences ("I am" link, saved views, start page per device class) stored per login via `GET/PUT /v1/me/preferences`, outside the shared calendar state; a PUT stores only the top-level keys it sends and keeps the rest, so a device cannot undo another device's changes to other keys (a key such as `savedViews` is replaced whole)
+- Optional location colors and a team "Color by: Person" mode (presentation only; planning is unaffected)
 - Rest-day and vacation pools
-- Per-class minimum slots (weekday vs weekend) and per-day overrides
+- Required staffing per weekly-template slot (set per weekday and for holidays) and per-day overrides
 - Clinician qualifications and preferences
 - Vacation tracking
 - AI planning drafts with explicit review and apply; CP-SAT and heuristic solvers also remain available through the API
@@ -15,24 +18,27 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 
 ## Tech Stack
 - Frontend: React 18, TypeScript, Vite, Tailwind CSS
-- Backend: FastAPI, OR-Tools, SQLite (single JSON state row)
+- Backend: FastAPI, OR-Tools, SQLite (calendar state as one JSON row per account in `app_state`; users, publications, solver runs, run feedback, snapshots, change log, per-user preferences and agent settings/spend in their own tables)
 
 ## Local Development (Step-by-step)
 Prereqs:
-- Python 3.11 (matches CI and the production image)
+- Python 3.10–3.12 (CI uses 3.11; the production image
+  `mcr.microsoft.com/playwright/python:v1.49.0-jammy` runs Ubuntu 22.04's
+  Python 3.10). Python 3.13 does not work: the pinned `ortools==9.11.4210`
+  has no wheels for it.
 - Node 20+ (22 recommended; CI and the frontend image use Node 22)
 
 Auth setup (required for login):
 ```bash
 export ADMIN_USERNAME=admin
 export ADMIN_PASSWORD=<choose-a-strong-password>
-export JWT_SECRET=<long-random-string>
+export JWT_SECRET=<long-random-string>   # e.g. openssl rand -base64 48
 ```
 On first startup, the admin user is created if it doesn't already exist.
 If the admin already exists, the password is not overwritten unless you set
 `ADMIN_PASSWORD_RESET=true` to force a reset for local dev.
 
-1) Install backend deps
+1) Install backend deps (add `-r backend/requirements-dev.txt` for pytest)
 ```bash
 python3 -m pip install -r backend/requirements.txt
 ```
@@ -77,10 +83,14 @@ CORS_ALLOW_ORIGINS=http://my-host:5173 python3 -m uvicorn backend.main:app --hos
 ```
 
 ## Deployment
-Production deploys are automated: every green push to `main` runs CI
-(pytest + typecheck/Vitest) and then deploys to the server via SSH.
-See [DEPLOY.md](DEPLOY.md) for the pipeline, server setup, `.env`
-reference, and operations/troubleshooting.
+Production runs at https://shiftplanner.truhn.ai (Proxmox LXC). Every push
+to `main` runs CI (backend pytest; frontend typecheck, Vitest, production
+build and critical Playwright specs) and, when green, deploys via SSH with
+`scripts/deploy-compose.sh`, which waits for running plans before replacing
+containers. Pushes that touch only Markdown files or the paths-ignored
+workflows (`agent-arena`, `backend-logs`, `set-agent-model`) skip CI and
+deploy. See [DEPLOY.md](DEPLOY.md) for the pipeline, both targets,
+`.env` reference, and operations/troubleshooting.
 
 ## Repository Notes
 - `node_modules/`, `dist/`, and local databases are ignored via `.gitignore`.

@@ -24,14 +24,14 @@ This document outlines the test strategy, coverage areas, and execution instruct
 # Install dev dependencies
 pip install -r backend/requirements-dev.txt
 
-# Run all backend tests
-python3 -m pytest backend/tests/ -v
+# Run all backend tests as CI does (the ~7 min solver benchmark excluded)
+(cd backend && python3 -m pytest tests -q --ignore=tests/test_solver_benchmark.py)
 
 # Run specific test file
 python3 -m pytest backend/tests/test_state_normalization.py -v
 
-# Run with coverage
-python3 -m pytest backend/tests/ --cov=backend --cov-report=html
+# Coverage needs pytest-cov, which is not in requirements-dev.txt:
+#   pip install pytest-cov && python3 -m pytest backend/tests/ --cov=backend --cov-report=html
 ```
 
 ### Frontend Unit Tests (Vitest)
@@ -43,7 +43,7 @@ npm test
 # Watch mode
 npm run test:watch
 
-# With coverage
+# With coverage (needs @vitest/coverage-v8, not in package.json)
 npm test -- --coverage
 ```
 
@@ -54,8 +54,8 @@ npm test -- --coverage
 # Backend: python3 -m uvicorn backend.main:app --port 8000
 # Frontend: npm run dev
 
-# Run E2E tests
-npm run test:e2e
+# Run E2E tests (npm run test:e2e is for Apple Silicon only, see CI section)
+npx playwright test
 
 # Run specific test file
 npx playwright test e2e/app.spec.ts
@@ -141,7 +141,7 @@ npx playwright show-report
 - [x] Only section assignments included (no pool rows)
 - [x] Vacation days filter out assignments
 
-**Backend Integration Tests** (`backend/tests/test_ical_routes.py`):
+**Backend Integration Tests** (`backend/tests/test_ical.py`, `test_publication_caching.py`, `test_publication_lifecycle.py`):
 - [x] Invalid token returns 404
 - [x] Unpublished weeks return empty calendar
 - [x] Published weeks return events
@@ -174,7 +174,6 @@ npx playwright show-report
 - [x] Solver does not reference pools
 
 **Frontend Tests**:
-- [x] `DEPRECATED_POOL_IDS` set excludes deprecated pools
 - [x] Normalization removes deprecated pools
 
 **E2E Tests** (`e2e/pool-removal.spec.ts`):
@@ -182,6 +181,47 @@ npx playwright show-report
 - [x] Reserve Pool not rendered in UI
 - [x] Settings view shows only Rest Day and Vacation pools
 - [x] Schedule grid has no deprecated pool rows
+
+### 3.9 My plan and per-user preferences (v1.64)
+
+**Backend Tests** (`backend/tests/test_user_preferences.py` unless noted):
+- [x] `GET /v1/me/preferences` returns defaults; PUT/GET round trip; partial input completed, unknown fields ignored
+- [x] Invalid input rejected without storing; saved-view cap (12) and name trimming
+- [x] Body over 32 KB → 413; the same request without a token → 401
+- [x] Isolated per user; deleted with the account; unreadable row → defaults; table added to an older database
+- [x] `Location.color` normalization, non-string values dropped, omitted when unset (`test_state_preferences.py`); excluded from the planning fingerprint (`test_fixed_planning_tasks.py`)
+
+**Frontend Tests**:
+- [x] `src/lib/myPlan/*.test.ts` — timeline (midnight split, previous-day night), hours, rest/vacation bands, coworkers, layout, colors, labels
+- [x] `src/lib/userPreferences.test.ts` — normalization, debounce, no PUT before a successful GET, flush on hide
+- [x] `src/pages/usePlanScope.test.ts`, `scrollToTeamAssignment.test.ts`
+- [x] `src/components/myPlan/*.test.tsx` — views, header chrome, shift detail, flows, keyboard shortcuts
+- [x] `TeamPlanHeader.test.tsx`, `LocationColorPicker.test.tsx`
+
+**E2E Tests** (`e2e/my-plan.spec.ts`, mocked API, in CI):
+- [x] Link yourself, change views, jump back into the team plan
+- [x] My plan as start page; Color by person colors the team pills
+- [x] A location color is saved with the calendar and tints the team rows
+- [x] Phone: the scope switch leads to My plan and hides the planning panels
+
+### 3.10 Team page regressions (v1.64)
+
+**Frontend Tests**: `src/pages/resetSolverAssignments.test.ts` (Reset Solver Only / Reset Unfixed), `src/lib/openSlots.test.ts`, `src/components/ui/ConfirmDialog.test.tsx`, `src/App.test.tsx` (502/network keep the session), `src/lib/clinicianSlotOptions.test.ts`, `ScheduleGrid.test.tsx` / `ClinicSheetGrid.test.tsx` (drag and drop).
+
+**E2E Tests** (`e2e/team-page.spec.ts`, mocked API, in CI):
+- [x] Rule-violation and split-shift popover items can be clicked
+- [x] Dragging into and out of the Vacation row adds and removes the vacation day
+- [x] Phone: the open-slots badge switches the day view to the open slot's day
+- [x] Template above the column limit: banner and no save, snapshot import refused, snapshot restore backs up the last saved calendar, sign-out asks first
+- [x] Reset Solver Only and Reset Unfixed also remove planner entries on vacation days (Reset Unfixed keeps manual ones there)
+
+### 3.11 Background runs (v1.64)
+
+**Backend Tests** (`backend/tests/test_solver_monitor.py`, `test_solver_run_endpoints.py`):
+- [x] Watchdog hard stop kills the worker once; salvaged plans end `aborted`; a torn queue message cannot hang the monitor; agent spend recorded once
+- [x] Invalid date ranges → 422 with no run row or process
+- [x] Discard after apply / of a failed run → 409; discarding an open run twice → 200
+- [x] A vacation-hidden unlocked solver row is replaced on apply (`is_replaced_by_draft`)
 
 ---
 
@@ -191,7 +231,7 @@ The following areas are explicitly excluded from automated testing:
 
 1. **Visual styling** - Covered by manual review; snapshot tests avoided for maintainability
 2. **PDF visual accuracy** - Only validates PDF generation, not pixel-perfect layout
-3. **Real external API calls** - Holiday API (date.nager.at) is mocked in tests
+3. **Real external API calls** - Holiday API (date.nager.at) is neither mocked nor referenced by any test
 4. **Browser compatibility** - Playwright runs Chromium only; cross-browser testing is manual
 5. **Performance benchmarks** - Not part of functional test suite
 6. **Mobile touch interactions** - HTML5 drag-and-drop doesn't support mobile
@@ -242,26 +282,22 @@ Tests are designed to be CI-friendly:
 - **Fast**: Unit tests complete in seconds
 - **Parallel-safe**: E2E tests use serial execution where needed
 
-### Recommended CI Pipeline
+### CI Pipeline
 
-```yaml
-test:
-  steps:
-    - name: Backend Tests
-      run: |
-        pip install -r backend/requirements-dev.txt
-        python3 -m pytest backend/tests/ -v
-
-    - name: Frontend Tests
-      run: npm test
-
-    - name: E2E Tests
-      run: |
-        npm run dev &
-        python3 -m uvicorn backend.main:app &
-        npx wait-on http://localhost:5173 http://localhost:8000/health
-        npm run test:e2e
-```
+The actual pipeline is [.github/workflows/ci-cd.yml](.github/workflows/ci-cd.yml):
+backend `python -m pytest tests -q --ignore=tests/test_solver_benchmark.py`
+(Python 3.11, from `backend/`); frontend on Node 22 with `npm run typecheck`,
+`npm test`, `npm run build`, then the critical Playwright specs
+(`e2e/agent-apply.spec.ts`, `e2e/agent-activity.spec.ts`,
+`e2e/fixed-assignments.spec.ts`, `e2e/model-settings.spec.ts`,
+`e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`) against a local Vite dev
+server with a mocked API (`page.route`; no backend needed). Run the same set
+locally with `npx playwright test e2e/agent-apply.spec.ts
+e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts
+e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts` while
+`npm run dev -- --host 127.0.0.1 --port 5173` is running. The full E2E suite is not part of CI. Note that
+`npm run test:e2e` forces `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=mac15-arm64` and
+only works on Apple Silicon; elsewhere run `npx playwright test`.
 
 ---
 
@@ -269,11 +305,10 @@ test:
 
 Areas identified for future test expansion:
 
-1. **Component tests for ClinicianEditor** - Complex form interactions
-2. **Template builder E2E tests** - More comprehensive slot placement scenarios
-3. **Solver performance tests** - Benchmark large schedule solving
-4. **Accessibility tests** - Verify WCAG compliance
-5. **API contract tests** - OpenAPI schema validation
+1. **Template builder E2E tests** - More comprehensive slot placement scenarios
+2. **Solver performance tests** - Benchmark large schedule solving
+3. **Accessibility tests** - Verify WCAG compliance
+4. **API contract tests** - OpenAPI schema validation
 
 ---
 
@@ -284,3 +319,4 @@ Areas identified for future test expansion:
 | 2026-01-03 | Claude | Initial test plan created |
 | 2026-01-03 | Claude | Added pool removal regression tests |
 | 2026-01-03 | Claude | Added iCal and web API tests |
+| 2026-10-15 | Claude | v1.64: My plan / preferences, team page and background-run coverage; CI spec list |
