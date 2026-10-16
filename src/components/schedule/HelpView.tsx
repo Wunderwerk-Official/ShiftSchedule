@@ -271,7 +271,9 @@ export default function HelpView() {
         <Section title="11. Export: PDF, iCal & Web">
           <p>
             <span className="font-medium">Open Export</span> below the calendar.{" "}
-            <span className="font-medium">PDF</span> creates printable week exports;{" "}
+            <span className="font-medium">PDF</span> creates printable week exports, either in
+            landscape with the times side by side or in portrait as the compact week (Times:
+            Stacked);{" "}
             <span className="font-medium">Web</span> creates a read-only public view link.
           </p>
           <p className="mt-2">
@@ -343,9 +345,12 @@ export default function HelpView() {
             </li>
             <li>
               <span className="font-medium">Times: Stacked</span> (team plan, standard weekly
-              grid) shows one column per day and a day&rsquo;s times as rows below each other,
-              with the time on the left, so the whole week fits on the screen. A cell names its
-              own time only where it differs from its row.{" "}
+              grid) shows one column per day and a day&rsquo;s times as rows below each other.
+              The left column names each row and its time and carries the workplace&rsquo;s color;
+              the cells show only the people (names shorten to initials in narrow columns). A
+              cell writes its own time only where it differs from its row; a{" "}
+              <span className="font-medium">+N</span> next to a row name means some days belong
+              to another workplace (hover it, or a cell, to see which).{" "}
               <span className="font-medium">Side by side</span> gives every time of a day its
               own column, as before.
             </li>

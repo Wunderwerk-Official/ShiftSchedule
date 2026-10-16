@@ -1,6 +1,6 @@
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { cx } from "../../lib/classNames";
-import type { StackedRowMeta } from "../../lib/stackedTeamLayout";
+import { compactTimeLabel, type StackedRowMeta } from "../../lib/stackedTeamLayout";
 import type { LocationRowTint } from "./teamColors";
 type RowLabelProps = {
   row: ScheduleRow;
@@ -12,33 +12,48 @@ type RowLabelProps = {
 
 const LABEL_FONT = { fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' };
 
-// Stacked layout label: row band name (first band only) and the band's own
+// Stacked layout label: row band name (first lane only) and the lane's
 // section on the left, its time right-aligned so times line up in a column.
-// The location is named by the band above the rows, not repeated here.
+// The location is named by the band above the rows, not repeated here. When
+// some days of the lane belong to another section, a "+N" badge lists them
+// (the cells name no section).
 function StackedRowLabel({ meta }: { meta: StackedRowMeta }) {
+  const others = meta.otherSections ?? [];
+  const othersTitle = others.length > 0 ? `Other days: ${others.join(" · ")}` : undefined;
   return (
-    <div className="flex h-full flex-col justify-center gap-0.5 px-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-4">
-      <div className="min-w-0 max-w-[132px] sm:max-w-[176px]" style={LABEL_FONT}>
+    <div className="flex h-full flex-col justify-center gap-0.5 px-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-3">
+      <div className="min-w-0 max-w-[128px] sm:max-w-[160px]" style={LABEL_FONT}>
         {meta.groupLabel ? (
           <span
-            className="block truncate text-[11px] font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-200"
+            // Two lines before an ellipsis: long row names stay readable.
+            className="line-clamp-2 break-words text-[11px] font-semibold uppercase leading-4 tracking-wide text-slate-800 dark:text-slate-50"
             title={meta.groupLabel}
           >
             {meta.groupLabel}
           </span>
         ) : null}
-        {meta.title ? (
-          <span
-            className="block truncate text-[11px] text-slate-500 dark:text-slate-400"
-            title={meta.title}
-          >
-            {meta.title}
+        {meta.title || others.length > 0 ? (
+          <span className="flex min-w-0 items-center gap-1 text-[11px] leading-4 text-slate-600 dark:text-slate-50">
+            {meta.title ? (
+              <span className="line-clamp-2 break-words" title={meta.title}>
+                {meta.title}
+              </span>
+            ) : null}
+            {others.length > 0 ? (
+              <span
+                className="shrink-0 rounded-full bg-white/70 px-1 text-[10px] font-semibold leading-4 text-slate-600 dark:bg-slate-950/50 dark:text-slate-50"
+                title={othersTitle}
+              >
+                +{others.length}
+                <span className="sr-only"> ({othersTitle})</span>
+              </span>
+            ) : null}
           </span>
         ) : null}
       </div>
       {meta.timeLabel ? (
-        <span className="shrink-0 whitespace-nowrap text-[11px] font-medium tabular-nums text-slate-500 dark:text-slate-400">
-          {meta.timeLabel}
+        <span className="shrink-0 whitespace-nowrap text-[11px] font-medium leading-4 tabular-nums text-slate-600 dark:text-slate-50">
+          {compactTimeLabel(meta.timeLabel)}
         </span>
       ) : null}
     </div>

@@ -195,9 +195,21 @@ describe("buildStackedTeamLayout", () => {
 
   it("titles a lane whose section is not the row's own name", () => {
     expect(layout.metaByRowId.get(`${mrGroup}__t1`)?.title).toBeUndefined();
-    expect(layout.metaByRowId.get(`${mrGroup}__t2`)).toMatchObject({
-      title: "Senior",
-      sectionName: "Senior",
+    expect(layout.metaByRowId.get(`${mrGroup}__t2`)).toMatchObject({ title: "Senior" });
+  });
+
+  it("colors a lane by its main section and lists the days of other sections", () => {
+    const mixed = buildStackedTeamLayout(
+      buildCalendarRows([
+        slot("mon", { blockColor: "#BFDBFE" }),
+        slot("tue", { dayType: "tue", sectionId: "sec-pro", sectionName: "Prostate", blockColor: "#FBCFE8" }),
+      ]),
+      [...columns, column("2026-01-07", "wed", 1, 4)],
+    );
+    // A tie between the two sections goes to the first day's (Monday's) section.
+    expect(mixed.metaByRowId.get(ctGroup)).toMatchObject({
+      sectionColor: "#BFDBFE",
+      otherSections: ["Tue: Prostate"],
     });
   });
 

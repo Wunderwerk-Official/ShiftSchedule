@@ -1319,9 +1319,18 @@ export async function unpublishIcal(): Promise<void> {
   }
 }
 
-export async function exportWeekPdf(startISO: string, revision?: string): Promise<Blob> {
+/** PDF page: the week grid on A4 landscape, or the compact week on A4 portrait. */
+export type PdfLayout = "landscape" | "portrait";
+
+const pdfLayoutQuery = (layout: PdfLayout) => (layout === "portrait" ? "&layout=portrait" : "");
+
+export async function exportWeekPdf(
+  startISO: string,
+  revision?: string,
+  layout: PdfLayout = "landscape",
+): Promise<Blob> {
   const res = await fetch(
-    `${API_BASE}/v1/pdf/week?start=${encodeURIComponent(startISO)}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}`,
+    `${API_BASE}/v1/pdf/week?start=${encodeURIComponent(startISO)}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}${pdfLayoutQuery(layout)}`,
     {
       headers: buildHeaders(),
     },
@@ -1399,11 +1408,16 @@ export async function getPublicWebWeek(
   return res.json();
 }
 
-export async function exportWeeksPdf(startISO: string, weeks: number, revision?: string): Promise<Blob> {
+export async function exportWeeksPdf(
+  startISO: string,
+  weeks: number,
+  revision?: string,
+  layout: PdfLayout = "landscape",
+): Promise<Blob> {
   const res = await fetch(
     `${API_BASE}/v1/pdf/weeks?start=${encodeURIComponent(startISO)}&weeks=${encodeURIComponent(
       String(weeks),
-    )}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}`,
+    )}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}${pdfLayoutQuery(layout)}`,
     {
       headers: buildHeaders(),
     },

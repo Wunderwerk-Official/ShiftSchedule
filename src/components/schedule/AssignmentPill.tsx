@@ -163,6 +163,12 @@ type AssignmentPillProps = {
    * both color modes (SPEC E7). Never set while no account is linked.
    */
   isMe?: boolean;
+  /**
+   * Compact grid ("Times: Stacked"): an unfixed pill shows its fix button
+   * only on hover or focus (always on touch screens) and keeps no room for
+   * it, so narrow day columns still fit the name. A fixed pill keeps it.
+   */
+  compact?: boolean;
 };
 
 function AssignmentPillImpl({
@@ -185,12 +191,16 @@ function AssignmentPillImpl({
   onClick,
   personStyle,
   isMe = false,
+  compact = false,
 }: AssignmentPillProps) {
   // Abbreviation logic: measure if name fits, progressively abbreviate if not
   const nameRef = useRef<HTMLSpanElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const initialsRef = useRef<HTMLSpanElement>(null);
   const hasInitials = Boolean(personStyle);
+  // Compact grid: an unfixed pill's fix button appears on hover and takes no room.
+  const hoverLock = compact && !!onToggleLock && !isLocked;
+  const reserveLock = !!onToggleLock && !hoverLock;
   // Color by: Person ends with the initials circle alone (the name is only
   // read out); the section look ends with "FL" initials as text.
   const maxAbbreviationLevel = hasInitials ? PERSON_INITIALS_ONLY_LEVEL : 4;
@@ -211,15 +221,16 @@ function AssignmentPillImpl({
 
     // Reset to full name first
     setAbbreviationLevel(0);
-  }, [name, hasInitials]);
+    // reserveLock: fixing a compact pill adds room for its button.
+  }, [name, hasInitials, reserveLock]);
 
-  // Color by: Person — the grid may settle its column widths after the
-  // first measurement (scope switch, resize): start over when the row width
-  // changes, so names never stay cut off. The default look keeps its
-  // one-shot measurement.
+  // Color by: Person and the compact grid — the grid may settle its column
+  // widths after the first measurement (scope switch, resize, a fix button
+  // taking room): start over when the row width changes, so names never stay
+  // cut off. The default look elsewhere keeps its one-shot measurement.
   useEffect(() => {
     const containerEl = containerRef.current;
-    if (!hasInitials || !containerEl || typeof ResizeObserver === "undefined") return;
+    if ((!hasInitials && !compact) || !containerEl || typeof ResizeObserver === "undefined") return;
     let lastWidth = containerEl.clientWidth;
     const observer = new ResizeObserver(() => {
       if (containerEl.clientWidth === lastWidth) return;
@@ -229,7 +240,7 @@ function AssignmentPillImpl({
     });
     observer.observe(containerEl);
     return () => observer.disconnect();
-  }, [hasInitials]);
+  }, [hasInitials, compact]);
 
   // Color by: Person — the first level whose name fits next to the circle,
   // measured in one pass (all pills read layout in the same commit).
@@ -277,8 +288,10 @@ function AssignmentPillImpl({
     });
 
     return () => cancelAnimationFrame(rafId);
-    // hasInitials: switching "Color by" changes the room for the name.
-  }, [displayName, abbreviationLevel, maxAbbreviationLevel, hasInitials, layoutVersion, measuredInOnePass]);
+    // hasInitials: switching "Color by" changes the room for the name;
+    // reserveLock: so does a compact pill's fix button (also at level 0,
+    // where the reset above changes no state).
+  }, [displayName, abbreviationLevel, maxAbbreviationLevel, hasInitials, layoutVersion, measuredInOnePass, reserveLock]);
 
   const isAbbreviated = abbreviationLevel > 0;
   const initialsOnly = hasInitials && abbreviationLevel >= PERSON_INITIALS_ONLY_LEVEL;
@@ -316,9 +329,19 @@ function AssignmentPillImpl({
   // 24 px height as the default pill); room on the right for the lock badge.
   // The default look reserves room for the manual lock badge too, so a long
   // name is abbreviated instead of running under the badge.
-  const personPaddingClass = personStyle
-    ? cx("py-px pl-0.5", onToggleLock ? null : showLockBadge ? "pr-5" : "pr-1.5")
-    : cx("py-0.5 pl-1.5", !onToggleLock && showLockBadge ? "pr-4" : "pr-1.5");
+  const rightPadding = reserveLock
+    ? "pr-6"
+    : showLockBadge
+      ? personStyle
+        ? "pr-5"
+        : "pr-4"
+      : "pr-1.5";
+  const personPaddingClass = cx(
+    personStyle ? "py-px pl-0.5" : "py-0.5 pl-1.5",
+    rightPadding,
+    // Touch screens have no hover: the fix button stays visible there.
+    hoverLock && "[@media(hover:none)]:pr-6",
+  );
   return (
     <div
       data-assignment-pill="true"
@@ -327,6 +350,9 @@ function AssignmentPillImpl({
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
       onClick={onClick}
+      // The full name of a shortened pill. On the pill itself: its content
+      // ignores the pointer (drag start), so a title in there never shows.
+      title={isAbbreviated ? name : undefined}
       style={personColorStyle}
       // No `select-none` here: Safari/WebKit refuses to start dragstart on an
       // element whose -webkit-user-select is `none` (Chrome ignores that).
@@ -355,7 +381,7 @@ function AssignmentPillImpl({
           : showDragFocus
             ? "hover:border-slate-900 hover:bg-sky-200"
             : "hover:border-sky-300 hover:bg-sky-100 dark:hover:border-sky-400/60 dark:hover:bg-sky-900/60",
-        onToggleLock && "min-h-7 pr-6",
+        reserveLock && "min-h-7",
         isMe && "outline outline-2 outline-offset-1 outline-slate-900 dark:outline-slate-100",
         className,
       )}
@@ -369,7 +395,7 @@ function AssignmentPillImpl({
               // Left-aligned in person mode: a centered row clips the initials.
               personStyle ? "min-w-0 justify-start" : "justify-center",
             )}
-            title={personStyle && isAbbreviated ? name : undefined}
+
           >
             {personStyle ? (
               <span
@@ -390,7 +416,7 @@ function AssignmentPillImpl({
                 personStyle ? "min-w-0 truncate" : "whitespace-nowrap text-center",
                 initialsOnly && "sr-only",
               )}
-              title={!personStyle && isAbbreviated ? name : undefined}
+
             >
               {initialsOnly ? name : displayName}
             </span>
@@ -398,7 +424,14 @@ function AssignmentPillImpl({
         </div>
       </div>
       {onToggleLock ? (
-        <span className="absolute right-0 top-0 z-[150]">
+        <span
+          className={cx(
+            "absolute z-[150]",
+            hoverLock
+              ? "right-0 top-1/2 -translate-y-1/2 rounded-md bg-white/90 opacity-0 transition-opacity group-hover/pill:opacity-100 group-focus-within/pill:opacity-100 dark:bg-slate-900/90 [@media(hover:none)]:opacity-100"
+              : "right-0 top-0",
+          )}
+        >
           <AssignmentLockButton name={name} locked={isLocked} onToggle={onToggleLock} />
         </span>
       ) : null}
@@ -501,6 +534,7 @@ function arePillPropsEqual(
     prev.personStyle?.color.light === next.personStyle?.color.light &&
     prev.personStyle?.initials === next.personStyle?.initials &&
     prev.isMe === next.isMe &&
+    prev.compact === next.compact &&
     arraysShallowEqual(prev.siblingNames, next.siblingNames)
   );
 }

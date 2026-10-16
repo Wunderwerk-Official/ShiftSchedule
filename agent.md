@@ -55,7 +55,7 @@ Top bar
 
 Schedule card
 - Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" and "Color by" (both classic grid only, "Times" since v1.65), start-page star and Views menu. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
-- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. See the v1.65 section at the end.
+- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. See the v1.65 and v1.66 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
 - On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
@@ -2159,3 +2159,57 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Deploy notes: no schema or calendar change; stored preferences without
   `teamTimeLayout` read as Stacked, so every user sees the compact week after
   the deploy until they pick Side by side.
+
+## v1.66 — Compact team cells ("plan for all" look) and portrait PDF
+
+- **Stacked cells without blocks.** In "Times: Stacked" a cell is the slot
+  itself: no section block around the pills and no section name inside.
+  The section look tints each active cell with its own section color
+  (`.stacked-section-cell`, `--section-color`, `color-mix()` in
+  `src/index.css`, inside `@supports`; browsers without `color-mix()` show
+  the plain section color); the person
+  look keeps cells white; a day without the lane's slot is hatched
+  (`.stacked-off-cell`, so it never reads as an empty slot, also in print); a
+  qualified drop target gets an inset ring. A cell writes only a time other
+  than its lane's (compact "08:00–20:00", wrapping after the dash in narrow
+  columns); a cell of another section than the
+  lane's gets a small corner mark (no text); its section and time are in its
+  tooltip.
+- **Lane labels like shift colors.** The label cell is tinted with the lane's
+  section color (`.stacked-label-tint`; it replaces the location tint there,
+  the location band above the rows keeps it). It shows the row band name
+  (first lane; long names wrap to two lines), the lane's section when it is
+  not the row band name and the compact time. When some visible days belong to another section, a "+N"
+  badge lists them in its tooltip and for screen readers ("Other days: Tue: X
+  · Wed: Y"); `StackedRowMeta` gains `sectionColor` and `otherSections`
+  (`src/lib/stackedTeamLayout.ts`).
+- **Narrower columns.** Stacked day columns may shrink to 64 px, so seven
+  days fit next to even the widest label (about 290 px) on A4 portrait; names
+  abbreviate (down to initials). `AssignmentPill` `compact`: an unfixed solver
+  pill shows its fix button only on hover or keyboard focus (always on touch
+  screens) and keeps no room for it; a fixed pill keeps the button. Compact
+  pills measure again when their width changes (resize, fixing a pill), so a
+  name never stays cut off. The full name of a shortened pill is now in the
+  pill's own tooltip (before, it sat on content that ignores the pointer and
+  never showed). Compact open slots read "Open".
+- **Portrait PDF.** `GET /v1/pdf/week` and `/v1/pdf/weeks` take
+  `layout=landscape|portrait` (default landscape). Portrait renders the print
+  route with `&layout=portrait` in an A4 portrait viewport (794 × 1122) and
+  writes an A4 portrait PDF. `PrintWeekPage` / `PrintWeeksPage` read the
+  layout (`src/pages/printPage.ts`), restate `@page { size: A4 portrait }`
+  (index.css says landscape for every print, and Chromium follows the CSS
+  page size over its landscape flag), lay the classic grid out as
+  `timeLayout="stacked"` at the page width (`portraitContentWidth`: names
+  abbreviate instead of the week shrinking) and start portrait pages at the
+  top. Multi-week pages now keep a left and top margin like the single-week
+  page. The Export dialog
+  offers "Landscape · times side by side | Portrait · compact week" for the
+  standard week grid (preselected from the user's Times choice); the monthly
+  clinic sheet always exports landscape. Open slots are not printed, as before.
+- Tests: `ScheduleGrid.test.tsx`, `AssignmentPill.test.tsx`,
+  `IcalExportModal.test.tsx`, `src/pages/printPage.test.ts`,
+  `PrintWeekPage.test.tsx`, `PrintWeeksPage.test.tsx`,
+  `src/api/client.pdf.test.ts`, `backend/tests/test_pdf_revision.py`.
+- Deploy notes: no schema or data change. The PDF renderer loads the deployed
+  frontend, so backend and frontend must ship together (one deploy does).
+

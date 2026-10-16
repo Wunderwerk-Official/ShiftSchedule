@@ -2,7 +2,7 @@ import { createPortal } from "react-dom";
 import { useEffect, useMemo, useState } from "react";
 import { getPillToggleClasses } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
-import type { IcalPublishStatus } from "../../api/client";
+import type { IcalPublishStatus, PdfLayout } from "../../api/client";
 import { useConfirm } from "../ui/ConfirmDialog";
 import CustomNumberInput from "./CustomNumberInput";
 import CustomDatePicker from "./CustomDatePicker";
@@ -29,7 +29,12 @@ type IcalExportModalProps = {
     startISO: string;
     weeks: number;
     mode: "combined" | "individual";
+    layout: PdfLayout;
   }) => void;
+  /** Page layout preselected when the dialog opens (the team grid's "Times"). */
+  defaultPdfLayout?: PdfLayout;
+  /** The compact portrait page exists for the standard week grid only. */
+  offerPdfPortrait?: boolean;
   pdfExporting: boolean;
   pdfProgress?: { current: number; total: number } | null;
   pdfError?: string | null;
@@ -57,6 +62,8 @@ export default function IcalExportModal({
   onRotate,
   onUnpublish,
   onExportPdf,
+  defaultPdfLayout = "landscape",
+  offerPdfPortrait = false,
   pdfExporting,
   pdfProgress,
   pdfError,
@@ -75,6 +82,7 @@ export default function IcalExportModal({
   const [pdfStartText, setPdfStartText] = useState<string>("");
   const [pdfWeeks, setPdfWeeks] = useState<number>(1);
   const [pdfMode, setPdfMode] = useState<"combined" | "individual">("combined");
+  const [pdfLayout, setPdfLayout] = useState<PdfLayout>("landscape");
   const [copyState, setCopyState] = useState<{
     status: "idle" | "copied" | "error";
     key?: string;
@@ -124,7 +132,8 @@ export default function IcalExportModal({
     setPdfStartText(isoToEuropean(defaultPdfStartISO));
     setPdfWeeks(1);
     setPdfMode("combined");
-  }, [defaultEndISO, defaultPdfStartISO, defaultStartISO, open]);
+    setPdfLayout(offerPdfPortrait ? defaultPdfLayout : "landscape");
+  }, [defaultEndISO, defaultPdfLayout, defaultPdfStartISO, defaultStartISO, offerPdfPortrait, open]);
 
   const range = useMemo(() => {
     const parsedStart = parseDateInput(startText);
@@ -424,6 +433,26 @@ export default function IcalExportModal({
                     Export PDF as individual files
                   </button>
                 </div>
+                {offerPdfPortrait ? (
+                  <div className="mt-3 flex flex-wrap items-center gap-2" role="group" aria-label="Page layout">
+                    <button
+                      type="button"
+                      aria-pressed={pdfLayout === "landscape"}
+                      onClick={() => setPdfLayout("landscape")}
+                      className={getPillToggleClasses(pdfLayout === "landscape")}
+                    >
+                      Landscape · times side by side
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={pdfLayout === "portrait"}
+                      onClick={() => setPdfLayout("portrait")}
+                      className={getPillToggleClasses(pdfLayout === "portrait")}
+                    >
+                      Portrait · compact week
+                    </button>
+                  </div>
+                ) : null}
                 {pdfValidation.hasError ? (
                   <div className="mt-2 text-xs font-semibold text-rose-600 dark:text-rose-300">
                     Enter a valid start date and number of weeks (1–55).
@@ -448,6 +477,7 @@ export default function IcalExportModal({
                         startISO: pdfValidation.startISO,
                         weeks: pdfValidation.weeks,
                         mode: pdfMode,
+                        layout: offerPdfPortrait ? pdfLayout : "landscape",
                       });
                     }}
                     disabled={pdfValidation.hasError || pdfExporting}

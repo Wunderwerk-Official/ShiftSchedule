@@ -72,6 +72,7 @@ import {
   type WeeklyCalendarTemplate,
   type WebPublishStatus,
   type SolverRule,
+  type PdfLayout,
   type ViewConfig,
 } from "../api/client";
 import SnapshotPopover from "../components/schedule/SnapshotPopover";
@@ -1205,6 +1206,7 @@ export default function WeeklySchedulePage({
     startISO: string;
     weeks: number;
     mode: "combined" | "individual";
+    layout: PdfLayout;
   }) => {
     if (pdfExporting || calendarTransitionRef.current) return;
     setPdfError(null);
@@ -1221,7 +1223,7 @@ export default function WeeklySchedulePage({
       if (!saved.revision) throw new Error("The saved calendar has no revision. Reload before exporting.");
       if (args.mode === "combined") {
         setPdfProgress({ current: 0, total: args.weeks });
-        const pdfBlob = await exportWeeksPdf(args.startISO, args.weeks, saved.revision);
+        const pdfBlob = await exportWeeksPdf(args.startISO, args.weeks, saved.revision, args.layout);
         const endISO = toISODate(addDays(addWeeks(new Date(`${args.startISO}T00:00:00`), args.weeks), -1));
         downloadBlob(`shift-planner-${args.startISO}-to-${endISO}.pdf`, pdfBlob);
       } else {
@@ -1230,7 +1232,7 @@ export default function WeeklySchedulePage({
           const weekStartDate = addWeeks(baseDate, i);
           const weekStartISO = toISODate(weekStartDate);
           setPdfProgress({ current: i + 1, total: args.weeks });
-          const pdfBlob = await exportWeekPdf(weekStartISO, saved.revision);
+          const pdfBlob = await exportWeekPdf(weekStartISO, saved.revision, args.layout);
           downloadBlob(`shift-planner-${weekStartISO}.pdf`, pdfBlob);
           exportedWeeks += 1;
           await new Promise((resolve) => setTimeout(resolve, 400));
@@ -3922,6 +3924,10 @@ export default function WeeklySchedulePage({
         onUnpublish={handleUnpublishSubscription}
         defaultPdfStartISO={currentWeekStartISO}
         onExportPdf={handleExportPdfBatch}
+        defaultPdfLayout={prefs.teamTimeLayout === "stacked" ? "portrait" : "landscape"}
+        // The print pages follow the calendar's layout, not the phone view:
+        // a clinic-sheet calendar always prints its sheet (landscape).
+        offerPdfPortrait={(solverSettings.scheduleLayout ?? "classic") !== "clinicSheet"}
         pdfExporting={pdfExporting}
         pdfProgress={pdfProgress}
         pdfError={pdfError}

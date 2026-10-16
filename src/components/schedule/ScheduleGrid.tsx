@@ -18,6 +18,7 @@ import { formatTimeRangeLabel, sortAssignmentsBySurname } from "../../lib/schedu
 import { getDayType } from "../../lib/dayTypes";
 import {
   buildStackedTeamLayout,
+  compactTimeLabel,
   slotTimeLabel,
   type StackedRowMeta,
 } from "../../lib/stackedTeamLayout";
@@ -28,7 +29,11 @@ import type { LocationRowTint, PersonPillStyle } from "./teamColors";
 import ClinicianPickerPopover from "./ClinicianPickerPopover";
 import type { ClinicianOption } from "./ClinicianPickerPopover";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent as ReactDragEvent, MouseEvent as ReactMouseEvent } from "react";
+import type {
+  CSSProperties,
+  DragEvent as ReactDragEvent,
+  MouseEvent as ReactMouseEvent,
+} from "react";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getContrastTextColor } from "../../lib/shiftRows";
 
@@ -237,8 +242,10 @@ export default function ScheduleGrid({
   }>({ open: false, rowId: "", dateISO: "", anchorRect: null, rowName: "" });
   const todayISO = toISODate(new Date());
   const isSingleDay = uniqueDayCount === 1;
-  // Stacked: seven narrower day columns fit next to the time labels.
-  const dayColumnMin = isSingleDay ? 140 : stacked ? 108 : 120;
+  // Stacked: day columns may shrink to 64 px (names abbreviate down to
+  // initials), so the week fits next to even the widest label (~290 px), also
+  // on A4 portrait.
+  const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : 120;
   const leftColumn = isSingleDay
     ? stacked
       ? "minmax(112px, 168px)"
@@ -813,6 +820,7 @@ function RowSection({
         assignmentKey={violationKey}
         personStyle={personPillStyles?.get(assignment.clinicianId)}
         isMe={!!myClinicianId && assignment.clinicianId === myClinicianId}
+        compact={!!stackedMeta}
         showNoEligibilityWarning={!getHasEligibleClasses(assignment.clinicianId)}
         showIneligibleWarning={
           isClassRow && !getIsQualified(assignment.clinicianId, slotRowId)
@@ -871,9 +879,17 @@ function RowSection({
         className={cx(
           "row border-r-2 border-slate-300 py-1 dark:border-slate-700 sm:py-1",
           borderBottomClass,
-          rowBg,
+          // Stacked: the lane label carries its section's color, like a shift
+          // color in a "plan for all".
+          stackedMeta?.sectionColor ? "stacked-label-tint" : rowBg,
         )}
-        style={rowTint ? { backgroundColor: rowTint.ground } : undefined}
+        style={
+          stackedMeta?.sectionColor
+            ? ({ "--section-color": stackedMeta.sectionColor } as CSSProperties)
+            : rowTint
+              ? { backgroundColor: rowTint.ground }
+              : undefined
+        }
       >
         <RowLabel row={row} tint={rowTint} stacked={stackedMeta} />
       </div>
@@ -1026,6 +1042,27 @@ function RowSection({
               : row.kind === "class" && isWeekend
                 ? "bg-white dark:bg-slate-900"
                 : rowBg;
+        // Stacked: no section block, the cell itself is the slot. The section
+        // look tints it with its section's color (index.css), a day without
+        // this lane's slot is greyed out, a qualified drop target gets a ring.
+        const stackedSectionColor =
+          stackedMeta && isCellActive && !personPillStyles ? activeRow.blockColor : undefined;
+        const stackedBgClass = isOtherDay
+          ? "bg-slate-200/70 text-slate-400 opacity-60"
+          : !isCellActive
+            ? "stacked-off-cell"
+            : stackedSectionColor
+              ? "stacked-section-cell"
+              : isHoveredCell
+                ? "bg-slate-50/70 dark:bg-slate-800/50"
+                : "bg-white dark:bg-slate-900";
+        const stackedTime = stackedMeta && isCellActive ? slotTimeLabel(activeRow) : undefined;
+        // A day of another section than the lane's: marked, not named (the
+        // label's "+N" and the cell's tooltip name it).
+        const isOtherSection =
+          !!stackedMeta?.sectionName &&
+          isCellActive &&
+          (activeRow.sectionName ?? activeRow.name) !== stackedMeta.sectionName;
 
         return (
           // Same Safari drag-routing fix as the grouped-view cell above —
@@ -1078,18 +1115,28 @@ function RowSection({
             data-row-id={activeRow.id}
             data-row-kind={row.kind}
             data-date-iso={dateISO}
+            // Stacked cells name no section: the tooltip keeps the exact one.
+            title={
+              stackedMeta && isCellActive
+                ? [activeRow.sectionName ?? activeRow.name, stackedTime].filter(Boolean).join(" · ")
+                : undefined
+            }
             className={cx(
               "row group relative border-r border-slate-200 text-left dark:border-slate-800",
-              stackedMeta ? "px-0.5 py-0.5 sm:px-1" : "p-0.5 sm:p-1",
+              stackedMeta ? "px-1 py-1" : "p-0.5 sm:p-1",
               borderBottomClass,
-              cellBgClass,
+              stackedMeta ? stackedBgClass : cellBgClass,
+              stackedMeta && showQualified && "ring-2 ring-inset ring-slate-900 dark:ring-slate-100",
               isDayDivider &&
                 "border-solid border-r-2 border-r-slate-300 dark:border-r-slate-700",
               { "border-r-0": isLastCol },
             )}
-            style={{
-              borderRightStyle: isDayDivider ? "solid" : "dashed",
-            }}
+            style={
+              {
+                borderRightStyle: isDayDivider ? "solid" : "dashed",
+                ...(stackedSectionColor ? { "--section-color": stackedSectionColor } : null),
+              } as CSSProperties
+            }
           >
             {(() => {
               const showSlotPanel = row.kind === "class" && isCellActive;
@@ -1125,6 +1172,7 @@ function RowSection({
                       <EmptySlotPill
                         key={`${cellKey}-empty-ghost`}
                         variant="ghost"
+                        dense={!!stackedMeta}
                         showAddIcon
                         highlighted={highlightOpenSlots}
                         className={cx(
@@ -1139,43 +1187,29 @@ function RowSection({
                 : null}
                 </>
               );
-              if (showSlotPanel && stackedMeta) {
-                // Compact block: section and time are in the row label; a
-                // cell names its own only where it differs from the row's.
-                const cellSection = activeRow.sectionName ?? activeRow.name;
-                const cellTime = slotTimeLabel(activeRow);
-                const captions = [
-                  cellSection !== stackedMeta.sectionName ? cellSection : null,
-                  cellTime && cellTime !== stackedMeta.timeLabel ? cellTime : null,
-                ].filter((caption): caption is string => !!caption);
-                const textColors = getContrastTextColor(sectionFill);
-                // Nobody needed and nobody assigned: drawn faint.
-                const isIdle = assignments.length === 0 && emptySlots === 0;
+              if (stackedMeta) {
+                // No block and no section name: the label column names the
+                // lane. Only a time other than the lane's is written out.
+                const ownTime =
+                  stackedTime && stackedTime !== stackedMeta.timeLabel ? stackedTime : null;
                 return (
-                  <div
-                    // Constant 2px border, as in the side-by-side block below.
-                    className={cx(
-                      "h-full w-full min-h-[34px] rounded-lg border-2 bg-white/95 p-1 shadow-sm dark:bg-slate-950",
-                      showQualified
-                        ? "border-slate-900 dark:border-slate-100"
-                        : "border-slate-200 dark:border-slate-700",
-                      isIdle && !showQualified && "opacity-40 shadow-none",
-                    )}
-                    style={sectionFill ? { backgroundColor: sectionFill } : undefined}
-                  >
-                    {captions.length > 0 ? (
-                      <div
-                        className={cx(
-                          "mb-1 truncate px-0.5 text-[10px] font-semibold leading-3",
-                          textColors.primary,
-                        )}
-                        title={captions.join(" · ")}
-                      >
-                        {captions.join(" · ")}
+                  <>
+                    {isOtherSection ? (
+                      <span
+                        aria-hidden="true"
+                        data-other-section="true"
+                        className="pointer-events-none absolute right-0 top-0 h-0 w-0 border-l-[7px] border-t-[7px] border-l-transparent border-t-slate-500/70 dark:border-t-slate-300/70"
+                      />
+                    ) : null}
+                    {ownTime ? (
+                      // Wraps after the dash in narrow columns instead of
+                      // cutting the time off.
+                      <div className="mb-0.5 break-words px-0.5 text-[10px] font-medium leading-3 tabular-nums text-slate-600 dark:text-slate-300">
+                        {compactTimeLabel(ownTime)}
                       </div>
                     ) : null}
                     <div className="flex flex-col gap-1">{cellContent}</div>
-                  </div>
+                  </>
                 );
               }
               return showSlotPanel ? (

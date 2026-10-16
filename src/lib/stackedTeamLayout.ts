@@ -6,9 +6,10 @@ import type { ScheduleRow } from "./shiftRows";
 // time columns of a day (col bands) become rows below each other, so every
 // day needs one column only and the whole week fits on screen. Each class
 // row (location × row band) splits into time lanes, one sub-row each; the
-// row band name and the lane's time move into the label column. Slots, their
-// ids and all assignment keys stay the same — only the grid's rows and
-// columns change, so drag & drop, the picker and "Show in team" keep working.
+// row band name, the lane's section and time move into the label column and
+// the cells hold only the people. Slots, their ids and all assignment keys
+// stay the same — only the grid's rows and columns change, so drag & drop,
+// the picker and "Show in team" keep working.
 
 export type StackedRowMeta = {
   /** The class row this sub-row belongs to (location separators refer to it). */
@@ -17,8 +18,12 @@ export type StackedRowMeta = {
   groupLabel?: string;
   /** The sub-row's section when it is not just the row band name again. */
   title?: string;
-  /** Section most of the sub-row's visible slots have; a cell with another one names its own. */
+  /** Section most of the lane's visible slots have; a cell of another one gets a corner mark. */
   sectionName?: string;
+  /** Block color of that section: tints the label like a shift color. */
+  sectionColor?: string;
+  /** Visible days whose slot belongs to another section, as "Tue: Section". */
+  otherSections?: string[];
   /** Time most of the sub-row's visible slots have; a cell with another one shows its own. */
   timeLabel?: string;
   isFirstInGroup: boolean;
@@ -34,6 +39,9 @@ export type StackedTeamLayout = {
 };
 
 const DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday"];
+const DAY_SHORT: Record<string, string> = {
+  mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun", holiday: "Holiday",
+};
 const dayIndex = (dayType: string) => {
   const index = DAY_ORDER.indexOf(dayType);
   return index === -1 ? DAY_ORDER.length : index;
@@ -65,10 +73,15 @@ const mostCommon = (values: string[]): string | undefined => {
   return best;
 };
 
+const slotSection = (slot: ScheduleRow) => slot.sectionName ?? slot.name;
+
 export const slotTimeLabel = (slot: ScheduleRow): string | undefined => {
   const interval = buildShiftInterval(slot);
   return interval ? formatTimeRangeLabel(interval.start, interval.end) : undefined;
 };
+
+/** "08:00 - 17:00" → "08:00–17:00": the narrow form for labels and cells. */
+export const compactTimeLabel = (label: string) => label.replace(" - ", "–");
 
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
@@ -202,9 +215,11 @@ export function buildStackedTeamLayout(
     const subRows = visibleLanes.length > 0 ? visibleLanes : lanes.slice(0, 1);
     subRows.forEach(({ number, laneSlots, visible }, index) => {
       const id = subRows.length === 1 ? row.id : `${row.id}__t${number}`;
-      const sectionName = mostCommon(
-        visible.map((slot) => slot.sectionName ?? slot.name).filter(Boolean),
-      );
+      const sectionName = mostCommon(visible.map(slotSection).filter(Boolean));
+      const sectionColor = visible.find((slot) => slotSection(slot) === sectionName)?.blockColor;
+      const otherSections = visible
+        .filter((slot) => slotSection(slot) !== sectionName)
+        .map((slot) => `${DAY_SHORT[slot.dayType ?? ""] ?? slot.dayType}: ${slotSection(slot)}`);
       const timeLabel = mostCommon(
         visible.map(slotTimeLabel).filter((label): label is string => !!label),
       );
@@ -216,6 +231,8 @@ export function buildStackedTeamLayout(
         groupLabel: index === 0 ? groupLabel : undefined,
         title: showTitle ? sectionName : undefined,
         sectionName,
+        sectionColor,
+        otherSections: otherSections.length > 0 ? otherSections : undefined,
         timeLabel,
         isFirstInGroup: index === 0,
         isLastInGroup: index === subRows.length - 1,

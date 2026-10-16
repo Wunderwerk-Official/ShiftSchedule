@@ -16,6 +16,7 @@ import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState } from "../lib/shiftRows";
+import { PORTRAIT_PAGE_CSS, portraitContentWidth, printPagePx, readPrintLayout } from "./printPage";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -27,29 +28,10 @@ type PrintWeekPageProps = {
   theme: "light" | "dark";
 };
 
-const PRINT_DPI = 96;
-const MM_TO_PX = PRINT_DPI / 25.4;
-const PRINT_PAGE_WIDTH_MM = 297;
-const PRINT_PAGE_HEIGHT_MM = 210;
 const PRINT_PAGE_MARGIN_MM = 8;
 const PRINT_SAFETY_SCALE = 0.95;
 // Maximum scale-up factor (e.g., 1.5 means content can be scaled up to 150%)
 const MAX_SCALE_UP = 1.5;
-
-// Full A4 page dimensions in pixels
-const getFullPagePx = () => ({
-  width: PRINT_PAGE_WIDTH_MM * MM_TO_PX,
-  height: PRINT_PAGE_HEIGHT_MM * MM_TO_PX,
-});
-
-// Printable area (page minus margins)
-const getPrintAreaPx = () => ({
-  width: (PRINT_PAGE_WIDTH_MM - PRINT_PAGE_MARGIN_MM * 2) * MM_TO_PX,
-  height: (PRINT_PAGE_HEIGHT_MM - PRINT_PAGE_MARGIN_MM * 2) * MM_TO_PX,
-});
-
-// Margin in pixels
-const getMarginPx = () => PRINT_PAGE_MARGIN_MM * MM_TO_PX;
 
 const parseISODate = (value: string | null) => {
   if (!value) return null;
@@ -82,9 +64,16 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     offsetY: 0,
   });
   const printContentRef = useRef<HTMLDivElement | null>(null);
-  const printArea = useMemo(() => getPrintAreaPx(), []);
-  const fullPage = useMemo(() => getFullPagePx(), []);
-  const marginPx = useMemo(() => getMarginPx(), []);
+  // Portrait: the compact week ("Times: Stacked") laid out at the page width,
+  // so long names abbreviate instead of the whole week shrinking.
+  const layout = useMemo(
+    () => readPrintLayout(typeof window !== "undefined" ? window.location.search : ""),
+    [],
+  );
+  const { page: fullPage, area: printArea, margin: marginPx } = useMemo(
+    () => printPagePx(layout, PRINT_PAGE_MARGIN_MM),
+    [layout],
+  );
 
   const startParam =
     typeof window !== "undefined" ? new URLSearchParams(window.location.search).get("start") : null;
@@ -289,6 +278,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
 
   return (
     <div className={cx("bg-white", theme === "dark" && "dark")}>
+      {layout === "portrait" ? <style>{PORTRAIT_PAGE_CSS}</style> : null}
       {/* Full A4 page container */}
       <div
         className="print-page"
@@ -318,7 +308,15 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
             style={{
               position: "absolute",
               left: printLayout.width ? (printArea.width - printLayout.width) / 2 : 0,
-              top: printLayout.height ? (printArea.height - printLayout.height) / 2 : 0,
+              // Portrait pages start at the top; landscape ones are centered.
+              top:
+                printLayout.height && layout !== "portrait"
+                  ? (printArea.height - printLayout.height) / 2
+                  : 0,
+              width:
+                layout === "portrait" && !isClinicSheet
+                  ? portraitContentWidth(printArea.width, PRINT_SAFETY_SCALE)
+                  : undefined,
               transform: `scale(${printLayout.scale})`,
               transformOrigin: "top left",
             }}
@@ -365,6 +363,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                 holidayDates={holidayDates}
                 holidayNameByDate={holidayNameByDate}
                 locationSeparatorRowIds={locationSeparatorRowIds}
+                timeLayout={layout === "portrait" ? "stacked" : "columns"}
                 readOnly
                 header={
                   <div className="flex items-center justify-between">

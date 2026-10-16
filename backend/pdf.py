@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -15,6 +15,13 @@ from .state import _load_state, _parse_date_input
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# "landscape": the classic week grid on A4 landscape. "portrait": the compact
+# week ("Times: Stacked", one column per day) on A4 portrait.
+PdfLayout = Literal["landscape", "portrait"]
+# A4 at 96 DPI: 297 mm x 210 mm = 1122 x 794 px.
+_A4_LONG_PX = 1122
+_A4_SHORT_PX = 794
 
 FRONTEND_BASE_URL = (
     os.environ.get("FRONTEND_BASE_URL")
@@ -58,19 +65,27 @@ def _render_pdf(
     current_user: UserPublic,
     authorization: Optional[str],
     expected_revision: Optional[str],
+    layout: PdfLayout = "landscape",
 ) -> Response:
     # _get_current_user already rejected requests without a bearer token.
     token = _extract_bearer_token(authorization)
     snapshot, revision = _export_snapshot(current_user, expected_revision)
+    portrait = layout == "portrait"
+    if portrait:
+        print_path = f"{print_path}&layout=portrait"
     print_url = f"{FRONTEND_BASE_URL.rstrip('/')}{print_path}"
 
     try:
         with sync_playwright() as playwright:
             browser = _launch_chromium(playwright)
             try:
-                # Set viewport to A4 landscape dimensions at 96 DPI
-                # 297mm x 210mm = 1122 x 794 px at 96 DPI
-                page = browser.new_page(viewport={"width": 1122, "height": 794})
+                # Viewport = the A4 page at 96 DPI in the chosen orientation.
+                viewport = (
+                    {"width": _A4_SHORT_PX, "height": _A4_LONG_PX}
+                    if portrait
+                    else {"width": _A4_LONG_PX, "height": _A4_SHORT_PX}
+                )
+                page = browser.new_page(viewport=viewport)
                 _bind_print_snapshot(page, snapshot)
                 page.add_init_script(
                     "localStorage.setItem('authToken', %s);" % json.dumps(token)
@@ -82,7 +97,7 @@ def _render_pdf(
                 # so we use scale=1.0 and no additional PDF margins
                 pdf_bytes = page.pdf(
                     format="A4",
-                    landscape=True,
+                    landscape=not portrait,
                     print_background=True,
                     scale=1.0,
                     margin={"top": "0mm", "right": "0mm", "bottom": "0mm", "left": "0mm"},
@@ -109,6 +124,7 @@ def _render_pdf(
 def export_week_pdf(
     start: str = Query(..., min_length=8),
     expected_revision: Optional[str] = Query(default=None),
+    layout: PdfLayout = Query(default="landscape"),
     authorization: Optional[str] = Header(default=None),
     current_user: UserPublic = Depends(_get_current_user),
 ):
@@ -117,7 +133,7 @@ def export_week_pdf(
         raise HTTPException(status_code=400, detail="Start date required.")
     return _render_pdf(
         f"/print/week?start={start_iso}", f"shift-planner-{start_iso}.pdf",
-        current_user, authorization, expected_revision,
+        current_user, authorization, expected_revision, layout,
     )
 
 
@@ -126,6 +142,7 @@ def export_weeks_pdf(
     start: str = Query(..., min_length=8),
     weeks: int = Query(..., ge=1, le=55),
     expected_revision: Optional[str] = Query(default=None),
+    layout: PdfLayout = Query(default="landscape"),
     authorization: Optional[str] = Header(default=None),
     current_user: UserPublic = Depends(_get_current_user),
 ):
@@ -134,5 +151,5 @@ def export_weeks_pdf(
         raise HTTPException(status_code=400, detail="Start date required.")
     return _render_pdf(
         f"/print/weeks?start={start_iso}&weeks={weeks}", f"shift-planner-{start_iso}-{weeks}w.pdf",
-        current_user, authorization, expected_revision,
+        current_user, authorization, expected_revision, layout,
     )

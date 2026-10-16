@@ -6,7 +6,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - Weekly schedule view with drag-and-drop within the same day
 - "My plan" individual view next to the team plan (Team | My plan switch): one person's shifts as day, week or month, with the date on top or on the left, overnight shifts split at midnight, absences, coworkers per shift, and location tints
 - Per-user preferences ("I am" link, saved views, start page per device class) stored per login via `GET/PUT /v1/me/preferences`, outside the shared calendar state; a PUT stores only the top-level keys it sends and keeps the rest, so a device cannot undo another device's changes to other keys (a key such as `savedViews` is replaced whole)
-- Compact team week: a day's times stacked as rows ("Times: Stacked", default) or side by side as columns
+- Compact team week: a day's times stacked as rows ("Times: Stacked", default; colored row labels, cells with people only) or side by side as columns
 - Optional location colors and a team "Color by: Person" mode (presentation only; planning is unaffected)
 - Rest-day and vacation pools
 - Required staffing per weekly-template slot (set per weekday and for holidays) and per-day overrides
@@ -15,7 +15,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - AI planning drafts with explicit review and apply; CP-SAT and heuristic solvers also remain available through the API
 - Rule checks and an automatic backup before applying; incomplete drafts need confirmation
 - Revision-checked saving prevents older browser edits from overwriting newer calendar changes
-- PDF export (A4 landscape) and public iCal subscription feeds (published weeks only)
+- PDF export (A4 landscape, or the compact week on A4 portrait) and public iCal subscription feeds (published weeks only)
 
 ## Tech Stack
 - Frontend: React 18, TypeScript, Vite, Tailwind CSS

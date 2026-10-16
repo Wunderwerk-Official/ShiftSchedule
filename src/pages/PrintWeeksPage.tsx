@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
 import ScheduleGrid from "../components/schedule/ScheduleGrid";
-import { getState, type Holiday, type WeeklyCalendarTemplate } from "../api/client";
+import { getState, type Holiday, type PdfLayout, type WeeklyCalendarTemplate } from "../api/client";
 import {
   Assignment,
   buildAssignmentMap,
@@ -16,6 +16,7 @@ import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState, type ScheduleRow } from "../lib/shiftRows";
+import { PORTRAIT_PAGE_CSS, portraitContentWidth, printPagePx, readPrintLayout } from "./printPage";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -27,19 +28,10 @@ type PrintWeeksPageProps = {
   theme: "light" | "dark";
 };
 
-const PRINT_DPI = 96;
-const MM_TO_PX = PRINT_DPI / 25.4;
-const PRINT_PAGE_WIDTH_MM = 297;
-const PRINT_PAGE_HEIGHT_MM = 210;
 const PRINT_PAGE_MARGIN_MM = 8;
 const PRINT_SAFETY_SCALE = 0.98;
 // Maximum scale-up factor (e.g., 1.5 means content can be scaled up to 150%)
 const MAX_SCALE_UP = 1.5;
-
-const getPrintAreaPx = () => ({
-  width: (PRINT_PAGE_WIDTH_MM - PRINT_PAGE_MARGIN_MM * 2) * MM_TO_PX,
-  height: (PRINT_PAGE_HEIGHT_MM - PRINT_PAGE_MARGIN_MM * 2) * MM_TO_PX,
-});
 
 type PrintableWeekProps = {
   weekIndex: number;
@@ -60,6 +52,8 @@ type PrintableWeekProps = {
   slotOverridesByKey: Record<string, number>;
   columnTimeMetaByKey: ReturnType<typeof buildColumnTimeMetaByKey>;
   rangeLabel: string;
+  /** Portrait: the compact week ("Times: Stacked") at the page width. */
+  layout: PdfLayout;
   onReady?: (weekIndex: number) => void;
 };
 
@@ -82,6 +76,7 @@ const PrintableWeek = ({
   slotOverridesByKey,
   columnTimeMetaByKey,
   rangeLabel,
+  layout,
   onReady,
 }: PrintableWeekProps) => {
   const [printLayout, setPrintLayout] = useState({
@@ -92,7 +87,10 @@ const PrintableWeek = ({
     offsetY: 0,
   });
   const printContentRef = useRef<HTMLDivElement | null>(null);
-  const printArea = useMemo(() => getPrintAreaPx(), []);
+  const { area: printArea, margin: marginPx } = useMemo(
+    () => printPagePx(layout, PRINT_PAGE_MARGIN_MM),
+    [layout],
+  );
   const weekAssignments = useMemo(
     () =>
       buildRenderedAssignmentMap(assignmentMap, clinicians, weekDays, {
@@ -168,6 +166,10 @@ const PrintableWeek = ({
     <div
       className="print-page"
       style={{
+        // Left/top page margin (the pages have none of their own); the block
+        // stays shorter than the page, so page breaks do not move.
+        paddingLeft: marginPx,
+        paddingTop: marginPx,
         breakInside: "avoid",
         pageBreakInside: "avoid",
         breakAfter: weekIndex === totalWeeks - 1 ? "auto" : "page",
@@ -191,6 +193,10 @@ const PrintableWeek = ({
           <div
             ref={printContentRef}
             style={{
+              width:
+                layout === "portrait" && !isClinicSheet
+                  ? portraitContentWidth(printArea.width, PRINT_SAFETY_SCALE)
+                  : undefined,
               transform: `scale(${printLayout.scale})`,
               transformOrigin: "top left",
             }}
@@ -236,6 +242,7 @@ const PrintableWeek = ({
               holidayDates={holidayDates}
               holidayNameByDate={holidayNameByDate}
               locationSeparatorRowIds={locationSeparatorRowIds}
+              timeLayout={layout === "portrait" ? "stacked" : "columns"}
               readOnly
               header={
                 <div className="flex items-center justify-between">
@@ -290,6 +297,10 @@ const clampWeeks = (value: string | null) => {
 };
 
 export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
+  const layout = useMemo(
+    () => readPrintLayout(typeof window !== "undefined" ? window.location.search : ""),
+    [],
+  );
   const [rows, setRows] = useState<WorkplaceRow[]>([]);
   const [locations, setLocations] = useState(defaultLocations);
   const [locationsEnabled, setLocationsEnabled] = useState(true);
@@ -458,6 +469,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
 
   return (
     <div className={cx("bg-white", theme === "dark" && "dark")}>
+      {layout === "portrait" ? <style>{PORTRAIT_PAGE_CSS}</style> : null}
       {(() => {
         const poolId = calendarRows.find((row) => row.kind === "pool")?.id;
         return Array.from({ length: totalWeeks }, (_, index) => {
@@ -485,6 +497,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
               slotOverridesByKey={slotOverridesByKey}
               columnTimeMetaByKey={columnTimeMetaByKey}
               rangeLabel={formatRangeLabel(rangeStart, rangeEnd)}
+              layout={layout}
               onReady={handleWeekReady}
             />
           );

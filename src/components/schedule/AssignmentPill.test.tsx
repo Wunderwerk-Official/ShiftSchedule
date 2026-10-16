@@ -69,7 +69,8 @@ describe("AssignmentPill in Color by: Person", () => {
     expect(name.textContent).toBe("Sarah N.");
     expect(name.className).toContain("truncate");
     expect(name.className).not.toContain("sr-only");
-    expect(name.parentElement?.getAttribute("title")).toBe("Sarah Neumann");
+    // On the pill: its content ignores the pointer, so a title there never shows.
+    expect(name.closest('[data-assignment-pill="true"]')?.getAttribute("title")).toBe("Sarah Neumann");
   });
 
   it("keeps only the initials circle when there is no room for a few letters", () => {

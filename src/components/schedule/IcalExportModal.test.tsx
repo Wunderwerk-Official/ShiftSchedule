@@ -60,7 +60,27 @@ describe("IcalExportModal PDF export", () => {
       startISO: "2026-03-02",
       weeks: 1,
       mode: "combined",
+      layout: "landscape",
     });
+    // Without the portrait option (monthly sheet) there is no layout choice.
+    expect(screen.queryByRole("group", { name: "Page layout" })).toBeNull();
+  });
+
+  it("preselects the compact portrait page and lets the user switch to landscape", () => {
+    const props = renderModal({ offerPdfPortrait: true, defaultPdfLayout: "portrait" });
+    const portrait = screen.getByRole("button", { name: "Portrait · compact week" });
+    expect(portrait.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(exportPdfButton());
+    expect(props.onExportPdf).toHaveBeenLastCalledWith(expect.objectContaining({ layout: "portrait" }));
+    fireEvent.click(screen.getByRole("button", { name: "Landscape · times side by side" }));
+    fireEvent.click(exportPdfButton());
+    expect(props.onExportPdf).toHaveBeenLastCalledWith(expect.objectContaining({ layout: "landscape" }));
+  });
+
+  it("never sends portrait when the option is not offered", () => {
+    const props = renderModal({ offerPdfPortrait: false, defaultPdfLayout: "portrait" });
+    fireEvent.click(exportPdfButton());
+    expect(props.onExportPdf).toHaveBeenLastCalledWith(expect.objectContaining({ layout: "landscape" }));
   });
 });
 

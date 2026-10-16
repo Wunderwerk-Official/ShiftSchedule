@@ -95,3 +95,43 @@ def test_render_timeout_is_logged_as_warning(export_case, monkeypatch, caplog):
         call()
     assert failure.value.status_code == 504
     assert any(r.name == "backend.pdf" and r.levelname == "WARNING" for r in caplog.records)
+
+
+@pytest.mark.parametrize("endpoint", ["week", "weeks"])
+@pytest.mark.parametrize("layout", ["landscape", "portrait"])
+def test_layout_sets_page_orientation_and_print_route(monkeypatch, endpoint, layout):
+    """Portrait renders the compact week (print page `layout=portrait`) on A4 portrait."""
+    state = make_app_state()
+    state.revision = "saved-revision"
+    seen = {}
+
+    class Page:
+        def route(self, pattern, handler): pass
+        def add_init_script(self, script): pass
+        def emulate_media(self, **kwargs): pass
+        def goto(self, url, **kwargs): seen["url"] = url
+        def wait_for_function(self, *args, **kwargs): pass
+        def pdf(self, **kwargs):
+            seen["pdf"] = kwargs
+            return b"%PDF-fake-render"
+
+    def new_page(**kwargs):
+        seen["viewport"] = kwargs["viewport"]
+        return Page()
+
+    browser = SimpleNamespace(new_page=new_page, close=lambda: None)
+    monkeypatch.setattr(pdf, "sync_playwright", lambda: nullcontext(None))
+    monkeypatch.setattr(pdf, "_launch_chromium", lambda _: browser)
+    monkeypatch.setattr(pdf, "authenticated_account_connection", lambda _: nullcontext(None))
+    monkeypatch.setattr(pdf, "_load_state", lambda _, **kwargs: state)
+    kwargs = dict(start="2026-01-05", expected_revision=None, layout=layout,
+                  authorization="Bearer test", current_user=SimpleNamespace(username="owner"))
+    if endpoint == "weeks":
+        pdf.export_weeks_pdf(weeks=2, **kwargs)
+    else:
+        pdf.export_week_pdf(**kwargs)
+
+    portrait = layout == "portrait"
+    assert seen["pdf"]["landscape"] is (not portrait)
+    assert seen["viewport"] == ({"width": 794, "height": 1122} if portrait else {"width": 1122, "height": 794})
+    assert seen["url"].endswith("&layout=portrait") is portrait

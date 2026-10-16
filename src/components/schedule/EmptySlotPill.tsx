@@ -26,7 +26,7 @@ export default function EmptySlotPill({
       // below this one. Only the border color/style and ring change.
       className={cx(
         "no-print group/empty relative w-full rounded-xl border-2 px-2 text-center text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
-        dense ? "py-0.5" : "py-1",
+        dense ? "truncate py-0.5" : "py-1",
         highlighted
           ? "border-solid border-rose-500 bg-rose-50 text-rose-700 ring-2 ring-rose-200/80 dark:border-rose-400 dark:bg-rose-900/30 dark:text-rose-100 dark:ring-rose-500/40"
           : variant === "ghost"
@@ -35,7 +35,8 @@ export default function EmptySlotPill({
         className,
       )}
     >
-      Open Slot
+      {/* Narrow compact columns: the short form fits without an ellipsis. */}
+      {dense ? "Open" : "Open Slot"}
       {showAddIcon ? (
         <span className="no-print absolute right-1 top-0 -translate-y-1/2">
           <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-slate-200 text-[12px] font-semibold text-slate-500 shadow-sm dark:bg-slate-700 dark:text-slate-300">

@@ -132,6 +132,7 @@ describe("ScheduleGrid", () => {
     expect(name.className).toBe("whitespace-nowrap text-center");
     expect(name.parentElement?.className).toContain("justify-center");
     expect(name.parentElement?.getAttribute("title")).toBeNull();
+    expect(pill.getAttribute("title")).toBeNull();
     // Manual pill: lock badge, no initials circle (no inline-styled spans at all).
     expect(pill.querySelector("svg")).not.toBeNull();
     expect(pill.querySelector("[style]")).toBeNull();
@@ -462,8 +463,8 @@ describe("ScheduleGrid stacked times", () => {
   it("puts the row name and each band's time into the label column", () => {
     renderStacked();
     expect(screen.getAllByText("CT", { selector: "span" })).toHaveLength(1);
-    expect(screen.getByText("07:00 - 15:00")).toBeTruthy();
-    expect(screen.getByText("14:00 - 22:00")).toBeTruthy();
+    expect(screen.getByText("07:00–15:00")).toBeTruthy();
+    expect(screen.getByText("14:00–22:00")).toBeTruthy();
     // The location is named by the band above its rows.
     expect(screen.getByText("Campus")).toBeTruthy();
   });
@@ -477,8 +478,94 @@ describe("ScheduleGrid stacked times", () => {
 
   it("shows a cell's own time only where it differs from its row", () => {
     renderStacked();
-    expect(within(cell("ct-tue-late", TUE)).getByText("14:00 - 20:00")).toBeTruthy();
-    expect(within(cell("ct-mon-late", MON)).queryByText("14:00 - 22:00")).toBeNull();
+    expect(within(cell("ct-tue-late", TUE)).getByText("14:00–20:00")).toBeTruthy();
+    expect(within(cell("ct-mon-late", MON)).queryByText("14:00–22:00")).toBeNull();
+  });
+
+  it("names no section in a cell: the label shows +N, the cell keeps it in its tooltip", () => {
+    const mixed: ScheduleRow = {
+      ...groupRow,
+      slotRows: groupRow.slotRows!.map((slot) =>
+        slot.id === "ct-tue-early"
+          ? { ...slot, sectionId: "sec-mr", sectionName: "MR", name: "MR", blockColor: "#BBF7D0" }
+          : { ...slot, blockColor: "#BFDBFE" },
+      ),
+    };
+    renderStacked({ rows: [mixed] });
+    const tue = cell("ct-tue-early", TUE);
+    expect(within(tue).queryByText("MR")).toBeNull();
+    expect(tue.getAttribute("title")).toBe("MR · 07:00 - 15:00");
+    const badge = screen.getByText("+1");
+    expect(badge.getAttribute("title")).toBe("Other days: Tue: MR");
+    // Section look: each cell is tinted with its own section's color.
+    expect(tue.className).toContain("stacked-section-cell");
+    expect(tue.style.getPropertyValue("--section-color")).toBe("#BBF7D0");
+    expect(cell("ct-mon-early", MON).style.getPropertyValue("--section-color")).toBe("#BFDBFE");
+  });
+
+  it("draws no section block and keeps person-colored cells untinted", () => {
+    renderStacked({
+      rows: [{ ...groupRow, slotRows: groupRow.slotRows!.map((slot) => ({ ...slot, blockColor: "#BFDBFE" })) }],
+      personPillStyles: buildPersonPillStyles([{ id: "x", name: "Xena Young", qualifiedClassIds: [], preferredClassIds: [], vacations: [] }]),
+    });
+    const mon = cell("ct-mon-early", MON);
+    expect(mon.querySelector(".rounded-lg.border-2")).toBeNull();
+    expect(mon.className).not.toContain("stacked-section-cell");
+    // The lane label still carries the section color.
+    expect(document.querySelector(".stacked-label-tint")).not.toBeNull();
+  });
+
+  it("marks a day of another section without naming it, and hatches days without a slot", () => {
+    const mixed: ScheduleRow = {
+      ...groupRow,
+      // Tuesday has no late slot; its early slot belongs to another section.
+      slotRows: groupRow.slotRows!
+        .filter((slot) => slot.id !== "ct-tue-late")
+        .map((slot) => (slot.id === "ct-tue-early" ? { ...slot, sectionId: "sec-mr", sectionName: "MR", name: "MR" } : slot)),
+    };
+    renderStacked({ rows: [mixed] });
+    expect(cell("ct-tue-early", TUE).querySelector('[data-other-section="true"]')).not.toBeNull();
+    expect(cell("ct-mon-early", MON).querySelector('[data-other-section="true"]')).toBeNull();
+    const lateTuesday = document.querySelector(
+      `[data-schedule-cell="true"][data-date-iso="${TUE}"][data-row-id="group-loc-1__rb-ct__t2"]`,
+    ) as HTMLElement;
+    expect(lateTuesday.className).toContain("stacked-off-cell");
+  });
+
+  it("writes short open slots in the compact grid", () => {
+    renderStacked({ minSlotsByRowId: { "ct-tue-early": { weekday: 1, weekend: 0 } } });
+    expect(within(cell("ct-tue-early", TUE)).getByText("Open")).toBeTruthy();
+    expect(screen.queryByText("Open Slot")).toBeNull();
+  });
+
+  it("keeps the fix button and its room on a fixed pill", () => {
+    renderStacked({
+      onToggleAssignmentLock: vi.fn(),
+      assignmentMap: new Map([
+        [`ct-mon-early__${MON}`, [{ id: "a1", rowId: "ct-mon-early", dateISO: MON, clinicianId: "x", source: "solver" as const, locked: true }]],
+      ]),
+    });
+    const pill = document.querySelector(
+      `[data-schedule-grid="true"] [data-assignment-key="ct-mon-early__${MON}__x"]`,
+    ) as HTMLElement;
+    expect(pill.classList).toContain("pr-6");
+    const button = screen.getByRole("button", { name: /Unfix assignment/ });
+    expect(button.parentElement?.className).not.toContain("opacity-0");
+  });
+
+  it("keeps no room for the fix button of an unfixed pill (shown on hover)", () => {
+    renderStacked({
+      onToggleAssignmentLock: vi.fn(),
+      assignmentMap: new Map([
+        [`ct-mon-early__${MON}`, [{ id: "a1", rowId: "ct-mon-early", dateISO: MON, clinicianId: "x", source: "solver" as const }]],
+      ]),
+    });
+    const pill = document.querySelector(
+      `[data-schedule-grid="true"] [data-assignment-key="ct-mon-early__${MON}__x"]`,
+    ) as HTMLElement;
+    expect(pill.classList).not.toContain("pr-6");
+    expect(pill.classList).toContain("[@media(hover:none)]:pr-6");
+    expect(screen.getByRole("button", { name: /Fix assignment/ })).toBeTruthy();
   });
 
   it("moves a pill between the time bands of a day", () => {
