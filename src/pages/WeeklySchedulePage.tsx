@@ -3322,7 +3322,7 @@ export default function WeeklySchedulePage({
                 </h3>
                 <div className="mt-1 text-xs text-red-700 dark:text-red-300">
                   <p className="mb-2">
-                    Multiple sections are assigned to the same row and time slot. Only one section will be visible in the calendar - others are hidden but still exist in the database.
+                    Multiple sections are assigned to the same row and time slot. In the side-by-side layout only one section is visible - the others are hidden but still exist in the database.
                   </p>
                   <details className="group">
                     <summary className="cursor-pointer font-medium hover:underline">
@@ -3492,6 +3492,7 @@ export default function WeeklySchedulePage({
             separatorBeforeRowIds={poolsSeparatorId ? [poolsSeparatorId] : []}
             locationSeparatorRowIds={locationSeparatorRowIds}
             locationColumnTimeMetaByKey={locationColumnTimeMetaByKey}
+            timeLayout={prefs.teamTimeLayout}
             minSlotsByRowId={minSlotsByRowId}
             getClinicianName={(id) => clinicianNameById.get(id) ?? "Unknown"}
             getHasEligibleClasses={(id) => {

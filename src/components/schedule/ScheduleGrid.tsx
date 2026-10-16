@@ -1,5 +1,5 @@
 import type { AssignmentIdentity } from "../../lib/assignmentPolicy";
-import type { DayType } from "../../api/client";
+import type { DayType, TeamTimeLayout } from "../../api/client";
 import type { RenderedAssignment, TimeRange } from "../../lib/schedule";
 import { cx } from "../../lib/classNames";
 import {
@@ -16,6 +16,11 @@ import {
 import { formatDayHeader, toISODate } from "../../lib/date";
 import { formatTimeRangeLabel, sortAssignmentsBySurname } from "../../lib/schedule";
 import { getDayType } from "../../lib/dayTypes";
+import {
+  buildStackedTeamLayout,
+  slotTimeLabel,
+  type StackedRowMeta,
+} from "../../lib/stackedTeamLayout";
 import AssignmentPill from "./AssignmentPill";
 import EmptySlotPill from "./EmptySlotPill";
 import RowLabel from "./RowLabel";
@@ -87,6 +92,12 @@ type ScheduleGridProps = {
   myClinicianId?: string | null;
   /** Tints of colored locations by location id (label cells + separator row). */
   locationRowTints?: Map<string, LocationRowTint>;
+  /**
+   * "columns" (default): the time columns of a day side by side. "stacked":
+   * one column per day, its times as rows with the time in the label column
+   * (compact week, see lib/stackedTeamLayout).
+   */
+  timeLayout?: TeamTimeLayout;
 };
 
 export default function ScheduleGrid({
@@ -125,23 +136,35 @@ export default function ScheduleGrid({
   personPillStyles,
   myClinicianId,
   locationRowTints,
+  timeLayout = "columns",
 }: ScheduleGridProps) {
   type DayColumn = NonNullable<ScheduleGridProps["dayColumns"]>[number];
-  const columns: DayColumn[] =
-    dayColumns ??
-    weekDays.map((date, index): DayColumn => {
-      const dateISO = toISODate(date);
-      return {
-        date,
-        dateISO,
-        dayType: getDayType(dateISO, holidayDates),
-        colOrder: 1,
-        isFirstInDay: true,
-        dayIndex: index,
-        columnIndex: index,
-        columnTimeLabel: undefined,
-      };
-    });
+  const sourceColumns: DayColumn[] = useMemo(
+    () =>
+      dayColumns ??
+      weekDays.map((date, index): DayColumn => {
+        const dateISO = toISODate(date);
+        return {
+          date,
+          dateISO,
+          dayType: getDayType(dateISO, holidayDates),
+          colOrder: 1,
+          isFirstInDay: true,
+          dayIndex: index,
+          columnIndex: index,
+          columnTimeLabel: undefined,
+        };
+      }),
+    [dayColumns, weekDays, holidayDates],
+  );
+  // Stacked times: the grid renders sub-rows and one column per day. Slot
+  // lookups (intervals, row kinds, picker options) keep using the source rows.
+  const stacked = useMemo(
+    () => (timeLayout === "stacked" ? buildStackedTeamLayout(rows, sourceColumns) : null),
+    [timeLayout, rows, sourceColumns],
+  );
+  const columns = stacked?.columns ?? sourceColumns;
+  const gridRows = stacked?.rows ?? rows;
   const uniqueDayCount = useMemo(
     () => new Set(columns.map((column) => column.dateISO)).size,
     [columns],
@@ -186,13 +209,13 @@ export default function ScheduleGrid({
       }
     }
     if (columnsWithSlots.size === 0) return false;
-    const hasMixedTimes = columns.some((column) => column.columnHasMixedTimes);
+    const hasMixedTimes = sourceColumns.some((column) => column.columnHasMixedTimes);
     if (hasMixedTimes) return true;
-    return columns.some((column) => {
+    return sourceColumns.some((column) => {
       const key = `${column.dayType}-${column.colOrder}`;
       return columnsWithSlots.has(key) && !column.columnTimeLabel;
     });
-  }, [columns, rows]);
+  }, [sourceColumns, rows]);
   const rowKindById = useMemo(() => buildRowKindById(rows), [rows]);
   // The pill being dragged: its day and person drive the cell styling.
   // Dragover sets no state on purpose — it fires many times per second and
@@ -214,8 +237,13 @@ export default function ScheduleGrid({
   }>({ open: false, rowId: "", dateISO: "", anchorRect: null, rowName: "" });
   const todayISO = toISODate(new Date());
   const isSingleDay = uniqueDayCount === 1;
-  const dayColumnMin = isSingleDay ? 140 : 120;
-  const leftColumn = isSingleDay ? "minmax(96px, 140px)" : "max-content";
+  // Stacked: seven narrower day columns fit next to the time labels.
+  const dayColumnMin = isSingleDay ? 140 : stacked ? 108 : 120;
+  const leftColumn = isSingleDay
+    ? stacked
+      ? "minmax(112px, 168px)"
+      : "minmax(96px, 140px)"
+    : "max-content";
   const shiftIntervalsByRowId = useMemo(() => buildShiftIntervalsByRowId(rows), [rows]);
   const { assignedIntervalsByDate, unknownIntervalsByDate } = useMemo(
     () => buildDateIntervalIndex(assignmentMap, rowKindById, shiftIntervalsByRowId),
@@ -452,11 +480,15 @@ export default function ScheduleGrid({
                   );
                 })}
 
-                {rows.map((row, index) => {
+                {gridRows.map((row, index) => {
+                  const stackedMeta = stacked?.metaByRowId.get(row.id);
                   const showSeparator = separatorBeforeRowIds.includes(row.id);
-                  const showLocationSeparator =
-                    locationSeparatorRowIds.includes(row.id);
-                  const nextRow = rows[index + 1];
+                  // A stacked row's separator goes before its first sub-row.
+                  const showLocationSeparator = stackedMeta
+                    ? stackedMeta.isFirstInGroup &&
+                      locationSeparatorRowIds.includes(stackedMeta.sourceRowId)
+                    : locationSeparatorRowIds.includes(row.id);
+                  const nextRow = gridRows[index + 1];
                   const nextRowId = nextRow?.id;
                   const suppressBottomBorder =
                     !!nextRowId && separatorBeforeRowIds.includes(nextRowId);
@@ -474,6 +506,7 @@ export default function ScheduleGrid({
                           holidayNameByDate={holidayNameByDate}
                           tint={rowTint}
                           locationName={row.locationName}
+                          stacked={!!stacked}
                         />
                       ) : null}
                       {showSeparator ? <SeparatorRow /> : null}
@@ -512,6 +545,7 @@ export default function ScheduleGrid({
                         personPillStyles={personPillStyles}
                         myClinicianId={myClinicianId}
                         rowTint={rowTint}
+                        stackedMeta={stackedMeta}
                       />
                     </Fragment>
                   );
@@ -580,6 +614,7 @@ function RowSection({
   personPillStyles,
   myClinicianId,
   rowTint,
+  stackedMeta,
 }: {
   row: ScheduleRow;
   dayColumns: {
@@ -641,6 +676,8 @@ function RowSection({
   personPillStyles?: Map<string, PersonPillStyle>;
   myClinicianId?: string | null;
   rowTint?: LocationRowTint;
+  /** Set in the stacked layout: this row is one time band of a class row. */
+  stackedMeta?: StackedRowMeta;
 }) {
   const rowBg =
     row.id === "pool-vacation"
@@ -651,7 +688,11 @@ function RowSection({
   const borderBottomClass =
     suppressBottomBorder || row.id === "pool-vacation"
       ? "border-b-0"
-      : "border-b border-slate-200 dark:border-slate-800";
+      : stackedMeta && !stackedMeta.isLastInGroup
+        ? // Between the time lanes of one row: a hairline only. Bottom-side
+          // colors, so the cells' other border colors stay as they are.
+          "border-b border-b-slate-100 dark:border-b-slate-800/50"
+        : "border-b border-slate-200 dark:border-slate-800";
   const applyDragImage = (
     source: HTMLElement,
     event: ReactMouseEvent<HTMLElement> | DragEvent,
@@ -834,7 +875,7 @@ function RowSection({
         )}
         style={rowTint ? { backgroundColor: rowTint.ground } : undefined}
       >
-        <RowLabel row={row} tint={rowTint} />
+        <RowLabel row={row} tint={rowTint} stacked={stackedMeta} />
       </div>
       {row.kind === "pool"
         ? dayGroups.map((group, groupIndex) => {
@@ -1038,7 +1079,8 @@ function RowSection({
             data-row-kind={row.kind}
             data-date-iso={dateISO}
             className={cx(
-              "row group relative border-r border-slate-200 p-0.5 text-left dark:border-slate-800 sm:p-1",
+              "row group relative border-r border-slate-200 text-left dark:border-slate-800",
+              stackedMeta ? "px-0.5 py-0.5 sm:px-1" : "p-0.5 sm:p-1",
               borderBottomClass,
               cellBgClass,
               isDayDivider &&
@@ -1066,6 +1108,7 @@ function RowSection({
                     <EmptySlotPill
                       key={`${cellKey}-empty-${idx}`}
                       highlighted={highlightOpenSlots}
+                      dense={!!stackedMeta}
                       onRemove={
                         !readOnly && onRemoveEmptySlot && row.kind === "class"
                           ? () =>
@@ -1096,6 +1139,45 @@ function RowSection({
                 : null}
                 </>
               );
+              if (showSlotPanel && stackedMeta) {
+                // Compact block: section and time are in the row label; a
+                // cell names its own only where it differs from the row's.
+                const cellSection = activeRow.sectionName ?? activeRow.name;
+                const cellTime = slotTimeLabel(activeRow);
+                const captions = [
+                  cellSection !== stackedMeta.sectionName ? cellSection : null,
+                  cellTime && cellTime !== stackedMeta.timeLabel ? cellTime : null,
+                ].filter((caption): caption is string => !!caption);
+                const textColors = getContrastTextColor(sectionFill);
+                // Nobody needed and nobody assigned: drawn faint.
+                const isIdle = assignments.length === 0 && emptySlots === 0;
+                return (
+                  <div
+                    // Constant 2px border, as in the side-by-side block below.
+                    className={cx(
+                      "h-full w-full min-h-[34px] rounded-lg border-2 bg-white/95 p-1 shadow-sm dark:bg-slate-950",
+                      showQualified
+                        ? "border-slate-900 dark:border-slate-100"
+                        : "border-slate-200 dark:border-slate-700",
+                      isIdle && !showQualified && "opacity-40 shadow-none",
+                    )}
+                    style={sectionFill ? { backgroundColor: sectionFill } : undefined}
+                  >
+                    {captions.length > 0 ? (
+                      <div
+                        className={cx(
+                          "mb-1 truncate px-0.5 text-[10px] font-semibold leading-3",
+                          textColors.primary,
+                        )}
+                        title={captions.join(" · ")}
+                      >
+                        {captions.join(" · ")}
+                      </div>
+                    ) : null}
+                    <div className="flex flex-col gap-1">{cellContent}</div>
+                  </div>
+                );
+              }
               return showSlotPanel ? (
                 <div
                   // Border width is kept constant at 2px across every state.
@@ -1159,6 +1241,7 @@ function LocationSeparatorRow({
   holidayNameByDate,
   tint,
   locationName,
+  stacked = false,
 }: {
   columns: {
     date: Date;
@@ -1178,6 +1261,8 @@ function LocationSeparatorRow({
   /** Colored location: light ground + the location name on a chip. */
   tint?: LocationRowTint;
   locationName?: string;
+  /** Stacked layout: the times are in the row labels; the band names the location. */
+  stacked?: boolean;
 }) {
   const tintLabel =
     tint && locationName ? (
@@ -1189,8 +1274,31 @@ function LocationSeparatorRow({
         {locationName}
       </span>
     ) : null;
+  // Stacked: no per-column times. The row labels drop the location name,
+  // so the band names it (neutral when the location has no color).
+  if (stacked && locationId && locationName) {
+    return (
+      <div
+        className={cx(
+          "row flex items-center border-t-2 border-slate-300 px-3 py-1 dark:border-slate-700 sm:px-4",
+          !tint && "bg-slate-50 dark:bg-slate-800/60",
+        )}
+        style={{ gridColumn: "1 / -1", ...(tint ? { backgroundColor: tint.ground } : null) }}
+      >
+        {tintLabel ?? (
+          <span
+            className="inline-block max-w-full truncate rounded-full bg-slate-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase leading-3 tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200"
+            title={locationName}
+          >
+            {locationName}
+          </span>
+        )}
+      </div>
+    );
+  }
   // Check if any column has a location-specific time label for this location
   const hasAnyTimeLabel =
+    !stacked &&
     locationId &&
     locationColumnTimeMetaByKey &&
     columns.some((col) => {

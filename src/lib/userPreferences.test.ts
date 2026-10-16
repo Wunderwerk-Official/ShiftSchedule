@@ -59,6 +59,7 @@ describe("normalizePreferences", () => {
       orientationByRange: { day: "left", week: "sideways" },
       myPlanRange: "month",
       teamColorBy: "rainbow",
+      teamTimeLayout: "diagonal",
       startViewDesktop: { scope: "me", range: "day" },
       startViewMobile: "today",
     });
@@ -70,6 +71,7 @@ describe("normalizePreferences", () => {
       startViewDesktop: { scope: "me", range: "day", orientation: "top", colorBy: "section" },
     });
     expect(normalizePreferences({ clinicianId: "x".repeat(201) }).clinicianId).toBeNull();
+    expect(normalizePreferences({ teamTimeLayout: "columns" }).teamTimeLayout).toBe("columns");
   });
 
   it("drops invalid saved views, dedupes ids and caps at 12", () => {

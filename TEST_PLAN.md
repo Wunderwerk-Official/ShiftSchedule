@@ -214,6 +214,9 @@ npx playwright show-report
 - [x] Phone: the open-slots badge switches the day view to the open slot's day
 - [x] Template above the column limit: banner and no save, snapshot import refused, snapshot restore backs up the last saved calendar, sign-out asks first
 - [x] Reset Solver Only and Reset Unfixed also remove planner entries on vacation days (Reset Unfixed keeps manual ones there)
+- [x] Times switches between side-by-side and stacked columns and stores the choice (v1.65)
+
+**Frontend Tests (v1.65 stacked times)**: `src/lib/stackedTeamLayout.test.ts` (time lanes: weekend columns by time, shorter shifts by nearest start, same-time columns by section), `ScheduleGrid.test.tsx` ("stacked times": one column per day, labels, own-time captions, drag between lanes), `TeamPlanHeader.test.tsx` (Times switch).
 
 ### 3.11 Background runs (v1.64)
 

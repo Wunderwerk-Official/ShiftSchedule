@@ -122,7 +122,8 @@ describe("ScheduleGrid", () => {
     });
     const pill = screen.getByText("Dr. Alice").closest('[data-assignment-pill="true"]') as HTMLElement;
     expect(pill.getAttribute("style")).toBeNull();
-    for (const token of ["border-2", "px-1.5", "py-0.5", "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]", "bg-sky-50", "border-sky-200"]) {
+    // pr-4: room for the manual lock badge, so long names abbreviate instead of running under it.
+    for (const token of ["border-2", "pl-1.5", "pr-4", "py-0.5", "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]", "bg-sky-50", "border-sky-200"]) {
       expect(pill.classList).toContain(token);
     }
     expect(pill.classList).not.toContain("border");
@@ -373,5 +374,146 @@ describe("ScheduleGrid drag and drop", () => {
     renderDnd();
     fireEvent.click(cell("mid", MON));
     expect(screen.getByPlaceholderText("Search clinicians...")).toBeTruthy();
+  });
+});
+
+describe("ScheduleGrid stacked times", () => {
+  const MON = "2026-01-05";
+  const TUE = "2026-01-06";
+  const band = (id: string, dayType: "mon" | "tue", colBandOrder: number, startTime: string, endTime: string): ScheduleRow => ({
+    ...baseRow,
+    id,
+    name: "CT",
+    sectionId: "sec-ct",
+    sectionName: "CT",
+    locationId: "loc-1",
+    locationName: "Campus",
+    rowBandId: "rb-ct",
+    rowBandLabel: "CT",
+    dayType,
+    colBandOrder,
+    startTime,
+    endTime,
+  });
+  const groupRow: ScheduleRow = {
+    ...band("ct-mon-early", "mon", 1, "07:00", "15:00"),
+    id: "group-loc-1__rb-ct",
+    slotRows: [
+      band("ct-mon-early", "mon", 1, "07:00", "15:00"),
+      band("ct-mon-late", "mon", 2, "14:00", "22:00"),
+      band("ct-tue-early", "tue", 1, "07:00", "15:00"),
+      // Tuesday's late shift ends earlier than the band's usual time.
+      band("ct-tue-late", "tue", 2, "14:00", "20:00"),
+    ],
+  };
+  const column = (dateISO: string, dayType: "mon" | "tue", colOrder: number, columnIndex: number) => ({
+    date: new Date(`${dateISO}T00:00:00`),
+    dateISO,
+    dayType,
+    colOrder,
+    isFirstInDay: colOrder === 1,
+    dayIndex: dateISO === MON ? 0 : 1,
+    columnIndex,
+  });
+  const dayColumns = [column(MON, "mon", 1, 0), column(MON, "mon", 2, 1), column(TUE, "tue", 1, 2), column(TUE, "tue", 2, 3)];
+  const assignmentMap = new Map<string, RenderedAssignment[]>([
+    [`ct-mon-early__${MON}`, [{ id: "a1", rowId: "ct-mon-early", dateISO: MON, clinicianId: "x" }]],
+  ]);
+  const renderStacked = (extra: Partial<Parameters<typeof ScheduleGrid>[0]> = {}) => {
+    const onMoveWithinDay = vi.fn();
+    render(
+      <ScheduleGrid
+        leftHeaderTitle=""
+        weekDays={[new Date(2026, 0, 5), new Date(2026, 0, 6)]}
+        dayColumns={dayColumns}
+        rows={[groupRow]}
+        assignmentMap={assignmentMap}
+        locationSeparatorRowIds={[groupRow.id]}
+        getClinicianName={(id) => `Person ${id.toUpperCase()}`}
+        getIsQualified={() => true}
+        getHasEligibleClasses={() => true}
+        onCellClick={vi.fn()}
+        onMoveWithinDay={onMoveWithinDay}
+        timeLayout="stacked"
+        {...extra}
+      />,
+    );
+    return { onMoveWithinDay };
+  };
+  const cells = () => Array.from(document.querySelectorAll<HTMLElement>('[data-schedule-cell="true"]'));
+  const cell = (rowId: string, dateISO: string) =>
+    document.querySelector(
+      `[data-schedule-cell="true"][data-row-id="${rowId}"][data-date-iso="${dateISO}"]`,
+    ) as HTMLElement;
+
+  it("renders one column per day and a day's times as rows", () => {
+    renderStacked();
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toContain("repeat(2,");
+    // Two bands × two days, each cell addressed by its slot id.
+    expect(cells().map((c) => `${c.dataset.rowId}@${c.dataset.dateIso}`)).toEqual([
+      `ct-mon-early@${MON}`,
+      `ct-tue-early@${TUE}`,
+      `ct-mon-late@${MON}`,
+      `ct-tue-late@${TUE}`,
+    ]);
+  });
+
+  it("puts the row name and each band's time into the label column", () => {
+    renderStacked();
+    expect(screen.getAllByText("CT", { selector: "span" })).toHaveLength(1);
+    expect(screen.getByText("07:00 - 15:00")).toBeTruthy();
+    expect(screen.getByText("14:00 - 22:00")).toBeTruthy();
+    // The location is named by the band above its rows.
+    expect(screen.getByText("Campus")).toBeTruthy();
+  });
+
+  it("draws a hairline between the lanes of a row, a full line after its last lane", () => {
+    renderStacked();
+    expect(cell("ct-mon-early", MON).className).toContain("border-b-slate-100");
+    expect(cell("ct-mon-late", MON).className).not.toContain("border-b-slate-100");
+    expect(cell("ct-mon-late", MON).className).toContain("border-slate-200");
+  });
+
+  it("shows a cell's own time only where it differs from its row", () => {
+    renderStacked();
+    expect(within(cell("ct-tue-late", TUE)).getByText("14:00 - 20:00")).toBeTruthy();
+    expect(within(cell("ct-mon-late", MON)).queryByText("14:00 - 22:00")).toBeNull();
+  });
+
+  it("moves a pill between the time bands of a day", () => {
+    const { onMoveWithinDay } = renderStacked();
+    const pill = document.querySelector(
+      `[data-schedule-grid="true"] [data-assignment-key="ct-mon-early__${MON}__x"]`,
+    ) as HTMLElement;
+    const data: Record<string, string> = {};
+    const dataTransfer = {
+      setData: (type: string, value: string) => {
+        data[type] = value;
+      },
+      getData: (type: string) => data[type] ?? "",
+      setDragImage: () => {},
+      effectAllowed: "all",
+      dropEffect: "none",
+    };
+    const target = cell("ct-mon-late", MON);
+    fireEvent.dragStart(pill, { dataTransfer });
+    fireEvent.dragOver(target, { dataTransfer });
+    fireEvent.drop(target, { dataTransfer });
+    expect(onMoveWithinDay).toHaveBeenCalledWith({
+      dateISO: MON,
+      fromRowId: "ct-mon-early",
+      toRowId: "ct-mon-late",
+      assignmentId: "a1",
+      clinicianId: "x",
+    });
+  });
+
+  it("keeps the side-by-side columns by default", () => {
+    renderStacked({ timeLayout: undefined });
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toContain("repeat(4,");
+    expect(cells()).toHaveLength(4);
+    expect(screen.queryByText("Campus", { selector: "span.rounded-full" })).toBeNull();
   });
 });

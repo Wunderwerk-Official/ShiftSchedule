@@ -54,7 +54,8 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Color by" (classic grid only), start-page star and Views menu. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" and "Color by" (both classic grid only, "Times" since v1.65), start-page star and Views menu. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
+- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. See the v1.65 section at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
 - On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
@@ -1446,6 +1447,7 @@ Frontend
 - `src/components/schedule/AgentSettingsPanel.tsx` (v1.64, extracted from SettingsView: AI provider/model, endpoint, API keys, model check, chat test, budget)
 - `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan, Color by, start-page star, Views)
 - `src/components/schedule/teamColors.ts` (v1.64: "Color by: Person" pill styles and location row tints for the classic grid)
+- `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — time lanes per class row, one grid column per day, label meta)
 - `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder)
 - `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while the start view is resolved)
 - `src/components/ui/ConfirmDialog.tsx` (confirm dialog; Enter acts on the focused button)
@@ -2110,3 +2112,50 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   zero-duration rule, scoring (`plan_stats` only) and the heuristic's
   blocked-slot handling (`human-heuristic-solver.md`,
   `HEURISTIC_SOLVER_V2_README.md`).
+
+## v1.65 — Compact team week ("Times: Stacked")
+
+- **Two time layouts in the classic grid.** The team header gets a "Times:
+  Side by side | Stacked" switch next to "Color by" (classic grid only; the
+  clinic sheet keeps its look). The choice is the per-user preference
+  `teamTimeLayout` (`"columns"` | `"stacked"`, default `"stacked"`; declared
+  in `backend/models.py::UserPreferences`, mirrored in `src/api/client.ts` and
+  `normalizePreferences`). It is not part of saved views or start pages.
+  Side by side is the unchanged pre-v1.65 grid (one column per col band of a
+  day). Stacked has one column per day: each class row (location × row band)
+  splits into one sub-row per time lane, the label column shows the row band
+  name (on its first lane), the lane's section when it is not the row band
+  name (e.g. a second column with another section) and the lane's time
+  right-aligned; the location separator names the location (neutral band when
+  uncolored) and the per-column time headings disappear. Cells are compact
+  section blocks (open slots 24 px high, "nobody needed" blocks faint); a cell
+  shows its own section or time only where it differs from its lane's.
+- **Time lanes** (`src/lib/stackedTeamLayout.ts::buildTimeLanes`, pure):
+  at most one slot per day type per lane. The day type with the most slots
+  opens the lanes in column order; the other days join them by the same time
+  and section, then the same time, then the nearest start on the clock
+  (00:00 is next to 22:00). Matching on time,
+  not on the col band order, matters because the template numbers each day's
+  columns on its own (a weekend with "Day | Night" puts its night shift into
+  the weekday night lane). Lanes without a slot on the visible days are left
+  out; a row without any keeps one inactive lane.
+- **Nothing else changes.** `ScheduleGrid` gets `timeLayout` (default
+  `"columns"`, so print/public pages and tests keep the old grid) and builds
+  the stacked rows/columns with `buildStackedTeamLayout`; slot ids, cell
+  `data-row-id`/`data-date-iso`, assignment keys, drag & drop, the picker,
+  open-slot/violation highlights and "Show in team plan" work unchanged.
+  Slot lookups (intervals, row kinds, picker options) still use the source
+  rows. A stacked lane's slots are copies with `colBandOrder: 1`; the source
+  rows are never changed. Two sections on the same row band / day / column
+  (the "slot collision" configuration error) get separate lanes, so Stacked
+  shows both while Side by side shows one; the warning text says so.
+- **Pills (both layouts):** a manually placed pill in the section look
+  reserves room on the right for its small lock badge (`pr-4`), so a long name
+  is abbreviated ("Julia M.") instead of running under the badge.
+- Tests: `src/lib/stackedTeamLayout.test.ts`, `ScheduleGrid.test.tsx`
+  ("stacked times"), `TeamPlanHeader.test.tsx`, `userPreferences.test.ts`,
+  `backend/tests/test_user_preferences.py`, `e2e/team-page.spec.ts` ("Times
+  switches between side-by-side and stacked columns").
+- Deploy notes: no schema or calendar change; stored preferences without
+  `teamTimeLayout` read as Stacked, so every user sees the compact week after
+  the deploy until they pick Side by side.

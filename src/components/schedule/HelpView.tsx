@@ -342,6 +342,14 @@ export default function HelpView() {
               lists the shortcuts.
             </li>
             <li>
+              <span className="font-medium">Times: Stacked</span> (team plan, standard weekly
+              grid) shows one column per day and a day&rsquo;s times as rows below each other,
+              with the time on the left, so the whole week fits on the screen. A cell names its
+              own time only where it differs from its row.{" "}
+              <span className="font-medium">Side by side</span> gives every time of a day its
+              own column, as before.
+            </li>
+            <li>
               <span className="font-medium">Color by: Person</span> (team plan, standard
               weekly grid) gives every person their own color. Once you have linked yourself
               (&ldquo;That&rsquo;s me&rdquo;), your own entries also get an outline. The
@@ -349,8 +357,8 @@ export default function HelpView() {
             </li>
           </ul>
           <p className="mt-2">
-            Team | My plan, range, date on top / left, Color by, saved views and start pages are
-            saved per account and never change the shared calendar.
+            Team | My plan, range, date on top / left, Times, Color by, saved views and start
+            pages are saved per account and never change the shared calendar.
           </p>
           <p className="mt-2">
             <span className="font-medium">Location colors</span> are different: they are part

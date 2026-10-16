@@ -7,6 +7,7 @@ import {
   type PlanRange,
   type PlanScope,
   type SavedView,
+  type TeamTimeLayout,
   type UserPreferences,
   type ViewConfig,
   type ViewStartAt,
@@ -27,6 +28,7 @@ const PLAN_SCOPES: PlanScope[] = ["team", "me"];
 const PLAN_RANGES: PlanRange[] = ["day", "week", "month"];
 const ORIENTATIONS: Orientation[] = ["top", "left"];
 const COLOR_BYS: ColorBy[] = ["section", "person"];
+const TIME_LAYOUTS: TeamTimeLayout[] = ["stacked", "columns"];
 const START_ATS: ViewStartAt[] = ["today", "nextShift", "weekStart"];
 
 /** Mirrors the backend defaults (backend/models.py::UserPreferences). */
@@ -38,6 +40,7 @@ export const DEFAULT_PREFERENCES: Readonly<UserPreferences> = Object.freeze<User
   myPlanRange: "week",
   myPlanRangeMobile: "week",
   teamColorBy: "section",
+  teamTimeLayout: "stacked",
   savedViews: [],
   startViewDesktop: null,
   startViewMobile: null,
@@ -113,6 +116,7 @@ export function normalizePreferences(raw: unknown): UserPreferences {
     myPlanRange: pick(source.myPlanRange, PLAN_RANGES, "week"),
     myPlanRangeMobile: pick(source.myPlanRangeMobile, PLAN_RANGES, "week"),
     teamColorBy: pick(source.teamColorBy, COLOR_BYS, "section"),
+    teamTimeLayout: pick(source.teamTimeLayout, TIME_LAYOUTS, "stacked"),
     savedViews,
     startViewDesktop: normalizeViewConfig(source.startViewDesktop),
     startViewMobile: normalizeViewConfig(source.startViewMobile),

@@ -168,6 +168,43 @@ test("dragging into and out of the Vacation row adds and removes the vacation da
   expect(api.errors).toEqual([]);
 });
 
+test("Times switches between side-by-side and stacked columns and stores the choice", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [assignment("ct", "mon", "CT", FIRST)];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const saved: Record<string, unknown>[] = [];
+  let stored: Record<string, unknown> = {};
+  await page.route("**/v1/me/preferences", (route) => {
+    if (route.request().method() === "PUT") {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      saved.push(body);
+      stored = { ...stored, ...body };
+    }
+    return route.fulfill({ json: stored });
+  });
+  const grid = page.locator('[data-schedule-grid="true"]');
+  const columnCount = async () =>
+    Number(/repeat\((\d+),/.exec((await grid.getAttribute("style")) ?? "")?.[1]);
+  const times = page.getByRole("group", { name: "Times" });
+  const pill = page.locator(
+    `[data-schedule-cell="true"][data-row-id="${slotId("mon", "CT")}"][data-date-iso="2026-01-05"] [data-assignment-pill="true"]`,
+  );
+
+  // Stacked by default: one column per day, the assignment in its slot.
+  await expect(times.getByRole("button", { name: "Stacked" })).toHaveAttribute("aria-pressed", "true");
+  expect(await columnCount()).toBe(7);
+  await expect(pill).toBeVisible();
+
+  await times.getByRole("button", { name: "Side by side" }).click();
+  await expect.poll(columnCount).toBeGreaterThan(7);
+  await expect(pill).toBeVisible();
+  await expect.poll(() => saved).toContainEqual({ teamTimeLayout: "columns" });
+  // The saved answer keeps the choice.
+  await page.waitForTimeout(300);
+  expect(await columnCount()).toBeGreaterThan(7);
+  expect(api.errors).toEqual([]);
+});
+
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 

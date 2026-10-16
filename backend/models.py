@@ -355,6 +355,7 @@ PlanScope = Literal["team", "me"]
 PlanRange = Literal["day", "week", "month"]
 Orientation = Literal["top", "left"]  # "top" = dates on top (days are columns)
 ColorBy = Literal["section", "person"]
+TeamTimeLayout = Literal["columns", "stacked"]
 MAX_SAVED_VIEWS = 12
 
 
@@ -399,6 +400,8 @@ class UserPreferences(BaseModel):
     # Phones remember their own My-plan range (SPEC R17: per area x range x device).
     myPlanRangeMobile: PlanRange = "week"
     teamColorBy: ColorBy = "section"
+    # Team week: a day's time columns side by side or stacked as rows.
+    teamTimeLayout: TeamTimeLayout = "stacked"
     savedViews: List[SavedView] = Field(default_factory=list, max_length=MAX_SAVED_VIEWS)
     startViewDesktop: Optional[ViewConfig] = None
     startViewMobile: Optional[ViewConfig] = None

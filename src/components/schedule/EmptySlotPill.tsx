@@ -5,6 +5,8 @@ type EmptySlotPillProps = {
   variant?: "default" | "ghost";
   showAddIcon?: boolean;
   highlighted?: boolean;
+  /** Compact grid (stacked times): 24 px high like an assignment pill. */
+  dense?: boolean;
   className?: string;
 };
 
@@ -13,6 +15,7 @@ export default function EmptySlotPill({
   variant = "default",
   showAddIcon = false,
   highlighted = false,
+  dense = false,
   className,
 }: EmptySlotPillProps) {
   return (
@@ -22,7 +25,8 @@ export default function EmptySlotPill({
       // grow the box by 1px on each side, which used to shift every row
       // below this one. Only the border color/style and ring change.
       className={cx(
-        "no-print group/empty relative w-full rounded-xl border-2 px-2 py-1 text-center text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
+        "no-print group/empty relative w-full rounded-xl border-2 px-2 text-center text-[11px] font-normal leading-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]",
+        dense ? "py-0.5" : "py-1",
         highlighted
           ? "border-solid border-rose-500 bg-rose-50 text-rose-700 ring-2 ring-rose-200/80 dark:border-rose-400 dark:bg-rose-900/30 dark:text-rose-100 dark:ring-rose-500/40"
           : variant === "ghost"

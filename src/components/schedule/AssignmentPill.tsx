@@ -314,9 +314,11 @@ function AssignmentPillImpl({
       : undefined;
   // SPEC C5.13: 1 px border, 20 px initials circle 3 px from the edge (same
   // 24 px height as the default pill); room on the right for the lock badge.
+  // The default look reserves room for the manual lock badge too, so a long
+  // name is abbreviated instead of running under the badge.
   const personPaddingClass = personStyle
     ? cx("py-px pl-0.5", onToggleLock ? null : showLockBadge ? "pr-5" : "pr-1.5")
-    : "px-1.5 py-0.5";
+    : cx("py-0.5 pl-1.5", !onToggleLock && showLockBadge ? "pr-4" : "pr-1.5");
   return (
     <div
       data-assignment-pill="true"

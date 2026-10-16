@@ -1,13 +1,52 @@
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { cx } from "../../lib/classNames";
+import type { StackedRowMeta } from "../../lib/stackedTeamLayout";
 import type { LocationRowTint } from "./teamColors";
 type RowLabelProps = {
   row: ScheduleRow;
   /** Colored location: the location name uses the tint's text color. */
   tint?: LocationRowTint;
+  /** Stacked layout: one time band of a class row (name on its first band). */
+  stacked?: StackedRowMeta;
 };
 
-export default function RowLabel({ row, tint }: RowLabelProps) {
+const LABEL_FONT = { fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' };
+
+// Stacked layout label: row band name (first band only) and the band's own
+// section on the left, its time right-aligned so times line up in a column.
+// The location is named by the band above the rows, not repeated here.
+function StackedRowLabel({ meta }: { meta: StackedRowMeta }) {
+  return (
+    <div className="flex h-full flex-col justify-center gap-0.5 px-3 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-4">
+      <div className="min-w-0 max-w-[132px] sm:max-w-[176px]" style={LABEL_FONT}>
+        {meta.groupLabel ? (
+          <span
+            className="block truncate text-[11px] font-semibold uppercase tracking-wide text-slate-700 dark:text-slate-200"
+            title={meta.groupLabel}
+          >
+            {meta.groupLabel}
+          </span>
+        ) : null}
+        {meta.title ? (
+          <span
+            className="block truncate text-[11px] text-slate-500 dark:text-slate-400"
+            title={meta.title}
+          >
+            {meta.title}
+          </span>
+        ) : null}
+      </div>
+      {meta.timeLabel ? (
+        <span className="shrink-0 whitespace-nowrap text-[11px] font-medium tabular-nums text-slate-500 dark:text-slate-400">
+          {meta.timeLabel}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+export default function RowLabel({ row, tint, stacked }: RowLabelProps) {
+  if (stacked) return <StackedRowLabel meta={stacked} />;
   const showVacationNote = row.id === "pool-vacation";
   const locationLabel = row.locationName ?? "";
   const rowLabel = row.rowBandLabel?.trim() ?? "";

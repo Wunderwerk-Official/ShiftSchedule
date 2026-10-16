@@ -33,6 +33,7 @@ const PREFERENCE_KEYS = [
   "clinicianId",
   "savedViews",
   "teamColorBy",
+  "teamTimeLayout",
   "myPlanRange",
   "myPlanRangeMobile",
   "orientationByRange",
