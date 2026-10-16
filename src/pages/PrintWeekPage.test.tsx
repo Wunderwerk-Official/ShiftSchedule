@@ -1,11 +1,11 @@
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import defaultState from "../../backend/default_state.json";
+import { printTestState } from "./printPage.fixture";
 import PrintWeekPage from "./PrintWeekPage";
 
 vi.mock("../api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/client")>()),
-  getState: vi.fn(async () => structuredClone(defaultState)),
+  getState: vi.fn(async () => printTestState()),
 }));
 
 const renderAt = async (search: string) => {

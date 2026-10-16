@@ -2212,4 +2212,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `src/api/client.pdf.test.ts`, `backend/tests/test_pdf_revision.py`.
 - Deploy notes: no schema or data change. The PDF renderer loads the deployed
   frontend, so backend and frontend must ship together (one deploy does).
+- Pitfall: nothing under `src/` (tests included) may import from `backend/`.
+  `tsc -b` checks the tests too, and the frontend Docker build copies only
+  `src/`, so such an import passes CI (full checkout) but fails the deploy
+  build. Frontend tests use frontend fixtures (e.g.
+  `src/pages/printPage.fixture.ts`).
 
