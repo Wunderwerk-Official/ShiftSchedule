@@ -166,7 +166,8 @@ waiting run per group and a newer dispatch replaces it, so dispatch the next
 run once the previous one has started. A deployment aborts a running arena
 case (the deploy would otherwise wait for it), and so does the 330-minute
 limit; the report then says so and the run does not count. Cancelling the
-job also stops its process in the container (last workflow step). Open the finished run →
+job also stops its process in the container (step "Stop the arena case
+after a cancel"). Open the finished run →
 job `arena` → step "Run the arena case on the LXC" → copy the
 `PROMPT_EVAL_REPORT` line. The workflow runs `prompt_eval.py`, so there is no
 `ARENA_REPORT` line and there are no `--- thought ---` blocks; the model's

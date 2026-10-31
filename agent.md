@@ -2356,8 +2356,11 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   job drops ssh, which does not end the container's non-TTY exec: the job
   records its pid (`shift-arena-<run>-<attempt>.pid` in the container's temp
   directory, removed when the run ends) and the workflow's `if: cancelled()`
-  step stops exactly that process (`build_job.stop_job`; a reused pid that
-  is no longer a stdin python job is left alone). A guarded abort is reported
+  step "Stop the arena case after a cancel" sends SIGTERM to exactly that
+  process (`build_job.stop_job`; a reused pid that is no longer a stdin
+  python job is left alone). The job turns SIGTERM into `SystemExit`, so its
+  scratch checkout and pid file are removed on a cancel or the container
+  timeout too. A guarded abort is reported
   and makes the run invalid. `agent_budget.ESTIMATE_ONLY_PRICES` prices Sonnet 5.5
   ($2/$10) and Opus 5 ($5/$25) for estimates only; they are not selectable
   in Settings. The workflow gains a `provider` input, an empty model

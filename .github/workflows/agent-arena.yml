@@ -52,7 +52,7 @@ jobs:
     # A Claude week run without a wall-clock budget can take hours. The run
     # aborts itself at 330 minutes (prompt_eval HARD_LIMIT_SECONDS; a model
     # call running then ends within 60 s) and the container stops it at 340;
-    # a cancelled job stops it in the last step.
+    # a cancelled job stops it in the "Stop the arena case after a cancel" step.
     timeout-minutes: 350
     concurrency:
       # One running run per group; runs with provider "anthropic" do not wait

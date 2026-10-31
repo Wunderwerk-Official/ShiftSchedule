@@ -122,3 +122,39 @@ def test_the_workflow_gets_a_stop_script_for_its_run(monkeypatch, tmp_path):
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
     _forwarded_argv(monkeypatch, tmp_path)
     assert "shift-arena-991-2.pid" in (tmp_path / "arena_stop.py").read_text()
+
+
+def test_a_stopped_job_removes_its_scratch_checkout_and_pid_file(tmp_path):
+    import signal
+
+    root = tmp_path / "checkout"
+    arena = root / "backend/arena"
+    arena.mkdir(parents=True)
+    (root / "backend/__init__.py").write_text("")
+    (root / "backend/agent_budget.py").write_text("")
+    (arena / "fixture_complex.json").write_text("{}")
+    (arena / "prompt_eval.py").write_text("import time\nprint('ready', flush=True)\ntime.sleep(30)\n")
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    job = build_job(root, ["prompt_eval", "--mock"], "checkout", run_id="7-1")
+    process = subprocess.Popen([sys.executable, "-"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                               text=True, env={**os.environ, "TMPDIR": str(temp)})
+    try:
+        process.stdin.write(job)
+        process.stdin.close()
+        assert process.stdout.readline().strip() == "ready"
+        assert any(temp.iterdir())  # scratch checkout and pid file exist while it runs
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=10) == 143
+    finally:
+        process.kill()
+    assert list(temp.iterdir()) == []
+
+
+def test_the_cancel_step_removes_a_stale_pid_file(tmp_path):
+    from backend.arena.build_job import pid_file_name
+
+    stale = tmp_path / pid_file_name("7-1")
+    stale.write_text("999999999")  # no such process
+    assert "No arena process" in _run_stop(tmp_path)
+    assert not stale.exists()

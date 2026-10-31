@@ -31,9 +31,12 @@ def build_job(root: Path, argv: list[str], implementation: str, run_id: str = "l
         fixture = root / "backend/arena/fixture_complex.json"
         files[str(fixture.relative_to(root))] = fixture.read_text()
     packed = base64.b64encode(gzip.compress(json.dumps(files).encode())).decode()
-    return f'''import base64, gzip, json, os, pathlib, sqlite3, sys, tempfile
+    return f'''import base64, gzip, json, os, pathlib, signal, sqlite3, sys, tempfile
 from urllib.parse import quote
 sys.argv = {argv!r}
+# SIGTERM (cancel step, container timeout) ends the run through SystemExit,
+# so the scratch checkout and the pid file are removed below.
+signal.signal(signal.SIGTERM, lambda *_: sys.exit(143))
 db_path_for_drain = pathlib.Path(os.environ.get("SCHEDULE_DB_PATH", "schedule.db"))
 if db_path_for_drain.with_name(".planning-drain").exists():
     raise SystemExit("Deployment in progress; start the arena again after deployment.")
@@ -75,8 +78,14 @@ def stop_job(run_id: str = "local") -> str:
 pid_file = pathlib.Path(tempfile.gettempdir()) / {pid_file_name(run_id)!r}
 try:
     pid = int(pid_file.read_text())
-    arguments = pathlib.Path(f"/proc/{{pid}}/cmdline").read_bytes().split(b"\\0")
-except (FileNotFoundError, ProcessLookupError, ValueError):
+except (FileNotFoundError, ValueError):
+    pid = None
+try:
+    arguments = pathlib.Path(f"/proc/{{pid}}/cmdline").read_bytes().split(b"\\0") if pid else None
+except (FileNotFoundError, ProcessLookupError):
+    arguments = None
+if arguments is None:
+    pid_file.unlink(missing_ok=True)
     print("No arena process of this run is running.")
 else:
     if (len(arguments) > 1 and arguments[1] == b"-"
