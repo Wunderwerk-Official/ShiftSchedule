@@ -365,3 +365,33 @@ def test_verify_tls_setting_roundtrip_and_overlay(temp_db):
     assert overlaid.openai_verify_tls is False
     client.put("/v1/agent/settings", json={"openai_verify_tls": True})
     assert resolve_agent_runtime_config(AgentConfig(provider="mock")).openai_verify_tls is True
+
+
+def test_estimate_only_models_are_priced_but_not_selectable():
+    from backend.agent_budget import ESTIMATE_ONLY_PRICES, MODEL_PRICES, model_price
+
+    usage = {"input_tokens": 1_000_000, "output_tokens": 1_000_000}
+    # Sonnet 5.5 ($2 / $10) and Opus 5 ($5 / $25), for arena comparisons only.
+    assert estimate_cost_usd("claude-sonnet-5-5", usage) == pytest.approx(12.0)
+    assert estimate_cost_usd("claude-opus-5", usage) == pytest.approx(30.0)
+    assert not set(ESTIMATE_ONLY_PRICES) & set(MODEL_PRICES)
+    assert model_price("claude-opus-5-5") == MODEL_PRICES["claude-opus-5-5"]
+    assert model_price(None) is None and model_price("Qwen/Qwen3.5-122B") is None
+
+
+def test_runtime_config_can_run_the_other_saved_provider_without_saving(temp_db):
+    """The arena runs Claude while the app plans with the self-hosted model:
+    the override takes the saved Claude model and key, the settings stay."""
+    from backend.agent.config import AgentConfig
+    from backend.agent_budget import resolve_agent_runtime_config
+
+    client = _client_as("admin")
+    client.put(
+        "/v1/agent/settings",
+        json={"provider": "openai", "openai_base_url": "http://h:8000/v1",
+              "openai_model": "Qwen/Qwen3.5-122B", "model": "claude-opus-5-5"},
+    )
+    overlaid = resolve_agent_runtime_config(AgentConfig(model="m0"), provider_override="anthropic")
+    assert (overlaid.provider, overlaid.model) == ("anthropic", "claude-opus-5-5")
+    assert get_agent_admin_settings()["provider"] == "openai"
+    assert resolve_agent_runtime_config(AgentConfig(model="m0")).model == "Qwen/Qwen3.5-122B"

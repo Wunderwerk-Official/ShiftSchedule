@@ -57,11 +57,15 @@ def main():
     root = Path(__file__).resolve().parents[2]
     implementation = os.environ.get("IMPLEMENTATION", "deployed")
     argv = ["prompt_eval", "--evaluation-ref", os.environ["GITHUB_SHA"]]
-    for name in ("start", "days", "timeout", "model", "scenario", "strategy", "variant"):
+    for name in ("start", "days", "timeout", "model", "scenario", "strategy", "variant", "provider"):
         if os.environ.get(name.upper()):
             argv.extend(["--" + name, os.environ[name.upper()]])
-    if os.environ.get("REASONING"):
-        argv.extend(["--reasoning-effort", os.environ["REASONING"]])
+    reasoning = os.environ.get("REASONING")
+    if reasoning:
+        # xhigh/max exist as Claude effort only; prompt_eval maps
+        # low/medium/high to the Claude effort when the provider is Anthropic.
+        flag = "--effort" if reasoning in ("xhigh", "max") else "--reasoning-effort"
+        argv.extend([flag, reasoning])
     if "balanced" in implementation:
         argv.extend(["--quality-profile", "balanced"])
     if "neighborhood" in implementation:

@@ -31,3 +31,33 @@ def test_checkout_experiment_uses_packaged_code_and_reads_settings_without_write
     assert "shift-arena-" in output["module"]
     assert not Path(output["module"]).exists()  # temporary checkout was cleaned up
     assert database.read_bytes() == original
+
+
+def _forwarded_argv(monkeypatch, tmp_path, **env):
+    import backend.arena.build_job as module
+
+    captured = {}
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(module, "build_job", lambda root, argv, impl: captured.setdefault("argv", argv) and "")
+    for name in ("START", "DAYS", "TIMEOUT", "MODEL", "SCENARIO", "STRATEGY", "VARIANT", "PROVIDER",
+                 "REASONING", "IMPLEMENTATION"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GITHUB_SHA", "abc")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    module.main()
+    return captured["argv"]
+
+
+def test_the_workflow_inputs_reach_the_experiment(monkeypatch, tmp_path):
+    argv = _forwarded_argv(monkeypatch, tmp_path, PROVIDER="anthropic", MODEL="claude-opus-5-5",
+                           TIMEOUT="0", REASONING="low")
+    assert argv == ["prompt_eval", "--evaluation-ref", "abc", "--timeout", "0", "--model", "claude-opus-5-5",
+                    "--provider", "anthropic", "--reasoning-effort", "low"]
+
+
+def test_claude_only_effort_levels_use_the_effort_flag(monkeypatch, tmp_path):
+    argv = _forwarded_argv(monkeypatch, tmp_path, PROVIDER="anthropic", REASONING="xhigh")
+    assert argv[-2:] == ["--effort", "xhigh"]
+    # An empty model input keeps the saved model.
+    assert "--model" not in argv

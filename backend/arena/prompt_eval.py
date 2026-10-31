@@ -13,11 +13,19 @@ import threading
 import time
 
 from backend.agent import harness, tools as agent_tools
-from backend.agent.config import AgentConfig
-from backend.agent.provider import LLMProvider, get_provider
+from backend.agent.config import ANTHROPIC_EFFORTS, AgentConfig
+from backend.agent.provider import LLMProvider, copy_provider_traits, get_provider
 from backend.agent.tools import PlanToolExecutor
-from backend.agent_budget import resolve_agent_runtime_config
-from backend.arena.run import FIXTURE, apply_scenario, load_state
+from backend.arena.run import (
+    FIXTURE,
+    PROVIDER_CHOICES,
+    apply_llm_overrides,
+    apply_scenario,
+    comparison_problems,
+    cost_report,
+    load_state,
+    resolve_arena_config,
+)
 from backend.models import Assignment, SolveRangeRequest
 from backend.scoring import plan_stats
 
@@ -82,7 +90,11 @@ def main():
     parser.add_argument("--start", default="2026-02-02")
     parser.add_argument("--days", type=int, default=1)
     parser.add_argument("--timeout", type=float, default=1200)
-    parser.add_argument("--model", default="nvidia/Qwen3.8-Flash-Next-NVFP4")
+    # Empty = the model saved in the settings for the chosen provider.
+    parser.add_argument("--model", default=None)
+    parser.add_argument("--provider", choices=PROVIDER_CHOICES, default="configured")
+    parser.add_argument("--effort", choices=ANTHROPIC_EFFORTS, default=None,
+                        help="Claude effort (low/medium/high also via --reasoning-effort)")
     parser.add_argument("--scenario", choices=["base", "vacation-wave", "understaffed", "crunch", "oncall", "pinned", "daynight", "fixed-patterns"], default="base")
     parser.add_argument("--strategy", choices=["day_by_day", "repair"], default="day_by_day")
     parser.add_argument("--variant", choices=["baseline", "focused"], default="baseline")
@@ -92,16 +104,19 @@ def main():
     parser.add_argument("--quality-profile", choices=["classic", "balanced"], default="classic")
     parser.add_argument("--neighborhood", action="store_true")
     args = parser.parse_args()
-    if not 1 <= args.days <= 7 or not 1 <= args.timeout <= 3600:
-        parser.error("Use 1–7 days and a 1–3600 second budget")
+    if not 1 <= args.days <= 7 or not (args.timeout == 0 or 1 <= args.timeout <= 14400):
+        parser.error("Use 1–7 days and a budget of 0 (unlimited, like production) or 1–14400 seconds")
 
-    config = AgentConfig(provider="mock") if args.mock else resolve_agent_runtime_config(AgentConfig.from_env())
-    config.model = args.model
+    config = AgentConfig(provider="mock") if args.mock else resolve_arena_config(args.provider)
     # A named-model comparison must never silently measure a replacement.
     config.allow_model_fallback = False
-    config.reasoning_effort = args.reasoning_effort  # None is the full/default control.
-    if not args.mock and config.provider != "openai":
-        raise SystemExit("The experiment requires the configured self-hosted provider")
+    if not args.mock:
+        apply_llm_overrides(config, model=args.model,
+                            effort=args.effort, reasoning_effort=args.reasoning_effort)
+        if config.provider not in ("openai", "anthropic"):
+            raise SystemExit("The experiment requires a self-hosted (openai) or Anthropic provider")
+    elif args.model:
+        config.model = args.model
     secrets = [v for v in (config.openai_api_key, config.anthropic_api_key) if v]
 
     def emit(kind, data):
@@ -124,10 +139,11 @@ def main():
     hashes["review_prompt"] = hashlib.sha256(review.encode()).hexdigest()
     emit("META", {"variant": args.variant, "evaluation_ref": args.evaluation_ref, "fixture_version": fixture_version,
                   "start": args.start, "days": args.days, "scenario": args.scenario,
-                  "scenario_desc": scenario_desc, "model": config.model,
+                  "scenario_desc": scenario_desc, "provider": config.provider, "model": config.model,
                   "allow_model_fallback": config.allow_model_fallback,
-                  "reasoning": config.reasoning_effort or "endpoint-default/full",
-                  "timeout": args.timeout, "hashes": hashes})
+                  "reasoning": (config.anthropic_effort if config.provider == "anthropic"
+                                else config.reasoning_effort) or "endpoint-default/full",
+                  "timeout": args.timeout or "unlimited", "hashes": hashes})
 
     started = time.monotonic()
     tool_counts = Counter()
@@ -175,6 +191,9 @@ def main():
     class TracedProvider(LLMProvider):
         def __init__(self, delegate):
             self.delegate = delegate
+            # The harness reads the model traits (history budget, thinking
+            # binding, literal texts) from the provider it is given.
+            copy_provider_traits(delegate, self)
 
         def complete(self, **kwargs):
             before = time.monotonic()
@@ -227,7 +246,13 @@ def main():
               "multi_tool_calls": sum(len(c["tools"]) > 1 for c in calls),
               "calls_by_phase": dict(Counter(c["phase"] for c in calls)),
               "quality_regression_iterations": regressions, "longest_inspection_streak": longest_inspection_streak,
-              "notes": result.get("notes"), "hashes": hashes}
+              "notes": result.get("notes"), "hashes": hashes,
+              "provider": config.provider,
+              "effort": config.anthropic_effort if config.provider == "anthropic" else config.reasoning_effort,
+              **cost_report(config.model, agent)}
+    problems = comparison_problems(agent, config.model) if agent else ["no agent result"]
+    report["valid_for_comparison"] = not problems
+    report["comparison_problems"] = problems
     report["top_level_tool_seconds"] = round(top_level_tool_seconds, 3)
     report["model_seconds"] = round(sum(c["seconds"] for c in calls), 3)
     report["fixed_unchanged"] = [a.model_dump() for a in executor.fixed_assignments] == executor.fixed_before if executor else None
@@ -243,6 +268,8 @@ def main():
     if (report["model"] != config.model
             or any(model != config.model for model in (report["model_usage"] or {}))):
         raise SystemExit("Model selection changed; do not count this as a comparison of the requested model")
+    if report["fallback_turns"]:
+        raise SystemExit("A refusal fallback model answered some turns; do not count this as a comparison of the requested model")
     if report["new_hard_violations"] or not report["fixed_unchanged"]:
         raise SystemExit("Guardrail regression detected: new hard violations or modified fixed context")
 

@@ -117,6 +117,8 @@ class ProviderResponse:
     model: Optional[str] = None
     model_selection: Optional[dict] = None
     model_unavailable: bool = False
+    # A refusal fallback model (not the requested one) served this turn.
+    fallback_turn: bool = False
 
 
 class LLMProvider(ABC):
@@ -132,10 +134,18 @@ class LLMProvider(ABC):
     # Bound by the harness; adapters with multiple attempts check it before
     # starting a subsequent request. Direct connection tests can leave it unset.
     cancel_event = None
-    # True when the model binds thinking blocks to the unchanged conversation
-    # history (Anthropic "preserved thinking"): the harness then strips the
-    # blocks a history compaction invalidated (harness._compact_tool_history).
+    # Model traits the harness reads (copy_provider_traits forwards them
+    # through wrappers such as the arena tracer):
+    # - binds_thinking_to_conversation: thinking blocks are bound to the
+    #   unchanged history (Anthropic "preserved thinking"); the harness strips
+    #   the blocks a history compaction invalidated.
+    # - tool_history_budget_chars: tool-result size that triggers the history
+    #   compaction; None = the harness default (sized for self-hosted models).
+    # - follows_tool_texts_literally: use the tool/prompt wording without the
+    #   contradictions the self-hosted-tuned texts carry (tools.LITERAL_*).
     binds_thinking_to_conversation = False
+    tool_history_budget_chars: Optional[int] = None
+    follows_tool_texts_literally = False
 
     @abstractmethod
     def complete(
@@ -146,6 +156,19 @@ class LLMProvider(ABC):
         tools: List[ToolSpec],
         timeout_seconds: float,
     ) -> ProviderResponse: ...
+
+
+PROVIDER_TRAITS = (
+    "binds_thinking_to_conversation",
+    "tool_history_budget_chars",
+    "follows_tool_texts_literally",
+)
+
+
+def copy_provider_traits(source, target) -> None:
+    """Give a wrapping provider the wrapped provider's model traits."""
+    for name in PROVIDER_TRAITS:
+        setattr(target, name, getattr(source, name, getattr(LLMProvider, name)))
 
 
 def get_provider(config: AgentConfig) -> LLMProvider:

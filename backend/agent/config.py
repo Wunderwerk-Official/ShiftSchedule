@@ -20,6 +20,8 @@ DEFAULT_MODEL = "claude-sonnet-5"
 # variable sets the real cap.
 DEFAULT_MAX_ITERATIONS = 1000
 DEFAULT_MAX_TOKENS = 16000
+# Claude effort levels (output_config.effort).
+ANTHROPIC_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
 @dataclass
@@ -43,6 +45,11 @@ class AgentConfig:
     # OpenAI-compatible endpoint (LiteLLM/vLLM honour ``reasoning_effort``);
     # lower effort = fewer thinking tokens = faster, cheaper turns.
     reasoning_effort: Optional[str] = None
+    # Claude effort override ("low" ... "max"), e.g. for arena sweeps. None =
+    # the adapter's per-model choice (Opus 5.5: "medium", others: API default).
+    # Separate from reasoning_effort so a self-hosted setting never leaks into
+    # Claude runs.
+    anthropic_effort: Optional[str] = None
     # Same-server, known Qwen alternatives only. Explicit model benchmarks
     # disable this so a fallback cannot be mistaken for the requested model.
     allow_model_fallback: bool = True
@@ -69,4 +76,10 @@ class AgentConfig:
             ),
             reasoning_effort=(os.environ.get("AGENT_REASONING_EFFORT") or "").strip()
             or None,
+            anthropic_effort=_anthropic_effort(os.environ.get("AGENT_ANTHROPIC_EFFORT")),
         )
+
+
+def _anthropic_effort(raw: Optional[str]) -> Optional[str]:
+    value = (raw or "").strip().lower()
+    return value if value in ANTHROPIC_EFFORTS else None

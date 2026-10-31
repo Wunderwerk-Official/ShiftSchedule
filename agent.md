@@ -1111,9 +1111,12 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   server log), so the best plan so far is kept. Key resolution:
   admin-stored key (Settings → Solver) wins over `ANTHROPIC_API_KEY` env.
   Since v1.67 Claude Opus 5.5 (`claude-opus-5-5`) requests go through the
-  beta namespace with three additions (`_opus55_request_extras`): explicit
+  beta namespace with three additions (`_request_extras`, named
+  `_opus55_request_extras` until v1.68): explicit
   `output_config.effort: "medium"` (its default; Sonnet 5 / Opus 4.8 run at
-  their default `high`), `thinking.block_binding.prefix_mismatch_behavior:
+  their default `high`; since v1.68 `AGENT_ANTHROPIC_EFFORT` /
+  `AgentConfig.anthropic_effort` overrides it for every model with adaptive
+  thinking — the arena's `--effort`), `thinking.block_binding.prefix_mismatch_behavior:
   "drop_block"` (beta `thinking-binding-controls-2026-08-01`) and the
   server-side refusal fallback `fallbacks: "default"` (beta
   `server-side-fallback-2026-07-01`; a classifier decline is answered by the
@@ -1136,6 +1139,15 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   models (Opus 5 / 4.8) bill at their own, and sticky routing keeps a
   conversation on them for about an hour. All other models (Sonnet 5,
   Opus 4.8, Haiku 4.5, …) keep the plain, unchanged request.
+  Since v1.68 every provider carries three model traits the harness reads
+  (`LLMProvider` class attributes; wrappers copy them with
+  `copy_provider_traits`): `binds_thinking_to_conversation`,
+  `tool_history_budget_chars` (Claude models with adaptive thinking: 600k
+  chars instead of the 60k `TOOL_HISTORY_BUDGET_CHARS` sized for the
+  self-hosted context) and `follows_tool_texts_literally` (all Claude
+  models: the literal tool and duty texts, see v1.68 below). The
+  OpenAI-compatible (Qwen) and mock providers keep the defaults, so their
+  requests, prompts and tool texts are unchanged.
 - `OpenAICompatibleProvider` — official `openai` SDK against any
   OpenAI-compatible endpoint (self-hosted vLLM, llama.cpp, TGI, or OpenAI
   itself) via `openai_base_url`. Differences handled inside the adapter:
@@ -2275,3 +2287,63 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   checked against the installed SDK's wire format. After the deploy, run
   Settings → Solver → "Model connection test" once with Opus 5.5.
 
+## v1.68 — Claude tuning and Claude comparisons in the arena
+
+- **Longer tool history for Claude.** `_compact_tool_history` stubs old tool
+  results once the history passes a character budget. The 60k-char budget
+  fits the self-hosted context window; Claude models with adaptive thinking
+  (Opus 5.5: 1M tokens) now keep 600k chars
+  (`anthropic_provider.LONG_CONTEXT_TOOL_HISTORY_CHARS`). Fewer stub rounds
+  also mean fewer edits of the history: fewer thinking-block strips and
+  cache-prefix breaks. The budget is read from
+  `provider.tool_history_budget_chars`; all four compaction call sites use
+  the run's `compact_history(messages)` helper.
+- **Literal tool texts for Claude** (`follows_tool_texts_literally`). Claude
+  follows instructions in tool texts literally, and a few texts tuned for
+  Qwen contradict the prompts. For Claude only:
+  - `get_plan_overview` no longer says to call it "after applying moves"
+    (apply_moves and apply_proposal already return the overview);
+  - `suggest_balance_moves` no longer says "write your final summary" (the
+    week review calls it per day);
+  - the balanced note says only that the date has no over-long or
+    mini-stint day (no "finish with your day summary");
+  - the unfillable `day_complete` note pages through `next_cursor` of
+    `suggest_rescue_moves`, as the day prompt says, instead of "call it
+    ONCE";
+  - the duty prompt allows a 24-hour shift only "when no other qualified
+    clinician can take the second duty" instead of "NEVER … a last resort
+    only" (`DUTY_SYSTEM_PROMPT_LITERAL`).
+  `tools.LITERAL_DESCRIPTION_FIXES` / `literal_tool_description` replace
+  exact sentences and raise if an original was reworded (so the fix cannot
+  silently stop applying); `PlanToolExecutor.literal_tool_texts` switches
+  the notes. Qwen keeps the measured originals (arena comparability).
+- **Effort and fallback turns.** `AGENT_ANTHROPIC_EFFORT`
+  (low/medium/high/xhigh/max) overrides the per-model effort; unset keeps
+  Opus 5.5 at `medium`. `ProviderResponse.fallback_turn` marks turns a
+  refusal-fallback model answered; the run's debug info counts them
+  (`agent.fallback_turns`).
+- **Arena for Claude.** `prompt_eval.py` and `run.py` take
+  `--provider configured|openai|anthropic` (runs the other saved provider
+  with its saved key and model, via
+  `resolve_agent_runtime_config(..., provider_override=)`; the settings stay
+  unchanged), `--model` (empty = the saved model), `--effort` (Claude;
+  `--reasoning-effort low|medium|high` maps to the Claude effort on
+  Anthropic) and `--timeout 0` (unlimited, like production). Reports add
+  `provider`, `effort`, `cost_usd` (cache tokens included; `None` for
+  self-hosted), cache tokens, `fallback_turns`, `valid_for_comparison` and
+  `comparison_problems`. prompt_eval exits non-zero on fallback turns as on
+  every other gate. `agent_budget.ESTIMATE_ONLY_PRICES` prices Sonnet 5.5
+  ($2/$10) and Opus 5 ($5/$25) for estimates only; they are not selectable
+  in Settings. The workflow gains a `provider` input, an empty model
+  default, the Claude effort levels, 240 minutes and one concurrency group
+  per provider. See "Claude comparison" in `backend/arena/README.md`.
+- Tests: `test_agent_anthropic_provider.py` (effort override on both request
+  paths, none for Haiku 4.5, traits, `fallback_turn`), `test_agent_harness.py`
+  (traits reach tool texts and history budget, `copy_provider_traits`),
+  `test_agent_tools.py` (literal notes, descriptions, duty prompt),
+  `test_agent_budget.py` (estimate-only prices, provider override),
+  `test_arena_build_job.py` (workflow inputs reach prompt_eval),
+  `test_arena_claude.py` (env effort, overrides, cost, comparison gate).
+- Deploy notes: no schema or data change. With `implementation: deployed`
+  the arena runs the checkout's `prompt_eval.py` against the deployed
+  modules, so Claude runs need v1.68 deployed first.

@@ -37,6 +37,7 @@ from .prompts import (
     DAY_SYSTEM_PROMPT,
     DEFAULT_AGENT_INSTRUCTIONS,
     DUTY_SYSTEM_PROMPT,
+    DUTY_SYSTEM_PROMPT_LITERAL,
     REVIEW_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
     build_day_digest,
@@ -51,7 +52,13 @@ from .provider import (
     ToolSpec,
     get_provider,
 )
-from .tools import DAY_ONLY_TOOL_NAMES, TOOL_SPECS_RAW, PlanToolExecutor, _fmt_span
+from .tools import (
+    DAY_ONLY_TOOL_NAMES,
+    TOOL_SPECS_RAW,
+    PlanToolExecutor,
+    _fmt_span,
+    literal_tool_description,
+)
 from .workflow import audit_time_budget
 
 # History compaction: once the tool results in the conversation exceed this
@@ -67,13 +74,16 @@ TOOL_RESULT_STUB = '{"trimmed":"stale tool result removed - re-query if needed"}
 _THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
 
 
-def _compact_tool_history(messages, strip_thinking: bool = False) -> None:
+def _compact_tool_history(
+    messages, strip_thinking: bool = False, budget_chars: int = TOOL_HISTORY_BUDGET_CHARS
+) -> None:
     """Replace old tool-result payloads with a stub when the history is big.
 
     The model re-reads the whole conversation every iteration; ancient
     candidate lists and overviews are outdated anyway (the working copy moved
     on) and only cost tokens. Assistant turns are otherwise replayed verbatim
-    (the API requires thinking blocks echoed unchanged).
+    (the API requires thinking blocks echoed unchanged). budget_chars comes
+    from the provider (long-context Claude models use a much larger one).
 
     strip_thinking (models that bind thinking blocks to the unchanged history,
     e.g. Claude Opus 5.5): stubbing invalidates every thinking block after the
@@ -86,7 +96,7 @@ def _compact_tool_history(messages, strip_thinking: bool = False) -> None:
     total = sum(
         len(r.content or "") for m in tool_messages for r in m.tool_results
     )
-    if total <= TOOL_HISTORY_BUDGET_CHARS:
+    if total <= budget_chars:
         return
     first_edited = None
     for message in tool_messages[:-TOOL_HISTORY_KEEP_RECENT]:
@@ -410,6 +420,8 @@ def agent_solve_range(
     total_generation_seconds = 0.0
     model_usage: Dict[str, dict] = {}
     model_switch_notes: List[str] = []
+    # Turns a refusal fallback model answered (Claude server-side fallback).
+    fallback_turns = 0
 
     activity_context: Dict[str, Any] = {"stage": "seed"}
     activity_sequence = 0
@@ -908,6 +920,7 @@ def agent_solve_range(
                     "output_tokens": total_output_tokens,
                     "cache_read_input_tokens": total_cache_read_tokens,
                     "cache_creation_input_tokens": total_cache_creation_tokens,
+                    "fallback_turns": fallback_turns,
                     # Average generation speed of the endpoint over this run
                     # (output tokens / summed generation time). Lets the admin
                     # see how fast the chosen model actually is, and track
@@ -984,6 +997,30 @@ def agent_solve_range(
                 return heuristic_fallback([unavailable_note])
             return finalize("AGENT_FALLBACK_SEED", [unavailable_note])
 
+    def compact_history(messages) -> None:
+        _compact_tool_history(
+            messages,
+            strip_thinking=provider.binds_thinking_to_conversation,
+            budget_chars=provider.tool_history_budget_chars or TOOL_HISTORY_BUDGET_CHARS,
+        )
+
+    # Models that follow tool texts literally (Claude) get the wording without
+    # the self-hosted-era contradictions; self-hosted models keep the
+    # measured originals.
+    duty_system_prompt = DUTY_SYSTEM_PROMPT
+    repair_tools = TOOL_SPECS
+    if provider.follows_tool_texts_literally:
+        executor.literal_tool_texts = True
+        duty_system_prompt = DUTY_SYSTEM_PROMPT_LITERAL
+        day_tools = [
+            ToolSpec(t.name, literal_tool_description(t.name, t.description), t.input_schema)
+            for t in day_tools
+        ]
+        repair_tools = [
+            ToolSpec(t.name, literal_tool_description(t.name, t.description), t.input_schema)
+            for t in TOOL_SPECS
+        ]
+
     # Free-text guidance from the admin (Settings -> "AI agent instructions").
     # None/absent falls back to the default; an explicitly emptied field
     # means "no instructions". Shared by both strategies.
@@ -1055,10 +1092,12 @@ def agent_solve_range(
     def absorb_response(response) -> None:
         """Token accounting + thought/summary feed emission — identical for
         the repair loop and the day-by-day loop."""
-        nonlocal total_input_tokens, total_output_tokens
+        nonlocal total_input_tokens, total_output_tokens, fallback_turns
         nonlocal total_cache_read_tokens, total_cache_creation_tokens, final_summary
         nonlocal total_generation_seconds
         record_model_selection(response)
+        if getattr(response, "fallback_turn", False):
+            fallback_turns += 1
         total_input_tokens += response.usage.get("input_tokens", 0)
         total_output_tokens += response.usage.get("output_tokens", 0)
         total_cache_read_tokens += response.usage.get("cache_read_input_tokens", 0)
@@ -1213,14 +1252,12 @@ def agent_solve_range(
                     break
                 if duty_deadline - time.time() <= 0:
                     break  # the pass's time share is spent — start the days
-                _compact_tool_history(
-                    messages, strip_thinking=provider.binds_thinking_to_conversation
-                )
+                compact_history(messages)
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
                 response = _complete_with_retry(
                     provider,
-                    system=DUTY_SYSTEM_PROMPT,
+                    system=duty_system_prompt,
                     messages=messages,
                     tools=day_tools,
                     compute_timeout=duty_call_timeout,
@@ -1446,9 +1483,7 @@ def agent_solve_range(
                     break
                 if day_deadline - time.time() <= 0:
                     break  # this day's share is spent — move to the next day
-                _compact_tool_history(
-                    messages, strip_thinking=provider.binds_thinking_to_conversation
-                )
+                compact_history(messages)
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
                 response = _complete_with_retry(
@@ -1676,9 +1711,7 @@ def agent_solve_range(
                 global_left = deadline - time.time()
                 if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
                     break
-                _compact_tool_history(
-                    messages, strip_thinking=provider.binds_thinking_to_conversation
-                )
+                compact_history(messages)
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
                 response = _complete_with_retry(
@@ -1844,14 +1877,14 @@ def agent_solve_range(
             extra_notes.append("Agent time budget exhausted; best plan so far returned.")
             break
 
-        _compact_tool_history(messages, strip_thinking=provider.binds_thinking_to_conversation)
+        compact_history(messages)
         executor.current_iteration = iterations_done + 1
         emit_agent("iteration", {"iteration": iterations_done + 1})
         response = _complete_with_retry(
             provider,
             system=SYSTEM_PROMPT,
             messages=messages,
-            tools=TOOL_SPECS,
+            tools=repair_tools,
             compute_timeout=lambda: min(
                 max((deadline - time.time()) - DEADLINE_HEADROOM_SECONDS, 10.0),
                 MAX_PER_CALL_TIMEOUT_SECONDS,

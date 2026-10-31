@@ -40,6 +40,19 @@ MODEL_PRICES: Dict[str, tuple] = {
 # cache at $0.20 per MTok, 0.05x of $4).
 CACHE_READ_MULTIPLIERS: Dict[str, float] = {"claude-opus-5-5": 0.05}
 DEFAULT_CACHE_READ_MULTIPLIER = 0.1
+# Priced for cost estimates only (arena comparisons, AGENT_MODEL overrides),
+# not selectable in Settings → Solver; same layout as MODEL_PRICES.
+ESTIMATE_ONLY_PRICES: Dict[str, tuple] = {
+    "claude-sonnet-5-5": (2.0, 10.0),
+    "claude-opus-5": (5.0, 25.0),
+}
+
+
+def model_price(model: Optional[str]) -> Optional[tuple]:
+    """(input, output) USD per MTok for selectable and estimate-only models."""
+    if not model:
+        return None
+    return MODEL_PRICES.get(model) or ESTIMATE_ONLY_PRICES.get(model)
 
 _SETTING_MODEL = "agent_model"
 _SETTING_BUDGET = "budget_usd"
@@ -89,15 +102,18 @@ def get_agent_admin_settings() -> Dict[str, Any]:
     }
 
 
-def resolve_agent_runtime_config(base):
+def resolve_agent_runtime_config(base, provider_override: Optional[str] = None):
     """Overlay the admin's stored provider settings onto an env-derived
     :class:`backend.agent.config.AgentConfig` — called by the solver
     subprocess right before a run. Secrets travel through this in-process
     path only: they never enter the solve payload (which is written to debug
     dumps) or any API response. Values the admin never set leave the env
-    config untouched, so AGENT_PROVIDER=mock test setups keep working."""
+    config untouched, so AGENT_PROVIDER=mock test setups keep working.
+
+    ``provider_override`` (arena only) runs the other saved provider without
+    changing the settings; its saved key and model are used."""
     values = _read_rows()
-    provider = (values.get(_SETTING_PROVIDER) or "").strip()
+    provider = (provider_override or values.get(_SETTING_PROVIDER) or "").strip()
     if provider in VALID_PROVIDERS:
         base.provider = provider
     if values.get(_SETTING_ANTHROPIC_KEY):
@@ -174,7 +190,7 @@ def estimate_cost_usd(model: Optional[str], usage: Optional[Dict[str, Any]]) -> 
     those installs manage cost themselves)."""
     if not usage or not model:
         return 0.0
-    prices = MODEL_PRICES.get(model)
+    prices = model_price(model)
     if prices is None:
         return 0.0
     per_in = prices[0] / 1_000_000

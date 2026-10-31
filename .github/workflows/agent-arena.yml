@@ -1,9 +1,10 @@
 name: Agent arena (truhn.ai)
 
 # Benchmark the agent solver against the complex-practice fixture, ON the
-# production LXC (the only place that reaches the self-hosted LLM endpoint).
-# Runs an isolated experiment process using the deployed harness and fixture.
-# The selected prompt variant never changes production files or saved settings.
+# production LXC (the only place that reaches the self-hosted LLM endpoint
+# and holds the saved Anthropic key). Runs an isolated experiment process
+# using the deployed harness and fixture. The selected prompt variant,
+# provider and model never change production files or saved settings.
 
 on:
   workflow_dispatch:
@@ -15,11 +16,16 @@ on:
         description: "Number of days (max 7)"
         default: "1"
       timeout:
-        description: "Wall-clock budget in seconds"
+        description: "Wall-clock budget in seconds; 0 = unlimited (like production)"
         default: "600"
+      provider:
+        description: "LLM provider for this run (saved settings stay unchanged)"
+        type: choice
+        options: [configured, openai, anthropic]
+        default: configured
       model:
-        description: "Self-hosted model ID"
-        default: "nvidia/Qwen3.8-Flash-Next-NVFP4"
+        description: "Model ID; empty = the model saved for that provider (e.g. claude-opus-5-5, claude-sonnet-5-5)"
+        default: ""
       variant:
         description: "Prompt experiment"
         type: choice
@@ -32,7 +38,7 @@ on:
         description: "day_by_day (standard) | repair (benchmark reference)"
         default: "day_by_day"
       reasoning:
-        description: "reasoning effort: (empty) | low | medium | high"
+        description: "effort: (empty) | low | medium | high — Claude also xhigh | max; empty = model default (Opus 5.5: medium)"
         default: ""
       implementation:
         description: "Code/profile to test; checkout runs only in a temporary directory"
@@ -43,9 +49,12 @@ on:
 jobs:
   arena:
     runs-on: ubuntu-latest
-    timeout-minutes: 65
+    # A Claude week run without a wall-clock budget can take hours.
+    timeout-minutes: 240
     concurrency:
-      group: agent-arena-self-hosted-gpu
+      # One run at a time per provider: GPU runs queue behind each other,
+      # Claude runs do not wait for them (and keep their timings clean).
+      group: agent-arena-${{ inputs.provider == 'anthropic' && 'anthropic' || 'self-hosted-gpu' }}
       cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
@@ -83,6 +92,7 @@ jobs:
           DAYS: ${{ inputs.days }}
           TIMEOUT: ${{ inputs.timeout }}
           MODEL: ${{ inputs.model }}
+          PROVIDER: ${{ inputs.provider }}
           SCENARIO: ${{ inputs.scenario }}
           STRATEGY: ${{ inputs.strategy }}
           REASONING: ${{ inputs.reasoning }}

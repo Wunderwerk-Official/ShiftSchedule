@@ -24,9 +24,9 @@ from datetime import date, timedelta
 from multiprocessing import Event
 from pathlib import Path
 
-from ..agent.config import AgentConfig
+from ..agent.config import ANTHROPIC_EFFORTS, AgentConfig
 from ..agent.harness import agent_solve_range
-from ..agent_budget import resolve_agent_runtime_config
+from ..agent_budget import estimate_cost_usd, model_price, resolve_agent_runtime_config
 from ..models import AppState, SolveRangeRequest
 
 FIXTURE = Path(__file__).with_name("fixture_complex.json")
@@ -270,13 +270,74 @@ def apply_scenario(state: AppState, scenario: str, start_iso: str, end_iso: str)
     raise SystemExit(f"unknown scenario: {scenario!r}")
 
 
+PROVIDER_CHOICES = ("configured", "openai", "anthropic")
+
+
+def resolve_arena_config(provider="configured"):
+    """The saved runtime config, optionally for the other saved provider
+    (its own key and model); the saved settings stay unchanged."""
+    override = None if provider in (None, "configured") else provider
+    return resolve_agent_runtime_config(AgentConfig.from_env(), provider_override=override)
+
+
+def apply_llm_overrides(config, *, model=None, effort=None, reasoning_effort=None):
+    """Arena-only model/effort overrides of the resolved config. One effort
+    flag serves both providers: low/medium/high are also Claude effort
+    levels; xhigh/max exist on Claude only."""
+    if model:
+        config.model = model
+    if config.provider == "anthropic":
+        config.anthropic_effort = effort or reasoning_effort
+        config.reasoning_effort = None
+    else:
+        config.reasoning_effort = reasoning_effort
+    return config
+
+
+def cost_report(model, agent: dict) -> dict:
+    """Estimated LLM cost of the run (cache tokens included) and the turns a
+    refusal fallback model answered. cost_usd is None for unpriced models
+    (self-hosted)."""
+    priced = model_price(model) is not None
+    return {
+        "cost_usd": round(estimate_cost_usd(model, agent), 4) if priced else None,
+        "cache_read_input_tokens": agent.get("cache_read_input_tokens"),
+        "cache_creation_input_tokens": agent.get("cache_creation_input_tokens"),
+        "fallback_turns": agent.get("fallback_turns", 0),
+    }
+
+
+def comparison_problems(agent: dict, requested_model) -> list:
+    """Why a run must not count in a model/prompt comparison (empty = valid)."""
+    problems = []
+    if agent.get("result_producer") != "agent":
+        problems.append("the returned plan came from the heuristic, not the model")
+    if agent.get("fallback"):
+        problems.append(f"heuristic fallback: {agent.get('fallback')}")
+    if agent.get("fallback_turns"):
+        problems.append(f"a refusal fallback model answered {agent['fallback_turns']} turn(s)")
+    if agent.get("model") not in (None, requested_model) or any(
+        model != requested_model for model in (agent.get("model_usage") or {})
+    ):
+        problems.append("model selection changed")
+    for key in ("daysSkipped", "daysIncomplete"):
+        if agent.get(key):
+            problems.append(f"{key}: {', '.join(agent[key])}")
+    return problems
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--start", default="2026-02-02")
     parser.add_argument("--days", type=int, default=1)
-    parser.add_argument("--timeout", type=float, default=600.0)
+    parser.add_argument("--timeout", type=float, default=600.0,
+                        help="wall-clock budget in seconds; 0 = unlimited (like production)")
     parser.add_argument("--max-iterations", type=int, default=None)
     parser.add_argument("--model", default=None, help="override the configured model")
+    parser.add_argument("--provider", default="configured", choices=PROVIDER_CHOICES,
+                        help="override the saved provider for this run (settings stay unchanged)")
+    parser.add_argument("--effort", default=None, choices=ANTHROPIC_EFFORTS,
+                        help="Claude effort level (output_config.effort)")
     parser.add_argument(
         "--scenario", default="base",
         choices=[
@@ -310,14 +371,12 @@ def main() -> None:
         solver_mode="agent",
         agent_strategy=args.strategy,
     )
-    config = resolve_agent_runtime_config(AgentConfig.from_env())
+    config = resolve_arena_config(args.provider)
     config.allow_model_fallback = False
-    if args.model:
-        config.model = args.model
+    apply_llm_overrides(config, model=args.model,
+                        effort=args.effort, reasoning_effort=args.reasoning_effort)
     if args.max_iterations:
         config.max_iterations = args.max_iterations
-    if args.reasoning_effort:
-        config.reasoning_effort = args.reasoning_effort
 
     def on_progress(kind: str, data: dict) -> None:
         # One line per iteration: progress for the human AND keepalive
@@ -351,8 +410,10 @@ def main() -> None:
         "scenario": args.scenario,
         "scenario_desc": scenario_desc,
         "strategy": args.strategy,
+        "provider": config.provider,
         "model": agent.get("model"),
         "requested_model": config.model,
+        "effort": config.anthropic_effort if config.provider == "anthropic" else config.reasoning_effort,
         "model_selection": agent.get("model_selection"),
         "model_usage": agent.get("model_usage"),
         "result_producer": agent.get("result_producer"),
@@ -374,7 +435,11 @@ def main() -> None:
         "violations_summary": (agent.get("violations_final") or ["?"])[0],
         "notes": result.get("notes"),
         "assignments": len(result.get("assignments") or []),
+        **cost_report(config.model, agent),
     }
+    problems = comparison_problems(agent, config.model)
+    report["valid_for_comparison"] = not problems
+    report["comparison_problems"] = problems
     print("ARENA_REPORT " + json.dumps(report, ensure_ascii=False))
     # Reasoning tail for qualitative review (what did the model struggle with)
     for t in (agent.get("thoughts") or [])[-3:]:

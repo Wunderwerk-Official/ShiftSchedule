@@ -18,7 +18,7 @@ Maps the provider-neutral protocol in ``provider.py`` onto the official
   so the reasoning feed / run log is not silently empty. No sampling
   parameters — current Opus models reject them.
 - Claude Opus 5.5 gets three request additions (beta namespace, see
-  ``_opus55_request_extras``): an explicit effort (its default is "medium",
+  ``_request_extras``): an explicit effort (its default is "medium",
   one level below Sonnet 5 / Opus 4.8), ``drop_block`` for thinking blocks
   bound to an edited history (the harness stubs old tool results; accounts
   created on or after 2026-08-31 would otherwise get a 400), and the
@@ -32,6 +32,13 @@ Maps the provider-neutral protocol in ``provider.py`` onto the official
 - Conversation-bound models (``binds_thinking_to_conversation``) let the
   harness strip thinking blocks that a history compaction invalidated, so
   ``drop_block`` does not keep dropping every later block.
+- Claude traits for the harness: 1M-context models compact the tool history
+  only past ``LONG_CONTEXT_TOOL_HISTORY_CHARS`` (the 60k default was sized
+  for self-hosted models; each compaction resets the cache and, on Opus 5.5,
+  drops earlier thinking), and every Claude model gets the tool/prompt
+  wording without the self-hosted-era contradictions.
+- ``config.anthropic_effort`` overrides the effort (arena sweeps) on every
+  model that takes one.
 - API failures never raise: SDK errors are mapped to
   ``ProviderResponse(stop_reason="error")`` with ``retryable`` classifying
   transient failures (429/5xx/connection); any other ``AnthropicError`` is a
@@ -80,6 +87,12 @@ def supports_adaptive_thinking(model: str) -> bool:
     return (model or "").lower().startswith(_ADAPTIVE_THINKING_PREFIXES)
 
 
+# Every adaptive-thinking model above has a 1M-token context: compact the
+# tool history only past ~200k tokens, so a day conversation normally never
+# compacts (peak about 120-170k tokens measured offline for a 7-day run).
+LONG_CONTEXT_TOOL_HISTORY_CHARS = 600_000
+
+
 # Models whose effort default is below the "high" the planner was tuned on:
 # set it explicitly. Opus 5.5 at "medium" matches Opus 5 at "high" (Anthropic's
 # guidance is to start there).
@@ -107,9 +120,10 @@ _SERVER_FALLBACK_MODELS = frozenset({"claude-opus-5-5"})
 _SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
-def _opus55_request_extras(model: str, thinking):
-    """Betas, request kwargs and extra body for models with the Opus 5.5
-    request surface; empty for every other model (unchanged requests)."""
+def _request_extras(model: str, thinking, effort_override=None):
+    """Betas, request kwargs and extra body: the Opus 5.5 request surface,
+    plus an explicit effort (``effort_override`` on any model that takes one).
+    Empty for every other model without an override (unchanged requests)."""
     model = (model or "").lower()
     betas: List[str] = []
     kwargs: dict = {}
@@ -117,7 +131,8 @@ def _opus55_request_extras(model: str, thinking):
     if thinking is not None and model in _CONVERSATION_BOUND_MODELS:
         thinking["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
         betas.append(_THINKING_BINDING_BETA)
-    effort = _EXPLICIT_EFFORT.get(model)
+    # Effort works on the adaptive-thinking models (Haiku 4.5 rejects it).
+    effort = (effort_override if supports_adaptive_thinking(model) else None) or _EXPLICIT_EFFORT.get(model)
     if effort:
         kwargs["output_config"] = {"effort": effort}
     if model in _SERVER_FALLBACK_MODELS:
@@ -157,6 +172,9 @@ def _token_usage(response, fallback_kind) -> dict:
 class AnthropicProvider(LLMProvider):
     def __init__(self, config: AgentConfig):
         self.binds_thinking_to_conversation = binds_thinking_to_conversation(config.model)
+        if supports_adaptive_thinking(config.model):
+            self.tool_history_budget_chars = LONG_CONTEXT_TOOL_HISTORY_CHARS
+        self.follows_tool_texts_literally = True
         # Admin-configured key (Settings → Solver) wins over the server .env.
         api_key = config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -194,8 +212,8 @@ class AnthropicProvider(LLMProvider):
                 ):
                     thinking["display"] = "summarized"
                 request_kwargs["thinking"] = thinking
-            betas, extra_kwargs, extra_body = _opus55_request_extras(
-                self._config.model, thinking
+            betas, extra_kwargs, extra_body = _request_extras(
+                self._config.model, thinking, self._config.anthropic_effort
             )
             request_kwargs.update(extra_kwargs)
             if tools:
@@ -328,6 +346,7 @@ class AnthropicProvider(LLMProvider):
             replay_text=text,
             raw_content=raw_content or None,
             output_truncated=stop_reason == "max_tokens",
+            fallback_turn=fallback_kind is not None,
         )
 
     @staticmethod

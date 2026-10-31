@@ -457,6 +457,36 @@ def build_clinician_aliases(state: AppState) -> Dict[str, str]:
     return aliases
 
 
+# Tool wording for models that follow tool texts literally (Claude). A few
+# self-hosted-tuned texts contradict the prompts: a "write your final
+# summary" inside a tool the week review calls per day, an overview call
+# "after applying moves" that apply_moves already returns. The self-hosted
+# path keeps the measured originals (arena comparability).
+LITERAL_DESCRIPTION_FIXES = {
+    "get_plan_overview": (
+        "Call this to orient yourself and after applying moves.",
+        "Use it to orient yourself; apply_moves and apply_proposal already "
+        "return this overview as their verification, so a call right after "
+        "them repeats it.",
+    ),
+    "suggest_balance_moves": (
+        "When no improving offer remains, write your final summary.",
+        "When no offer improves the plan, this date needs no further balance moves.",
+    ),
+}
+
+
+def literal_tool_description(name: str, description: str) -> str:
+    """The description with LITERAL_DESCRIPTION_FIXES applied."""
+    fix = LITERAL_DESCRIPTION_FIXES.get(name)
+    if fix is None:
+        return description
+    old, new = fix
+    if old not in description:
+        raise ValueError(f"literal wording fix for {name} no longer matches its description")
+    return description.replace(old, new)
+
+
 class PlanToolExecutor:
     """Owns the working copy and executes tool calls against it."""
 
@@ -472,6 +502,9 @@ class PlanToolExecutor:
     ):
         self.state = state
         self.ctx = ctx
+        # Set by the harness for models that follow tool texts literally:
+        # result notes without the self-hosted-era contradictions.
+        self.literal_tool_texts = False
         self.reference_assignments = list(reference_assignments or [])
         self.quality_fields = BALANCED_FIELDS if ctx.settings.agentQualityProfile == "balanced" else CLASSIC_FIELDS
         self.on_improvement = on_improvement
@@ -1617,14 +1650,27 @@ class PlanToolExecutor:
                     "open_positions": sum(e["missing"] for e in entries),
                     "unfillable_slots": unfillable,
                     "note": (
-                        "No open slot of this day has a legal candidate "
-                        "left. Call suggest_rescue_moves ONCE before "
-                        "finishing — moving one of your own placements may "
-                        "still free a qualified person. If it offers "
-                        "nothing, run the final review "
-                        "(suggest_balance_moves), then reply WITHOUT tool "
-                        "calls, naming the unfillable slots (do not force "
-                        "a move)."
+                        (
+                            # The day prompt pages through next_cursor.
+                            "No open slot of this day has a legal candidate "
+                            "left. Call suggest_rescue_moves(dateISO) before "
+                            "finishing and follow next_cursor until all pages "
+                            "are checked; moving one of your own placements "
+                            "may still free a qualified person. If nothing "
+                            "improves the plan, run the final review "
+                            "(suggest_balance_moves), then reply without tool "
+                            "calls, naming the unfillable slots (do not force "
+                            "a move)."
+                            if self.literal_tool_texts
+                            else "No open slot of this day has a legal candidate "
+                            "left. Call suggest_rescue_moves ONCE before "
+                            "finishing — moving one of your own placements may "
+                            "still free a qualified person. If it offers "
+                            "nothing, run the final review "
+                            "(suggest_balance_moves), then reply WITHOUT tool "
+                            "calls, naming the unfillable slots (do not force "
+                            "a move)."
+                        )
                         if unfillable
                         else "The day is fully staffed. Run the final "
                         "review now: call suggest_balance_moves(dateISO) "
@@ -2275,8 +2321,11 @@ class PlanToolExecutor:
             ]
         if not overlong and not stubs:
             out["balanced"] = True
+            # The week review calls this per issue day and must go on.
             out["note"] = (
-                "No over-long day and no mini-stint day found — the day "
+                "No over-long day and no mini-stint day found on this date."
+                if self.literal_tool_texts
+                else "No over-long day and no mini-stint day found — the day "
                 "looks balanced. Finish with your day summary."
             )
         elif offers:

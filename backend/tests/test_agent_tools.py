@@ -2152,3 +2152,55 @@ def test_suggest_tool_descriptions_point_to_apply_proposal():
     # Only blocks that failed the dry-run lack an ID; never advise re-applying them whole.
     assert "WHOLE block in one apply_moves" not in specs["suggest_day_blocks"]
     assert "failed the whole-block check" in specs["suggest_day_blocks"]
+
+
+def test_literal_tool_texts_drop_the_self_hosted_wording_only_when_asked():
+    """Claude follows tool texts literally: the unfillable note pages through
+    next_cursor (no 'ONCE') and the balanced note no longer asks for a day
+    summary the week review would treat as the end. The self-hosted path
+    keeps the measured originals."""
+    def notes(literal):
+        state = _scarce_flexible_state()
+        for c in state.clinicians:
+            c.qualifiedClassIds = ["section-a"]
+        executor = _make_executor(state)
+        executor.literal_tool_texts = literal
+        _run(executor, "apply_moves", {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"},
+        ]})
+        done, _ = _run(executor, "suggest_day_blocks", {"dateISO": MON})
+        balance_state = _balance_state()
+        balance_state.assignments = [make_assignment("m1", "slot-eve__mon", MON, "clin-2")]
+        balancer = _make_executor(balance_state)
+        balancer.literal_tool_texts = literal
+        balanced, _ = _run(balancer, "suggest_balance_moves", {"dateISO": MON})
+        assert done["day_complete"] is True and balanced["balanced"] is True
+        return done["note"], balanced["note"]
+
+    unfillable, balanced = notes(literal=True)
+    assert "next_cursor" in unfillable and "ONCE" not in unfillable
+    assert balanced == "No over-long day and no mini-stint day found on this date."
+    unfillable, balanced = notes(literal=False)
+    assert "ONCE" in unfillable
+    assert balanced.endswith("Finish with your day summary.")
+
+
+def test_literal_tool_descriptions_replace_only_the_contradicting_sentences():
+    from backend.agent.tools import LITERAL_DESCRIPTION_FIXES, TOOL_SPECS_RAW, literal_tool_description
+
+    by_name = {spec["name"]: spec["description"] for spec in TOOL_SPECS_RAW}
+    for name, (old, new) in LITERAL_DESCRIPTION_FIXES.items():
+        literal = literal_tool_description(name, by_name[name])
+        assert old not in literal and new in literal
+    untouched = next(name for name in by_name if name not in LITERAL_DESCRIPTION_FIXES)
+    assert literal_tool_description(untouched, by_name[untouched]) == by_name[untouched]
+    with pytest.raises(ValueError):
+        literal_tool_description("get_plan_overview", "reworded")
+
+
+def test_the_literal_duty_prompt_allows_a_24_hour_shift_only_as_a_last_resort():
+    from backend.agent.prompts import DUTY_SYSTEM_PROMPT, DUTY_SYSTEM_PROMPT_LITERAL
+
+    assert "NEVER give one person two duties" in DUTY_SYSTEM_PROMPT
+    assert "NEVER give one person two duties" not in DUTY_SYSTEM_PROMPT_LITERAL
+    assert "only when no other qualified clinician can take the" in DUTY_SYSTEM_PROMPT_LITERAL

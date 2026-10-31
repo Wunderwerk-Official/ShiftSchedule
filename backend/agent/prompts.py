@@ -663,3 +663,17 @@ it atomically. The harness may perform a bounded final repair and reports checks
 DAY_SYSTEM_PROMPT += _WORKFLOW_POLICY
 REVIEW_SYSTEM_PROMPT += _WORKFLOW_POLICY
 DUTY_SYSTEM_PROMPT += _WORKFLOW_POLICY
+
+
+# DUTY_SYSTEM_PROMPT for models that follow texts literally (Claude): the
+# original says "NEVER ... a last resort only" in one sentence, while the day
+# prompt and the candidate sort treat a 24-hour shift as a legal last resort.
+_DUTY_NEVER = """2. Choosing among the candidates: NEVER give one person two duties of the
+   same day (a day duty plus a night duty is a 24-hour shift —
+   overloaded=true marks it, a last resort only). Spread duties across"""
+_DUTY_LAST_RESORT = """2. Choosing among the candidates: give one person two duties of the
+   same day (a day duty plus a night duty is a 24-hour shift, marked
+   overloaded=true) only when no other qualified clinician can take the
+   second duty. Spread duties across"""
+assert _DUTY_NEVER in DUTY_SYSTEM_PROMPT
+DUTY_SYSTEM_PROMPT_LITERAL = DUTY_SYSTEM_PROMPT.replace(_DUTY_NEVER, _DUTY_LAST_RESORT)

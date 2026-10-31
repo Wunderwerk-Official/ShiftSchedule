@@ -1706,3 +1706,55 @@ def test_failed_model_selection_does_not_claim_a_successful_model():
     assert agent["model_selection"] == response.model_selection
     assert agent["model_usage"] == {}
     assert not any("Planning model changed" in note for note in result["notes"])
+
+
+class ToolTextRecorder(MockProvider):
+    """MockProvider that records the tool descriptions it is offered."""
+
+    def __init__(self, script, *, literal, budget=None):
+        super().__init__(script)
+        self.follows_tool_texts_literally = literal
+        self.tool_history_budget_chars = budget
+        self.descriptions = {}
+
+    def complete(self, *, system, messages, tools, timeout_seconds):
+        self.descriptions.update({tool.name: tool.description for tool in tools})
+        return super().complete(system=system, messages=messages, tools=tools,
+                                timeout_seconds=timeout_seconds)
+
+
+@pytest.mark.parametrize("literal, budget", [(True, 600_000), (False, None)])
+def test_claude_traits_reach_the_tool_texts_and_the_history_budget(monkeypatch, literal, budget):
+    import backend.agent.harness as harness
+
+    budgets = []
+    original = harness._compact_tool_history
+    monkeypatch.setattr(harness, "_compact_tool_history",
+                        lambda messages, **kw: budgets.append(kw["budget_chars"]) or original(messages, **kw))
+    script = [
+        {"tool_calls": [{"name": "get_plan_overview", "arguments": {}}]},
+        {"text": "No further improvements."},
+    ]
+    provider = ToolTextRecorder(script, literal=literal, budget=budget)
+    agent_solve_range(_payload(), _two_clinician_state(), MockCancelEvent(), ProgressRecorder(),
+                      time.time(), provider=provider, config=_config())
+    overview = provider.descriptions["get_plan_overview"]
+    assert ("after applying moves" in overview) is not literal
+    assert budgets and set(budgets) == {budget or harness.TOOL_HISTORY_BUDGET_CHARS}
+
+
+def test_copy_provider_traits_carries_the_model_traits_to_a_wrapper():
+    from backend.agent.provider import PROVIDER_TRAITS, copy_provider_traits
+
+    source = MockProvider([])
+    source.binds_thinking_to_conversation = True
+    source.tool_history_budget_chars = 600_000
+    source.follows_tool_texts_literally = True
+    wrapper = ResponseProvider([])
+    copy_provider_traits(source, wrapper)
+    assert all(getattr(wrapper, name) == getattr(source, name) for name in PROVIDER_TRAITS)
+    # A plain provider keeps the self-hosted defaults.
+    plain = ResponseProvider([])
+    copy_provider_traits(MockProvider([]), plain)
+    assert (plain.binds_thinking_to_conversation, plain.tool_history_budget_chars,
+            plain.follows_tool_texts_literally) == (False, None, False)

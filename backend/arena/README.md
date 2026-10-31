@@ -35,7 +35,8 @@ from historical commits or previously exported artifacts.
 
 It runs the **real** agent solver in-process (same code path as production),
 so executing it inside the production backend container measures the actual
-self-hosted Qwen model on the real endpoint.
+self-hosted Qwen model on the real endpoint, or (since v1.68,
+`provider=anthropic`) a Claude model with the saved Anthropic key.
 
 
 ## Current harness evaluation (v1.61, updated 2026-10-06)
@@ -148,15 +149,17 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 |---|---|
 | start | `2026-02-02` |
 | days | `1` (default), `3` or `7` — `prompt_eval` caps the range at 7 days |
-| timeout | `600` (default) / `900` for 3-day runs; 1–3600 seconds |
-| model | `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4`; `Qwen/Qwen3.8-27B` is no longer served |
+| timeout | `600` (default) / `900` for 3-day runs; 1–14400 seconds, or `0` = unlimited like production (Claude comparisons) |
+| provider | `configured` (the saved one) / `openai` (self-hosted) / `anthropic` (Claude, saved key); the saved settings stay unchanged |
+| model | empty = the model saved for that provider; self-hosted: `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` (`Qwen/Qwen3.8-27B` is no longer served); Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, … |
 | variant | `baseline` (production prompts) / `focused` (prompt experiment) |
 | scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` / `fixed-patterns` |
 | strategy | `day_by_day` (production; LLM builds each day from scratch) / `repair` (benchmark reference: heuristic seed + LLM repair) |
-| reasoning | empty (endpoint default / full) / `low` / `medium` / `high` |
+| reasoning | empty (endpoint / model default; Opus 5.5: `medium`) / `low` / `medium` / `high`; Claude also `xhigh` / `max` |
 | implementation | `deployed` (container's code and fixture) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 
-Run **one at a time** (the endpoint shares a GPU). Open the finished run →
+Run self-hosted cases **one at a time** (the endpoint shares a GPU; Claude
+runs have their own queue). Open the finished run →
 job `arena` → step "Run the arena case on the LXC" → copy the
 `PROMPT_EVAL_REPORT` line. The workflow runs `prompt_eval.py`, so there is no
 `ARENA_REPORT` line and there are no `--- thought ---` blocks; the model's
@@ -171,6 +174,44 @@ cd /opt/app
 docker compose -f docker-compose.proxied.yml exec -T backend \
   python -m backend.arena.run --start 2026-02-02 --days 3 \
     --timeout 900 --model Qwen/Qwen3.5-35B-A3B-GPTQ-Int4 --scenario base
+```
+
+### Claude comparison (v1.68)
+
+Needs v1.68 deployed (`implementation: deployed` runs this checkout's
+`prompt_eval.py` against the deployed modules) and an Anthropic key plus API
+credit saved in Settings → Solver. The arena never charges the per-user AI
+budget, but every run costs real API credit: the report's `cost_usd` is the
+estimate (cache tokens included) and the Console shows the bill. Set
+`timeout` to `0`: production runs have no wall-clock limit, and a budget
+would cut slower models short and measure speed instead of quality.
+
+Count a run only when the report says `valid_for_comparison: true`
+(the model, not the heuristic, produced the plan; no heuristic fallback; no
+refusal-fallback turns; no model change; no skipped or incomplete day) and
+prompt_eval exited 0 (also no new hard violations, fixed context
+unchanged). Compare valid runs in this order: hard violations → open
+required slots → short days → soft-rule violations → working-hours
+deviation → preference fits; cost and duration only break ties.
+
+Staged plan (`variant: baseline`, `strategy: day_by_day`,
+`implementation: deployed`, `scenario: base`, `provider: anthropic`):
+
+| stage | case | configurations | runs | estimated cost |
+|---|---|---|---|---|
+| 0 calibration | `start 2026-02-02`, `days 1` | Opus 5.5 medium (`model claude-opus-5-5`, reasoning empty), Opus 5.5 low (`reasoning low`), Sonnet 5.5 (`model claude-sonnet-5-5`, reasoning empty = its default `high`) | 1 each | about $3–8 in total |
+| 1 comparison | `2026-02-02` × `days 3` and `2026-02-16` × `days 5` (nine of 24 away) | the same three | 3 each, interleaved (A, B, C, A, B, C, …) | about $100–120 in total |
+
+Read the stage-0 `cost_usd` values before starting stage 1 and scale the
+estimate. Stage 1 decides the model: Opus 5.5 low only replaces medium when
+its valid runs are as good in the order above; Sonnet 5.5 is cheaper per
+token but is not selectable in Settings (estimate-only price). The same
+runs on the server (path B):
+
+```
+docker compose -f docker-compose.proxied.yml exec -T backend \
+  python -m backend.arena.prompt_eval --provider anthropic \
+    --model claude-opus-5-5 --reasoning-effort low --start 2026-02-16 --days 5 --timeout 0
 ```
 
 ### C. Locally with the mock provider (no LLM, validates plumbing only)

@@ -266,3 +266,57 @@ def test_only_conversation_bound_models_ask_for_thinking_stripping(model, bound)
     provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test", model=model))
     provider._client.close()
     assert provider.binds_thinking_to_conversation is bound
+
+
+@pytest.mark.parametrize("model, path", [("claude-opus-5-5", "beta"), ("claude-opus-4-8", "messages")])
+def test_a_configured_effort_overrides_the_model_default(model, path):
+    calls = {"messages": [], "beta": []}
+    provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test", model=model, anthropic_effort="low"))
+    provider._client.close()
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=lambda **kw: calls["messages"].append(kw) or _empty_response()),
+        beta=SimpleNamespace(messages=SimpleNamespace(
+            create=lambda **kw: calls["beta"].append(kw) or _empty_response())),
+    )
+    client.with_options = lambda **_: client
+    provider._client = client
+    provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    (request,) = calls[path]
+    assert request["output_config"] == {"effort": "low"}
+
+
+def test_a_configured_effort_is_not_sent_to_a_model_without_adaptive_thinking():
+    calls = []
+    provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test", model="claude-haiku-4-5",
+                                             anthropic_effort="high"))
+    provider._client.close()
+    client = SimpleNamespace(messages=SimpleNamespace(create=lambda **kw: calls.append(kw) or _empty_response()))
+    client.with_options = lambda **_: client
+    provider._client = client
+    provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    assert "output_config" not in calls[0]
+
+
+@pytest.mark.parametrize("model, budget", [
+    ("claude-opus-5-5", 600_000), ("claude-sonnet-5-5", 600_000), ("claude-haiku-4-5", None),
+])
+def test_claude_models_get_a_long_tool_history_and_literal_texts(model, budget):
+    provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test", model=model))
+    provider._client.close()
+    assert provider.tool_history_budget_chars == budget
+    assert provider.follows_tool_texts_literally is True
+
+
+def test_fallback_turns_are_flagged_and_normal_turns_are_not():
+    text = {"type": "text", "text": "Done."}
+    block = SimpleNamespace(**text, model_dump=lambda **_: text)
+    switched = _provider_with_fake_create(
+        lambda **_: _fallback_response([block], [SimpleNamespace(type="fallback_message")]),
+        model="claude-opus-5-5",
+    )
+    assert switched.complete(system="plan", messages=[], tools=[], timeout_seconds=10).fallback_turn is True
+    normal = _provider_with_fake_create(
+        lambda **_: _fallback_response([block], [SimpleNamespace(type="message")], model="claude-opus-5-5"),
+        model="claude-opus-5-5",
+    )
+    assert normal.complete(system="plan", messages=[], tools=[], timeout_seconds=10).fallback_turn is False
