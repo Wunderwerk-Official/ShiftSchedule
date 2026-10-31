@@ -49,7 +49,7 @@ Maps the provider-neutral protocol in ``provider.py`` onto the official
 from __future__ import annotations
 
 import os
-from typing import List
+from typing import List, Optional
 
 from .config import AgentConfig
 from .provider import (
@@ -120,6 +120,14 @@ _SERVER_FALLBACK_MODELS = frozenset({"claude-opus-5-5"})
 _SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 
+def effective_effort(model: Optional[str], override: Optional[str] = None) -> Optional[str]:
+    """The effort a request for ``model`` carries: the override on models
+    with adaptive thinking (Haiku 4.5 rejects effort), else the per-model
+    explicit default; None = the API default."""
+    model = (model or "").lower()
+    return (override if supports_adaptive_thinking(model) else None) or _EXPLICIT_EFFORT.get(model)
+
+
 def _request_extras(model: str, thinking, effort_override=None):
     """Betas, request kwargs and extra body: the Opus 5.5 request surface,
     plus an explicit effort (``effort_override`` on any model that takes one).
@@ -131,8 +139,7 @@ def _request_extras(model: str, thinking, effort_override=None):
     if thinking is not None and model in _CONVERSATION_BOUND_MODELS:
         thinking["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
         betas.append(_THINKING_BINDING_BETA)
-    # Effort works on the adaptive-thinking models (Haiku 4.5 rejects it).
-    effort = (effort_override if supports_adaptive_thinking(model) else None) or _EXPLICIT_EFFORT.get(model)
+    effort = effective_effort(model, effort_override)
     if effort:
         kwargs["output_config"] = {"effort": effort}
     if model in _SERVER_FALLBACK_MODELS:

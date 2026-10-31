@@ -19,11 +19,14 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import threading
 import time
 from datetime import date, timedelta
 from multiprocessing import Event
 from pathlib import Path
 
+from ..agent.anthropic_provider import effective_effort, supports_adaptive_thinking
 from ..agent.config import ANTHROPIC_EFFORTS, AgentConfig
 from ..agent.harness import agent_solve_range
 from ..agent_budget import estimate_cost_usd, model_price, resolve_agent_runtime_config
@@ -283,15 +286,73 @@ def resolve_arena_config(provider="configured"):
 def apply_llm_overrides(config, *, model=None, effort=None, reasoning_effort=None):
     """Arena-only model/effort overrides of the resolved config. One effort
     flag serves both providers: low/medium/high are also Claude effort
-    levels; xhigh/max exist on Claude only."""
+    levels; xhigh/max exist on Claude only. An effort the request would not
+    carry is refused, so a report never names an effort that was not sent."""
     if model:
         config.model = model
     if config.provider == "anthropic":
-        config.anthropic_effort = effort or reasoning_effort
+        requested = effort or reasoning_effort
+        if requested and not supports_adaptive_thinking(config.model):
+            raise SystemExit(f"{config.model} takes no effort setting; leave the effort empty")
+        config.anthropic_effort = requested
         config.reasoning_effort = None
     else:
+        if effort:
+            raise SystemExit(f"effort {effort} exists on Claude only; "
+                             "use low, medium or high for the self-hosted model")
         config.reasoning_effort = reasoning_effort
     return config
+
+
+def reported_effort(config):
+    """The effort the run's requests carry (Claude: the override or the
+    model's explicit default, e.g. Opus 5.5 medium; None = API/endpoint default)."""
+    if config.provider == "anthropic":
+        return effective_effort(config.model, config.anthropic_effort)
+    return config.reasoning_effort
+
+
+def drain_marker() -> Path:
+    """The marker a deployment creates while it waits for planning to end."""
+    return Path(os.environ.get("SCHEDULE_DB_PATH", "schedule.db")).with_name(".planning-drain")
+
+
+class RunGuard:
+    """Ends an arena run through the harness's abort path when a deployment
+    drain starts or a hard wall-clock limit passes. The deploy waits for
+    arena processes too (scripts/count_planning_processes.py), so a run of
+    several hours would otherwise keep planning closed and fail the deploy.
+    A guarded abort makes the run invalid for comparisons (``reason``)."""
+
+    def __init__(self, cancel_event, *, marker=None, hard_limit_seconds=None, poll_seconds=10.0):
+        self.cancel_event = cancel_event
+        self.marker = marker
+        self.hard_limit_seconds = hard_limit_seconds
+        self.poll_seconds = poll_seconds
+        self.reason = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._watch, daemon=True)
+
+    def __enter__(self):
+        self._started = time.monotonic()
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_):
+        self._stop.set()
+        self._thread.join(timeout=5)
+
+    def _watch(self):
+        while not self._stop.wait(self.poll_seconds):
+            if self.marker is not None and self.marker.exists():
+                self.reason = "a deployment started; the run was aborted"
+            elif (self.hard_limit_seconds
+                  and time.monotonic() - self._started >= self.hard_limit_seconds):
+                self.reason = f"hard limit of {self.hard_limit_seconds:.0f} s reached; the run was aborted"
+            else:
+                continue
+            self.cancel_event.set()
+            return
 
 
 def cost_report(model, agent: dict) -> dict:
@@ -323,6 +384,11 @@ def comparison_problems(agent: dict, requested_model) -> list:
     for key in ("daysSkipped", "daysIncomplete"):
         if agent.get(key):
             problems.append(f"{key}: {', '.join(agent[key])}")
+    # A day the model gave up on (refusal, error) that the final audit filled
+    # leaves daysSkipped; the plan is then partly not the model's.
+    audit_filled = sorted(set(agent.get("modelDaysSkipped") or []) - set(agent.get("daysSkipped") or []))
+    if audit_filled:
+        problems.append(f"days the model skipped (filled by the final audit): {', '.join(audit_filled)}")
     return problems
 
 
@@ -390,9 +456,11 @@ def main() -> None:
             )
 
     started = time.time()
-    result = agent_solve_range(
-        payload, state, Event(), on_progress, started, config=config,
-    )
+    cancel = Event()
+    with RunGuard(cancel, marker=drain_marker()) as guard:
+        result = agent_solve_range(
+            payload, state, cancel, on_progress, started, config=config,
+        )
     duration = time.time() - started
 
     debug = result.get("debug_info") or result.get("debugInfo") or {}
@@ -413,7 +481,7 @@ def main() -> None:
         "provider": config.provider,
         "model": agent.get("model"),
         "requested_model": config.model,
-        "effort": config.anthropic_effort if config.provider == "anthropic" else config.reasoning_effort,
+        "effort": reported_effort(config),
         "model_selection": agent.get("model_selection"),
         "model_usage": agent.get("model_usage"),
         "result_producer": agent.get("result_producer"),
@@ -438,6 +506,8 @@ def main() -> None:
         **cost_report(config.model, agent),
     }
     problems = comparison_problems(agent, config.model)
+    if guard.reason:
+        problems.append(guard.reason)
     report["valid_for_comparison"] = not problems
     report["comparison_problems"] = problems
     print("ARENA_REPORT " + json.dumps(report, ensure_ascii=False))

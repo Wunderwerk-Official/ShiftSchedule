@@ -19,13 +19,22 @@ from backend.agent.tools import PlanToolExecutor
 from backend.arena.run import (
     FIXTURE,
     PROVIDER_CHOICES,
+    RunGuard,
     apply_llm_overrides,
     apply_scenario,
     comparison_problems,
     cost_report,
+    drain_marker,
     load_state,
+    reported_effort,
     resolve_arena_config,
 )
+
+# The GitHub job ends at 350 minutes (agent-arena.yml) and the container
+# kills the process at 340; the run itself aborts gracefully before both,
+# so a report is always printed. Budgets stay below the hard limit.
+MAX_BUDGET_SECONDS = 18_000
+HARD_LIMIT_SECONDS = 19_800
 from backend.models import Assignment, SolveRangeRequest
 from backend.scoring import plan_stats
 
@@ -104,8 +113,9 @@ def main():
     parser.add_argument("--quality-profile", choices=["classic", "balanced"], default="classic")
     parser.add_argument("--neighborhood", action="store_true")
     args = parser.parse_args()
-    if not 1 <= args.days <= 7 or not (args.timeout == 0 or 1 <= args.timeout <= 14400):
-        parser.error("Use 1–7 days and a budget of 0 (unlimited, like production) or 1–14400 seconds")
+    if not 1 <= args.days <= 7 or not (args.timeout == 0 or 1 <= args.timeout <= MAX_BUDGET_SECONDS):
+        parser.error(f"Use 1–7 days and a budget of 0 (unlimited, like production) "
+                     f"or 1–{MAX_BUDGET_SECONDS} seconds")
 
     config = AgentConfig(provider="mock") if args.mock else resolve_arena_config(args.provider)
     # A named-model comparison must never silently measure a replacement.
@@ -141,8 +151,7 @@ def main():
                   "start": args.start, "days": args.days, "scenario": args.scenario,
                   "scenario_desc": scenario_desc, "provider": config.provider, "model": config.model,
                   "allow_model_fallback": config.allow_model_fallback,
-                  "reasoning": (config.anthropic_effort if config.provider == "anthropic"
-                                else config.reasoning_effort) or "endpoint-default/full",
+                  "reasoning": reported_effort(config) or "endpoint-default/full",
                   "timeout": args.timeout or "unlimited", "hashes": hashes})
 
     started = time.monotonic()
@@ -211,13 +220,16 @@ def main():
 
     original = (harness.PlanToolExecutor, harness.DAY_SYSTEM_PROMPT, harness.REVIEW_SYSTEM_PROMPT)
     harness.PlanToolExecutor, harness.DAY_SYSTEM_PROMPT, harness.REVIEW_SYSTEM_PROMPT = TracedExecutor, day, review
+    cancel = threading.Event()
     try:
-        result = harness.agent_solve_range(
-            SolveRangeRequest(startISO=args.start, endISO=end, only_fill_required=True,
-                              timeout_seconds=args.timeout, solver_mode="agent", agent_strategy=args.strategy),
-            state, threading.Event(), lambda *_: None, time.time(),
-            provider=TracedProvider(get_provider(config)), config=config,
-        )
+        with RunGuard(cancel, marker=None if args.mock else drain_marker(),
+                      hard_limit_seconds=HARD_LIMIT_SECONDS) as guard:
+            result = harness.agent_solve_range(
+                SolveRangeRequest(startISO=args.start, endISO=end, only_fill_required=True,
+                                  timeout_seconds=args.timeout, solver_mode="agent", agent_strategy=args.strategy),
+                state, cancel, lambda *_: None, time.time(),
+                provider=TracedProvider(get_provider(config)), config=config,
+            )
     finally:
         harness.PlanToolExecutor, harness.DAY_SYSTEM_PROMPT, harness.REVIEW_SYSTEM_PROMPT = original
     agent = (result.get("debugInfo") or {}).get("agent") or {}
@@ -248,9 +260,11 @@ def main():
               "quality_regression_iterations": regressions, "longest_inspection_streak": longest_inspection_streak,
               "notes": result.get("notes"), "hashes": hashes,
               "provider": config.provider,
-              "effort": config.anthropic_effort if config.provider == "anthropic" else config.reasoning_effort,
+              "effort": reported_effort(config),
               **cost_report(config.model, agent)}
     problems = comparison_problems(agent, config.model) if agent else ["no agent result"]
+    if guard.reason:
+        problems.append(guard.reason)
     report["valid_for_comparison"] = not problems
     report["comparison_problems"] = problems
     report["top_level_tool_seconds"] = round(top_level_tool_seconds, 3)
@@ -270,6 +284,8 @@ def main():
         raise SystemExit("Model selection changed; do not count this as a comparison of the requested model")
     if report["fallback_turns"]:
         raise SystemExit("A refusal fallback model answered some turns; do not count this as a comparison of the requested model")
+    if guard.reason:
+        raise SystemExit(f"The run was aborted ({guard.reason}); do not count it")
     if report["new_hard_violations"] or not report["fixed_unchanged"]:
         raise SystemExit("Guardrail regression detected: new hard violations or modified fixed context")
 

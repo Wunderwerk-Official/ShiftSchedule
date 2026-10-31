@@ -149,17 +149,21 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 |---|---|
 | start | `2026-02-02` |
 | days | `1` (default), `3` or `7` — `prompt_eval` caps the range at 7 days |
-| timeout | `600` (default) / `900` for 3-day runs; 1–14400 seconds, or `0` = unlimited like production (Claude comparisons) |
+| timeout | `600` (default) / `900` for 3-day runs; 1–18000 seconds, or `0` = unlimited like production (Claude comparisons; every run aborts at 330 minutes) |
 | provider | `configured` (the saved one) / `openai` (self-hosted) / `anthropic` (Claude, saved key); the saved settings stay unchanged |
 | model | empty = the model saved for that provider; self-hosted: `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` (`Qwen/Qwen3.8-27B` is no longer served); Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, … |
 | variant | `baseline` (production prompts) / `focused` (prompt experiment) |
 | scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` / `fixed-patterns` |
 | strategy | `day_by_day` (production; LLM builds each day from scratch) / `repair` (benchmark reference: heuristic seed + LLM repair) |
 | reasoning | empty (endpoint / model default; Opus 5.5: `medium`) / `low` / `medium` / `high`; Claude also `xhigh` / `max` |
-| implementation | `deployed` (container's code and fixture) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
+| implementation | `deployed` (container's code and fixture; runs this checkout's `prompt_eval.py` against them, so from v1.68 on it needs v1.68 deployed — use `checkout` until then) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 
-Run self-hosted cases **one at a time** (the endpoint shares a GPU; Claude
-runs have their own queue). Open the finished run →
+Run cases **one at a time**: self-hosted and Claude runs each have their own
+concurrency group (the endpoint shares a GPU; Claude runs never wait for
+it), but GitHub keeps only one waiting run per group and a newer dispatch
+replaces it, so dispatch the next run once the previous one has started.
+A deployment aborts a running arena case (the deploy would otherwise wait
+for it); the report then says so and the run does not count. Open the finished run →
 job `arena` → step "Run the arena case on the LXC" → copy the
 `PROMPT_EVAL_REPORT` line. The workflow runs `prompt_eval.py`, so there is no
 `ARENA_REPORT` line and there are no `--- thought ---` blocks; the model's
@@ -188,7 +192,9 @@ would cut slower models short and measure speed instead of quality.
 
 Count a run only when the report says `valid_for_comparison: true`
 (the model, not the heuristic, produced the plan; no heuristic fallback; no
-refusal-fallback turns; no model change; no skipped or incomplete day) and
+refusal-fallback turns; no model change; no skipped or incomplete day, also
+none the model skipped and the final audit filled; not aborted by a
+deployment or the 330-minute limit) and
 prompt_eval exited 0 (also no new hard violations, fixed context
 unchanged). Compare valid runs in this order: hard violations → open
 required slots → short days → soft-rule violations → working-hours
@@ -203,7 +209,10 @@ Staged plan (`variant: baseline`, `strategy: day_by_day`,
 | 1 comparison | `2026-02-02` × `days 3` and `2026-02-16` × `days 5` (nine of 24 away) | the same three | 3 each, interleaved (A, B, C, A, B, C, …) | about $100–120 in total |
 
 Read the stage-0 `cost_usd` values before starting stage 1 and scale the
-estimate. Stage 1 decides the model: Opus 5.5 low only replaces medium when
+estimate. The report's `effort` is the effort actually sent (Opus 5.5 with an empty
+reasoning field: `medium`); an effort a model would not get (Haiku 4.5, or
+`xhigh`/`max` on the self-hosted model) is refused before the run starts.
+Stage 1 decides the model: Opus 5.5 low only replaces medium when
 its valid runs are as good in the order above; Sonnet 5.5 is cheaper per
 token but is not selectable in Settings (estimate-only price). The same
 runs on the server (path B):

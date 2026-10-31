@@ -16,7 +16,7 @@ on:
         description: "Number of days (max 7)"
         default: "1"
       timeout:
-        description: "Wall-clock budget in seconds; 0 = unlimited (like production)"
+        description: "Wall-clock budget in seconds (max 18000); 0 = unlimited like production (aborted at 330 min)"
         default: "600"
       provider:
         description: "LLM provider for this run (saved settings stay unchanged)"
@@ -49,11 +49,14 @@ on:
 jobs:
   arena:
     runs-on: ubuntu-latest
-    # A Claude week run without a wall-clock budget can take hours.
-    timeout-minutes: 240
+    # A Claude week run without a wall-clock budget can take hours. The run
+    # aborts itself at 330 minutes (prompt_eval HARD_LIMIT_SECONDS) and the
+    # container stops it at 340, so it never outlives this job.
+    timeout-minutes: 350
     concurrency:
-      # One run at a time per provider: GPU runs queue behind each other,
-      # Claude runs do not wait for them (and keep their timings clean).
+      # One running run per provider; Claude runs do not wait for GPU runs.
+      # GitHub keeps at most one waiting run per group and a newer dispatch
+      # replaces it: dispatch the next run once the previous one started.
       group: agent-arena-${{ inputs.provider == 'anthropic' && 'anthropic' || 'self-hosted-gpu' }}
       cancel-in-progress: false
     steps:
@@ -101,7 +104,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m backend.arena.build_job
-          ssh truhn-target 'cd /opt/app && docker compose -f docker-compose.proxied.yml exec -T backend python -' \
+          ssh truhn-target 'cd /opt/app && docker compose -f docker-compose.proxied.yml exec -T backend timeout --kill-after=60 20400 python -' \
             < arena_job.py | tee arena-trace.log
 
       - uses: actions/upload-artifact@v4

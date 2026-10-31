@@ -1018,10 +1018,8 @@ def test_day_by_day_pipelined_turn_gets_post_apply_suggestion():
     assert suggestion["unfillable_slots"] == []
 
 
-def test_duty_pre_pass_runs_before_day_planning():
-    """With on-call duties in the range, a duty pre-pass conversation staffs
-    them FIRST (its own digest, DUTY prompt), and only then the per-day
-    conversations start — duties placed last starved on weekly hours."""
+def _duty_state():
+    """One ordinary Monday slot and one overnight on-call duty."""
     from .conftest import make_template_slot, make_workplace_row, make_pool_row
     from backend.models import TemplateBlock
 
@@ -1058,6 +1056,14 @@ def test_duty_pre_pass_runs_before_day_planning():
     state.weeklyTemplate.blocks.append(
         TemplateBlock(id="block-oc", sectionId="section-oc", requiredSlots=0)
     )
+    return state
+
+
+def test_duty_pre_pass_runs_before_day_planning():
+    """With on-call duties in the range, a duty pre-pass conversation staffs
+    them FIRST (its own digest, DUTY prompt), and only then the per-day
+    conversations start — duties placed last starved on weekly hours."""
+    state = _duty_state()
     script = [
         # Duty pass: one round staffs the on-call duty.
         {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
@@ -1758,3 +1764,66 @@ def test_copy_provider_traits_carries_the_model_traits_to_a_wrapper():
     copy_provider_traits(MockProvider([]), plain)
     assert (plain.binds_thinking_to_conversation, plain.tool_history_budget_chars,
             plain.follows_tool_texts_literally) == (False, None, False)
+
+
+class SystemRecorder(ToolTextRecorder):
+    def __init__(self, script, *, literal):
+        super().__init__(script, literal=literal)
+        self.systems = []
+
+    def complete(self, *, system, messages, tools, timeout_seconds):
+        self.systems.append(system)
+        return super().complete(system=system, messages=messages, tools=tools,
+                                timeout_seconds=timeout_seconds)
+
+
+@pytest.mark.parametrize("literal", [True, False])
+def test_claude_traits_reach_the_duty_prompt_and_the_day_tools(monkeypatch, literal):
+    import backend.agent.harness as harness
+    from backend.agent.prompts import DUTY_SYSTEM_PROMPT, DUTY_SYSTEM_PROMPT_LITERAL
+
+    executors = []
+    original_executor = harness.PlanToolExecutor
+
+    class RecordingExecutor(original_executor):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            executors.append(self)
+
+    monkeypatch.setattr(harness, "PlanToolExecutor", RecordingExecutor)
+    script = [
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-oc__mon__{MON}", "clinicianId": "Alice"}]}}]},
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Bob"}]}}]},
+        {"text": "Day complete."},
+    ]
+    provider = SystemRecorder(script, literal=literal)
+    agent_solve_range(_payload(agent_strategy="day_by_day"), _duty_state(), MockCancelEvent(),
+                      ProgressRecorder(), time.time(), provider=provider, config=_config())
+    assert provider.systems[0] == (DUTY_SYSTEM_PROMPT_LITERAL if literal else DUTY_SYSTEM_PROMPT)
+    balance = provider.descriptions["suggest_balance_moves"]
+    assert ("write your final summary" in balance) is not literal
+    assert executors and all(e.literal_tool_texts is literal for e in executors)
+
+
+def test_a_larger_history_budget_keeps_tool_results_the_default_would_stub():
+    from backend.agent.harness import TOOL_HISTORY_BUDGET_CHARS, TOOL_RESULT_STUB, _compact_tool_history
+    from backend.agent.provider import ChatMessage, ToolResult
+
+    def history():
+        big = "x" * (TOOL_HISTORY_BUDGET_CHARS // 4)
+        messages = [ChatMessage(role="user", content="digest")]
+        for i in range(8):
+            messages.append(ChatMessage(role="assistant", content=None, tool_calls=[]))
+            messages.append(ChatMessage(role="tool", tool_results=[ToolResult(f"c{i}", big, False)]))
+        return messages
+
+    def stubbed(messages):
+        return sum(r.content == TOOL_RESULT_STUB for m in messages if m.role == "tool" for r in m.tool_results)
+
+    default, claude = history(), history()
+    _compact_tool_history(default)
+    _compact_tool_history(claude, budget_chars=600_000)
+    assert stubbed(default) == 4
+    assert stubbed(claude) == 0

@@ -320,3 +320,13 @@ def test_fallback_turns_are_flagged_and_normal_turns_are_not():
         model="claude-opus-5-5",
     )
     assert normal.complete(system="plan", messages=[], tools=[], timeout_seconds=10).fallback_turn is False
+
+
+def test_effective_effort_is_the_single_source_for_requests_and_reports():
+    from backend.agent.anthropic_provider import effective_effort
+
+    assert effective_effort("claude-opus-5-5") == "medium"
+    assert effective_effort("claude-opus-5-5", "xhigh") == "xhigh"
+    assert effective_effort("claude-sonnet-5") is None
+    assert effective_effort("claude-sonnet-5", "low") == "low"
+    assert effective_effort("claude-haiku-4-5", "high") is None

@@ -4,8 +4,16 @@ from __future__ import annotations
 
 import pytest
 
+import threading
+
 from backend.agent.config import AgentConfig
-from backend.arena.run import apply_llm_overrides, comparison_problems, cost_report
+from backend.arena.run import (
+    RunGuard,
+    apply_llm_overrides,
+    comparison_problems,
+    cost_report,
+    reported_effort,
+)
 
 
 @pytest.mark.parametrize("raw, expected", [
@@ -53,3 +61,57 @@ def test_only_clean_model_runs_count_in_a_comparison():
     )
     assert len(problems) == 4
     assert comparison_problems(clean, "claude-sonnet-5-5") == ["model selection changed"]
+
+
+def test_an_effort_the_request_would_not_carry_is_refused():
+    # Haiku 4.5 has no adaptive thinking: the API takes no effort for it.
+    with pytest.raises(SystemExit):
+        apply_llm_overrides(AgentConfig(provider="anthropic", model="claude-haiku-4-5"), effort="low")
+    # xhigh/max are Claude-only; the self-hosted endpoint knows low/medium/high.
+    with pytest.raises(SystemExit):
+        apply_llm_overrides(AgentConfig(provider="openai", model="Qwen/Qwen3.5-122B"), effort="max")
+    plain = apply_llm_overrides(AgentConfig(provider="anthropic", model="claude-haiku-4-5"))
+    assert plain.anthropic_effort is None
+
+
+def test_the_report_names_the_effort_that_is_sent():
+    # Opus 5.5 without an override still sends its explicit "medium".
+    assert reported_effort(AgentConfig(provider="anthropic", model="claude-opus-5-5")) == "medium"
+    assert reported_effort(AgentConfig(provider="anthropic", model="claude-opus-5-5",
+                                       anthropic_effort="low")) == "low"
+    assert reported_effort(AgentConfig(provider="anthropic", model="claude-sonnet-5")) is None
+    assert reported_effort(AgentConfig(provider="openai", reasoning_effort="high",
+                                       anthropic_effort="max")) == "high"
+
+
+def test_a_day_the_model_skipped_makes_the_run_invalid_even_when_the_audit_filled_it():
+    clean = {"result_producer": "agent", "model": "m", "daysSkipped": [], "modelDaysSkipped": []}
+    assert comparison_problems(clean, "m") == []
+    filled = {**clean, "modelDaysSkipped": ["2026-02-03"]}
+    assert comparison_problems(filled, "m") == [
+        "days the model skipped (filled by the final audit): 2026-02-03"
+    ]
+    # A day still skipped is named once, under daysSkipped.
+    still = {**clean, "daysSkipped": ["2026-02-03"], "modelDaysSkipped": ["2026-02-03"]}
+    assert comparison_problems(still, "m") == ["daysSkipped: 2026-02-03"]
+
+
+def test_the_run_guard_aborts_on_a_deployment_drain(tmp_path):
+    marker = tmp_path / ".planning-drain"
+    cancel = threading.Event()
+    with RunGuard(cancel, marker=marker, poll_seconds=0.01) as guard:
+        assert not cancel.wait(0.05)
+        marker.touch()
+        assert cancel.wait(2)
+    assert "deployment" in guard.reason
+
+
+def test_the_run_guard_aborts_at_the_hard_limit_and_stays_quiet_otherwise(tmp_path):
+    cancel = threading.Event()
+    with RunGuard(cancel, hard_limit_seconds=0.05, poll_seconds=0.01) as guard:
+        assert cancel.wait(2)
+    assert "hard limit" in guard.reason
+    quiet = threading.Event()
+    with RunGuard(quiet, marker=tmp_path / "absent", hard_limit_seconds=60, poll_seconds=0.01) as guard:
+        pass
+    assert not quiet.is_set() and guard.reason is None
