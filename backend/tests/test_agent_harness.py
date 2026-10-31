@@ -680,6 +680,61 @@ def test_tool_history_is_compacted_in_one_chunk():
     assert small[0].tool_results[0].content == "tiny"
 
 
+def test_compaction_strips_invalidated_thinking_for_conversation_bound_models():
+    """Opus 5.5 binds thinking blocks to the unchanged history: blocks after
+    the first stubbed tool result are removed once (text/tool_use stay), the
+    ones before it are kept; other models keep every block."""
+    from backend.agent.harness import TOOL_HISTORY_BUDGET_CHARS, _compact_tool_history
+    from backend.agent.provider import ChatMessage, ToolResult
+
+    big = "x" * (TOOL_HISTORY_BUDGET_CHARS // 4)
+
+    def history():
+        messages = [ChatMessage(role="user", content="digest")]
+        for i in range(8):
+            raw = [
+                {"type": "thinking", "thinking": f"t{i}", "signature": f"s{i}"},
+                {"type": "tool_use", "id": f"c{i}", "name": "apply_moves", "input": {}},
+            ]
+            messages.append(ChatMessage(role="assistant", content=None, tool_calls=[], raw_content=raw))
+            messages.append(ChatMessage(role="tool", tool_results=[ToolResult(f"c{i}", big, False)]))
+        return messages
+
+    messages = history()
+    _compact_tool_history(messages, strip_thinking=True)
+    assistants = [m for m in messages if m.role == "assistant"]
+    # The first tool result (after assistant 0) is the first one stubbed.
+    assert [b["type"] for b in assistants[0].raw_content] == ["thinking", "tool_use"]
+    assert all([b["type"] for b in a.raw_content] == ["tool_use"] for a in assistants[1:])
+    # A second compaction pass with nothing new to stub changes nothing.
+    _compact_tool_history(messages, strip_thinking=True)
+    assert [b["type"] for b in assistants[0].raw_content] == ["thinking", "tool_use"]
+
+    untouched = history()
+    _compact_tool_history(untouched)
+    assert all(
+        [b["type"] for b in m.raw_content] == ["thinking", "tool_use"]
+        for m in untouched if m.role == "assistant"
+    )
+
+
+def test_a_thinking_only_turn_keeps_non_empty_content_when_stripped():
+    from backend.agent.harness import TOOL_HISTORY_BUDGET_CHARS, _compact_tool_history
+    from backend.agent.provider import ChatMessage, ToolResult
+
+    big = "x" * (TOOL_HISTORY_BUDGET_CHARS // 2)
+    thinking_only = ChatMessage(
+        role="assistant", content="(reasoning)",
+        raw_content=[{"type": "thinking", "thinking": "t", "signature": "s"}],
+    )
+    messages = [ChatMessage(role="tool", tool_results=[ToolResult(f"c{i}", big, False)]) for i in range(3)]
+    messages += [thinking_only] + [
+        ChatMessage(role="tool", tool_results=[ToolResult(f"d{i}", "y", False)]) for i in range(4)
+    ]
+    _compact_tool_history(messages, strip_thinking=True)
+    assert thinking_only.raw_content == [{"type": "text", "text": "(no reply)"}]
+
+
 def test_in_range_solver_assignments_are_replaced_not_fixed():
     """Previous solver output inside the range is replan material: it must
     not sit in the fixed set (double-booking the seed) — real practice data

@@ -8,8 +8,9 @@ ignored since this module exists). Every user shares one spending cap
 draft until an admin raises the budget.
 
 Pricing mirrors ``src/lib/llmPricing.ts`` (USD per million tokens, cache
-reads at 0.1x and cache writes at 1.25x the input rate) — update both tables
-together when Anthropic prices change. Anthropic bills in USD, so the budget
+reads at 0.1x the input rate unless ``CACHE_READ_MULTIPLIERS`` says otherwise,
+cache writes at 1.25x) — update both tables together when Anthropic prices
+change. Anthropic bills in USD, so the budget
 is stored in USD too.
 """
 
@@ -30,10 +31,15 @@ VALID_PROVIDERS = ("anthropic", "openai")
 
 # model id -> (input USD/MTok, output USD/MTok)
 MODEL_PRICES: Dict[str, tuple] = {
+    "claude-opus-5-5": (4.0, 20.0),
     "claude-opus-4-8": (5.0, 25.0),
     "claude-sonnet-5": (2.0, 10.0),
     "claude-haiku-4-5": (1.0, 5.0),
 }
+# Cache reads cost 0.1x the input rate except where listed (Opus 5.5 reads its
+# cache at $0.20 per MTok, 0.05x of $4).
+CACHE_READ_MULTIPLIERS: Dict[str, float] = {"claude-opus-5-5": 0.05}
+DEFAULT_CACHE_READ_MULTIPLIER = 0.1
 
 _SETTING_MODEL = "agent_model"
 _SETTING_BUDGET = "budget_usd"
@@ -178,9 +184,10 @@ def estimate_cost_usd(model: Optional[str], usage: Optional[Dict[str, Any]]) -> 
         value = usage.get(key)
         return int(value) if isinstance(value, (int, float)) else 0
 
+    cache_read = CACHE_READ_MULTIPLIERS.get(model, DEFAULT_CACHE_READ_MULTIPLIER)
     return (
         _tok("input_tokens") * per_in
-        + _tok("cache_read_input_tokens") * per_in * 0.1
+        + _tok("cache_read_input_tokens") * per_in * cache_read
         + _tok("cache_creation_input_tokens") * per_in * 1.25
         + _tok("output_tokens") * per_out
     )

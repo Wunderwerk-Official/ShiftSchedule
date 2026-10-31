@@ -1110,6 +1110,32 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   an error response by the harness (type name in the note, traceback in the
   server log), so the best plan so far is kept. Key resolution:
   admin-stored key (Settings → Solver) wins over `ANTHROPIC_API_KEY` env.
+  Since v1.67 Claude Opus 5.5 (`claude-opus-5-5`) requests go through the
+  beta namespace with three additions (`_opus55_request_extras`): explicit
+  `output_config.effort: "medium"` (its default; Sonnet 5 / Opus 4.8 run at
+  their default `high`), `thinking.block_binding.prefix_mismatch_behavior:
+  "drop_block"` (beta `thinking-binding-controls-2026-08-01`) and the
+  server-side refusal fallback `fallbacks: "default"` (beta
+  `server-side-fallback-2026-07-01`; a classifier decline is answered by the
+  model Anthropic recommends for that category inside the same call).
+  Opus 5.5 binds thinking blocks to the unchanged history ("preserved
+  thinking"; accounts created on or after 2026-08-31 get a 400 when a replayed
+  block follows an edited turn). `_compact_tool_history` edits the history, so
+  for conversation-bound models (`binds_thinking_to_conversation`: Opus 5.5,
+  and Sonnet 5.5 / Fable 5.1 / Mythos 5.1 if set via `AGENT_MODEL` — these
+  also get `drop_block`) it strips the thinking blocks after the first
+  stubbed tool result once (text and `tool_use` stay); `drop_block` is the
+  safety net for anything else. Without the strip, the first stale block
+  would make the API drop every later block on every request. A `fallback`
+  content block is not replayed; a "Note:" line in the reasoning feed names
+  the model that answered (or that the fallback stays active, on sticky-routed
+  turns); a refusal carries `declined, category: …` (plus "the fallback model
+  … declined too") into the run notes. The run keeps reporting the chosen
+  model so its cost stays priced; a fallback turn counts the tokens of every
+  attempt (`usage.iterations`) but at Opus 5.5 rates, although fallback
+  models (Opus 5 / 4.8) bill at their own, and sticky routing keeps a
+  conversation on them for about an hour. All other models (Sonnet 5,
+  Opus 4.8, Haiku 4.5, …) keep the plain, unchanged request.
 - `OpenAICompatibleProvider` — official `openai` SDK against any
   OpenAI-compatible endpoint (self-hosted vLLM, llama.cpp, TGI, or OpenAI
   itself) via `openai_base_url`. Differences handled inside the adapter:
@@ -1144,7 +1170,9 @@ AI budget (default $5, admin-settable): each run's cost is computed from its
 token counts (`agent_budget.MODEL_PRICES`, mirrored from
 `src/lib/llmPricing.ts` — update both together;
 `test_backend_prices_match_the_frontend_table` fails on drift; Sonnet 5 is
-$2/$10 per MTok since v1.64) and recorded in `agent_spend`; once over budget the harness
+$2/$10 per MTok since v1.64; Opus 5.5 $4/$20 with cache reads at 0.05x
+(`CACHE_READ_MULTIPLIERS` / `cacheReadMultiplier`, default 0.1x) since v1.67)
+and recorded in `agent_spend`; once over budget the harness
 returns the heuristic draft with an explanatory note
 (`payload.agent_budget_exhausted`, also server-injected). The frontend planning panel always
 sends `solver_mode: "agent"` — the CP-SAT solver remains available through
@@ -2217,4 +2245,33 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `src/`, so such an import passes CI (full checkout) but fails the deploy
   build. Frontend tests use frontend fixtures (e.g.
   `src/pages/printPage.fixture.ts`).
+
+## v1.67 — Claude Opus 5.5 as planning model
+
+- Settings → Solver offers **Opus 5.5** (`claude-opus-5-5`, "Best quality",
+  $4 / $20 per MTok, cache reads $0.20 = 0.05x, cache writes 1.25x) next to
+  Sonnet 5 (default, unchanged), Opus 4.8 (now "Previous Opus") and Haiku 4.5.
+  Pricing in `agent_budget.MODEL_PRICES` + `CACHE_READ_MULTIPLIERS` and
+  `src/lib/llmPricing.ts` (`cacheReadMultiplier`); the parity test compares
+  both.
+- Request shape for Opus 5.5 (see "Pluggable LLM backend"): explicit effort
+  `medium`, `drop_block` for history-bound thinking blocks, server-side
+  refusal fallback `"default"`; no `thinking: disabled`, no forced
+  `tool_choice`, no sampling parameters (none of these were sent before
+  either). History compaction strips the thinking blocks it invalidated
+  (conversation-bound models only); refusal notes name the category.
+- Using it needs an Anthropic API key (console.anthropic.com → API keys) in
+  Settings → Solver → "Anthropic API key" (admin; stored server-side, the API
+  only reports whether one is set) or `ANTHROPIC_API_KEY` in the server
+  `.env`, plus API credit on that Console organization. Claude.ai
+  subscriptions and the API are billed separately.
+- Tests: `test_agent_anthropic_provider.py` (Opus 5.5 request, plain requests
+  for other models, fallback block, feed notes, refusal categories, tokens of
+  every attempt), `test_agent_harness.py` (compaction strips invalidated
+  thinking for bound models only), `test_agent_budget.py` (Opus 5.5 cost,
+  cache-read parity incl. defaults), `src/lib/llmPricing.test.ts`.
+- Not verified against the live API in development (no key there): the
+  request and response shapes follow Anthropic's published docs and were
+  checked against the installed SDK's wire format. After the deploy, run
+  Settings → Solver → "Model connection test" once with Opus 5.5.
 

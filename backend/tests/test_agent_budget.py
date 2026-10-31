@@ -232,6 +232,8 @@ def test_estimate_cost_matches_pricing_table():
     # Opus 4.8 ($5 / $25): 5 + 25 + 0.5 + 6.25; Haiku 4.5 ($1 / $5): 1 + 5 + 0.1 + 1.25
     assert estimate_cost_usd("claude-opus-4-8", usage) == pytest.approx(36.75)
     assert estimate_cost_usd("claude-haiku-4-5", usage) == pytest.approx(7.35)
+    # Opus 5.5 ($4 / $20, cache reads $0.20 = 0.05x): 4 + 20 + 0.2 + 5
+    assert estimate_cost_usd("claude-opus-5-5", usage) == pytest.approx(29.2)
     assert estimate_cost_usd("unknown-model", usage) == 0.0
     assert estimate_cost_usd("claude-sonnet-5", None) == 0.0
 
@@ -254,6 +256,23 @@ def test_backend_prices_match_the_frontend_table():
         )
     }
     assert frontend == MODEL_PRICES
+    # Cache-read share per model (0.1x unless set) on both sides. Comments are
+    # stripped first, so a commented-out field can't pass for a real one.
+    from backend.agent_budget import CACHE_READ_MULTIPLIERS, DEFAULT_CACHE_READ_MULTIPLIER
+
+    code = re.sub(r"//[^\n]*|/\*.*?\*/", "", source, flags=re.S)
+    options_block = code.split("AGENT_MODEL_OPTIONS", 1)[1].split("];", 1)[0]
+    options = re.findall(r"\{[^{}]*\}", options_block)
+    assert len(options) == len(MODEL_PRICES)
+    frontend_cache = {}
+    for option in options:
+        model_id = re.search(r'id: "([^"]+)"', option).group(1)
+        share = re.search(r"cacheReadMultiplier: ([\d.]+)", option)
+        frontend_cache[model_id] = float(share.group(1)) if share else DEFAULT_CACHE_READ_MULTIPLIER
+    assert frontend_cache == {
+        model_id: CACHE_READ_MULTIPLIERS.get(model_id, DEFAULT_CACHE_READ_MULTIPLIER)
+        for model_id in MODEL_PRICES
+    }
 
 
 def test_exhausted_budget_falls_back_to_draft(temp_db, monkeypatch):

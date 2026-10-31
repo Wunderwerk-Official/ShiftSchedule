@@ -10,6 +10,8 @@ export type AgentModelOption = {
   description: string;
   inputPerMTok: number;
   outputPerMTok: number;
+  /** Cache reads as a share of the input rate; 0.1 unless set. */
+  cacheReadMultiplier?: number;
   /** Rough cost of one planning run — ballpark for the picker; the exact
    * per-run cost is computed from real token counts in the solver history. */
   approxRunCost: string;
@@ -25,9 +27,19 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     approxRunCost: "≈ $0.35–1.00 per run",
   },
   {
+    id: "claude-opus-5-5",
+    label: "Opus 5.5",
+    description: "Best quality",
+    inputPerMTok: 4,
+    outputPerMTok: 20,
+    // $0.20 per MTok cache reads (0.05x).
+    cacheReadMultiplier: 0.05,
+    approxRunCost: "≈ $0.80–2.50 per run",
+  },
+  {
     id: "claude-opus-4-8",
     label: "Opus 4.8",
-    description: "Best quality",
+    description: "Previous Opus",
     inputPerMTok: 5,
     outputPerMTok: 25,
     approxRunCost: "≈ $1–3 per run",
@@ -52,7 +64,8 @@ export type AgentTokenUsage = {
 };
 
 /** Estimated run cost in USD, or null when the model's pricing is unknown.
- * Cache reads bill at ~0.1x and cache writes at 1.25x the input rate. */
+ * Cache reads bill at the model's cache-read share of the input rate (0.1x,
+ * Opus 5.5 0.05x) and cache writes at 1.25x. */
 export function estimateAgentCostUSD(
   model: string | null | undefined,
   usage: AgentTokenUsage | null | undefined,
@@ -64,7 +77,7 @@ export function estimateAgentCostUSD(
   const perTokOut = option.outputPerMTok / 1_000_000;
   return (
     (usage.input_tokens ?? 0) * perTokIn +
-    (usage.cache_read_input_tokens ?? 0) * perTokIn * 0.1 +
+    (usage.cache_read_input_tokens ?? 0) * perTokIn * (option.cacheReadMultiplier ?? 0.1) +
     (usage.cache_creation_input_tokens ?? 0) * perTokIn * 1.25 +
     (usage.output_tokens ?? 0) * perTokOut
   );

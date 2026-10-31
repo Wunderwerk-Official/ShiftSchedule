@@ -64,13 +64,23 @@ TOOL_HISTORY_KEEP_RECENT = 4
 TOOL_RESULT_STUB = '{"trimmed":"stale tool result removed - re-query if needed"}'
 
 
-def _compact_tool_history(messages) -> None:
+_THINKING_BLOCK_TYPES = ("thinking", "redacted_thinking")
+
+
+def _compact_tool_history(messages, strip_thinking: bool = False) -> None:
     """Replace old tool-result payloads with a stub when the history is big.
 
     The model re-reads the whole conversation every iteration; ancient
     candidate lists and overviews are outdated anyway (the working copy moved
-    on) and only cost tokens. Assistant turns are never touched — the API
-    requires them to be replayed verbatim (thinking blocks).
+    on) and only cost tokens. Assistant turns are otherwise replayed verbatim
+    (the API requires thinking blocks echoed unchanged).
+
+    strip_thinking (models that bind thinking blocks to the unchanged history,
+    e.g. Claude Opus 5.5): stubbing invalidates every thinking block after the
+    first edited message. Those blocks are removed once, here — text and
+    tool_use blocks stay — so blocks produced from now on stay valid. Left in
+    place, the API would drop the first stale block and every block after it
+    on every later request (drop_block), new ones included.
     """
     tool_messages = [m for m in messages if m.role == "tool"]
     total = sum(
@@ -78,10 +88,22 @@ def _compact_tool_history(messages) -> None:
     )
     if total <= TOOL_HISTORY_BUDGET_CHARS:
         return
+    first_edited = None
     for message in tool_messages[:-TOOL_HISTORY_KEEP_RECENT]:
         for result in message.tool_results:
             if result.content != TOOL_RESULT_STUB:
                 result.content = TOOL_RESULT_STUB
+                if first_edited is None:
+                    first_edited = message
+    if not strip_thinking or first_edited is None:
+        return
+    start = next(i for i, m in enumerate(messages) if m is first_edited)
+    for message in messages[start + 1:]:
+        if message.role != "assistant" or not message.raw_content:
+            continue
+        kept = [b for b in message.raw_content if b.get("type") not in _THINKING_BLOCK_TYPES]
+        # The API rejects empty assistant content.
+        message.raw_content = kept or [{"type": "text", "text": "(no reply)"}]
 # Leave this many seconds of headroom before the deadline for finalization.
 DEADLINE_HEADROOM_SECONDS = 5.0
 # Bounded retry for transient provider failures (429/5xx/529, connection
@@ -1191,7 +1213,9 @@ def agent_solve_range(
                     break
                 if duty_deadline - time.time() <= 0:
                     break  # the pass's time share is spent — start the days
-                _compact_tool_history(messages)
+                _compact_tool_history(
+                    messages, strip_thinking=provider.binds_thinking_to_conversation
+                )
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
                 response = _complete_with_retry(
@@ -1422,7 +1446,9 @@ def agent_solve_range(
                     break
                 if day_deadline - time.time() <= 0:
                     break  # this day's share is spent — move to the next day
-                _compact_tool_history(messages)
+                _compact_tool_history(
+                    messages, strip_thinking=provider.binds_thinking_to_conversation
+                )
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
                 response = _complete_with_retry(
@@ -1650,7 +1676,9 @@ def agent_solve_range(
                 global_left = deadline - time.time()
                 if global_left <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
                     break
-                _compact_tool_history(messages)
+                _compact_tool_history(
+                    messages, strip_thinking=provider.binds_thinking_to_conversation
+                )
                 executor.current_iteration = iterations_done + 1
                 emit_agent("iteration", {"iteration": iterations_done + 1})
                 response = _complete_with_retry(
@@ -1816,7 +1844,7 @@ def agent_solve_range(
             extra_notes.append("Agent time budget exhausted; best plan so far returned.")
             break
 
-        _compact_tool_history(messages)
+        _compact_tool_history(messages, strip_thinking=provider.binds_thinking_to_conversation)
         executor.current_iteration = iterations_done + 1
         emit_agent("iteration", {"iteration": iterations_done + 1})
         response = _complete_with_retry(
@@ -1844,7 +1872,8 @@ def agent_solve_range(
             )
             break
         if response.stop_reason == "refusal":
-            extra_notes.append("LLM declined the request; best plan so far returned.")
+            detail = f" ({response.error})" if response.error else ""
+            extra_notes.append(f"LLM declined the request{detail}; best plan so far returned.")
             break
         if response.stop_reason == "tool_use" and response.tool_calls:
             # replay_text is the TRUE assistant content: reasoning promoted

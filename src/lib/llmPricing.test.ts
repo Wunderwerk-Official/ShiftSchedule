@@ -15,6 +15,7 @@ describe("AGENT_MODEL_OPTIONS", () => {
     );
     expect(prices).toEqual({
       "claude-sonnet-5": [2, 10],
+      "claude-opus-5-5": [4, 20],
       "claude-opus-4-8": [5, 25],
       "claude-haiku-4-5": [1, 5],
     });
@@ -26,6 +27,11 @@ describe("estimateAgentCostUSD", () => {
     // Sonnet 5: 2 in + 10 out + 0.2 cache read + 2.5 cache write
     expect(estimateAgentCostUSD("claude-sonnet-5", MILLION)).toBeCloseTo(14.7);
     expect(estimateAgentCostUSD("claude-opus-4-8", MILLION)).toBeCloseTo(36.75);
+  });
+
+  it("bills Opus 5.5 cache reads at 0.05x ($0.20 per MTok)", () => {
+    // 4 in + 20 out + 0.2 cache read + 5 cache write
+    expect(estimateAgentCostUSD("claude-opus-5-5", MILLION)).toBeCloseTo(29.2);
   });
 
   it("returns null for unknown models or missing usage", () => {

@@ -26,10 +26,14 @@ def test_non_object_tool_input_is_reported_without_crashing(arguments):
     assert result.usage["input_tokens"] == 7
 
 
-def _provider_with_fake_create(create, model="claude-sonnet-5"):
+def _provider_with_fake_create(create, model="claude-sonnet-5", beta_create=None):
+    """Both namespaces call `create` unless the test tells them apart."""
     provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test", model=model))
     provider._client.close()
-    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=create),
+        beta=SimpleNamespace(messages=SimpleNamespace(create=beta_create or create)),
+    )
     client.with_options = lambda **_: client
     provider._client = client
     return provider
@@ -81,7 +85,9 @@ def test_empty_user_content_gets_non_whitespace_text_block():
     [
         ("claude-sonnet-5", {"type": "adaptive", "display": "summarized"}),
         ("claude-opus-4-8", {"type": "adaptive", "display": "summarized"}),
-        ("claude-opus-5-5", {"type": "adaptive", "display": "summarized"}),
+        # Opus 5.5 binds thinking blocks to the conversation: see below.
+        ("claude-opus-5-5", {"type": "adaptive", "display": "summarized",
+                             "block_binding": {"prefix_mismatch_behavior": "drop_block"}}),
         ("claude-haiku-5-5", {"type": "adaptive", "display": "summarized"}),
         ("claude-fable-5", {"type": "adaptive", "display": "summarized"}),
         ("claude-sonnet-4-6", {"type": "adaptive"}),
@@ -132,3 +138,131 @@ def test_other_sdk_errors_become_non_retryable_error_response():
     assert result.stop_reason == "error"
     assert result.retryable is False
     assert "unexpected payload" in result.error
+
+
+def _capture_paths(model):
+    calls = {"messages": [], "beta": []}
+    provider = _provider_with_fake_create(
+        lambda **kwargs: calls["messages"].append(kwargs) or _empty_response(),
+        model=model,
+        beta_create=lambda **kwargs: calls["beta"].append(kwargs) or _empty_response(),
+    )
+    provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    return calls
+
+
+def test_opus_55_requests_effort_drop_block_and_the_refusal_fallback():
+    calls = _capture_paths("claude-opus-5-5")
+    assert calls["messages"] == []
+    (request,) = calls["beta"]
+    assert request["betas"] == ["thinking-binding-controls-2026-08-01", "server-side-fallback-2026-07-01"]
+    # Opus 5.5 defaults to "medium": set explicitly.
+    assert request["output_config"] == {"effort": "medium"}
+    assert request["thinking"]["block_binding"] == {"prefix_mismatch_behavior": "drop_block"}
+    assert request["extra_body"] == {"fallbacks": "default"}
+    assert "temperature" not in request and "tool_choice" not in request
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5", "claude-opus-4-8", "claude-haiku-4-5"])
+def test_other_models_keep_the_plain_request(model):
+    calls = _capture_paths(model)
+    assert calls["beta"] == []
+    (request,) = calls["messages"]
+    for key in ("betas", "output_config", "extra_body"):
+        assert key not in request
+    assert "block_binding" not in (request.get("thinking") or {})
+
+
+def _fallback_response(content, iterations=None, model="claude-opus-5"):
+    usage = SimpleNamespace(input_tokens=5, output_tokens=2, iterations=iterations)
+    return SimpleNamespace(content=content, usage=usage, stop_reason="end_turn", model=model)
+
+
+def test_refusal_fallback_block_is_not_replayed_and_the_feed_names_the_serving_model():
+    marker = {"type": "fallback", "from_": {"model": "claude-opus-5-5"}, "to": {"model": "claude-opus-5"}}
+    text = {"type": "text", "text": "Monday is full."}
+    blocks = [SimpleNamespace(**raw, model_dump=lambda raw=raw, **_: raw) for raw in (marker, text)]
+    provider = _provider_with_fake_create(lambda **_: _fallback_response(blocks), model="claude-opus-5-5")
+    result = provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    assert result.raw_content == [text]
+    assert result.text == "Monday is full."
+    assert result.reasoning == "Note: claude-opus-5-5 declined this turn (safety classifier); claude-opus-5 answered it."
+    # The run keeps the chosen (priced) model: no model switch is reported.
+    assert result.model is None
+
+
+def test_sticky_fallback_turn_is_detected_from_the_usage_iterations():
+    text = {"type": "text", "text": "Done."}
+    block = SimpleNamespace(**text, model_dump=lambda **_: text)
+    iterations = [SimpleNamespace(type="fallback_message")]
+    provider = _provider_with_fake_create(
+        lambda **_: _fallback_response([block], iterations), model="claude-opus-5-5"
+    )
+    result = provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    # Sticky routing: the requested model did not run this turn.
+    assert result.reasoning == (
+        "Note: answered by claude-opus-5; the refusal fallback for claude-opus-5-5 "
+        "is still active for this conversation."
+    )
+
+
+def test_a_normal_turn_reports_no_model_switch():
+    text = {"type": "text", "text": "Done."}
+    block = SimpleNamespace(**text, model_dump=lambda **_: text)
+    provider = _provider_with_fake_create(
+        lambda **_: _fallback_response([block], [SimpleNamespace(type="message")], model="claude-opus-5-5"),
+        model="claude-opus-5-5",
+    )
+    result = provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    assert result.reasoning is None
+    assert result.model is None
+
+
+def _refusal_response(content, category, iterations=None, model="claude-opus-5"):
+    usage = SimpleNamespace(input_tokens=5, output_tokens=0, iterations=iterations)
+    return SimpleNamespace(content=content, usage=usage, stop_reason="refusal", model=model,
+                           stop_details=SimpleNamespace(category=category))
+
+
+def test_a_refusal_names_its_category_for_the_run_note():
+    provider = _provider_with_fake_create(lambda **_: _refusal_response([], "bio"), model="claude-opus-5-5")
+    result = provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    assert result.stop_reason == "refusal"
+    assert result.error == "declined, category: bio"
+    assert result.reasoning is None and result.text is None
+
+
+def test_a_refusal_of_the_whole_fallback_chain_never_claims_an_answer():
+    marker = {"type": "fallback", "from_": {"model": "claude-opus-5-5"}, "to": {"model": "claude-opus-4-8"}}
+    block = SimpleNamespace(**marker, model_dump=lambda **_: marker)
+    provider = _provider_with_fake_create(
+        lambda **_: _refusal_response([block], "cyber", model="claude-opus-4-8"), model="claude-opus-5-5"
+    )
+    result = provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10)
+    assert result.error == "declined, category: cyber; the fallback model claude-opus-4-8 declined too"
+    assert result.text is None and result.reasoning is None
+    assert result.raw_content is None
+
+
+def test_a_fallback_turn_counts_the_tokens_of_every_attempt():
+    text = {"type": "text", "text": "Done."}
+    block = SimpleNamespace(**text, model_dump=lambda **_: text)
+    attempt = dict(cache_read_input_tokens=0, cache_creation_input_tokens=0)
+    iterations = [
+        SimpleNamespace(type="message", input_tokens=100, output_tokens=0, **attempt),
+        SimpleNamespace(type="fallback_message", input_tokens=120, output_tokens=40,
+                        cache_read_input_tokens=10, cache_creation_input_tokens=5),
+    ]
+    provider = _provider_with_fake_create(
+        lambda **_: _fallback_response([block], iterations), model="claude-opus-5-5"
+    )
+    usage = provider.complete(system="plan", messages=[], tools=[], timeout_seconds=10).usage
+    assert usage == {"input_tokens": 220, "output_tokens": 40,
+                     "cache_read_input_tokens": 10, "cache_creation_input_tokens": 5}
+
+
+@pytest.mark.parametrize("model, bound", [("claude-opus-5-5", True), ("claude-sonnet-5", False)])
+def test_only_conversation_bound_models_ask_for_thinking_stripping(model, bound):
+    provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test", model=model))
+    provider._client.close()
+    assert provider.binds_thinking_to_conversation is bound

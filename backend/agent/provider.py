@@ -85,7 +85,7 @@ class ProviderResponse:
     # "tool_use" | "end_turn" | "max_tokens" | "refusal" | "error"
     stop_reason: str
     usage: Dict[str, int] = field(default_factory=dict)  # input_tokens/output_tokens
-    error: Optional[str] = None  # set when stop_reason == "error"
+    error: Optional[str] = None  # set when stop_reason == "error"; a refusal may carry its detail
     # HTTP status behind an "error" stop, when one exists (connection errors
     # have none). Providers classify; the harness decides whether to retry.
     error_status: Optional[int] = None
@@ -132,6 +132,10 @@ class LLMProvider(ABC):
     # Bound by the harness; adapters with multiple attempts check it before
     # starting a subsequent request. Direct connection tests can leave it unset.
     cancel_event = None
+    # True when the model binds thinking blocks to the unchanged conversation
+    # history (Anthropic "preserved thinking"): the harness then strips the
+    # blocks a history compaction invalidated (harness._compact_tool_history).
+    binds_thinking_to_conversation = False
 
     @abstractmethod
     def complete(

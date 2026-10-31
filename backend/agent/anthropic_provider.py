@@ -17,6 +17,21 @@ Maps the provider-neutral protocol in ``provider.py`` onto the official
   Fable/Mythos)
   so the reasoning feed / run log is not silently empty. No sampling
   parameters — current Opus models reject them.
+- Claude Opus 5.5 gets three request additions (beta namespace, see
+  ``_opus55_request_extras``): an explicit effort (its default is "medium",
+  one level below Sonnet 5 / Opus 4.8), ``drop_block`` for thinking blocks
+  bound to an edited history (the harness stubs old tool results; accounts
+  created on or after 2026-08-31 would otherwise get a 400), and the
+  server-side refusal fallback. A ``fallback`` block in the reply is not
+  replayed; a note in the reasoning feed names the model that answered (a
+  refusal of the whole chain names its category in ``error`` instead). The
+  run keeps reporting the chosen model, so its cost is priced from the
+  pricing table at that model's rates, with the tokens of every attempt of a
+  fallback turn counted (fallback models bill at their own Opus rates, and
+  sticky routing keeps a conversation on them for about an hour).
+- Conversation-bound models (``binds_thinking_to_conversation``) let the
+  harness strip thinking blocks that a history compaction invalidated, so
+  ``drop_block`` does not keep dropping every later block.
 - API failures never raise: SDK errors are mapped to
   ``ProviderResponse(stop_reason="error")`` with ``retryable`` classifying
   transient failures (429/5xx/connection); any other ``AnthropicError`` is a
@@ -65,8 +80,83 @@ def supports_adaptive_thinking(model: str) -> bool:
     return (model or "").lower().startswith(_ADAPTIVE_THINKING_PREFIXES)
 
 
+# Models whose effort default is below the "high" the planner was tuned on:
+# set it explicitly. Opus 5.5 at "medium" matches Opus 5 at "high" (Anthropic's
+# guidance is to start there).
+_EXPLICIT_EFFORT = {"claude-opus-5-5": "medium"}
+# Models that bind thinking blocks to the conversation prefix ("preserved
+# thinking"); of these only Opus 5.5 is selectable (agent_budget), the others
+# can come in through AGENT_MODEL. _compact_tool_history (harness) replaces
+# old tool results with a stub, which invalidates every later thinking block:
+# the harness strips those blocks once (binds_thinking_to_conversation), and
+# drop_block makes the API drop any other invalid block (unbilled) instead of
+# rejecting the request. A stale block left in the history would make the API
+# drop it and every block after it on every later request.
+_CONVERSATION_BOUND_MODELS = frozenset(
+    {"claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-mythos-5-1"}
+)
+
+
+def binds_thinking_to_conversation(model: str) -> bool:
+    return (model or "").lower() in _CONVERSATION_BOUND_MODELS
+_THINKING_BINDING_BETA = "thinking-binding-controls-2026-08-01"
+# Server-side refusal fallback: a classifier decline (cyber/bio/...) is re-run
+# on the model Anthropic recommends for that category inside the same call,
+# instead of skipping the planning day.
+_SERVER_FALLBACK_MODELS = frozenset({"claude-opus-5-5"})
+_SERVER_FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+
+def _opus55_request_extras(model: str, thinking):
+    """Betas, request kwargs and extra body for models with the Opus 5.5
+    request surface; empty for every other model (unchanged requests)."""
+    model = (model or "").lower()
+    betas: List[str] = []
+    kwargs: dict = {}
+    extra_body: dict = {}
+    if thinking is not None and model in _CONVERSATION_BOUND_MODELS:
+        thinking["block_binding"] = {"prefix_mismatch_behavior": "drop_block"}
+        betas.append(_THINKING_BINDING_BETA)
+    effort = _EXPLICIT_EFFORT.get(model)
+    if effort:
+        kwargs["output_config"] = {"effort": effort}
+    if model in _SERVER_FALLBACK_MODELS:
+        betas.append(_SERVER_FALLBACK_BETA)
+        # The installed SDK types only the array form of `fallbacks`.
+        extra_body["fallbacks"] = "default"
+    return betas, kwargs, extra_body
+
+
+def _fallback_kind(response):
+    """"switch" when the requested model declined this turn and a fallback
+    model ran, "sticky" when a fallback model served the turn directly (sticky
+    routing after an earlier decline), else None."""
+    if any(getattr(block, "type", None) == "fallback" for block in response.content):
+        return "switch"
+    iterations = getattr(response.usage, "iterations", None) or []
+    if any(getattr(entry, "type", None) == "fallback_message" for entry in iterations):
+        return "sticky"
+    return None
+
+
+_USAGE_KEYS = (
+    "input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"
+)
+
+
+def _token_usage(response, fallback_kind) -> dict:
+    """Top-level usage covers only the attempt that produced the reply; on a
+    fallback turn the per-attempt ``usage.iterations`` hold every attempt."""
+    iterations = getattr(response.usage, "iterations", None) or []
+    source = iterations if fallback_kind and iterations else [response.usage]
+    return {
+        key: sum(getattr(entry, key, 0) or 0 for entry in source) for key in _USAGE_KEYS
+    }
+
+
 class AnthropicProvider(LLMProvider):
     def __init__(self, config: AgentConfig):
+        self.binds_thinking_to_conversation = binds_thinking_to_conversation(config.model)
         # Admin-configured key (Settings → Solver) wins over the server .env.
         api_key = config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
@@ -96,6 +186,7 @@ class AnthropicProvider(LLMProvider):
             # could otherwise block ~3x past the solve deadline. Transient
             # failures degrade to the best-plan-so-far path instead.
             request_kwargs = {}
+            thinking = None
             if supports_adaptive_thinking(self._config.model):
                 thinking = {"type": "adaptive"}
                 if not (self._config.model or "").lower().startswith(
@@ -103,6 +194,10 @@ class AnthropicProvider(LLMProvider):
                 ):
                     thinking["display"] = "summarized"
                 request_kwargs["thinking"] = thinking
+            betas, extra_kwargs, extra_body = _opus55_request_extras(
+                self._config.model, thinking
+            )
+            request_kwargs.update(extra_kwargs)
             if tools:
                 # Omitted entirely for plain chat calls (admin connection
                 # test) — an empty tools array is pointless on the wire.
@@ -114,9 +209,15 @@ class AnthropicProvider(LLMProvider):
                     }
                     for t in tools
                 ]
-            response = self._client.with_options(
-                timeout=timeout_seconds, max_retries=0
-            ).messages.create(
+            client = self._client.with_options(timeout=timeout_seconds, max_retries=0)
+            if betas:
+                create = client.beta.messages.create
+                request_kwargs["betas"] = betas
+                if extra_body:
+                    request_kwargs["extra_body"] = extra_body
+            else:
+                create = client.messages.create
+            response = create(
                 model=self._config.model,
                 max_tokens=self._config.max_tokens,
                 **request_kwargs,
@@ -157,9 +258,14 @@ class AnthropicProvider(LLMProvider):
         tool_calls: List[ToolCall] = []
         raw_content: List[dict] = []
         for block in response.content:
-            # Keep EVERY block (thinking included) for verbatim replay: the
-            # API requires thinking blocks to be echoed back unchanged when
-            # continuing the conversation; stripping them 400s the next call.
+            if block.type == "fallback":
+                # Audit marker of a refusal fallback (may be kept or dropped
+                # on replay): dropped, its alias field would not round-trip.
+                continue
+            # Keep EVERY other block (thinking included) for verbatim replay:
+            # the API requires thinking blocks to be echoed back unchanged
+            # when continuing the conversation; stripping them 400s the next
+            # call.
             raw_content.append(block.model_dump(exclude_none=True))
             if block.type == "text":
                 text_parts.append(block.text)
@@ -175,17 +281,32 @@ class AnthropicProvider(LLMProvider):
                              arguments=block.input if isinstance(block.input, dict) else {},
                              argument_error=None if isinstance(block.input, dict) else "Tool arguments must be a JSON object.")
                 )
-        usage = {
-            "input_tokens": getattr(response.usage, "input_tokens", 0) or 0,
-            "output_tokens": getattr(response.usage, "output_tokens", 0) or 0,
-            # Cached tokens are billed separately (~0.1x reads, 1.25x writes)
-            # and excluded from input_tokens — track them for cost estimates.
-            "cache_read_input_tokens": getattr(response.usage, "cache_read_input_tokens", 0) or 0,
-            "cache_creation_input_tokens": getattr(response.usage, "cache_creation_input_tokens", 0) or 0,
-        }
+        fallback_kind = _fallback_kind(response)
+        # Cached tokens are billed separately (cache reads/writes at their own
+        # rates) and excluded from input_tokens — tracked for cost estimates.
+        usage = _token_usage(response, fallback_kind)
         stop_reason = response.stop_reason or "end_turn"
         if stop_reason not in ("tool_use", "end_turn", "max_tokens", "refusal"):
             stop_reason = "end_turn"
+        served = getattr(response, "model", None) or "a fallback model"
+        refusal_detail = None
+        if stop_reason == "refusal":
+            # The harness adds this to its "LLM refusal ..." run note.
+            details = getattr(response, "stop_details", None)
+            category = getattr(details, "category", None) or "unspecified"
+            refusal_detail = f"declined, category: {category}"
+            if fallback_kind:
+                refusal_detail += f"; the fallback model {served} declined too"
+        elif fallback_kind:
+            # A note, not the run's model: reporting the fallback model would
+            # leave the run unpriced (agent_budget.MODEL_PRICES).
+            reasoning_parts.insert(
+                0,
+                f"Note: {self._config.model} declined this turn (safety classifier); {served} answered it."
+                if fallback_kind == "switch"
+                else f"Note: answered by {served}; the refusal fallback for {self._config.model} "
+                "is still active for this conversation.",
+            )
         text = "\n".join(text_parts) or None
         reasoning = "\n".join(reasoning_parts) or None
         if text is None and reasoning is not None:
@@ -197,6 +318,7 @@ class AnthropicProvider(LLMProvider):
             text=text,
             tool_calls=tool_calls,
             stop_reason=stop_reason,
+            error=refusal_detail,
             usage=usage,
             reasoning=reasoning,
             # raw_content wins on replay (thinking blocks must be echoed
