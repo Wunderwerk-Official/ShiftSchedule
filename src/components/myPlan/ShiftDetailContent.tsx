@@ -281,7 +281,12 @@ export default function ShiftDetailContent(props: ShiftDetailContentProps) {
         <span className={draftBadgeClass}>Draft – not published</span>
       )}
       {shift.locked ? (
-        <span className={cx(chipClass, "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200")}>Fixed</span>
+        <span
+          className={cx(chipClass, "bg-slate-100 text-slate-700 dark:bg-slate-800 dark:text-slate-200")}
+          title="Locked in the team plan: replanning keeps this shift."
+        >
+          Locked
+        </span>
       ) : null}
     </div>
   );

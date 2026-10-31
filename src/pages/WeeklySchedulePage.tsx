@@ -1924,7 +1924,12 @@ export default function WeeklySchedulePage({
           const toList = next.get(toKey) ?? [];
           const already = toList.some((item) => item.clinicianId === clinicianId);
           if (!already) {
-            next.set(toKey, [...toList, { ...moving, rowId: toRowId, dateISO }]);
+            // A hand-made pool entry: pool rows have no lock, so a lock the
+            // shift had must not stay behind invisibly.
+            next.set(toKey, [
+              ...toList,
+              { ...moving, rowId: toRowId, dateISO, source: "manual", locked: undefined },
+            ]);
           }
           return next;
         }

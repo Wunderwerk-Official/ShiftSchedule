@@ -126,7 +126,8 @@ export default function HelpView() {
                   A <span className="font-medium">closed lock</span> on a name means the
                   shift stays: replanning, applying a plan and both Resets keep it. Names
                   you place or move by hand are locked right away; the planner&rsquo;s
-                  names start unlocked (the open lock shows when you point at them).
+                  names start unlocked (the open lock shows when you point at them, on
+                  phones and tablets it is always shown).
                 </li>
                 <li>
                   Click the lock to switch: unlocking a shift hands it to the planner,

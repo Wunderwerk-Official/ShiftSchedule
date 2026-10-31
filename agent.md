@@ -105,7 +105,7 @@ Clinic sheet layout (Klinik-Monatslayout)
 
 Pills
 - Team grid (since v1.69 always): person colors — light fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Print/public pages keep the section look (blue pill).
-- One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus (always on touch screens) at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css). Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock.
+- One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
 - Warning icons are small circular badges at top-right of the pill.
@@ -2417,12 +2417,20 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   "Unlocked shifts" / "Unlocked shifts and rest days". The second one keeps
   every locked shift — hand-placed ones included (before, it removed manual
   entries) — and still empties the Rest Day row (except hand-made entries on
-  vacation days).
+  vacation days). Pool rows have no lock, so a `locked` flag there no longer
+  keeps an entry, and a shift dragged into the Rest Day row is stored as a
+  hand-made entry (`source: "manual"`, no `locked`).
+- **My plan** follows the same lock: the shift detail's chip ("Fixed",
+  now "Locked") is shown for every shift the team plan shows locked
+  (`isProtectedAssignment`), not only for planner shifts locked later.
 - **Lock design.** A locked pill shows a small solid lock in the person's ink
   color inside the row (no taller pill any more: before, a fixed pill grew to
   28 px for its 24 px button); an unlocked pill shows the open lock only on
-  hover or focus (always on touch screens), and the name fades out under it
-  (CSS mask) instead of a white box covering it. The button is 18 px with a
+  hover or focus, and the name fades out under it (CSS mask, devices with
+  hover only) instead of a white box covering it. Touch screens always show
+  the open lock and keep room for it, so names are measured beside it. The
+  clinic sheet does the same (its faded box spans the name cell, so short
+  names never fade). The button is 18 px with a
   3 px larger click area; read-only grids show no lock at all (print and
   public pages used to show the manual badge).
 - **Own times in stacked cells** are a small tag with room below it, so they
@@ -2447,7 +2455,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   ignored); e2e `fixed-assignments.spec.ts` (hand-placed starts locked,
   unlock → reset removes it), `team-page.spec.ts` (a moved planner shift
   is locked), `my-plan.spec.ts`,
-  `agent-activity.spec.ts`.
+  `agent-activity.spec.ts`; `ClinicSheetGrid.test.tsx` (sheet lock),
+  `src/lib/myPlan/timeline.test.ts` (My plan lock), `team-page.spec.ts` (a
+  locked shift moved into Rest Day loses its lock).
 - Deploy notes: no calendar migration. Hand-placed entries keep their data
   (`source: "manual"`) and now simply show as locked. Stored preferences lose
   `teamColorBy` on their next save; users who had "Section" selected see the

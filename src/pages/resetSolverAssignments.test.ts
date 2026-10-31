@@ -78,8 +78,10 @@ describe("resetUnfixedAssignments", () => {
       entry("solver", { clinicianId: "clin-3" }),
       entry("locked", { locked: true, clinicianId: "clin-4" }),
       entry("rest-day", { rowId: "pool-rest-day", source: "manual", clinicianId: "clin-2" }),
-      // Pool rows have no lock: a hand-made entry hidden by a vacation stays.
+      // Pool rows have no lock: a hand-made entry hidden by a vacation stays,
+      // a lock flag there (a locked shift moved in before v1.69) means nothing.
       entry("rest-day-vacation", { rowId: "pool-rest-day", source: "manual" }),
+      entry("rest-day-locked", { rowId: "pool-rest-day", source: "solver", locked: true, clinicianId: "clin-6" }),
     ]);
     expect(ids(resetUnfixedAssignments(map, RANGE, onVacation))).toEqual([
       "legacy-vacation",

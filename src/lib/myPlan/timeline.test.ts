@@ -289,3 +289,24 @@ describe("buildPersonPlan — overlaps, rest conflicts, two locations", () => {
     expect(lena.shifts.get("lh:angio:2026-10-16")?.title).toBe("Angiographie");
   });
 });
+
+describe("buildPersonPlan — lock (v1.69)", () => {
+  it("marks a shift locked exactly when the team plan shows it locked", () => {
+    const monday = (slot: string) => assign("lh", slot, "2026-10-12");
+    const source = makeSource({
+      assignments: [
+        { ...monday("kon"), source: "manual" },
+        { ...monday("mrt"), source: "solver" },
+      ],
+    });
+    const locked = (slot: string) =>
+      [...week42(source).shifts.values()].find((shift) => shift.id.includes(`:${slot}:`))?.locked;
+    expect(locked("kon")).toBe(true);
+    expect(locked("mrt")).toBeUndefined();
+    const relocked = makeSource({
+      assignments: [{ ...monday("mrt"), source: "solver", locked: true }],
+    });
+    expect([...week42(relocked).shifts.values()][0]?.locked).toBe(true);
+  });
+});
+

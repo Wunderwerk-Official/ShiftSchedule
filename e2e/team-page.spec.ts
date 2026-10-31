@@ -185,6 +185,26 @@ test("moving a planner shift by hand locks it (v1.69)", async ({ page }) => {
   expect(api.errors).toEqual([]);
 });
 
+test("a locked shift moved into the Rest Day row becomes a plain rest day entry (v1.69)", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [assignment("ct", "mon", "CT", FIRST, { source: "solver", locked: true })];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const cell = (rowId: string) =>
+    page.locator(`[data-schedule-cell="true"][data-row-id="${rowId}"][data-date-iso="2026-01-05"]`);
+
+  await cell(slotId("mon", "CT")).locator('div[draggable="true"]').first().dragTo(cell("pool-rest-day"));
+  // Pool rows have no lock: no hidden lock may stay behind.
+  await expect
+    .poll(() => api.state().assignments.map((item) => [item.rowId, item.source, item.locked ?? null]))
+    .toEqual([["pool-rest-day", "manual", null]]);
+  await expect(cell("pool-rest-day").getByRole("button", { name: /^Lock assignment for/ })).toHaveCount(0);
+
+  await page.getByRole("button", { name: "Reset", exact: true }).click();
+  await page.getByRole("button", { name: /^Unlocked shifts and rest days/ }).click();
+  await expect.poll(() => api.state().assignments.length).toBe(0);
+  expect(api.errors).toEqual([]);
+});
+
 test("Times switches between side-by-side and stacked columns and stores the choice", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [assignment("ct", "mon", "CT", FIRST)];

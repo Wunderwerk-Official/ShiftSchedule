@@ -86,6 +86,7 @@ export type PlanShift = {
   colors: BlockColors;
   /** Week of the start day is published. */
   published: boolean;
+  /** Locked in the team plan (hand-placed or locked later): replanning keeps it. */
   locked?: boolean;
 };
 

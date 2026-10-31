@@ -33,7 +33,13 @@ const poolRow: ScheduleRow = {
   dotColorClass: "bg-emerald-500",
 };
 
-const setup = (options: { readOnly?: boolean } = {}) => {
+const setup = (
+  options: {
+    readOnly?: boolean;
+    source?: RenderedAssignment["source"];
+    onToggleAssignmentLock?: (assignment: { id: string; rowId: string; dateISO: string }) => void;
+  } = {},
+) => {
   const slotRow = makeSlotRow();
   const groupedRow: ScheduleRow = {
     ...slotRow,
@@ -47,7 +53,7 @@ const setup = (options: { readOnly?: boolean } = {}) => {
   });
   // 2026-07-06 is a Monday.
   const assignments: RenderedAssignment[] = [
-    { id: "assign-1", rowId: slotRow.id, dateISO: "2026-07-06", clinicianId: "clin-1" },
+    { id: "assign-1", rowId: slotRow.id, dateISO: "2026-07-06", clinicianId: "clin-1", source: options.source },
   ];
   const assignmentMap = new Map([[`${slotRow.id}__2026-07-06`, assignments]]);
   const onAddAssignment = vi.fn();
@@ -78,6 +84,7 @@ const setup = (options: { readOnly?: boolean } = {}) => {
       onAddAssignment={onAddAssignment}
       onRemoveAssignment={onRemoveAssignment}
       onMoveWithinDay={onMoveWithinDay}
+      onToggleAssignmentLock={options.onToggleAssignmentLock}
     />,
   );
   return { onAddAssignment, onRemoveAssignment, onMoveWithinDay, slotRow };
@@ -101,6 +108,28 @@ const makeDataTransfer = () => {
 };
 
 describe("ClinicSheetGrid", () => {
+  it("shows the same lock as the weekly grid: hand-placed names locked, planner names on hover", () => {
+    const onToggleAssignmentLock = vi.fn();
+    setup({ source: "manual", onToggleAssignmentLock });
+    const locked = screen.getAllByRole("button", { name: "Lock assignment for Anna Bergmann" })[0];
+    expect(locked).toHaveAttribute("aria-pressed", "true");
+    expect(locked.className).not.toContain("pill-lock-reveal");
+    fireEvent.click(locked);
+    expect(onToggleAssignmentLock).toHaveBeenCalledWith(expect.objectContaining({ id: "assign-1" }));
+  });
+
+  it("fades an unlocked name only under its lock and keeps the lock's room on touch screens", () => {
+    setup({ source: "solver", onToggleAssignmentLock: vi.fn() });
+    const button = screen.getAllByRole("button", { name: "Lock assignment for Anna Bergmann" })[0];
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(button.className).toContain("pill-lock-reveal");
+    const cell = button.closest("[data-sheet-name]") as HTMLElement;
+    // The faded box spans the cell up to the lock, so a short name never fades.
+    const name = cell.querySelector(".pill-lock-fade") as HTMLElement;
+    expect(name.className).toContain("flex-1");
+    expect(cell.className).toContain("[@media(hover:none)]:pr-5");
+  });
+
   it("renders assignments as plain surname text, not pills", () => {
     setup();
     const name = screen.getAllByText("Bergmann")[0];

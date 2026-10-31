@@ -335,9 +335,13 @@ function AssignmentPillImpl({
   // SPEC C5.13: 1 px border, 20 px initials circle 3 px from the edge (same
   // 24 px height as the section pill). The lock of a locked pill sits in the
   // row and brings its own spacing, so the pill keeps only a small padding.
-  const paddingClass = personStyle
-    ? cx("py-px pl-0.5", lockInRow ? "pr-px" : "pr-1.5")
-    : cx("py-0.5 pl-1.5", lockInRow ? "pr-px" : "pr-1.5");
+  const paddingClass = cx(
+    personStyle ? "py-px pl-0.5" : "py-0.5 pl-1.5",
+    lockInRow ? "pr-px" : "pr-1.5",
+    // Touch screens have no hover, so an unlocked pill always shows its lock:
+    // keep its room there, and the name is measured beside it, not under it.
+    lockOnHover && "[@media(hover:none)]:pr-[22px]",
+  );
   return (
     <div
       data-assignment-pill="true"
@@ -388,8 +392,9 @@ function AssignmentPillImpl({
           "pointer-events-none relative z-10 flex min-w-0 flex-1 select-none items-center gap-1 overflow-hidden",
           // Left-aligned in person mode: a centered row clips the initials.
           personStyle ? "justify-start" : "justify-center",
-          // The open lock of an unlocked pill appears over the row's end:
-          // the name fades out under it (index.css) instead of a box on top.
+          // The open lock of an unlocked pill appears over the row's end on
+          // hover: the name fades out under it (index.css) instead of a box
+          // on top. Touch screens keep room for it instead (padding above).
           lockOnHover && "pill-lock-fade",
         )}
       >

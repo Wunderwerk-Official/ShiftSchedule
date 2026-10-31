@@ -315,13 +315,15 @@ export default function ClinicSheetGrid({
         }
         className={cx(
           "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px]",
+          // Touch screens always show an unlocked name's lock: keep its room.
+          hasLock && !isLocked && "[@media(hover:none)]:pr-5",
           textClass,
           isUnqualified && "underline decoration-amber-500 decoration-wavy",
           !readOnly && "cursor-grab active:cursor-grabbing hover:bg-black/5",
           isBeingDragged && "opacity-40",
         )}
       >
-        <span className={cx("min-w-0 truncate", hasLock && !isLocked && "pill-lock-fade")}>
+        <span className={cx("min-w-0 flex-1 truncate", hasLock && !isLocked && "pill-lock-fade")}>
           {displayName}
         </span>
         {/* The same lock as the weekly grid: a locked name shows it, an

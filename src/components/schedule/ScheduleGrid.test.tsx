@@ -563,6 +563,7 @@ describe("ScheduleGrid stacked times", () => {
     expect(button.className).toContain("relative");
     expect(button.className).not.toContain("pill-lock-reveal");
     expect(pill.classList).not.toContain("min-h-7");
+    expect(pill.className).not.toContain("[@media(hover:none)]:pr-[22px]");
   });
 
   it("shows an unlocked planner pill's open lock only on hover, over the faded name", () => {
@@ -573,6 +574,8 @@ describe("ScheduleGrid stacked times", () => {
     expect(button.className).toContain("absolute");
     expect(pill.querySelector(".pill-lock-fade")).not.toBeNull();
     expect(pill.classList).toContain("pr-1.5");
+    // Touch screens always show the lock: its room is kept there.
+    expect(pill.classList).toContain("[@media(hover:none)]:pr-[22px]");
   });
 
   it("starts a hand-placed pill locked and toggles it with the same button", () => {

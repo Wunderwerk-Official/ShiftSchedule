@@ -1,4 +1,5 @@
 import type { Assignment, Clinician, Location } from "../../api/client";
+import { isProtectedAssignment } from "../assignmentPolicy";
 import { getDayType } from "../dayTypes";
 import type { ScheduleRow } from "../shiftRows";
 import { parseTimeToMinutes } from "../time";
@@ -187,7 +188,8 @@ export function toPlanShift(ctx: PlanContext, assignment: Assignment): PlanShift
     kind: isDuty ? "duty" : "shift",
     colors: isDuty ? DUTY_COLORS : deriveBlockColors(row.blockColor),
     published: ctx.publishedWeeks.has(weekStartISO(assignment.dateISO)),
-    locked: assignment.locked || undefined,
+    // The team grid's lock (v1.69): hand-placed or locked later.
+    locked: isProtectedAssignment(assignment) || undefined,
   };
 }
 

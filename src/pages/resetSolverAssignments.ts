@@ -32,9 +32,10 @@ export function resetSolverAssignments(
  * "Reset → Unlocked shifts and rest days": the shifts "Unlocked shifts"
  * removes, and the pool rows (Rest Day) of the range are emptied too. Locked
  * shifts stay — since v1.69 that includes every hand-placed shift nobody
- * unlocked (before, this reset removed manual entries). In pool rows, which
- * have no lock button, hand-made entries on the clinician's vacation days
- * stay (hidden in the grid). Returns `prev` when nothing changes.
+ * unlocked (before, this reset removed manual entries). Pool rows have no
+ * lock button: there a `locked` flag means nothing, and only hand-made
+ * entries on the clinician's vacation days stay (hidden in the grid).
+ * Returns `prev` when nothing changes.
  */
 export function resetUnfixedAssignments(
   prev: Map<string, Assignment[]>,
@@ -49,8 +50,7 @@ export function resetUnfixedAssignments(
     const isPool = rowId.startsWith("pool-");
     const kept = list.filter((item) =>
       isPool
-        ? item.locked === true ||
-          (isProtectedAssignment(item) && isOnVacation(item.clinicianId, dateISO))
+        ? item.source !== "solver" && isOnVacation(item.clinicianId, dateISO)
         : isProtectedAssignment(item),
     );
     if (kept.length === list.length) continue;
