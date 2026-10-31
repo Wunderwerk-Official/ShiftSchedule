@@ -38,7 +38,7 @@ def _forwarded_argv(monkeypatch, tmp_path, **env):
 
     captured = {}
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(module, "build_job", lambda root, argv, impl: captured.setdefault("argv", argv) and "")
+    monkeypatch.setattr(module, "build_job", lambda root, argv, impl, *_: captured.setdefault("argv", argv) and "")
     for name in ("START", "DAYS", "TIMEOUT", "MODEL", "SCENARIO", "STRATEGY", "VARIANT", "PROVIDER",
                  "REASONING", "IMPLEMENTATION"):
         monkeypatch.delenv(name, raising=False)
@@ -61,3 +61,64 @@ def test_claude_only_effort_levels_use_the_effort_flag(monkeypatch, tmp_path):
     assert argv[-2:] == ["--effort", "xhigh"]
     # An empty model input keeps the saved model.
     assert "--model" not in argv
+
+
+def test_the_job_records_its_pid_only_while_it_runs(tmp_path):
+    from backend.arena.build_job import pid_file_name
+
+    root = tmp_path / "checkout"
+    arena = root / "backend/arena"
+    arena.mkdir(parents=True)
+    (root / "backend/__init__.py").write_text("")
+    (root / "backend/agent_budget.py").write_text("")
+    (arena / "fixture_complex.json").write_text("{}")
+    (arena / "prompt_eval.py").write_text(
+        "import os, pathlib, tempfile\n"
+        f"print(pathlib.Path(tempfile.gettempdir(), {pid_file_name('7-1')!r}).read_text() == str(os.getpid()))\n")
+    temp = tmp_path / "tmp"
+    temp.mkdir()
+    job = build_job(root, ["prompt_eval", "--mock"], "checkout", run_id="7-1")
+    result = subprocess.run([sys.executable, "-"], input=job, text=True, capture_output=True,
+                            env={**os.environ, "TMPDIR": str(temp)}, check=True)
+    assert result.stdout.strip() == "True"
+    assert list(temp.iterdir()) == []
+
+
+def _run_stop(temp, run_id="7-1"):
+    from backend.arena.build_job import stop_job
+
+    return subprocess.run([sys.executable, "-"], input=stop_job(run_id), text=True, capture_output=True,
+                          env={**os.environ, "TMPDIR": str(temp)}, check=True).stdout
+
+
+def test_the_cancel_step_stops_the_recorded_arena_process(tmp_path):
+    from backend.arena.build_job import pid_file_name
+
+    arena = subprocess.Popen([sys.executable, "-"], stdin=subprocess.PIPE)
+    try:
+        (tmp_path / pid_file_name("7-1")).write_text(str(arena.pid))
+        assert "Stopped arena process" in _run_stop(tmp_path)
+        assert arena.wait(timeout=10) != 0
+        assert not (tmp_path / pid_file_name("7-1")).exists()
+    finally:
+        arena.kill()
+    assert "No arena process" in _run_stop(tmp_path)
+
+
+def test_the_cancel_step_leaves_a_reused_pid_alone(tmp_path):
+    from backend.arena.build_job import pid_file_name
+
+    other = subprocess.Popen(["sleep", "30"])
+    try:
+        (tmp_path / pid_file_name("7-1")).write_text(str(other.pid))
+        assert "no longer the arena job" in _run_stop(tmp_path)
+        assert other.poll() is None
+    finally:
+        other.kill()
+
+
+def test_the_workflow_gets_a_stop_script_for_its_run(monkeypatch, tmp_path):
+    monkeypatch.setenv("GITHUB_RUN_ID", "991")
+    monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "2")
+    _forwarded_argv(monkeypatch, tmp_path)
+    assert "shift-arena-991-2.pid" in (tmp_path / "arena_stop.py").read_text()

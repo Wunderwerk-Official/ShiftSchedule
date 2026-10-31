@@ -10,6 +10,7 @@ from backend.agent.config import AgentConfig
 from backend.arena.run import (
     RunGuard,
     apply_llm_overrides,
+    clamp_call_timeout,
     comparison_problems,
     cost_report,
     reported_effort,
@@ -72,6 +73,9 @@ def test_an_effort_the_request_would_not_carry_is_refused():
         apply_llm_overrides(AgentConfig(provider="openai", model="Qwen/Qwen3.5-122B"), effort="max")
     plain = apply_llm_overrides(AgentConfig(provider="anthropic", model="claude-haiku-4-5"))
     assert plain.anthropic_effort is None
+    # low/medium/high via --effort reach the self-hosted endpoint as well.
+    qwen = apply_llm_overrides(AgentConfig(provider="openai", model="Qwen/Qwen3.5-122B"), effort="high")
+    assert qwen.reasoning_effort == "high"
 
 
 def test_the_report_names_the_effort_that_is_sent():
@@ -115,3 +119,12 @@ def test_the_run_guard_aborts_at_the_hard_limit_and_stays_quiet_otherwise(tmp_pa
     with RunGuard(quiet, marker=tmp_path / "absent", hard_limit_seconds=60, poll_seconds=0.01) as guard:
         pass
     assert not quiet.is_set() and guard.reason is None
+
+
+def test_a_model_call_near_the_hard_limit_ends_within_the_grace():
+    assert clamp_call_timeout(1200.0, None, 0.0, 60.0) == 1200.0
+    assert clamp_call_timeout(1200.0, 10_000.0, 0.0, 60.0) == 1200.0
+    # 5 minutes before the limit: the call may run 5 minutes + grace.
+    assert clamp_call_timeout(1200.0, 10_000.0, 9_700.0, 60.0) == 360.0
+    # Past the limit (the abort is pending): a short floor, never negative.
+    assert clamp_call_timeout(1200.0, 10_000.0, 10_100.0, 60.0) == 10.0

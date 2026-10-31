@@ -50,13 +50,15 @@ jobs:
   arena:
     runs-on: ubuntu-latest
     # A Claude week run without a wall-clock budget can take hours. The run
-    # aborts itself at 330 minutes (prompt_eval HARD_LIMIT_SECONDS) and the
-    # container stops it at 340, so it never outlives this job.
+    # aborts itself at 330 minutes (prompt_eval HARD_LIMIT_SECONDS; a model
+    # call running then ends within 60 s) and the container stops it at 340;
+    # a cancelled job stops it in the last step.
     timeout-minutes: 350
     concurrency:
-      # One running run per provider; Claude runs do not wait for GPU runs.
-      # GitHub keeps at most one waiting run per group and a newer dispatch
-      # replaces it: dispatch the next run once the previous one started.
+      # One running run per group; runs with provider "anthropic" do not wait
+      # for GPU runs ("configured" always queues as self-hosted). GitHub keeps
+      # at most one waiting run per group and a newer dispatch replaces it:
+      # dispatch the next run once the previous one started.
       group: agent-arena-${{ inputs.provider == 'anthropic' && 'anthropic' || 'self-hosted-gpu' }}
       cancel-in-progress: false
     steps:
@@ -106,6 +108,15 @@ jobs:
           python3 -m backend.arena.build_job
           ssh truhn-target 'cd /opt/app && docker compose -f docker-compose.proxied.yml exec -T backend timeout --kill-after=60 20400 python -' \
             < arena_job.py | tee arena-trace.log
+
+      # A cancelled job drops ssh, which does not end the non-TTY exec in the
+      # container: stop this run's arena process (recorded by arena_job.py).
+      - name: Stop the arena case after a cancel
+        if: cancelled()
+        run: |
+          [ -f arena_stop.py ] || exit 0
+          ssh truhn-target 'cd /opt/app && docker compose -f docker-compose.proxied.yml exec -T backend python -' \
+            < arena_stop.py
 
       - uses: actions/upload-artifact@v4
         if: always()

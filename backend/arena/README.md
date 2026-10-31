@@ -158,12 +158,15 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | reasoning | empty (endpoint / model default; Opus 5.5: `medium`) / `low` / `medium` / `high`; Claude also `xhigh` / `max` |
 | implementation | `deployed` (container's code and fixture; runs this checkout's `prompt_eval.py` against them, so from v1.68 on it needs v1.68 deployed — use `checkout` until then) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 
-Run cases **one at a time**: self-hosted and Claude runs each have their own
-concurrency group (the endpoint shares a GPU; Claude runs never wait for
-it), but GitHub keeps only one waiting run per group and a newer dispatch
-replaces it, so dispatch the next run once the previous one has started.
-A deployment aborts a running arena case (the deploy would otherwise wait
-for it); the report then says so and the run does not count. Open the finished run →
+Run cases **one at a time**: runs with `provider: anthropic` have their own
+concurrency group and never wait for the GPU; `configured` and `openai`
+share the self-hosted group (dispatch Claude runs with `provider:
+anthropic`, even when Claude is the saved provider). GitHub keeps only one
+waiting run per group and a newer dispatch replaces it, so dispatch the next
+run once the previous one has started. A deployment aborts a running arena
+case (the deploy would otherwise wait for it), and so does the 330-minute
+limit; the report then says so and the run does not count. Cancelling the
+job also stops its process in the container (last workflow step). Open the finished run →
 job `arena` → step "Run the arena case on the LXC" → copy the
 `PROMPT_EVAL_REPORT` line. The workflow runs `prompt_eval.py`, so there is no
 `ARENA_REPORT` line and there are no `--- thought ---` blocks; the model's
@@ -212,6 +215,8 @@ Read the stage-0 `cost_usd` values before starting stage 1 and scale the
 estimate. The report's `effort` is the effort actually sent (Opus 5.5 with an empty
 reasoning field: `medium`); an effort a model would not get (Haiku 4.5, or
 `xhigh`/`max` on the self-hosted model) is refused before the run starts.
+On the server (path B) `--effort low|medium|high` also sets the self-hosted
+reasoning effort.
 Stage 1 decides the model: Opus 5.5 low only replaces medium when
 its valid runs are as good in the order above; Sonnet 5.5 is cheaper per
 token but is not selectable in Settings (estimate-only price). The same

@@ -297,10 +297,10 @@ def apply_llm_overrides(config, *, model=None, effort=None, reasoning_effort=Non
         config.anthropic_effort = requested
         config.reasoning_effort = None
     else:
-        if effort:
+        if effort in ("xhigh", "max"):
             raise SystemExit(f"effort {effort} exists on Claude only; "
-                             "use low, medium or high for the self-hosted model")
-        config.reasoning_effort = reasoning_effort
+                             "the self-hosted model takes low, medium or high")
+        config.reasoning_effort = effort or reasoning_effort
     return config
 
 
@@ -310,6 +310,14 @@ def reported_effort(config):
     if config.provider == "anthropic":
         return effective_effort(config.model, config.anthropic_effort)
     return config.reasoning_effort
+
+
+def clamp_call_timeout(timeout_seconds, hard_deadline, now, grace_seconds):
+    """A model call may not outlive the hard limit by more than the grace:
+    the harness only sees the abort once the running call returns."""
+    if hard_deadline is None:
+        return timeout_seconds
+    return max(10.0, min(timeout_seconds, hard_deadline + grace_seconds - now))
 
 
 def drain_marker() -> Path:

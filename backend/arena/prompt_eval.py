@@ -21,6 +21,7 @@ from backend.arena.run import (
     PROVIDER_CHOICES,
     RunGuard,
     apply_llm_overrides,
+    clamp_call_timeout,
     apply_scenario,
     comparison_problems,
     cost_report,
@@ -31,10 +32,12 @@ from backend.arena.run import (
 )
 
 # The GitHub job ends at 350 minutes (agent-arena.yml) and the container
-# kills the process at 340; the run itself aborts gracefully before both,
-# so a report is always printed. Budgets stay below the hard limit.
+# kills the process at 340; the run itself aborts at 330 and a model call
+# still running then ends within CALL_GRACE_SECONDS (its timeout is clamped),
+# so the abort, report and plan land before the kill. Budgets stay below.
 MAX_BUDGET_SECONDS = 18_000
 HARD_LIMIT_SECONDS = 19_800
+CALL_GRACE_SECONDS = 60.0
 from backend.models import Assignment, SolveRangeRequest
 from backend.scoring import plan_stats
 
@@ -155,6 +158,7 @@ def main():
                   "timeout": args.timeout or "unlimited", "hashes": hashes})
 
     started = time.monotonic()
+    limits = {"hard_deadline": None}
     tool_counts = Counter()
     timings = Counter()
     top_level_tool_seconds = 0.0
@@ -206,6 +210,8 @@ def main():
 
         def complete(self, **kwargs):
             before = time.monotonic()
+            kwargs["timeout_seconds"] = clamp_call_timeout(
+                kwargs["timeout_seconds"], limits["hard_deadline"], before, CALL_GRACE_SECONDS)
             self.delegate.cancel_event = self.cancel_event
             response = self.delegate.complete(**kwargs)
             row = {"call": len(calls) + 1, "phase": "day" if kwargs["system"] == day else "review" if kwargs["system"] == review else "duty_or_repair",
@@ -224,6 +230,7 @@ def main():
     try:
         with RunGuard(cancel, marker=None if args.mock else drain_marker(),
                       hard_limit_seconds=HARD_LIMIT_SECONDS) as guard:
+            limits["hard_deadline"] = time.monotonic() + HARD_LIMIT_SECONDS
             result = harness.agent_solve_range(
                 SolveRangeRequest(startISO=args.start, endISO=end, only_fill_required=True,
                                   timeout_seconds=args.timeout, solver_mode="agent", agent_strategy=args.strategy),

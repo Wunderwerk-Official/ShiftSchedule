@@ -2331,8 +2331,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `resolve_agent_runtime_config(..., provider_override=)`; the settings stay
   unchanged), `--model` (empty = the saved model), `--effort` (Claude;
   `--reasoning-effort low|medium|high` maps to the Claude effort on
-  Anthropic; an effort the request would not carry — Haiku 4.5, or xhigh/max
-  on the self-hosted model — is refused) and `--timeout 0` (unlimited, like
+  Anthropic and `--effort low|medium|high` to the reasoning effort on the
+  self-hosted model; an effort the request would not carry — Haiku 4.5, or
+  xhigh/max on the self-hosted model — is refused) and `--timeout 0` (unlimited, like
   production; prompt_eval budgets up to 18000 s). Reports add `provider`,
   `effort` (the effort actually sent, e.g. `medium` for Opus 5.5 without an
   override), `cost_usd` (cache tokens included; `None` for self-hosted),
@@ -2347,15 +2348,23 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   hours-long Claude run would keep planning closed and fail the deploy.
   `arena.run.RunGuard` watches the `.planning-drain` marker every 10 s and
   ends the run through the harness's abort path (the current model call
-  finishes first); prompt_eval also aborts at a hard limit of 330 minutes
-  (`HARD_LIMIT_SECONDS`). The workflow job allows 350 minutes and the
-  container stops the process at 340 (`timeout --kill-after=60 20400`), so a
-  cancelled job never leaves an orphaned run. A guarded abort is reported
+  finishes first, at most 20 minutes); prompt_eval also aborts at a hard
+  limit of 330 minutes (`HARD_LIMIT_SECONDS`) and clamps the timeout of a
+  model call running then to end within 60 s (`clamp_call_timeout`), so the
+  report and plan are printed before the container stops the process at 340
+  minutes (`timeout --kill-after=60 20400`; the job allows 350). A cancelled
+  job drops ssh, which does not end the container's non-TTY exec: the job
+  records its pid (`shift-arena-<run>-<attempt>.pid` in the container's temp
+  directory, removed when the run ends) and the workflow's `if: cancelled()`
+  step stops exactly that process (`build_job.stop_job`; a reused pid that
+  is no longer a stdin python job is left alone). A guarded abort is reported
   and makes the run invalid. `agent_budget.ESTIMATE_ONLY_PRICES` prices Sonnet 5.5
   ($2/$10) and Opus 5 ($5/$25) for estimates only; they are not selectable
   in Settings. The workflow gains a `provider` input, an empty model
-  default, the Claude effort levels and one concurrency group per provider
-  (GitHub keeps one waiting run per group; a newer dispatch replaces it).
+  default, the Claude effort levels, the cancel step and two concurrency
+  groups (`anthropic` for provider `anthropic`; `configured` and `openai`
+  queue as self-hosted; GitHub keeps one waiting run per group and a newer
+  dispatch replaces it).
   See "Claude comparison" in `backend/arena/README.md`.
 - Tests: `test_agent_anthropic_provider.py` (effort override on both request
   paths, none for Haiku 4.5, `effective_effort`, traits, `fallback_turn`),
@@ -2364,9 +2373,11 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   keeps results the default stubs; `copy_provider_traits`),
   `test_agent_tools.py` (literal notes, descriptions, duty prompt),
   `test_agent_budget.py` (estimate-only prices, provider override),
-  `test_arena_build_job.py` (workflow inputs reach prompt_eval),
-  `test_arena_claude.py` (env effort, overrides and refusals, reported
-  effort, cost, comparison gate, run guard).
+  `test_arena_build_job.py` (workflow inputs reach prompt_eval, pid file
+  only while the run lasts, cancel step stops the recorded process and
+  leaves a reused pid alone), `test_arena_claude.py` (env effort, overrides
+  and refusals, reported effort, cost, comparison gate, run guard, call
+  clamp).
 - Deploy notes: no schema or data change. With `implementation: deployed`
   the arena runs the checkout's `prompt_eval.py` against the deployed
   modules and imports names that exist from v1.68 on, so every
