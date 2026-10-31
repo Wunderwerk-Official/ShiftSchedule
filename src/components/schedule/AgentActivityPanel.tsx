@@ -46,16 +46,16 @@ function SparkleIcon({ className = "" }: { className?: string }) {
   );
 }
 
+type DayState = "done" | "current" | "skipped" | "open";
+
 /**
- * One segment per day of the range: planned, in progress (pulsing) or still
- * open. Short ranges name their days below the segments.
+ * One segment per day of the range: planned, in progress (pulsing), skipped
+ * (amber) or still open. Short ranges name their days below the segments.
  */
-function DayTrack({ days, total, done, current }: {
-  days: string[];
-  total: number;
-  done: number;
-  current: number | null;
-}) {
+function DayTrack({ days, states }: { days: string[]; states: DayState[] }) {
+  const total = states.length;
+  const done = states.filter((state) => state === "done").length;
+  const skipped = states.filter((state) => state === "skipped").length;
   const labelled = days.length === total && total <= 10;
   return (
     <div>
@@ -65,19 +65,23 @@ function DayTrack({ days, total, done, current }: {
         aria-valuemin={0}
         aria-valuemax={total}
         aria-valuenow={done}
-        aria-valuetext={`${done} of ${total} days planned`}
+        aria-valuetext={`${done} of ${total} days planned${skipped ? `, ${skipped} skipped` : ""}`}
         className={cx("flex", total > 14 ? "gap-px" : "gap-1")}
       >
-        {Array.from({ length: total }, (_, index) => (
+        {states.map((state, index) => (
           <span
             key={index}
+            data-day-state={state}
+            title={state === "skipped" ? "Skipped: this day was not planned" : undefined}
             className={cx(
               "h-1.5 flex-1 rounded-full transition-colors duration-700",
-              index < done
+              state === "done"
                 ? "bg-indigo-500 dark:bg-indigo-400"
-                : index === current
+                : state === "current"
                   ? "bg-indigo-300 motion-safe:animate-pulse dark:bg-indigo-400/45"
-                  : "bg-slate-200 dark:bg-slate-700",
+                  : state === "skipped"
+                    ? "bg-amber-400 dark:bg-amber-500/70"
+                    : "bg-slate-200 dark:bg-slate-700",
             )}
           />
         ))}
@@ -87,16 +91,19 @@ function DayTrack({ days, total, done, current }: {
           {days.map((dateISO, index) => {
             const [year, month, day] = dateISO.split("-").map(Number);
             const weekday = WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
+            const state = states[index];
             return (
               <span
                 key={dateISO}
                 className={cx(
                   "flex-1 truncate text-center text-[10px] tabular-nums",
-                  index === current
+                  state === "current"
                     ? "font-semibold text-indigo-600 dark:text-indigo-300"
-                    : index < done
-                      ? "text-slate-500 dark:text-slate-400"
-                      : "text-slate-400 dark:text-slate-500",
+                    : state === "skipped"
+                      ? "text-amber-700 dark:text-amber-300"
+                      : state === "done"
+                        ? "text-slate-500 dark:text-slate-400"
+                        : "text-slate-400 dark:text-slate-500",
                 )}
               >
                 {weekday} {String(day).padStart(2, "0")}
@@ -106,6 +113,39 @@ function DayTrack({ days, total, done, current }: {
         </div>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Day states for the track, or null when the run has no day loop (repair
+ * strategy). New servers send the finished and skipped days with every
+ * event; for older ones the context is read: days before the current one
+ * are done, and once the context drops the day again (whole-range review,
+ * finalize) every day counts as done.
+ */
+function dayStates(status: AgentStatus, days: string[]): DayState[] | null {
+  const total = status.totalDays ?? days.length;
+  if (total <= 0) return null;
+  const current = status.stage !== "finalize" && status.dayIndex ? status.dayIndex - 1 : null;
+  if (status.daysFinished) {
+    const finished = new Set(status.daysFinished);
+    const skipped = new Set(status.daysSkipped ?? []);
+    const byDate = days.length === total;
+    return Array.from({ length: total }, (_, index): DayState => {
+      if (index === current) return "current";
+      if (byDate) {
+        if (finished.has(days[index])) return "done";
+        if (skipped.has(days[index])) return "skipped";
+        return "open";
+      }
+      return index < finished.size ? "done" : "open";
+    });
+  }
+  if (status.totalDays === null) return null;
+  const reviewing = status.stage === "finalize" || (status.dayIndex === null && status.maxDayIndex !== null);
+  const done = reviewing ? total : current !== null ? Math.min(total, current) : 0;
+  return Array.from({ length: total }, (_, index): DayState =>
+    index === current ? "current" : index < done ? "done" : "open",
   );
 }
 
@@ -122,10 +162,8 @@ export function AgentRunProgress({ status, range, elapsedMs = 0, currentPhase, l
   liveConnected?: boolean;
 }) {
   const days = rangeDays(range);
-  const total = status.totalDays ?? days.length;
-  const reviewing = status.stage === "finalize" || (status.dayIndex === null && status.maxDayIndex !== null);
-  const done = reviewing ? total : status.dayIndex ? Math.min(total, status.dayIndex - 1) : 0;
-  const current = !reviewing && status.dayIndex ? status.dayIndex - 1 : null;
+  const states = dayStates(status, days);
+  const total = states?.length ?? 0;
   const waitSeconds = Math.max(0, Math.floor((elapsedMs - status.actionStartedMs) / 1000));
   const phase = status.stage === "finalize"
     ? "Finishing: the best plan is prepared for review"
@@ -148,7 +186,7 @@ export function AgentRunProgress({ status, range, elapsedMs = 0, currentPhase, l
           ) : null}
         </p>
       </div>
-      {total > 0 ? <DayTrack days={days} total={total} done={done} current={current} /> : null}
+      {states ? <DayTrack days={days} states={states} /> : null}
       <div className="flex items-start gap-2.5 rounded-xl bg-slate-50 px-3 py-2.5 dark:bg-slate-800/60">
         <SparkleIcon
           className={cx("mt-0.5 h-4 w-4 shrink-0", liveConnected ? "solver-float text-indigo-500" : "text-amber-500")}

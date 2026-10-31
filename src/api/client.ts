@@ -1165,6 +1165,13 @@ export type AgentActivityData = {
   planning_date?: string | null;
   day_index?: number | null;
   total_days?: number;
+  /**
+   * Day-by-day runs (v1.69): range days the day loop finished (planned or
+   * attempted) and days it skipped, sent with every event so the live day
+   * track needs no history. Absent for the repair strategy.
+   */
+  days_finished?: string[];
+  days_skipped?: string[];
   activity_id?: number;
   tool?: string;
   dateISO?: string;

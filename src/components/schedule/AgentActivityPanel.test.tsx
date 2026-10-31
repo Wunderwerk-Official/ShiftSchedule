@@ -1,6 +1,7 @@
 import { act, render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import AgentActivityPanel from "./AgentActivityPanel";
+import { appendAgentEvent } from "../../lib/agentActivity";
 import type { AgentActivityData } from "../../api/client";
 
 // Distinct start/end markers so we can prove the WHOLE text is shown, not a
@@ -189,10 +190,10 @@ describe("day track", () => {
     expect(screen.getByText("Wed 07").className).toContain("font-semibold");
   });
 
-  it("counts every day as planned once the agent reviews the whole range", () => {
+  it("counts every day as planned once the agent reviews the whole range (servers without day lists)", () => {
     render(<AgentActivityPanel range={RANGE} events={[
       day(5, "2026-01-09"),
-      ev({ kind: "phase", phase_label: "Review the whole planning range", day_index: null, planning_date: null }),
+      ev({ kind: "phase", phase_label: "Review the whole planning range", day_index: null, planning_date: null, total_days: 5 }),
     ]} />);
     expect(screen.getByRole("progressbar", { name: "Days planned" })).toHaveAttribute("aria-valuenow", "5");
     const progress = screen.getByRole("region", { name: "Planning progress" });
@@ -200,8 +201,53 @@ describe("day track", () => {
   });
 
   it("starts empty while the first draft is made", () => {
-    render(<AgentActivityPanel range={RANGE} events={[ev({ kind: "stage", stage: "seed", iteration: 0 })]} />);
+    render(<AgentActivityPanel range={RANGE} events={[ev({ kind: "stage", stage: "seed", iteration: 0, days_finished: [], days_skipped: [] })]} />);
     expect(screen.getByRole("progressbar", { name: "Days planned" })).toHaveAttribute("aria-valuenow", "0");
     expect(screen.getByText("Drafting a first plan")).toBeTruthy();
+  });
+
+  it("reads finished and skipped days from the server, also with no history (reload)", () => {
+    // A reload during the review: no day event in the buffer any more, but
+    // every event carries the day lists (v1.69).
+    render(<AgentActivityPanel range={RANGE} events={[
+      ev({ kind: "phase", stage: "improve", phase_label: "Review the whole planning range", day_index: null,
+        planning_date: null, total_days: 5,
+        days_finished: ["2026-01-05", "2026-01-06", "2026-01-08", "2026-01-09"], days_skipped: ["2026-01-07"] }),
+    ]} />);
+    const track = screen.getByRole("progressbar", { name: "Days planned" });
+    expect(track).toHaveAttribute("aria-valuenow", "4");
+    expect(track).toHaveAttribute("aria-valuetext", "4 of 5 days planned, 1 skipped");
+    expect([...track.children].map((segment) => segment.getAttribute("data-day-state"))).toEqual([
+      "done", "done", "skipped", "done", "done",
+    ]);
+    expect(screen.getByText("Wed 07").className).toContain("text-amber-700");
+  });
+
+  it("keeps the track full through a long review that pushed every day event out of the buffer", () => {
+    const all = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09"];
+    let events: AgentActivityData[] = [day(5, "2026-01-09")];
+    for (let i = 0; i < 300; i += 1) {
+      events = appendAgentEvent(events, ev({ kind: "tool_result", stage: "improve", phase_label: "Review the whole planning range",
+        day_index: null, planning_date: null, total_days: 5, days_finished: all, days_skipped: [], activity_id: i, summary: `check ${i}` }));
+    }
+    expect(events.some((event) => typeof event.day_index === "number")).toBe(false);
+    render(<AgentActivityPanel range={RANGE} events={events} />);
+    expect(screen.getByRole("progressbar", { name: "Days planned" })).toHaveAttribute("aria-valuenow", "5");
+  });
+
+  it("keeps the current day and the days not reached yet apart", () => {
+    render(<AgentActivityPanel range={RANGE} events={[
+      day(2, "2026-01-06"),
+      ev({ kind: "iteration", stage: "improve", phase_label: "Build the daily plan", day_index: 2, total_days: 5,
+        planning_date: "2026-01-06", days_finished: ["2026-01-05"], days_skipped: [] }),
+    ]} />);
+    const states = [...screen.getByRole("progressbar", { name: "Days planned" }).children]
+      .map((segment) => segment.getAttribute("data-day-state"));
+    expect(states).toEqual(["done", "current", "open", "open", "open"]);
+  });
+
+  it("shows no day track for runs without a day loop (repair strategy)", () => {
+    render(<AgentActivityPanel range={RANGE} events={[ev({ kind: "iteration", stage: "improve", iteration: 3 })]} />);
+    expect(screen.queryByRole("progressbar", { name: "Days planned" })).toBeNull();
   });
 });

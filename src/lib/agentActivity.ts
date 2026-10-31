@@ -99,10 +99,17 @@ export type AgentStatus = {
   totalDays: number | null;
   /**
    * Highest day of the range the agent has worked on (1-based), or null.
-   * Once the context drops the day again (whole-range review), the days are
-   * done: the progress track shows them all as planned.
+   * Only a fallback for servers that do not send days_finished: once the
+   * context drops the day again (whole-range review), the days count as done.
    */
   maxDayIndex: number | null;
+  /**
+   * Days the day loop finished / skipped (ISO dates), from the latest event
+   * that carries them; null when the server sends none (repair strategy or
+   * an older server).
+   */
+  daysFinished: string[] | null;
+  daysSkipped: string[] | null;
   planningDate: string | null;
   checksProgress?: AgentActivityData["checks_progress"];
   currentAction: string;
@@ -123,6 +130,8 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
   let movesAccepted = 0;
   let context: AgentActivityData | undefined;
   let maxDayIndex: number | null = null;
+  let daysFinished: string[] | null = null;
+  let daysSkipped: string[] | null = null;
   let lastResult: string | null = null;
   const activeTools = new Map<number, AgentActivityData>();
   const detailedIterations = new Set(events.filter((e) => e.kind === "tool_start" || e.kind === "tool_result").map((e) => e.iteration));
@@ -138,6 +147,10 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
     }
     if (event.phase_label) context = event;
     if (typeof event.day_index === "number") maxDayIndex = Math.max(maxDayIndex ?? 0, event.day_index);
+    if (Array.isArray(event.days_finished)) {
+      daysFinished = event.days_finished;
+      daysSkipped = Array.isArray(event.days_skipped) ? event.days_skipped : [];
+    }
     iteration = Math.max(iteration, event.iteration ?? 0);
     if (typeof event.max_iterations === "number") {
       maxIterations = event.max_iterations;
@@ -215,6 +228,8 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
     dayIndex: context?.day_index ?? null,
     totalDays: context?.total_days ?? null,
     maxDayIndex,
+    daysFinished,
+    daysSkipped,
     planningDate: context?.planning_date ?? null,
     checksProgress: last?.checks_progress,
     currentAction,

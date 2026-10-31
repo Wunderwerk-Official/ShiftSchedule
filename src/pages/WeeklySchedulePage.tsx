@@ -783,8 +783,9 @@ export default function WeeklySchedulePage({
     [clinicians],
   );
   // Team grid colors (plan §2.9): every person has their own color and the
-  // linked person ("That's me") gets an outline. The section colors stay in
-  // the row labels (and in print/public pages, which keep the section look).
+  // linked person ("That's me") gets an outline. With "Times: Stacked" the
+  // section colors stay in the lane labels; side by side shows neutral
+  // section blocks. Print/public pages keep the section look.
   const linkedClinicianIndex = prefs.clinicianId
     ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
     : -1;

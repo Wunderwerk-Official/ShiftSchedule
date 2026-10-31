@@ -813,6 +813,11 @@ def test_day_by_day_runs_one_conversation_per_day():
     second_day = next(e for e in live if e["kind"] == "iteration" and e.get("planning_date") == TUE)
     assert second_day["day_index"] == 2 and second_day["total_days"] == 2
     assert any(e.get("phase_label") == "Verify the final plan and remaining gaps" for e in live)
+    # The live day track reads the finished days from every event (v1.69).
+    assert second_day["days_finished"] == [MON] and second_day["days_skipped"] == []
+    verify = next(e for e in live if e.get("phase_label") == "Verify the final plan and remaining gaps")
+    assert verify["day_index"] is None
+    assert verify["days_finished"] == [MON, TUE] and verify["days_skipped"] == []
     assert {(a["rowId"], a["clinicianId"]) for a in result["assignments"]} == {
         ("slot-a__mon", "clin-1"),
         ("slot-b__tue", "clin-2"),
@@ -830,6 +835,47 @@ def test_day_by_day_runs_one_conversation_per_day():
     assert len(provider.seen_messages[3]) == 1  # history did not carry over
     # The day-2 digest reports what day 1 achieved.
     assert "Days already built in this run" in first_day2
+
+
+def test_day_track_events_report_a_skipped_day():
+    """A day whose model call fails is skipped; the events after it say so,
+    and the next day still counts as finished (v1.69 day track)."""
+    state = _two_day_state()
+    script = [
+        {"error": "bad request", "status": 400, "retryable": False},
+        {"tool_calls": [{"name": "apply_moves", "arguments": {"moves": [
+            {"action": "assign", "slot_key": f"slot-b__tue__{TUE}", "clinicianId": "Bob"}]}}]},
+        {"text": "Day 2 staffed."},
+    ]
+    payload = _payload(endISO=TUE)
+    payload.agent_strategy = "day_by_day"
+    progress = ProgressRecorder()
+    result = agent_solve_range(
+        payload, state, MockCancelEvent(), progress, time.time(),
+        provider=CapturingProvider(script), config=_config(),
+    )
+    live = [data for kind, data in progress.events if kind == "agent"]
+    second_day = next(e for e in live if e["kind"] == "iteration" and e.get("planning_date") == TUE)
+    assert second_day["days_skipped"] == [MON] and second_day["days_finished"] == []
+    # The last event agrees with the run's outcome (the final audit may still
+    # recover a skipped day deterministically).
+    agent = result["debugInfo"]["agent"]
+    last = live[-1]
+    assert last["days_skipped"] == agent["daysSkipped"]
+    assert len(last["days_finished"]) == (
+        agent["daysPlanned"] + len(agent["daysIncomplete"]) + len(agent["daysUnverified"]))
+    assert TUE in last["days_finished"]
+
+
+def test_repair_strategy_events_carry_no_day_track():
+    state = _two_clinician_state()
+    progress = ProgressRecorder()
+    agent_solve_range(
+        _payload(), state, MockCancelEvent(), progress, time.time(),
+        provider=CapturingProvider([{"text": "Nothing to change."}]), config=_config(),
+    )
+    live = [data for kind, data in progress.events if kind == "agent"]
+    assert live and all("days_finished" not in e for e in live)
 
 
 def test_day_by_day_is_default_and_repair_stays_selectable():

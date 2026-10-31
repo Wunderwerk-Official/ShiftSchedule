@@ -357,8 +357,10 @@ export default function HelpView() {
               own column, as before.
             </li>
             <li>
-              In the team plan (standard weekly grid) every person has their own color; the
-              workplaces keep their colors in the row labels. Once you have linked yourself
+              In the team plan (standard weekly grid) every person has their own color. With{" "}
+              <span className="font-medium">Times: Stacked</span> the workplaces keep their
+              colors in the row labels; <span className="font-medium">Side by side</span> shows
+              the workplace names in neutral blocks. Once you have linked yourself
               (&ldquo;That&rsquo;s me&rdquo;), your own entries also get an outline. The
               monthly sheet layout keeps its look.
             </li>

@@ -92,6 +92,8 @@ export default function ConstraintPulse({
       ? Math.min(1, stats.filledSlots / stats.totalRequiredSlots)
       : 1;
   const fullyCovered = stats.totalRequiredSlots > 0 && stats.filledSlots >= stats.totalRequiredSlots;
+  // Rounded down, and 100 only when every position is filled: 209 of 210 reads 99%.
+  const coverageLabel = fullyCovered ? 100 : Math.min(99, Math.floor(coveragePct * 100));
 
   return (
     <div className="flex w-full flex-col gap-3">
@@ -109,7 +111,7 @@ export default function ConstraintPulse({
               )}
             </p>
             <span className="shrink-0 text-xs font-semibold tabular-nums text-slate-500 dark:text-slate-400">
-              {Math.round(coveragePct * 100)}%
+              {coverageLabel}%
             </span>
           </div>
           <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">

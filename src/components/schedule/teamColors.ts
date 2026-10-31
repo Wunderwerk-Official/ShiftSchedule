@@ -16,7 +16,7 @@ export type PersonPillStyle = {
   initials: string;
 };
 
-/** The own outline ("That's me") is separate: ScheduleGrid's myClinicianId (set in person mode only). */
+/** The own outline ("That's me") is separate: ScheduleGrid's myClinicianId (the linked person, whenever one is linked). */
 export function buildPersonPillStyles(clinicians: Clinician[], isDark = false): Map<string, PersonPillStyle> {
   return new Map(
     clinicians.map((clinician, index) => [

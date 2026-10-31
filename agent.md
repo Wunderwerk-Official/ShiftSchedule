@@ -734,26 +734,19 @@ SSE live updates (real-time progress):
 - Frontend subscribes via `subscribeSolverProgress()` in `src/api/client.ts`.
 - When aborted, the last solution's assignments can be applied immediately.
 
-Solver overlay (SolverOverlay.tsx):
-- Renders inside the calendar container via `createPortal(content, calendarContainer)` where `calendarContainer` is the parent of `.calendar-scroll`.
-- Uses absolute positioning (`absolute inset-0 z-30`) so it only covers the calendar area.
+Solver overlay (SolverOverlay.tsx; layout since v1.69):
+- Renders inside the calendar container via `createPortal(content, calendarContainer)` where `calendarContainer` is the parent of `.calendar-scroll` (absolute, `inset-0 z-30`), or as a fixed overlay when no tall enough calendar is mounted.
 - Only shows when the displayed week overlaps with the solve range.
-- Compact panel width (`w-auto max-w-lg`) that fits content.
-- Components:
-  - Animated spinner with indigo accent.
-  - Date range label (DD.MM.YYYY format).
-  - Preparation phase indicator: shows current solver phase before first solution (e.g., "Loading schedule data...", "Solving constraints...").
-  - Live solution chart: SVG line chart showing objective value over time (log scale, inverted so better scores appear higher).
-  - Elapsed/total time counter (X:XX / Y:XX format, e.g., "0:45 / 1:00").
-  - Action buttons:
-    - "Run in background" - hides the overlay; the run continues server-side and a badge stays in the corner.
-    - "Stop run" (rose/red) - always visible; the calendar stays untouched, a partial result lands in the run inbox.
-    - "Apply best plan" (indigo/blue) - only shown after solutions found; stops the run and applies the best plan so far.
-    - "Details" button - opens full-screen dashboard with all graphs.
+- One panel (`max-w-2xl`, `max-h-full`), top to bottom:
+  - Header: title ("AI planning" / "Optimizing schedule"), the range (DD.MM.YYYY – DD.MM.YYYY) and the running time (role="progressbar", "Solver progress").
+  - Body (scrolls on its own): for agent runs `AgentActivityPanel` — phase or "Day N of M", the day track ("Days planned": planned / in progress / skipped / open, from the `days_finished` / `days_skipped` the server sends with every event) and the current step with its duration (role="status"); before the first solution of the classic optimizer, its phase line.
+  - "Best plan so far" card (`ConstraintPulse`): required positions filled (number, percentage, bar), rule and goal chips; for the classic optimizer also the live score chart. Its "Charts" button opens the full-screen dashboard (`SolverDashboard`, titled "Run charts").
+  - Agent runs: the activity log, collapsed to its latest entry; opened it lists the recent activity, "Include model text" and "Jump to latest ↓". The open state lives in SolverOverlay, so it survives "Run in background".
+  - Footer (never scrolls away): "Apply best plan" (primary; only after a solution exists; stops the run and applies the best plan so far), "Run in background" (hides the overlay; the run continues server-side and a badge stays in the corner), "Stop run" (quiet rose text button; the calendar stays untouched, a partial result lands in the run inbox). Phones stack them with the primary action first.
 - Full-screen dashboard (SolverDashboard):
-  - Opens via "Details" button, renders as full-viewport overlay via portal to `document.body` (z-[1100]).
+  - Opens via the "Charts" button, renders as full-viewport overlay via portal to `document.body` (z-[1100]).
   - Organized into logical sections with section headers:
-    - **Coverage**: Optimization Score (full width), Filled Slots, Total Assignments.
+    - **Coverage**: Optimization Score (full width; classic optimizer only), Filled Slots, Total Assignments.
     - **Constraints**: Non-consecutive Shifts, Location Changes, Working Hours Compliance, On-Call Rest Violations.
     - **Preferences**: Section Preference Match, Time Window Compliance.
   - Cards are conditionally shown only when relevant (e.g., Time Window only if clinicians have time preferences set).
@@ -2395,8 +2388,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 
 - **People are always colored in the team week.** The "Color by: Section |
   Person" switch is gone; the classic grid always uses the person colors
-  (`buildPersonPillStyles`) and outlines the linked person's pills. Section
-  colors stay in the row labels; print, PDF and public pages keep the section
+  (`buildPersonPillStyles`) and outlines the linked person's pills. With
+  "Times: Stacked" the section colors stay in the lane labels; "Side by side"
+  shows neutral section blocks; print, PDF and public pages keep the section
   look; the clinic sheet keeps its look. `teamColorBy` and a view's `colorBy`
   are removed from `UserPreferences` / `ViewConfig` (frontend and
   `backend/models.py`); stored documents that still carry them are read
@@ -2437,9 +2431,14 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   no longer crowd the first pill (or the "me" outline).
 - **Planning view (SolverOverlay).** Header with title, range and running
   time; then, for AI runs, the phase or "Day N of M" with a day track (one
-  segment per day: planned / in progress / open; weekday labels up to 10
-  days; whole-range review and finalize count every day as planned, using the
-  new `AgentStatus.maxDayIndex`) and the agent's current step; then "Best
+  segment per day: planned / in progress / skipped (amber) / open; weekday
+  labels up to 10 days). The track reads the new `days_finished` /
+  `days_skipped` lists that day-by-day runs send with every agent event
+  (`backend/agent/harness.py` `emit_agent`; finished = planned, incomplete or
+  planned but not verified in time), so a page reload or the bounded event
+  buffer cannot reset it. Older servers fall back to the event context and
+  `AgentStatus.maxDayIndex`; runs without a day loop (repair strategy) show
+  no track. Next to it the agent's current step; then "Best
   plan so far" (coverage as a number and bar, rule and goal chips; the
   optimizer's score chart below; "Charts" opens the dashboard); then the
   activity log, collapsed to its latest entry (open state kept while the run
@@ -2450,14 +2449,18 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Tests: `src/lib/assignmentPolicy.test.ts` (new), `resetSolverAssignments.test.ts`,
   `ScheduleGrid.test.tsx` (lock states, read-only), `AssignmentPill*.test.tsx`,
   `TeamPlanHeader.test.tsx`, `userPreferences.test.ts`, `planHelpers.test.ts`,
-  `usePlanScope.test.ts`, `AgentActivityPanel.test.tsx` (day track, collapsed
-  log), `HelpView.test.tsx`; backend `test_user_preferences.py` (retired keys
-  ignored); e2e `fixed-assignments.spec.ts` (hand-placed starts locked,
+  `usePlanScope.test.ts`, `AgentActivityPanel.test.tsx` (day track incl.
+  reload, eviction and skipped days, collapsed log), `ConstraintPulse.test.tsx`,
+  `HelpView.test.tsx`; backend `test_user_preferences.py` (retired keys
+  ignored), `test_agent_harness.py` (day lists on agent events); e2e `fixed-assignments.spec.ts` (hand-placed starts locked,
   unlock → reset removes it), `team-page.spec.ts` (a moved planner shift
   is locked), `my-plan.spec.ts`,
   `agent-activity.spec.ts`; `ClinicSheetGrid.test.tsx` (sheet lock),
   `src/lib/myPlan/timeline.test.ts` (My plan lock), `team-page.spec.ts` (a
   locked shift moved into Rest Day loses its lock).
+- Agent events (SSE `agent`) gain `days_finished` / `days_skipped` (day-by-day
+  runs only); older frontends ignore them. The model-visible text is
+  unchanged.
 - Deploy notes: no calendar migration. Hand-placed entries keep their data
   (`source: "manual"`) and now simply show as locked. Stored preferences lose
   `teamColorBy` on their next save; users who had "Section" selected see the

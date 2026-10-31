@@ -445,6 +445,16 @@ def agent_solve_range(
             data["checks_progress"] = {"revision": workflow.revision, "total": len(ctx.target_day_isos),
                 "complete": sum(check.get("complete", False) and check.get("plan_revision") == workflow.revision
                                 for check in workflow.day_checks.values())}
+        if strategy == "day_by_day":
+            # The live day track (v1.69): which days the day loop finished
+            # (planned, attempted, or planned but not verified in time) and
+            # which it skipped, on every event, so it needs no history
+            # (bounded client buffer, page reload).
+            finished = (set(run_meta["days_planned"]) | set(run_meta["days_incomplete"])
+                        | set(run_meta["days_unverified"]))
+            skipped = set(run_meta["days_skipped"]) - finished
+            data["days_finished"] = [d for d in ctx.target_day_isos if d in finished]
+            data["days_skipped"] = [d for d in ctx.target_day_isos if d in skipped]
         on_progress("agent", data)
 
     def agent_phase(label: str, *, day_index=None, planning_date=None) -> None:
