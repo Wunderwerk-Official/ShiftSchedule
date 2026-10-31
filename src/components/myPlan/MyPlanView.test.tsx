@@ -95,7 +95,7 @@ describe("MyPlanView", () => {
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     const [saved] = view.prefs().savedViews;
     expect(saved).toMatchObject({ name: "Week grid", scope: "me", range: "week", orientation: "top" });
-    expect(Object.keys(saved).sort()).toEqual(["colorBy", "id", "name", "orientation", "range", "scope", "startAt"]);
+    expect(Object.keys(saved).sort()).toEqual(["id", "name", "orientation", "range", "scope", "startAt"]);
     expect(saved.startAt).toBe("today");
     expect(view.prefs().startViewDesktop).toMatchObject({ range: "week" });
     expect(screen.getByRole("status")).toHaveTextContent('View "Week grid" saved · start page on computers');

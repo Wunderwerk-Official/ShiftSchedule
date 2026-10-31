@@ -16,7 +16,7 @@ function setup(initial: Props) {
   return { ...hook, onUpdatePrefs };
 }
 
-const meWeekLeft = { scope: "me", range: "week", orientation: "left", colorBy: "section" } as const;
+const meWeekLeft = { scope: "me", range: "week", orientation: "left" } as const;
 
 describe("usePlanScope", () => {
   it("stays on the team plan without a start view and writes nothing", () => {
@@ -38,7 +38,7 @@ describe("usePlanScope", () => {
     expect(next.orientationByRange.week).toBe("left");
 
     act(() => result.current.setPlanScope("team"));
-    rerender({ prefs: normalizePreferences({ ...loadedPrefs, teamColorBy: "person" }), loaded: true });
+    rerender({ prefs: normalizePreferences({ ...loadedPrefs, teamTimeLayout: "columns" }), loaded: true });
     expect(result.current.planScope).toBe("team");
     expect(onUpdatePrefs).toHaveBeenCalledTimes(1);
   });
@@ -56,7 +56,7 @@ describe("usePlanScope", () => {
   it("uses the phone start view on phones", () => {
     const prefs = normalizePreferences({
       startViewDesktop: meWeekLeft,
-      startViewMobile: { scope: "team", range: "week", orientation: "top", colorBy: "section" },
+      startViewMobile: { scope: "team", range: "week", orientation: "top" },
     });
     const { result } = setup({ prefs, loaded: true, isMobile: true });
     expect(result.current.planScope).toBe("team");

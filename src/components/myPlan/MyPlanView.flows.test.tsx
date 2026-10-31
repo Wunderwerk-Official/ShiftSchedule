@@ -123,14 +123,14 @@ describe("MyPlanView flows", () => {
   it("stores the start view for the device class it was set on", () => {
     const phone = renderPlan({ prefs: { ...LENA, myPlanRangeMobile: "month" }, isMobile: true });
     fireEvent.click(screen.getByRole("button", { name: "Start page on phones" }));
-    expect(phone.prefs().startViewMobile).toEqual({ scope: "me", range: "month", orientation: "top", colorBy: "section" });
+    expect(phone.prefs().startViewMobile).toEqual({ scope: "me", range: "month", orientation: "top" });
     expect(phone.prefs().startViewDesktop).toBeNull();
     expect(screen.getByRole("button", { name: "Start page on phones" })).toHaveAttribute("aria-pressed", "true");
     phone.unmount();
 
     const desktop = renderPlan({ prefs: { ...LENA, orientationByRange: { week: "left" } } });
     fireEvent.click(screen.getByRole("button", { name: "Start page on computers" }));
-    expect(desktop.prefs().startViewDesktop).toEqual({ scope: "me", range: "week", orientation: "left", colorBy: "section" });
+    expect(desktop.prefs().startViewDesktop).toEqual({ scope: "me", range: "week", orientation: "left" });
     expect(desktop.prefs().startViewMobile).toBeNull();
   });
 

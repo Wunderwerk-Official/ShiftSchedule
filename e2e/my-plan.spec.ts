@@ -32,7 +32,6 @@ const NEXT_MONDAY_CT = slotId("mon", "CT");
 const PREFERENCE_KEYS = [
   "clinicianId",
   "savedViews",
-  "teamColorBy",
   "teamTimeLayout",
   "myPlanRange",
   "myPlanRangeMobile",
@@ -205,18 +204,15 @@ test("My plan: link yourself, change views and jump back into the team plan", as
     page.locator(`[data-assignment-key="${NEXT_MONDAY_CT}__2026-01-12__${ME}"]`),
   ).toBeVisible();
   await expect(page.getByRole("button", { name: "Open Vacation Planner" })).toBeVisible();
-  // The team default look is unchanged although I am linked now: no inline
-  // colors on any pill and no own outline (that belongs to Color by: Person).
-  const grid = page.locator('[data-schedule-grid="true"]');
+  // Now that I am linked, my team pills carry the own outline (people are
+  // always colored by person since v1.69).
   const myPill = page.locator(`[data-assignment-key="${NEXT_MONDAY_CT}__2026-01-12__${ME}"]`);
-  await expect(myPill).not.toHaveAttribute("style", /.+/);
-  await expect(myPill).toHaveCSS("outline-style", "none");
-  await expect(grid.locator('[data-assignment-pill="true"][style]')).toHaveCount(0);
+  await expect(myPill).toHaveCSS("outline-style", "solid");
   expectNoPreferencesInState(api.statePosts);
   expect(api.errors).toEqual([]);
 });
 
-test("My plan as start page opens directly; Color by person colors the team pills", async ({ page }) => {
+test("My plan as start page opens directly; the team pills carry person colors", async ({ page }) => {
   const api = await openCalendar(page);
   // Link + make My plan the start page on computers via the star.
   await page.getByRole("group", { name: "Choose plan" }).getByRole("button", { name: "My plan" }).click();
@@ -239,23 +235,16 @@ test("My plan as start page opens directly; Color by person colors the team pill
   const teamGridSeen = await page.evaluate(() => (window as unknown as { teamGridSeen?: boolean }).teamGridSeen);
   expect(teamGridSeen ?? false).toBe(false);
 
-  // Team plan, Color by: Person → my pills get my person color and the outline.
+  // Team plan: people always have their own color (no "Color by" switch
+  // since v1.69); my pills get my person color and the outline.
   const scope = page.getByRole("group", { name: "Choose plan" });
   await scope.getByRole("button", { name: "Team" }).click();
-  const colorBy = page.getByRole("group", { name: "Color by" });
-  await expect(colorBy.getByRole("button", { name: "Section" })).toHaveAttribute("aria-pressed", "true");
-  await colorBy.getByRole("button", { name: "Person" }).click();
+  await expect(page.getByRole("group", { name: "Color by" })).toHaveCount(0);
   const myPill = page.locator(`[data-assignment-key$="__2026-01-07__${ME}"]`).first();
   // Person palette p01 (first clinician): strong #1D4ED8, light #DBEAFE.
   await expect(myPill).toHaveCSS("border-top-color", "rgb(29, 78, 216)");
   await expect(myPill).toHaveCSS("background-color", "rgb(219, 234, 254)");
   await expect(myPill).toHaveCSS("outline-style", "solid");
-  await expect.poll(() => api.prefs().teamColorBy).toBe("person");
-  // Section again: the outline goes with the person colors.
-  await colorBy.getByRole("button", { name: "Section" }).click();
-  await expect(myPill).toHaveCSS("outline-style", "none");
-  await expect(myPill).not.toHaveAttribute("style", /.+/);
-  await expect.poll(() => api.prefs().teamColorBy).toBe("section");
   expectNoPreferencesInState(api.statePosts);
   expect(api.errors).toEqual([]);
 });
@@ -279,7 +268,7 @@ test("My plan as start page waits for the calendar instead of calling the link s
     initialState: state,
     initialPrefs: {
       clinicianId: REAL,
-      startViewDesktop: { scope: "me", range: "week", orientation: "top", colorBy: "section" },
+      startViewDesktop: { scope: "me", range: "week", orientation: "top" },
     },
     stateGate,
   });
@@ -302,12 +291,12 @@ test("My plan as start page waits for the calendar instead of calling the link s
 
 test("signing out first sends a preference change still waiting to be saved, with the token", async ({ page }) => {
   const api = await openCalendar(page);
-  await page.getByRole("group", { name: "Color by" }).getByRole("button", { name: "Person" }).click();
+  await page.getByRole("group", { name: "Times" }).getByRole("button", { name: "Side by side" }).click();
   // Sign out at once, before the 600 ms save delay is over.
   await page.getByRole("button", { name: "Account", exact: true }).click();
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page.getByRole("button", { name: "Sign in" })).toBeVisible();
-  expect(api.prefsPuts).toEqual([{ teamColorBy: "person" }]);
+  expect(api.prefsPuts).toEqual([{ teamTimeLayout: "columns" }]);
   expect(api.prefsPutAuth).toEqual(["Bearer test-token"]);
   expect(api.errors).toEqual([]);
 });

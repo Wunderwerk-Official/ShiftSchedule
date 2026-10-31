@@ -115,9 +115,16 @@ export const pillLabel = {
   ),
 } as const;
 
-/** Compact, keyboard-accessible control for assignment fixation. */
+/**
+ * The lock of a shift inside its pill: an 18 px round button in the pill's
+ * own text color (no box of its own), so it reads as part of the name. Its
+ * click area reaches 3 px further (before:) without taking more room. The
+ * caller positions it (relative in a row, absolute over a pill's end).
+ */
 export const buttonAssignmentLock = cx(
-  "inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-500",
-  "hover:bg-slate-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-600",
-  "dark:text-slate-300 dark:hover:bg-slate-700", disabledBase,
+  "inline-flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-full text-current",
+  "before:absolute before:-inset-[3px] before:content-['']",
+  "transition-[opacity,background-color] hover:bg-black/[0.07] hover:opacity-100",
+  "focus-visible:opacity-100 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-sky-600",
+  "dark:hover:bg-white/10", disabledBase,
 );

@@ -26,7 +26,7 @@ async function start(page: Page) {
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Solver running..." }).click();
-  await expect(page.getByText("AI Agent Planning", { exact: true })).toBeVisible();
+  await expect(page.getByText("AI planning", { exact: true })).toBeVisible();
 }
 
 async function send(page: Page, data: Partial<AgentActivityData>, token = run.id) {
@@ -51,6 +51,10 @@ test("live planning shows actual work, survives 300 events and keeps the reader'
   await expect(page.getByText("Day 2 of 5 · Tue 06.01.", { exact: true })).toBeVisible();
   await send(page, { kind: "tool_result", tool: "suggest_rescue_moves", activity_id: 1, outcome: "warning",
     summary: "No option found in this search. More options remain unchecked.", duration_ms: 12400 });
+  // The log starts collapsed to its latest entry.
+  const logToggle = page.getByRole("button", { name: /Activity log/ });
+  await expect(logToggle).toContainText("More options remain unchecked");
+  await logToggle.click();
   const feed = page.getByRole("region", { name: "Planning activity" });
   await expect(feed.getByText(/More options remain unchecked/)).toBeVisible();
   for (let i = 0; i < 300; i++) await send(page, { kind: "tool_result", tool: "get_day_priorities", activity_id: i + 2, time_ms: 101000 + i,
@@ -63,7 +67,9 @@ test("live planning shows actual work, survives 300 events and keeps the reader'
   expect(await feed.evaluate((el) => el.scrollTop)).toBe(before);
   await expect(page.getByRole("status").filter({ hasText: "Waiting for the model" })).toBeVisible();
   await send(page, { kind: "stage", stage: "finalize" }, "unrelated-run");
-  await expect(page.locator('[aria-label="Agent stage: AI improving"]')).toBeVisible();
+  // Events of another run change nothing: no "Finishing", still day 2.
+  await expect(page.getByText(/^Finishing/)).toHaveCount(0);
+  await expect(page.getByRole("progressbar", { name: "Days planned" })).toHaveAttribute("aria-valuenow", "1");
   await expect(page.getByText("Day 2 of 5 · Tue 06.01.", { exact: true })).toBeVisible();
 
   await page.evaluate(() => (window as unknown as { activitySource: { onerror: (e: Event) => void } }).activitySource.onerror(new Event("error")));
@@ -89,7 +95,7 @@ for (const mode of ["desktop", "dark", "mobile"] as const) {
       id: "demo", rowId: state.weeklyTemplate.locations[0].slots[0].id, clinicianId: state.clinicians[0].id, dateISO: "2026-01-05", source: "solver",
     }] } });
     await send(page, { kind: "tool_start", tool: "suggest_balance_moves", activity_id: 3, time_ms: 100000 });
-    await expect(page.getByText("Best saved draft", { exact: true })).toBeVisible();
+    await expect(page.getByText("Best plan so far", { exact: true })).toBeVisible();
     await expect(page.getByText("Day 2 of 5 · Tue 06.01.", { exact: true }).first()).toBeVisible();
     await page.screenshot({ path: testInfo.outputPath(`${mode}.png`), animations: "disabled" });
   });
@@ -104,6 +110,7 @@ test("mobile planning actions and full model text remain accessible", async ({ p
   const box = await action.boundingBox();
   expect(box && box.x >= 0 && box.x + box.width <= 390).toBeTruthy();
   await send(page, { kind: "thought", reasoning: true, text: "MODEL START " + "Detailed model output. ".repeat(120) + "MODEL END" });
+  await page.getByRole("button", { name: /Activity log/ }).click();
   await page.getByRole("checkbox", { name: "Include model text" }).check();
   await page.getByRole("button", { name: "Show full text" }).click();
   const dialog = page.getByRole("dialog", { name: "Model reasoning (full text)" });
@@ -127,6 +134,7 @@ for (const width of [390, 1440]) {
       } });
     });
     await send(page, { kind: "thought", reasoning: true, text, output_truncated: true });
+    await page.getByRole("button", { name: /Activity log/ }).click();
     await page.getByRole("checkbox", { name: "Include model text" }).check();
     await page.getByRole("button", { name: "Show full text" }).click();
     const dialog = page.getByRole("dialog", { name: "Model reasoning (full text)" });

@@ -54,7 +54,7 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" and "Color by" (both classic grid only, "Times" since v1.65), start-page star and Views menu. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" (classic grid only, since v1.65), start-page star and Views menu. The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
 - Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. See the v1.65 and v1.66 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
@@ -104,6 +104,8 @@ Clinic sheet layout (Klinik-Monatslayout)
 - Month-scoped `buildRenderedAssignmentMap` (do NOT reuse the week-scoped map — pool synthesis is day-bound). Desktop only (mobile keeps the daily view); week-scoped badges and the Publish toggle are hidden in sheet mode; print/PDF/public pages always use the classic grid. The sheet stays paper-light in dark mode by design.
 
 Pills
+- Team grid (since v1.69 always): person colors — light fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Print/public pages keep the section look (blue pill).
+- One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus (always on touch screens) at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css). Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock.
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
 - Warning icons are small circular badges at top-right of the pill.
@@ -582,8 +584,7 @@ Per-user UI preferences (v1.64) — NOT part of AppState
 type PlanScope = "team" | "me";
 type PlanRange = "day" | "week" | "month";
 type Orientation = "top" | "left";          // "top" = dates on top (days are columns)
-type ColorBy = "section" | "person";
-type ViewConfig = { scope: PlanScope; range: PlanRange; orientation: Orientation; colorBy: ColorBy };
+type ViewConfig = { scope: PlanScope; range: PlanRange; orientation: Orientation };  // v1.69: no colorBy (ignored when stored)
 type ViewStartAt = "today" | "nextShift" | "weekStart";  // relative anchor, never a date
 type SavedView = ViewConfig & { id: string /* 1-64 */; name: string /* 1-60 */; startAt: ViewStartAt /* default "today" */ };
 type UserPreferences = {
@@ -593,7 +594,7 @@ type UserPreferences = {
   orientationByRangeMobile: Record<PlanRange, Orientation>;  // phones; default week "left" (agenda)
   myPlanRange: PlanRange;                   // computers; default "week"
   myPlanRangeMobile: PlanRange;             // phones; default "week"
-  teamColorBy: ColorBy;                     // default "section"
+  teamTimeLayout: "columns" | "stacked";    // v1.65; default "stacked" (teamColorBy retired in v1.69, ignored when stored)
   savedViews: SavedView[];                  // max 12, unique ids
   startViewDesktop: ViewConfig | null;      // start page on computers (no startAt)
   startViewMobile: ViewConfig | null;       // start page on phones (no startAt)
@@ -776,8 +777,8 @@ Automated Shift Planning panel (frontend):
 - No strategy toggle any more (removed on admin request, 2026-07): every run fills required slots only (`only_fill_required=true`); Distribute-all stays available through the API.
 - Run button starts an AI planning run (`solver_mode: "agent"`); the result waits in the run inbox (Solver info modal) until it is applied or discarded.
 - Reset button opens a dropdown panel with two options (rules in `src/pages/resetSolverAssignments.ts`, unit-tested):
-  - "Reset Solver Only" (`resetSolverAssignments`): in the timeframe, removes every unlocked solver entry of a section row, including entries on the clinician's vacation days (hidden in the grid) — the same rule as applying a stored draft (`backend/assignment_policy.py::is_replaced_by_draft`). Keeps manual/legacy and locked (fixed) entries, pool entries and everything outside the timeframe. Before v1.64 it also kept unlocked solver entries on vacation days.
-  - "Reset Unfixed" (`resetUnfixedAssignments`): in the timeframe, removes every entry (pool rows included) except locked ones and manual/legacy ones on the clinician's vacation days. Unlocked solver entries on vacation days go too (before v1.64 every entry on a vacation day was kept), so it always removes at least what "Reset Solver Only" removes. Vacation ranges themselves live on the clinician and are untouched.
+  - "Unlocked shifts" (`resetSolverAssignments`; "Reset Solver Only" before v1.69): in the timeframe, removes every unlocked shift of a section row — planner entries and hand-placed ones someone unlocked (unlocking turns them into planner entries) — including entries on the clinician's vacation days (hidden in the grid); the same rule as applying a stored draft (`backend/assignment_policy.py::is_replaced_by_draft`). Keeps locked shifts (hand-placed/legacy or locked later), pool entries and everything outside the timeframe. Before v1.64 it also kept unlocked solver entries on vacation days.
+  - "Unlocked shifts and rest days" (`resetUnfixedAssignments`; "Reset Unfixed" before v1.69): the same for section rows, and the pool rows (Rest Day) of the timeframe are emptied too, except hand-made pool entries on the clinician's vacation days. Since v1.69 it keeps hand-placed shifts (they are locked); before, it removed them. Vacation ranges themselves live on the clinician and are untouched.
 - Reset panel auto-positions: opens above the button when there's insufficient space below (viewport-aware).
 
 Custom date picker component (`CustomDatePicker.tsx`):
@@ -929,7 +930,7 @@ unlocked in-range solver assignments of section rows are replaced,
 including rows hidden by a clinician's vacation; manual/legacy, locked and
 pool entries and everything outside the range survive —
 `assignment_policy.is_replaced_by_draft`, also used by the CP-SAT/heuristic
-pre-solve filter and matching the agent harness and "Reset Solver Only")
+pre-solve filter and matching the agent harness and Reset → "Unlocked shifts")
 or discards it. Discard is a conditional update (`solver_runs.discard_run`):
 only `finished`, `aborted` or already `discarded` runs can be discarded,
 anything else (e.g. applied from another tab, failed) returns
@@ -1480,13 +1481,15 @@ Frontend
 - `src/components/schedule/AssignmentPill.tsx`
 - `src/components/schedule/VacationOverviewModal.tsx` (vacation planner, scrolls to today on open)
 - `src/components/schedule/WorkingHoursOverviewModal.tsx` (yearly working hours overview for all clinicians)
-- `src/components/schedule/SolverOverlay.tsx` (live solver progress overlay with chart and abort/apply)
+- `src/components/schedule/SolverOverlay.tsx` (live solver progress overlay; v1.69 layout: header, day track + current step (`AgentActivityPanel`), best plan so far (`ConstraintPulse`), collapsed activity log, action footer)
 - `src/components/schedule/SolverDebugPanel.tsx` (debug info visualization after solve completes)
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
-- `src/components/schedule/AutomatedPlanningPanel.tsx` (planning panel: date range, Run, Reset Solver Only / Reset Unfixed)
+- `src/components/schedule/AutomatedPlanningPanel.tsx` (planning panel: date range, Run, Reset → Unlocked shifts / Unlocked shifts and rest days)
 - `src/components/schedule/AgentSettingsPanel.tsx` (v1.64, extracted from SettingsView: AI provider/model, endpoint, API keys, model check, chat test, budget)
-- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan, Color by, start-page star, Views)
-- `src/components/schedule/teamColors.ts` (v1.64: "Color by: Person" pill styles and location row tints for the classic grid)
+- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan, Times, start-page star, Views)
+- `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints)
+- `src/components/schedule/AssignmentLockButton.tsx` (v1.69: the one lock of a shift, `LockGlyph`)
+- `src/lib/assignmentPolicy.ts` (`isProtectedAssignment` = locked; v1.69 `toggleAssignmentLock`)
 - `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — time lanes per class row, one grid column per day, label meta)
 - `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder)
 - `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while the start view is resolved)
@@ -1501,7 +1504,7 @@ Frontend
 - `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS`, person palette `PERSON_COLORS`)
 - `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan, start view applied once, `scopeReady`)
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
-- `src/pages/resetSolverAssignments.ts` (v1.64: Reset Solver Only / Reset Unfixed rules)
+- `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
 - `src/lib/templateLimits.ts` (v1.64: `MAX_TOTAL_COLBANDS` = 300, `countTemplateColBands`)
 - `src/lib/time.ts` (v1.64: the one strict `parseTimeToMinutes`)
@@ -2387,3 +2390,65 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   deployed-mode run from this commit on (self-hosted included) fails with
   an ImportError until v1.68 is deployed; use `implementation: checkout`
   before then.
+
+## v1.69 — One lock, person colors, clearer planning view
+
+- **People are always colored in the team week.** The "Color by: Section |
+  Person" switch is gone; the classic grid always uses the person colors
+  (`buildPersonPillStyles`) and outlines the linked person's pills. Section
+  colors stay in the row labels; print, PDF and public pages keep the section
+  look; the clinic sheet keeps its look. `teamColorBy` and a view's `colorBy`
+  are removed from `UserPreferences` / `ViewConfig` (frontend and
+  `backend/models.py`); stored documents that still carry them are read
+  without them (pydantic ignores unknown keys, `normalizePreferences` drops
+  them) and lose them on their next save. A team view is just "Team plan".
+- **One lock for every shift.** Before, hand-placed names showed a small
+  static badge and only planner names had a lock button. Now every shift of a
+  section row has the same button (`AssignmentLockButton`, label "Lock
+  assignment for X", `aria-pressed` = locked), in the weekly grid and the
+  clinic sheet. Locked = `isProtectedAssignment` (unchanged rule, so the
+  backend, solvers, agent and draft apply are untouched): hand-placed and
+  legacy entries start locked, planner entries start unlocked.
+  `toggleAssignmentLock` unlocks by handing the entry to the planner
+  (`source: "solver", locked: false`) and locks with `locked: true`. A shift
+  moved by drag and drop becomes hand-placed (`source: "manual"`), so it is
+  locked too. The lock toggle only touches the shift's own cell.
+- **Reset follows the lock.** "Reset Solver Only" / "Reset Unfixed" are now
+  "Unlocked shifts" / "Unlocked shifts and rest days". The second one keeps
+  every locked shift — hand-placed ones included (before, it removed manual
+  entries) — and still empties the Rest Day row (except hand-made entries on
+  vacation days).
+- **Lock design.** A locked pill shows a small solid lock in the person's ink
+  color inside the row (no taller pill any more: before, a fixed pill grew to
+  28 px for its 24 px button); an unlocked pill shows the open lock only on
+  hover or focus (always on touch screens), and the name fades out under it
+  (CSS mask) instead of a white box covering it. The button is 18 px with a
+  3 px larger click area; read-only grids show no lock at all (print and
+  public pages used to show the manual badge).
+- **Own times in stacked cells** are a small tag with room below it, so they
+  no longer crowd the first pill (or the "me" outline).
+- **Planning view (SolverOverlay).** Header with title, range and running
+  time; then, for AI runs, the phase or "Day N of M" with a day track (one
+  segment per day: planned / in progress / open; weekday labels up to 10
+  days; whole-range review and finalize count every day as planned, using the
+  new `AgentStatus.maxDayIndex`) and the agent's current step; then "Best
+  plan so far" (coverage as a number and bar, rule and goal chips; the
+  optimizer's score chart below; "Charts" opens the dashboard); then the
+  activity log, collapsed to its latest entry (open state kept while the run
+  is in the background). The actions sit in a footer that never scrolls
+  away: "Apply best plan" (primary), "Run in background", "Stop run" (quiet);
+  phones stack them with the primary action first. The stage stepper and the
+  explanatory header text are gone (the note moved into the footer).
+- Tests: `src/lib/assignmentPolicy.test.ts` (new), `resetSolverAssignments.test.ts`,
+  `ScheduleGrid.test.tsx` (lock states, read-only), `AssignmentPill*.test.tsx`,
+  `TeamPlanHeader.test.tsx`, `userPreferences.test.ts`, `planHelpers.test.ts`,
+  `usePlanScope.test.ts`, `AgentActivityPanel.test.tsx` (day track, collapsed
+  log), `HelpView.test.tsx`; backend `test_user_preferences.py` (retired keys
+  ignored); e2e `fixed-assignments.spec.ts` (hand-placed starts locked,
+  unlock → reset removes it), `team-page.spec.ts` (a moved planner shift
+  is locked), `my-plan.spec.ts`,
+  `agent-activity.spec.ts`.
+- Deploy notes: no calendar migration. Hand-placed entries keep their data
+  (`source: "manual"`) and now simply show as locked. Stored preferences lose
+  `teamColorBy` on their next save; users who had "Section" selected see the
+  person colors after the deploy.

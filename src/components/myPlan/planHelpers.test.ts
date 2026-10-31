@@ -40,18 +40,17 @@ describe("viewConfig", () => {
     const prefs = normalizePreferences({
       myPlanRange: "month",
       orientationByRange: { month: "left" },
-      teamColorBy: "person",
     });
     const me = currentViewConfig(prefs, "me");
     expect(me).toMatchObject({ scope: "me", range: "month", orientation: "left" });
     expect(describeView(me)).toBe("My plan · Month · List");
     const team = currentViewConfig(prefs, "team");
-    expect(team).toEqual({ scope: "team", range: "week", orientation: "top", colorBy: "person" });
-    expect(describeView(team)).toBe("Team · Color by person");
+    expect(team).toEqual({ scope: "team", range: "week", orientation: "top" });
+    expect(describeView(team)).toBe("Team plan");
     expect(describeView({ ...me, range: "week", orientation: "top" })).toBe("My plan · Week · Date on top");
   });
 
-  it("applies a view: My plan sets range + its orientation, team sets colorBy, scope last", () => {
+  it("applies a view: My plan sets range + its orientation, a team view only the scope, scope last", () => {
     const calls: string[] = [];
     let prefs = { ...DEFAULT_PREFERENCES };
     const update = vi.fn((change) => {
@@ -59,13 +58,14 @@ describe("viewConfig", () => {
       prefs = typeof change === "function" ? change(prefs) : { ...prefs, ...change };
     });
     const scope = vi.fn(() => calls.push("scope"));
-    applyViewConfig({ scope: "me", range: "day", orientation: "left", colorBy: "section" }, scope, update);
+    applyViewConfig({ scope: "me", range: "day", orientation: "left" }, scope, update);
     expect(prefs.myPlanRange).toBe("day");
     expect(prefs.orientationByRange).toEqual({ day: "left", week: "top", month: "top" });
     expect(scope).toHaveBeenLastCalledWith("me");
-    applyViewConfig({ scope: "team", range: "month", orientation: "left", colorBy: "person" }, scope, update);
-    expect(prefs.teamColorBy).toBe("person");
+    applyViewConfig({ scope: "team", range: "month", orientation: "left" }, scope, update);
+    expect(scope).toHaveBeenLastCalledWith("team");
     expect(prefs.myPlanRange).toBe("day");
+    expect(prefs.orientationByRange).toEqual({ day: "left", week: "top", month: "top" });
     expect(calls).toEqual(["prefs", "scope", "prefs", "scope"]);
   });
 });

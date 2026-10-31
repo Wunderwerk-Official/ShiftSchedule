@@ -1436,7 +1436,6 @@ export type PlanScope = "team" | "me";
 export type PlanRange = "day" | "week" | "month";
 /** "top" = date on top (days are columns), "left" = date on the left (days are rows). */
 export type Orientation = "top" | "left";
-export type ColorBy = "section" | "person";
 /** Team week: a day's time columns side by side, or stacked as rows (compact). */
 export type TeamTimeLayout = "columns" | "stacked";
 
@@ -1444,8 +1443,6 @@ export type ViewConfig = {
   scope: PlanScope;
   range: PlanRange;
   orientation: Orientation;
-  /** Only meaningful for scope "team". */
-  colorBy: ColorBy;
 };
 
 /** Relative anchor a saved view opens at (never a fixed date). */
@@ -1467,7 +1464,6 @@ export type UserPreferences = {
   myPlanRange: PlanRange;
   /** Phones remember their own range (SPEC R17). */
   myPlanRangeMobile: PlanRange;
-  teamColorBy: ColorBy;
   teamTimeLayout: TeamTimeLayout;
   /** At most 12 (backend limit). */
   savedViews: SavedView[];

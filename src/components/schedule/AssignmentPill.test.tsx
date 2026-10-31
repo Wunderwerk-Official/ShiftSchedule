@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AssignmentPill from "./AssignmentPill";
 import { buildPersonPillStyles } from "./teamColors";
 
-// Color by: Person picks the name's abbreviation from canvas text widths.
+// Person colors pick the name's abbreviation from canvas text widths.
 // jsdom has no layout or canvas metrics, so both are faked here: 6 px per
 // character, a 20 px initials circle and a name row of `rowWidth` px.
 let rowWidth = 66;
@@ -51,11 +51,11 @@ const personStyle = buildPersonPillStyles([
 
 const renderPerson = (name: string, width: number) => {
   rowWidth = width;
-  render(<AssignmentPill name={name} personStyle={personStyle} isManual />);
+  render(<AssignmentPill name={name} personStyle={personStyle} isLocked onToggleLock={() => {}} />);
   return screen.getByText(/./, { selector: "span.min-w-0" });
 };
 
-describe("AssignmentPill in Color by: Person", () => {
+describe("AssignmentPill with person colors", () => {
   it("shows the full name when it fits next to the circle", () => {
     // 66 - 20 (circle) - 4 (gap) = 42 px; "Tim Lang" = 48 px, "Mia Fox" = 42 px.
     const name = renderPerson("Mia Fox", 66);

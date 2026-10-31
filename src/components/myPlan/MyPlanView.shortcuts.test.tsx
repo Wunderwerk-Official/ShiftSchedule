@@ -15,7 +15,6 @@ const savedView = (startAt: string) => ({
   scope: "me",
   range: "week",
   orientation: "top",
-  colorBy: "section",
   startAt,
 });
 

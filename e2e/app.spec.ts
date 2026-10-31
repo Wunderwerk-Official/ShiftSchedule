@@ -582,6 +582,8 @@ test.describe.serial("app flows", () => {
             rowId: slotRowId,
             dateISO: testDateISO,
             clinicianId: "clin-1",
+            // A planner entry: hand-placed ones are locked and survive Reset.
+            source: "solver",
           },
         ],
       }),
@@ -594,10 +596,10 @@ test.describe.serial("app flows", () => {
     await expect(shiftCell.getByText("Dr. Test")).toBeVisible();
     await attachStepScreenshot(page, testInfo, "reset-before");
     await page.getByRole("button", { name: "Current week" }).click();
-    // "Reset" now opens a panel with "Reset Solver Only" / "Reset Unfixed"
-    // instead of resetting directly behind a confirm dialog.
+    // "Reset" opens a panel with "Unlocked shifts" / "Unlocked shifts and
+    // rest days" instead of resetting directly behind a confirm dialog.
     await page.getByRole("button", { name: "Reset", exact: true }).click();
-    await page.getByRole("button", { name: /Reset Unfixed/ }).click();
+    await page.getByRole("button", { name: /^Unlocked shifts and rest days/ }).click();
     // Verify assignment was removed
     await expect(shiftCell.getByText("Dr. Test")).toHaveCount(0);
     await attachStepScreenshot(page, testInfo, "reset-after");

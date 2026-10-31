@@ -10,6 +10,7 @@ import type {
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { calculateSolverLiveStats } from "../../lib/solverStats";
 import type { SolverLiveStats, SolverSettingsForStats } from "../../lib/solverStats";
+import { cx } from "../../lib/classNames";
 import AgentActivityPanel from "./AgentActivityPanel";
 import ConstraintPulse from "./ConstraintPulse";
 
@@ -517,7 +518,7 @@ function SolverDashboard({
       <div className="flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4 dark:border-slate-700 dark:bg-slate-800">
         <div className="flex items-center gap-3">
           <h2 className="text-lg font-semibold text-slate-800 dark:text-slate-100">
-            Solver Details
+            Run charts
           </h2>
           <div className="flex items-center gap-2 rounded-full bg-slate-100 px-3 py-1 dark:bg-slate-700">
             <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
@@ -664,6 +665,9 @@ export default function SolverOverlay({
   error,
 }: SolverOverlayProps) {
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  // Held here, not in the panel: this component stays mounted while the run
+  // is in the background, so an opened log is still open when it comes back.
+  const [activityLogOpen, setActivityLogOpen] = useState(false);
   const [calendarContainer, setCalendarContainer] = useState<HTMLElement | null>(null);
 
   // Reset dashboard view when a new solve starts
@@ -763,128 +767,171 @@ export default function SolverOverlay({
   // If no calendar container found (e.g., settings view is open), render as fixed overlay
   const portalTarget = calendarContainer?.isConnected ? calendarContainer : document.body;
   const isFixedOverlay = portalTarget === document.body;
+  const isAgent = solverMode === "agent";
+  const hasDraftAssignments = liveSolutions.some((solution) => (solution.assignments?.length ?? 0) > 0);
 
-  return createPortal(
-    <div className={isFixedOverlay ? "fixed inset-0 z-30 flex items-center justify-center" : "absolute inset-0 z-30 flex items-center justify-center"}>
-      {/* Semi-transparent overlay */}
-      <div className="absolute inset-0 bg-white/80 dark:bg-slate-900/80" />
-
-      {/* Content panel. max-w-3xl on wide viewports (so the live chart can
-          use ~700px and the modal stops looking stranded), mx-4 so on narrow
-          viewports the modal still keeps a 1rem side-gutter. */}
-      <div className="relative z-10 mx-3 flex max-h-[90%] w-full max-w-3xl flex-col items-center gap-3 overflow-y-auto rounded-2xl border border-slate-200 bg-white px-3 py-4 shadow-2xl sm:mx-4 sm:px-6 sm:py-5 dark:border-slate-700 dark:bg-slate-900">
-        {/* Header: title with elapsed/total time inline, then date range + subtitle */}
-        <div
-          className="flex flex-col items-center gap-1"
-          role="progressbar"
-          aria-label="Solver progress"
-        >
-          <div className="flex items-baseline gap-3">
-            <h3 className="text-base font-semibold text-slate-800 dark:text-slate-100">
-              {solverMode === "agent" ? (
-                <span className="bg-gradient-to-r from-indigo-600 to-violet-500 bg-clip-text text-transparent dark:from-indigo-300 dark:to-violet-300">
-                  AI Agent Planning
-                </span>
-              ) : (
-                "Optimizing Schedule"
-              )}
-            </h3>
-            <span className="text-sm font-medium tabular-nums text-slate-500 dark:text-slate-400">
-              {formatDuration(elapsedMs)}
-            </span>
-          </div>
-          {dateRangeLabel && (
-            <p className="text-sm font-medium text-indigo-600 dark:text-indigo-400">
-              {dateRangeLabel}
-            </p>
-          )}
-          <p className="text-center text-xs text-slate-500 dark:text-slate-400">
-            Planning continues on the server. The best draft is kept for review;
-            your calendar changes only when you apply it.
-          </p>
-        </div>
-
-        {/* Action buttons — placed above the phase/chart so they stay visible
-            without scrolling as the chart fills with live solutions. */}
-        <div className="flex flex-wrap items-center justify-center gap-2">
-          {/* Details button - only shown when solutions exist */}
-          {liveSolutions.some((solution) => (solution.assignments?.length ?? 0) > 0) && (
-            <button
-              type="button"
-              onClick={() => setDashboardOpen(true)}
-              title="Show live charts and statistics for this run. Planning continues in the background."
-              className="rounded-lg border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-700"
-            >
-              Details
-            </button>
-          )}
-
-          {onMinimize && (
-            <button
-              type="button"
-              onClick={onMinimize}
-              title="Hide this panel - the run keeps working on the server and a badge stays in the corner."
-              className="rounded-lg border border-slate-200 bg-white px-4 py-1.5 text-sm font-medium text-slate-600 transition-colors hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300 dark:hover:border-slate-600 dark:hover:bg-slate-700"
-            >
-              Run in background
-            </button>
-          )}
-
-          {error && <div role="alert" className="w-full rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-200">{error}</div>}
-          {/* Abort button - always shown */}
+  // Layout (top to bottom): what runs and for how long · where it stands
+  // (agent: day track and current step; optimizer: phase) · the best plan so
+  // far (coverage, rules, goals; the score chart for the optimizer) · the
+  // agent's activity log, collapsed · the actions in a footer that never
+  // scrolls away. Primary action: apply the best plan; "Stop run" is quiet.
+  const bestPlan = liveStats ? (
+    <section
+      aria-label="Best plan so far"
+      className="rounded-xl border border-slate-200 bg-white p-3 shadow-sm sm:p-4 dark:border-slate-700 dark:bg-slate-900"
+    >
+      <div className="mb-2.5 flex items-center justify-between gap-2">
+        <h4 className="text-[11px] font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
+          Best plan so far
+        </h4>
+        {hasDraftAssignments ? (
           <button
             type="button"
-            onClick={onAbort}
-            title="Stop the run — the calendar stays untouched; any partial result lands in the run inbox."
-            className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-1.5 text-sm font-medium text-rose-600 transition-colors hover:border-rose-300 hover:bg-rose-100 focus:outline-none focus:ring-2 focus:ring-rose-500 focus:ring-offset-2 dark:border-rose-800 dark:bg-rose-950 dark:text-rose-300 dark:hover:border-rose-700 dark:hover:bg-rose-900"
+            onClick={() => setDashboardOpen(true)}
+            title="Show live charts and statistics for this run. Planning continues in the background."
+            className="rounded-md px-1.5 py-0.5 text-xs font-medium text-indigo-600 hover:bg-indigo-50 dark:text-indigo-300 dark:hover:bg-indigo-950"
           >
-            Stop run
+            Charts
           </button>
+        ) : null}
+      </div>
+      <ConstraintPulse stats={liveStats} onCallRestEnabled={solverSettings?.onCallRestEnabled ?? false} />
+      {/* Agent runs work on a strict priority ladder, not a scalar score: the
+          encoded objective means nothing to users there, so the score chart
+          only shows for the classic optimizer. */}
+      {liveSolutions.length > 0 && !isAgent ? (
+        <div className="mt-4 border-t border-slate-100 pt-3 text-slate-600 dark:border-slate-800 dark:text-slate-300">
+          <LiveSolutionChart solutions={liveSolutions} elapsedMs={elapsedMs} />
+        </div>
+      ) : null}
+    </section>
+  ) : isAgent ? (
+    <section
+      aria-label="Best plan so far"
+      className="rounded-xl border border-dashed border-slate-200 px-3 py-3 text-xs text-slate-500 sm:px-4 dark:border-slate-700 dark:text-slate-400"
+    >
+      <span className="font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">Best plan so far</span>
+      <span className="mt-1 block">Appears here as soon as the first draft is saved.</span>
+    </section>
+  ) : null;
 
-          {/* Apply Solution button - only shown when solutions exist */}
-          {liveSolutions.length > 0 && (
-            <button
-              type="button"
-              onClick={onApplySolution}
-              title="Stop the run now and apply the best plan found so far to the calendar."
-              className="rounded-lg border border-indigo-200 bg-indigo-50 px-4 py-1.5 text-sm font-medium text-indigo-600 transition-colors hover:border-indigo-300 hover:bg-indigo-100 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300 dark:hover:border-indigo-700 dark:hover:bg-indigo-900"
-            >
-              Apply best plan
-            </button>
-          )}
+  return createPortal(
+    <div
+      className={cx(
+        isFixedOverlay ? "fixed" : "absolute",
+        "inset-0 z-30 flex items-center justify-center p-3 sm:p-6",
+      )}
+    >
+      {/* Calm backdrop: the calendar stays recognizable behind the panel. */}
+      <div className="absolute inset-0 bg-white/80 backdrop-blur-[2px] dark:bg-slate-950/80" />
+
+      <section
+        aria-label={isAgent ? "AI planning run" : "Optimizer run"}
+        className="relative z-10 flex max-h-full w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+      >
+        {/* Header: what runs, over which days, for how long. */}
+        <header className="flex items-center gap-3 border-b border-slate-100 px-4 py-3 sm:px-5 dark:border-slate-800">
+          <span
+            aria-hidden="true"
+            className="solver-breathe grid h-9 w-9 shrink-0 place-items-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500 text-white"
+          >
+            <svg viewBox="0 0 24 24" fill="currentColor" className="h-[18px] w-[18px]">
+              <path d="M12 2c.4 3.9 3 6.9 7 7.5v1c-4 .6-6.6 3.6-7 7.5h-1c-.4-3.9-3-6.9-7-7.5v-1c4-.6 6.6-3.6 7-7.5h1z" />
+            </svg>
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="truncate text-[15px] font-semibold text-slate-900 dark:text-slate-50">
+              {isAgent ? "AI planning" : "Optimizing schedule"}
+            </h3>
+            {dateRangeLabel ? (
+              <p className="truncate text-xs tabular-nums text-slate-500 dark:text-slate-400">{dateRangeLabel}</p>
+            ) : null}
+          </div>
+          <div
+            role="progressbar"
+            aria-label="Solver progress"
+            aria-valuetext={`Running for ${formatDuration(elapsedMs)}`}
+            className="shrink-0 text-right"
+          >
+            <div className="text-lg font-semibold leading-6 tabular-nums text-slate-800 dark:text-slate-100">
+              {formatDuration(elapsedMs)}
+            </div>
+            <div className="text-[10px] uppercase tracking-wide text-slate-400 dark:text-slate-500">running</div>
+          </div>
+        </header>
+
+        {/* Body: scrolls on its own, header and actions stay in place. */}
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">
+          <div className="flex flex-col gap-4">
+            {error ? (
+              <div role="alert" className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:bg-rose-950 dark:text-rose-200">
+                {error}
+              </div>
+            ) : null}
+            {isAgent ? (
+              <AgentActivityPanel
+                events={agentEvents}
+                elapsedMs={elapsedMs}
+                currentPhase={currentPhase}
+                liveConnected={liveConnected}
+                range={solveRange}
+                logOpen={activityLogOpen}
+                onLogOpenChange={setActivityLogOpen}
+              >
+                {bestPlan}
+              </AgentActivityPanel>
+            ) : (
+              <>
+                {/* Preparation phase, shown before the first solution arrives. */}
+                {currentPhase && liveSolutions.length === 0 ? (
+                  <div className="flex items-center gap-3 rounded-xl bg-slate-50 px-4 py-3 dark:bg-slate-800/60">
+                    <div className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-indigo-500" />
+                    <span className="text-sm text-slate-600 dark:text-slate-300">{currentPhase}</span>
+                  </div>
+                ) : null}
+                {bestPlan}
+              </>
+            )}
+          </div>
         </div>
 
-        {/* Preparation phase indicator - shown before solutions arrive.
-            Agent mode has its own richer status panel below. */}
-        {currentPhase && liveSolutions.length === 0 && solverMode !== "agent" && (
-          <div className="flex items-center gap-3 rounded-lg bg-slate-50 px-4 py-3 dark:bg-slate-800">
-            <div className="h-2 w-2 animate-pulse rounded-full bg-indigo-500" />
-            <span className="text-sm text-slate-600 dark:text-slate-300">
-              {currentPhase}
-            </span>
+        {/* Actions: always visible. On phones the primary action comes first. */}
+        <footer className="border-t border-slate-100 bg-slate-50/80 px-4 py-3 sm:px-5 dark:border-slate-800 dark:bg-slate-950/40">
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:items-center">
+            <button
+              type="button"
+              onClick={onAbort}
+              title="Stop the run — the calendar stays untouched; any partial result lands in the run inbox."
+              className="rounded-lg px-3 py-2 text-sm font-medium text-rose-600 transition-colors hover:bg-rose-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-rose-500 sm:mr-auto sm:py-1.5 dark:text-rose-300 dark:hover:bg-rose-950/60"
+            >
+              Stop run
+            </button>
+            {onMinimize ? (
+              <button
+                type="button"
+                onClick={onMinimize}
+                title="Hide this panel - the run keeps working on the server and a badge stays in the corner."
+                className="rounded-lg border border-slate-200 bg-white px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-500 sm:py-1.5 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700"
+              >
+                Run in background
+              </button>
+            ) : null}
+            {liveSolutions.length > 0 ? (
+              <button
+                type="button"
+                onClick={onApplySolution}
+                title="Stop the run now and apply the best plan found so far to the calendar."
+                className="rounded-lg bg-indigo-600 px-4 py-2 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 sm:py-1.5 dark:bg-indigo-500 dark:hover:bg-indigo-400 dark:focus-visible:ring-offset-slate-900"
+              >
+                Apply best plan
+              </button>
+            ) : null}
           </div>
-        )}
-
-        {/* Agent live activity: stage stepper, iteration progress, move feed */}
-        {solverMode === "agent" && <AgentActivityPanel events={agentEvents} elapsedMs={elapsedMs} currentPhase={currentPhase} liveConnected={liveConnected} />}
-
-        {/* Live constraint fulfilment for the current best solution */}
-        {liveStats && (
-          <div className="w-full max-w-xl">
-            {solverMode === "agent" && <p className="mb-2 text-xs font-semibold text-slate-600 dark:text-slate-300">Best saved draft</p>}
-            <ConstraintPulse
-              stats={liveStats}
-              onCallRestEnabled={solverSettings?.onCallRestEnabled ?? false}
-            />
-          </div>
-        )}
-
-        {/* Live solutions chart. Agent runs work on a strict priority ladder,
-            not a scalar score — the encoded objective is meaningless to users
-            there, so the chart only renders for the classic optimizer. */}
-        {liveSolutions.length > 0 && solverMode !== "agent" && (
-          <LiveSolutionChart solutions={liveSolutions} elapsedMs={elapsedMs} />
-        )}
+          <p className="mt-2 text-[11px] leading-snug text-slate-500 dark:text-slate-400">
+            The run continues on the server. Your calendar changes only when you apply a plan; the
+            best plan is also kept in the run inbox for review.
+          </p>
+        </footer>
 
         {/* Full-screen dashboard */}
         {dashboardOpen && (
@@ -897,7 +944,7 @@ export default function SolverOverlay({
             onClose={() => setDashboardOpen(false)}
           />
         )}
-      </div>
+      </section>
     </div>,
     portalTarget,
   );

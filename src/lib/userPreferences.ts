@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   getUserPreferences,
   saveUserPreferences,
-  type ColorBy,
   type Orientation,
   type PlanRange,
   type PlanScope,
@@ -27,7 +26,6 @@ const SAVE_DEBOUNCE_MS = 600;
 const PLAN_SCOPES: PlanScope[] = ["team", "me"];
 const PLAN_RANGES: PlanRange[] = ["day", "week", "month"];
 const ORIENTATIONS: Orientation[] = ["top", "left"];
-const COLOR_BYS: ColorBy[] = ["section", "person"];
 const TIME_LAYOUTS: TeamTimeLayout[] = ["stacked", "columns"];
 const START_ATS: ViewStartAt[] = ["today", "nextShift", "weekStart"];
 
@@ -39,7 +37,6 @@ export const DEFAULT_PREFERENCES: Readonly<UserPreferences> = Object.freeze<User
   orientationByRangeMobile: { day: "top", week: "left", month: "top" },
   myPlanRange: "week",
   myPlanRangeMobile: "week",
-  teamColorBy: "section",
   teamTimeLayout: "stacked",
   savedViews: [],
   startViewDesktop: null,
@@ -67,22 +64,13 @@ export function normalizeViewConfig(raw: unknown): ViewConfig | null {
     scope: pick(raw.scope, PLAN_SCOPES, "team"),
     range: pick(raw.range, PLAN_RANGES, "week"),
     orientation: pick(raw.orientation, ORIENTATIONS, "top"),
-    colorBy: pick(raw.colorBy, COLOR_BYS, "section"),
   };
 }
 
-/**
- * Same scope/range/orientation, and colorBy for scope "team" (it has no
- * meaning in My plan, so it is ignored there); ids and names are ignored.
- */
+/** Same scope/range/orientation; ids and names are ignored. */
 export function sameViewConfig(a: ViewConfig | null, b: ViewConfig | null): boolean {
   if (!a || !b) return a === b;
-  return (
-    a.scope === b.scope &&
-    a.range === b.range &&
-    a.orientation === b.orientation &&
-    (a.scope === "me" || a.colorBy === b.colorBy)
-  );
+  return a.scope === b.scope && a.range === b.range && a.orientation === b.orientation;
 }
 
 /** Coerces anything (server JSON, old shapes) into valid preferences; pure. */
@@ -115,7 +103,6 @@ export function normalizePreferences(raw: unknown): UserPreferences {
     orientationByRangeMobile: orientations("orientationByRangeMobile"),
     myPlanRange: pick(source.myPlanRange, PLAN_RANGES, "week"),
     myPlanRangeMobile: pick(source.myPlanRangeMobile, PLAN_RANGES, "week"),
-    teamColorBy: pick(source.teamColorBy, COLOR_BYS, "section"),
     teamTimeLayout: pick(source.teamTimeLayout, TIME_LAYOUTS, "stacked"),
     savedViews,
     startViewDesktop: normalizeViewConfig(source.startViewDesktop),

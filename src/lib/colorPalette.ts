@@ -60,7 +60,7 @@ export const LOCATION_COLOR_OPTIONS: LocationColorOption[] = [
   },
 ];
 
-// Person colors for "Color by: Person" (assigned in clinician list order,
+// Person colors of the team grid and My plan (assigned in clinician list order,
 // repeating after 16). `strong` = initials circle + pill border (white text
 // on it), `light` = pill fill, `ink` = pill text. `dark` holds the dark-mode
 // tokens (SPEC B8): a lighter circle/border with dark initials (#0F172A), a

@@ -324,7 +324,7 @@ export default function AutomatedPlanningPanel({
               type="button"
               onClick={handleResetButtonClick}
               disabled={isRunning}
-              title="Remove assignments in the selected timeframe — choose whether to keep manual ones."
+              title="Remove assignments in the selected timeframe. Locked shifts stay."
               className={buttonSecondary.base}
             >
               Reset
@@ -339,7 +339,7 @@ export default function AutomatedPlanningPanel({
               >
                 <div className="flex flex-col gap-3">
                   <div className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                    Reset Assignments
+                    Reset assignments
                   </div>
                   <button
                     type="button"
@@ -347,11 +347,11 @@ export default function AutomatedPlanningPanel({
                     className="flex flex-col gap-1 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:border-sky-300 hover:bg-sky-50 dark:border-slate-700 dark:hover:border-sky-600 dark:hover:bg-sky-900/30"
                   >
                     <span className="text-sm font-medium text-slate-800 dark:text-slate-100">
-                      Reset Solver Only
+                      Unlocked shifts
                     </span>
                     <span className="text-xs text-slate-500 dark:text-slate-400">
-                      Removes only assignments created by the automated planner.
-                      Manual and fixed assignments will be kept.
+                      Removes every shift without a lock in the selected timeframe.
+                      Locked shifts, rest days and vacations stay.
                     </span>
                   </button>
                   <button
@@ -360,11 +360,10 @@ export default function AutomatedPlanningPanel({
                     className="flex flex-col gap-1 rounded-lg border border-slate-200 p-3 text-left transition-colors hover:border-rose-300 hover:bg-rose-50 dark:border-slate-700 dark:hover:border-rose-600 dark:hover:bg-rose-900/30"
                   >
                     <span className="text-sm font-medium text-slate-800 dark:text-slate-100">
-                      Reset Unfixed
+                      Unlocked shifts and rest days
                     </span>
                     <span className="text-xs text-slate-500 dark:text-slate-400">
-                      Removes unfixed assignments in the selected timeframe, including manual entries.
-                      Explicitly fixed assignments and vacations are kept.
+                      Also empties the Rest Day row. Locked shifts and vacations stay.
                     </span>
                   </button>
                 </div>

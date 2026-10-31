@@ -1,11 +1,5 @@
 import type { ReactNode } from "react";
-import type {
-  ColorBy,
-  PlanScope,
-  TeamTimeLayout,
-  UserPreferences,
-  ViewConfig,
-} from "../../api/client";
+import type { PlanScope, TeamTimeLayout, UserPreferences, ViewConfig } from "../../api/client";
 import { cx } from "../../lib/classNames";
 import { personColor } from "../../lib/myPlan";
 import type { PreferencesUpdate } from "../../lib/userPreferences";
@@ -17,40 +11,33 @@ import Toast, { useToast } from "../myPlan/Toast";
 import { currentViewConfig } from "../myPlan/viewConfig";
 
 // Card header of the team calendars (classic grid and clinic sheet), plan
-// §2.1/§2.9. Row 1: "Team | My plan" switch on the left, "Times" and "Color
-// by" (classic grid only), start-page star and Views menu on the right — the
-// same places as in the My-plan header, so switching scope does not move the
-// controls. Row 2: the existing header (navigator, badges, publish), unchanged.
+// §2.1/§2.9. Row 1: "Team | My plan" switch on the left, "Times" (classic
+// grid only), start-page star and Views menu on the right — the same places
+// as in the My-plan header, so switching scope does not move the controls.
+// Row 2: the existing header (navigator, badges, publish), unchanged. The
+// classic grid always colors people (the "Color by" switch is gone).
 
 type TeamPlanHeaderProps = {
   isMobile: boolean;
   prefs: UserPreferences;
   onUpdatePrefs: (update: PreferencesUpdate) => void;
   onScopeChange: (scope: PlanScope) => void;
-  /** Apply a saved view (scope + range/orientation/colorBy). */
+  /** Apply a saved view (scope + range/orientation). */
   onApplyView: (view: ViewConfig) => void;
   /** Person linked to the account and their clinician list index (initials on "My plan"). */
   me?: { name: string; index: number } | null;
-  /**
-   * "Times: Side by side | Stacked" and "Color by: Section | Person" —
-   * classic grid only; the clinic sheet keeps its look.
-   */
-  showColorBy?: boolean;
+  /** "Times: Side by side | Stacked" — classic grid only; the clinic sheet keeps its look. */
+  showTimeLayout?: boolean;
   /** The existing header row. */
   children: ReactNode;
 };
-
-const COLOR_BY_OPTIONS: Array<{ value: ColorBy; label: string }> = [
-  { value: "section", label: "Section" },
-  { value: "person", label: "Person" },
-];
 
 const TIME_LAYOUT_OPTIONS: Array<{ value: TeamTimeLayout; label: string; title: string }> = [
   { value: "columns", label: "Side by side", title: "A day's times as columns next to each other" },
   { value: "stacked", label: "Stacked", title: "A day's times as rows below each other: the whole week at a glance" },
 ];
 
-/** Labeled segmented control ("Color by", "Times"). */
+/** Labeled segmented control ("Times"). */
 function SegmentSwitch<T extends string>({
   label,
   options,
@@ -95,13 +82,11 @@ export default function TeamPlanHeader({
   onScopeChange,
   onApplyView,
   me,
-  showColorBy = false,
+  showTimeLayout = false,
   children,
 }: TeamPlanHeaderProps) {
   const { toast, show: notify, dismiss } = useToast();
-  const teamView = currentViewConfig(prefs, "team");
-  // The monthly sheet ignores "Color by": its views keep the section look.
-  const currentView = showColorBy ? teamView : { ...teamView, colorBy: "section" as const };
+  const currentView = currentViewConfig(prefs, "team");
   const scopeSwitch = (
     <PlanScopeSwitch
       scope="team"
@@ -111,23 +96,14 @@ export default function TeamPlanHeader({
       compact={isMobile}
     />
   );
-  const displaySwitches = showColorBy ? (
-    <>
-      <SegmentSwitch
-        label="Times"
-        options={TIME_LAYOUT_OPTIONS}
-        value={prefs.teamTimeLayout}
-        onChange={(teamTimeLayout) => onUpdatePrefs({ teamTimeLayout })}
-        compact={isMobile}
-      />
-      <SegmentSwitch
-        label="Color by"
-        options={COLOR_BY_OPTIONS}
-        value={prefs.teamColorBy}
-        onChange={(teamColorBy) => onUpdatePrefs({ teamColorBy })}
-        compact={isMobile}
-      />
-    </>
+  const displaySwitches = showTimeLayout ? (
+    <SegmentSwitch
+      label="Times"
+      options={TIME_LAYOUT_OPTIONS}
+      value={prefs.teamTimeLayout}
+      onChange={(teamTimeLayout) => onUpdatePrefs({ teamTimeLayout })}
+      compact={isMobile}
+    />
   ) : null;
   const tools = (
     <>

@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
 import type { AgentActivityData } from "../../api/client";
 import {
@@ -6,20 +7,35 @@ import {
   formatActivityTime,
   formatFeedDate,
   type AgentFeedEntry,
-  type AgentStage,
+  type AgentStatus,
 } from "../../lib/agentActivity";
 import { buttonSmall } from "../../lib/buttonStyles";
+import { cx } from "../../lib/classNames";
 import { copyTextToClipboard } from "../../lib/clipboard";
 
-// Live view of the agent solver: stage stepper, iteration progress, and a
-// feed of the concrete changes the agent makes. Rendered inside SolverOverlay
-// for solver_mode === "agent" only.
+// Live view of the agent solver inside SolverOverlay (solver_mode "agent"):
+// a day track over the planning range with the agent's current step, then
+// (slot) the best plan so far, then the activity log — collapsed to its
+// latest entry, so the overlay stays readable while the agent works.
 
-const STAGES: { id: AgentStage; label: string }[] = [
-  { id: "seed", label: "Draft plan" },
-  { id: "improve", label: "AI improving" },
-  { id: "finalize", label: "Finalize" },
-];
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+/** The ISO dates of a planning range (at most 62, oldest first). */
+export function rangeDays(range?: { startISO: string; endISO: string } | null): string[] {
+  if (!range) return [];
+  const parse = (iso: string) => {
+    const [year, month, day] = iso.split("-").map(Number);
+    return year && month && day ? Date.UTC(year, month - 1, day) : NaN;
+  };
+  const start = parse(range.startISO);
+  const end = parse(range.endISO);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end < start) return [];
+  const days: string[] = [];
+  for (let t = start; t <= end && days.length < 62; t += 86_400_000) {
+    days.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return days;
+}
 
 function SparkleIcon({ className = "" }: { className?: string }) {
   return (
@@ -30,60 +46,143 @@ function SparkleIcon({ className = "" }: { className?: string }) {
   );
 }
 
-function CheckIcon({ className = "" }: { className?: string }) {
+/**
+ * One segment per day of the range: planned, in progress (pulsing) or still
+ * open. Short ranges name their days below the segments.
+ */
+function DayTrack({ days, total, done, current }: {
+  days: string[];
+  total: number;
+  done: number;
+  current: number | null;
+}) {
+  const labelled = days.length === total && total <= 10;
   return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={3} className={className} aria-hidden>
-      <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
-    </svg>
+    <div>
+      <div
+        role="progressbar"
+        aria-label="Days planned"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={done}
+        aria-valuetext={`${done} of ${total} days planned`}
+        className={cx("flex", total > 14 ? "gap-px" : "gap-1")}
+      >
+        {Array.from({ length: total }, (_, index) => (
+          <span
+            key={index}
+            className={cx(
+              "h-1.5 flex-1 rounded-full transition-colors duration-700",
+              index < done
+                ? "bg-indigo-500 dark:bg-indigo-400"
+                : index === current
+                  ? "bg-indigo-300 motion-safe:animate-pulse dark:bg-indigo-400/45"
+                  : "bg-slate-200 dark:bg-slate-700",
+            )}
+          />
+        ))}
+      </div>
+      {labelled ? (
+        <div className={cx("mt-1 flex", total > 14 ? "gap-px" : "gap-1")} aria-hidden="true">
+          {days.map((dateISO, index) => {
+            const [year, month, day] = dateISO.split("-").map(Number);
+            const weekday = WEEKDAYS[new Date(Date.UTC(year, month - 1, day)).getUTCDay()];
+            return (
+              <span
+                key={dateISO}
+                className={cx(
+                  "flex-1 truncate text-center text-[10px] tabular-nums",
+                  index === current
+                    ? "font-semibold text-indigo-600 dark:text-indigo-300"
+                    : index < done
+                      ? "text-slate-500 dark:text-slate-400"
+                      : "text-slate-400 dark:text-slate-500",
+                )}
+              >
+                {weekday} {String(day).padStart(2, "0")}
+              </span>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
-function StageStepper({ stage }: { stage: AgentStage }) {
-  const activeIndex = STAGES.findIndex((s) => s.id === stage);
+/**
+ * Where the run stands: phase or day, the day track, and the agent's current
+ * step with its duration. The step sits in role="status" so screen readers
+ * hear it change.
+ */
+export function AgentRunProgress({ status, range, elapsedMs = 0, currentPhase, liveConnected = true }: {
+  status: AgentStatus;
+  range?: { startISO: string; endISO: string } | null;
+  elapsedMs?: number;
+  currentPhase?: string | null;
+  liveConnected?: boolean;
+}) {
+  const days = rangeDays(range);
+  const total = status.totalDays ?? days.length;
+  const reviewing = status.stage === "finalize" || (status.dayIndex === null && status.maxDayIndex !== null);
+  const done = reviewing ? total : status.dayIndex ? Math.min(total, status.dayIndex - 1) : 0;
+  const current = !reviewing && status.dayIndex ? status.dayIndex - 1 : null;
+  const waitSeconds = Math.max(0, Math.floor((elapsedMs - status.actionStartedMs) / 1000));
+  const phase = status.stage === "finalize"
+    ? "Finishing: the best plan is prepared for review"
+    : status.planningDate && status.dayIndex
+      ? `Day ${status.dayIndex} of ${status.totalDays ?? total} · ${formatFeedDate(status.planningDate)}`
+      : status.stage === "seed" && !status.phaseLabel
+        ? "Drafting a first plan"
+        : status.phaseLabel ?? currentPhase ?? "Preparing the planning run";
+  const checks = status.checksProgress;
   return (
-    <div className="flex w-full items-center" aria-label={`Agent stage: ${STAGES[activeIndex]?.label}`}>
-      {STAGES.map((step, index) => {
-        const done = index < activeIndex;
-        const active = index === activeIndex;
-        return (
-          <div key={step.id} className={`flex items-center ${index > 0 ? "flex-1" : ""}`}>
-            {index > 0 && (
-              <div
-                className={`mx-2 h-px flex-1 rounded transition-colors duration-700 ${
-                  index <= activeIndex
-                    ? "bg-gradient-to-r from-indigo-400 to-violet-400"
-                    : "bg-slate-200 dark:bg-slate-700"
-                }`}
-              />
-            )}
-            <div className="flex items-center gap-1.5">
-              {done ? (
-                <span className="solver-pop flex h-4 w-4 items-center justify-center rounded-full bg-indigo-500 text-white">
-                  <CheckIcon className="h-2.5 w-2.5" />
-                </span>
-              ) : active ? (
-                <span className="solver-breathe flex h-4 w-4 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-500">
-                  <span className="h-1.5 w-1.5 rounded-full bg-white/90" />
-                </span>
-              ) : (
-                <span className="h-4 w-4 rounded-full border-2 border-slate-200 dark:border-slate-600" />
-              )}
-              <span
-                className={`text-xs font-medium ${
-                  active
-                    ? "text-indigo-600 dark:text-indigo-300"
-                    : done
-                      ? "text-slate-600 dark:text-slate-300"
-                      : "text-slate-400 dark:text-slate-500"
-                }`}
-              >
-                {step.label}
+    <section aria-label="Planning progress" className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <p className="text-sm font-semibold text-slate-800 dark:text-slate-100">{phase}</p>
+        <p className="text-[11px] tabular-nums text-slate-400 dark:text-slate-500">
+          Step {status.iteration} · {status.movesAccepted} draft change{status.movesAccepted === 1 ? "" : "s"}
+          {checks ? (
+            <span title="Final day checks of the current plan. They start over when assignments change.">
+              {" "}· Current plan: {checks.complete}/{checks.total} days checked
+            </span>
+          ) : null}
+        </p>
+      </div>
+      {total > 0 ? <DayTrack days={days} total={total} done={done} current={current} /> : null}
+      <div className="flex items-start gap-2.5 rounded-xl bg-slate-50 px-3 py-2.5 dark:bg-slate-800/60">
+        <SparkleIcon
+          className={cx("mt-0.5 h-4 w-4 shrink-0", liveConnected ? "solver-float text-indigo-500" : "text-amber-500")}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-baseline justify-between gap-x-3">
+            <p role="status" className="min-w-0 text-sm font-medium text-slate-800 dark:text-slate-100">
+              {liveConnected ? status.currentAction : "Live updates interrupted"}
+            </p>
+            {liveConnected ? (
+              <span className="shrink-0 text-[11px] tabular-nums text-slate-400 dark:text-slate-500">
+                {formatActivityTime(waitSeconds * 1000)} in this step
               </span>
-            </div>
+            ) : null}
           </div>
-        );
-      })}
-    </div>
+          {!liveConnected ? (
+            <p className="mt-1 text-xs text-amber-700 dark:text-amber-300">
+              The connection is being restored. The run continues on the server; this view may be
+              out of date. If updates do not resume, reload the page.
+            </p>
+          ) : status.thinking && waitSeconds >= 30 ? (
+            <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
+              Waiting for the model response; complex steps can take a few minutes.
+            </p>
+          ) : null}
+          {status.lastResult ? (
+            <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+              <span className="font-medium text-slate-600 dark:text-slate-300">Last result: </span>
+              {status.lastResult}
+            </p>
+          ) : null}
+        </div>
+      </div>
+    </section>
   );
 }
 
@@ -294,71 +393,145 @@ function FeedRow({
   );
 }
 
-export default function AgentActivityPanel({ events, elapsedMs = 0, currentPhase, liveConnected = true }: {
-  events: AgentActivityData[];
-  elapsedMs?: number;
-  currentPhase?: string | null;
-  liveConnected?: boolean;
+/** One line for the collapsed log: what happened last (model text excluded). */
+function entrySummary(entry: AgentFeedEntry): string {
+  switch (entry.type) {
+    case "move": {
+      const { move } = entry;
+      const arrow = move.action === "assign" ? "→" : "←";
+      const note = entry.improved ? " · Better plan saved" : "";
+      return `${move.clinician} ${arrow} ${move.section || "shift"} · ${formatFeedDate(move.dateISO)}${note}`;
+    }
+    case "tools":
+      return entry.summary ? `${entry.label}: ${entry.summary}` : entry.label;
+    case "notice":
+      return entry.label;
+    case "rejected":
+      return `${entry.count} change${entry.count === 1 ? "" : "s"} rolled back — ${entry.reason}`;
+    default:
+      return entry.text;
+  }
+}
+
+/**
+ * The agent's activity log. Collapsed it shows only the latest entry; opened
+ * it lists the recent activity (model text on request). Only an explicit
+ * click scrolls: readers keep their place as results arrive.
+ */
+export function AgentActivityLog({ status, open, onOpenChange }: {
+  status: AgentStatus;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
-  const status = useMemo(() => deriveAgentStatus(events), [events]);
   const [fullThought, setFullThought] = useState<ThoughtDetails | null>(null);
   const closeThought = useCallback(() => setFullThought(null), []);
   const [includeModelText, setIncludeModelText] = useState(false);
   const feedRef = useRef<HTMLDivElement>(null);
-  const waitSeconds = Math.max(0, Math.floor((elapsedMs - status.actionStartedMs) / 1000));
+  const bodyId = useId();
   const visibleFeed = status.feed.filter((entry) => includeModelText || entry.type !== "thought");
-  const phase = status.stage === "finalize" ? "Finalize the best draft"
-    : status.phaseLabel ?? currentPhase ?? "Prepare the planning run";
+  const activity = status.feed.filter((entry) => entry.type !== "thought");
+  const latest = activity[activity.length - 1];
   return (
-    <div className="w-full rounded-xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-3 sm:p-4 dark:border-indigo-900/50 dark:from-indigo-950/40 dark:to-slate-900">
-      <StageStepper stage={status.stage} />
-      <div className="mt-4 rounded-lg border border-indigo-100 bg-white/80 p-3 dark:border-indigo-900 dark:bg-slate-900/70">
-        <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] font-medium text-slate-500 dark:text-slate-400">
-          <span>{status.planningDate && status.dayIndex ? `Day ${status.dayIndex} of ${status.totalDays} · ${formatFeedDate(status.planningDate)}` : phase}</span>
-          <span className="tabular-nums">Step {status.iteration} · {status.movesAccepted} draft changes</span>
-        </div>
-        <div role="status" className="mt-2 flex items-start gap-2 text-sm font-semibold text-slate-800 dark:text-slate-100">
-          <SparkleIcon className={`mt-0.5 h-4 w-4 shrink-0 text-indigo-500 ${liveConnected ? "solver-float" : ""}`} />
-          <span>{liveConnected ? status.currentAction : "Live updates interrupted"}</span>
-        </div>
-        {!liveConnected ? (
-          <p className="mt-2 text-xs text-amber-700 dark:text-amber-300">The connection is being restored. The run continues on the server; this view may be out of date. If updates do not resume, reload the page.</p>
-        ) : (
-          <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-            <span className="tabular-nums">{formatActivityTime(waitSeconds * 1000)} in this step</span>
-            {status.thinking && waitSeconds >= 30 && <span> · Waiting for the model response; complex steps can take a few minutes.</span>}
+    <section className="rounded-xl border border-slate-200 dark:border-slate-700">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={bodyId}
+        onClick={() => onOpenChange(!open)}
+        className="flex w-full items-start gap-2 rounded-xl px-3 py-2.5 text-left transition-colors hover:bg-slate-50 dark:hover:bg-slate-800/60"
+      >
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth={1.8} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+          className={cx("mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform", open && "rotate-90")}>
+          <path d="M6 3.5 10.5 8 6 12.5" />
+        </svg>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline justify-between gap-2">
+            <span className="text-xs font-semibold text-slate-700 dark:text-slate-200">Activity log</span>
+            <span className="text-[11px] tabular-nums text-slate-400 dark:text-slate-500">
+              {activity.length === 0 ? "nothing yet" : `${activity.length} recent`}
+            </span>
+          </span>
+          {!open && latest ? (
+            <span className="mt-0.5 flex gap-2 text-xs text-slate-500 dark:text-slate-400">
+              <span className="shrink-0 tabular-nums text-slate-400 dark:text-slate-500">{formatActivityTime(latest.timeMs)}</span>
+              <span className="min-w-0 truncate">{entrySummary(latest)}</span>
+            </span>
+          ) : null}
+        </span>
+      </button>
+      {open ? (
+        <div id={bodyId} className="border-t border-slate-100 px-3 pb-3 dark:border-slate-800">
+          <div className="flex flex-wrap items-center justify-between gap-2 py-2">
+            <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
+              <input type="checkbox" checked={includeModelText} onChange={(e) => setIncludeModelText(e.target.checked)} className="accent-indigo-600" />
+              Include model text
+            </label>
+            <button type="button" className={buttonSmall.base} disabled={visibleFeed.length === 0} onClick={() => {
+              if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+            }}>Jump to latest ↓</button>
           </div>
-        )}
-        {status.checksProgress && <p className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-          Current plan: {status.checksProgress.complete}/{status.checksProgress.total} day checks complete.
-          Checks restart when assignments change.
-        </p>}
-        {status.lastResult && <p className="mt-2 border-t border-slate-100 pt-2 text-xs leading-relaxed text-slate-600 dark:border-slate-800 dark:text-slate-300"><span className="font-medium">Last result: </span>{status.lastResult}</p>}
-      </div>
-
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-          <input type="checkbox" checked={includeModelText} onChange={(e) => setIncludeModelText(e.target.checked)} className="accent-indigo-600" />
-          Include model text
-        </label>
-        <button type="button" className={buttonSmall.base} disabled={visibleFeed.length === 0} onClick={() => {
-          if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
-        }}>Jump to latest ↓</button>
-      </div>
-      {/* Only an explicit click scrolls: readers keep their place as results arrive. */}
-      <div ref={feedRef} role="region" aria-label="Planning activity" tabIndex={0} className="mt-2 flex max-h-64 flex-col gap-1 overflow-y-auto overscroll-contain pr-1 [overflow-anchor:none]">
-        {visibleFeed.map((entry) => (
-          <div key={entry.key} className="flex items-start gap-1 border-b border-slate-100 py-1 last:border-0 dark:border-slate-800">
-            <span className="w-9 shrink-0 pt-1.5 text-right text-[10px] tabular-nums text-slate-400">{formatActivityTime(entry.timeMs)}</span>
-            <div className="min-w-0 flex-1"><FeedRow entry={entry} onShowFullThought={setFullThought} /></div>
+          <div ref={feedRef} role="region" aria-label="Planning activity" tabIndex={0} className="flex max-h-60 flex-col gap-1 overflow-y-auto overscroll-contain pr-1 [overflow-anchor:none]">
+            {visibleFeed.map((entry) => (
+              <div key={entry.key} className="flex items-start gap-1 border-b border-slate-100 py-1 last:border-0 dark:border-slate-800">
+                <span className="w-9 shrink-0 pt-1.5 text-right text-[10px] tabular-nums text-slate-400">{formatActivityTime(entry.timeMs)}</span>
+                <div className="min-w-0 flex-1"><FeedRow entry={entry} onShowFullThought={setFullThought} /></div>
+              </div>
+            ))}
+            {visibleFeed.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Checks and draft changes will appear here as they happen.</p>}
           </div>
-        ))}
-        {visibleFeed.length === 0 && <p className="px-2 py-3 text-xs text-slate-500">Checks and draft changes will appear here as they happen.</p>}
-      </div>
-      <p className="mt-2 text-[10px] leading-relaxed text-slate-400">Recent activity · Changes below belong to the working draft. The best saved plan is shown in the coverage figures.</p>
+          <p className="mt-2 text-[10px] leading-relaxed text-slate-400">
+            Changes in the log belong to the working draft. &ldquo;Best plan so far&rdquo; above shows the plan that would be applied.
+          </p>
+        </div>
+      ) : null}
       {fullThought && (
         <ThoughtDialog details={fullThought} onClose={closeThought} />
       )}
+    </section>
+  );
+}
+
+/**
+ * Progress, then `children` (the overlay puts the best plan so far there),
+ * then the log. The log's open state can be held by the caller, so it
+ * survives hiding the overlay ("Run in background") and opening it again.
+ */
+export default function AgentActivityPanel({
+  events,
+  elapsedMs = 0,
+  currentPhase,
+  liveConnected = true,
+  range,
+  logOpen,
+  onLogOpenChange,
+  children,
+}: {
+  events: AgentActivityData[];
+  elapsedMs?: number;
+  currentPhase?: string | null;
+  liveConnected?: boolean;
+  range?: { startISO: string; endISO: string } | null;
+  logOpen?: boolean;
+  onLogOpenChange?: (open: boolean) => void;
+  children?: ReactNode;
+}) {
+  const status = useMemo(() => deriveAgentStatus(events), [events]);
+  const [ownLogOpen, setOwnLogOpen] = useState(false);
+  return (
+    <div className="flex w-full flex-col gap-4">
+      <AgentRunProgress
+        status={status}
+        range={range}
+        elapsedMs={elapsedMs}
+        currentPhase={currentPhase}
+        liveConnected={liveConnected}
+      />
+      {children}
+      <AgentActivityLog
+        status={status}
+        open={logOpen ?? ownLogOpen}
+        onOpenChange={onLogOpenChange ?? setOwnLogOpen}
+      />
     </div>
   );
 }

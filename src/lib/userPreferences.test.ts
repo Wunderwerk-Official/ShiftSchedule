@@ -17,7 +17,7 @@ vi.mock("../api/client", () => ({
 
 const getMock = vi.mocked(getUserPreferences);
 const saveMock = vi.mocked(saveUserPreferences);
-const view = { scope: "me", range: "week", orientation: "left", colorBy: "section" } as const;
+const view = { scope: "me", range: "week", orientation: "left" } as const;
 // Runs due debounce timers and settles promises (fake timers only).
 const flushTimers = () =>
   act(async () => {
@@ -58,7 +58,7 @@ describe("normalizePreferences", () => {
       clinicianId: "  lh ",
       orientationByRange: { day: "left", week: "sideways" },
       myPlanRange: "month",
-      teamColorBy: "rainbow",
+      teamColorBy: "person", // retired in v1.69: dropped
       teamTimeLayout: "diagonal",
       startViewDesktop: { scope: "me", range: "day" },
       startViewMobile: "today",
@@ -68,8 +68,9 @@ describe("normalizePreferences", () => {
       clinicianId: "lh",
       orientationByRange: { day: "left", week: "top", month: "top" },
       myPlanRange: "month",
-      startViewDesktop: { scope: "me", range: "day", orientation: "top", colorBy: "section" },
+      startViewDesktop: { scope: "me", range: "day", orientation: "top" },
     });
+    expect(prefs).not.toHaveProperty("teamColorBy");
     expect(normalizePreferences({ clinicianId: "x".repeat(201) }).clinicianId).toBeNull();
     expect(normalizePreferences({ teamTimeLayout: "columns" }).teamTimeLayout).toBe("columns");
   });
@@ -106,12 +107,13 @@ describe("normalizePreferences", () => {
     expect(normalizePreferences({ myPlanRangeMobile: "year" }).myPlanRangeMobile).toBe("week");
   });
 
-  it("compares views by their settings only, colorBy only for the team scope", () => {
+  it("compares views by their settings only", () => {
     expect(sameViewConfig(view, { ...view, id: "a", name: "Mine" } as never)).toBe(true);
     expect(sameViewConfig(view, { ...view, range: "day" })).toBe(false);
-    expect(sameViewConfig(view, { ...view, colorBy: "person" })).toBe(true);
+    expect(sameViewConfig(view, { ...view, scope: "team" })).toBe(false);
+    // Views stored before v1.69 may still carry a colorBy: it has no meaning.
     const team = { ...view, scope: "team" } as const;
-    expect(sameViewConfig(team, { ...team, colorBy: "person" })).toBe(false);
+    expect(sameViewConfig(team, { ...team, colorBy: "person" } as never)).toBe(true);
     expect(sameViewConfig(null, null)).toBe(true);
     expect(sameViewConfig(view, null)).toBe(false);
   });
@@ -176,15 +178,15 @@ describe("useUserPreferences", () => {
       orientationByRange: { day: "top", week: "top", month: "left" },
     });
     // Saved keys are clean: the next save sends only what changed since.
-    act(() => result.current.update({ teamColorBy: "person" }));
+    act(() => result.current.update({ teamTimeLayout: "columns" }));
     await flushTimers();
-    expect(saveMock.mock.calls[1][0]).toEqual({ teamColorBy: "person" });
+    expect(saveMock.mock.calls[1][0]).toEqual({ teamTimeLayout: "columns" });
     expect(stored).toEqual({
       ...DEFAULT_PREFERENCES,
       clinicianId: "lh",
       myPlanRange: "month",
       orientationByRange: { day: "top", week: "top", month: "left" },
-      teamColorBy: "person",
+      teamTimeLayout: "columns",
     });
     expect(result.current.prefs).toEqual(stored);
   });
@@ -201,12 +203,12 @@ describe("useUserPreferences", () => {
   });
 
   it("does not save an update that changes nothing", async () => {
-    getMock.mockResolvedValue({ ...DEFAULT_PREFERENCES, teamColorBy: "person" });
+    getMock.mockResolvedValue({ ...DEFAULT_PREFERENCES, teamTimeLayout: "columns" });
     const { result } = renderHook(() => useUserPreferences("lena"));
     await waitFor(() => expect(result.current.loaded).toBe(true));
     const before = result.current.prefs;
     vi.useFakeTimers();
-    act(() => result.current.update({ teamColorBy: "person" }));
+    act(() => result.current.update({ teamTimeLayout: "columns" }));
     act(() => result.current.update((prev) => ({ ...prev, myPlanRange: "week" })));
     await flushTimers();
     expect(saveMock).not.toHaveBeenCalled();
@@ -219,9 +221,9 @@ describe("useUserPreferences", () => {
     const { result } = renderHook(() => useUserPreferences("lena"));
     await waitFor(() => expect(result.current.loaded).toBe(true));
     vi.useFakeTimers();
-    act(() => result.current.update({ teamColorBy: "person" }));
+    act(() => result.current.update({ teamTimeLayout: "columns" }));
     await flushTimers();
-    expect(result.current.prefs.teamColorBy).toBe("person");
+    expect(result.current.prefs.teamTimeLayout).toBe("columns");
     // Unsaved keys count as pending: coming back to the tab does not re-read.
     await act(async () => {
       window.dispatchEvent(new Event("focus"));
@@ -230,8 +232,8 @@ describe("useUserPreferences", () => {
     act(() => result.current.update({ clinicianId: "lh" }));
     await flushTimers();
     expect(saveMock).toHaveBeenCalledTimes(2);
-    expect(saveMock.mock.calls[1][0]).toEqual({ clinicianId: "lh", teamColorBy: "person" });
-    expect(stored).toMatchObject({ teamColorBy: "person", clinicianId: "lh" });
+    expect(saveMock.mock.calls[1][0]).toEqual({ clinicianId: "lh", teamTimeLayout: "columns" });
+    expect(stored).toMatchObject({ teamTimeLayout: "columns", clinicianId: "lh" });
   });
 
   it("serializes saves: a change during a running save is saved afterwards, latest state", async () => {
@@ -257,9 +259,9 @@ describe("useUserPreferences", () => {
     const { result } = renderHook(() => useUserPreferences("lena"));
     await waitFor(() => expect(result.current.loaded).toBe(true));
     vi.useFakeTimers();
-    act(() => result.current.update({ myPlanRange: "day", teamColorBy: "person" }));
+    act(() => result.current.update({ myPlanRange: "day", teamTimeLayout: "columns" }));
     await flushTimers(); // PUT 1 runs
-    expect(saveMock.mock.calls[0][0]).toEqual({ myPlanRange: "day", teamColorBy: "person" });
+    expect(saveMock.mock.calls[0][0]).toEqual({ myPlanRange: "day", teamTimeLayout: "columns" });
     act(() => result.current.update({ myPlanRange: "month" })); // debounce not due yet
     stored = { ...stored, clinicianId: "phone" }; // another device saved meanwhile
     await act(async () => first.finish());
@@ -268,7 +270,7 @@ describe("useUserPreferences", () => {
       ...DEFAULT_PREFERENCES,
       clinicianId: "phone",
       myPlanRange: "month",
-      teamColorBy: "person",
+      teamTimeLayout: "columns",
     });
     await flushTimers();
     expect(saveMock).toHaveBeenCalledTimes(2);
@@ -296,7 +298,7 @@ describe("useUserPreferences", () => {
     });
     expect(saveMock).toHaveBeenCalledTimes(1); // no debounce wait
     // A change while the PUT runs is part of the same flush.
-    act(() => result.current.update({ teamColorBy: "person" }));
+    act(() => result.current.update({ teamTimeLayout: "columns" }));
     let flushedAgain!: Promise<void>;
     act(() => {
       flushedAgain = result.current.flush();
@@ -312,8 +314,8 @@ describe("useUserPreferences", () => {
     });
     expect(done).toBe(true);
     expect(saveMock).toHaveBeenCalledTimes(2);
-    expect(saveMock.mock.calls[1][0]).toEqual({ teamColorBy: "person" });
-    expect(stored).toMatchObject({ myPlanRange: "day", teamColorBy: "person" });
+    expect(saveMock.mock.calls[1][0]).toEqual({ teamTimeLayout: "columns" });
+    expect(stored).toMatchObject({ myPlanRange: "day", teamTimeLayout: "columns" });
     await flushTimers();
     expect(saveMock).toHaveBeenCalledTimes(2); // no debounced save left over
   });
@@ -359,12 +361,12 @@ describe("useUserPreferences", () => {
     expect(getMock).toHaveBeenCalledTimes(2);
     expect(saveMock).not.toHaveBeenCalled();
     expect(result.current.prefs.myPlanRange).toBe("day");
-    act(() => result.current.update({ teamColorBy: "person" })); // retry succeeds
+    act(() => result.current.update({ teamTimeLayout: "columns" })); // retry succeeds
     await flushTimers();
     expect(getMock).toHaveBeenCalledTimes(3);
     expect(saveMock).toHaveBeenCalledTimes(1);
-    expect(saveMock.mock.calls[0][0]).toEqual({ myPlanRange: "day", teamColorBy: "person" });
-    expect(result.current.prefs).toEqual({ ...onServer, myPlanRange: "day", teamColorBy: "person" });
+    expect(saveMock.mock.calls[0][0]).toEqual({ myPlanRange: "day", teamTimeLayout: "columns" });
+    expect(result.current.prefs).toEqual({ ...onServer, myPlanRange: "day", teamTimeLayout: "columns" });
     expect(stored).toEqual(result.current.prefs);
   });
 
@@ -424,7 +426,7 @@ describe("useUserPreferences", () => {
   });
 
   it("a re-read keeps loaded true and does not re-apply the start view", async () => {
-    const startView = { scope: "me", range: "week", orientation: "top", colorBy: "section" } as const;
+    const startView = { scope: "me", range: "week", orientation: "top" } as const;
     serve({ startViewDesktop: startView });
     const { result } = renderHook(() => {
       const preferences = useUserPreferences("lena");
@@ -507,11 +509,11 @@ describe("useUserPreferences", () => {
     act(() => {
       window.dispatchEvent(new Event("focus")); // this re-read fails
     });
-    act(() => result.current.update({ teamColorBy: "person" }));
+    act(() => result.current.update({ teamTimeLayout: "columns" }));
     await flushTimers();
-    expect(result.current.prefs).toMatchObject({ clinicianId: "lh", myPlanRange: "day", teamColorBy: "person" });
+    expect(result.current.prefs).toMatchObject({ clinicianId: "lh", myPlanRange: "day", teamTimeLayout: "columns" });
     expect(saveMock).toHaveBeenCalledTimes(2);
-    expect(saveMock.mock.calls[1][0]).toEqual({ teamColorBy: "person" });
+    expect(saveMock.mock.calls[1][0]).toEqual({ teamTimeLayout: "columns" });
     expect(stored).toEqual(result.current.prefs);
   });
 
@@ -551,7 +553,7 @@ describe("useUserPreferences", () => {
   });
 
   it("drops a pending save when the username changes; the next user's save sends only their keys", async () => {
-    const mia = normalizePreferences({ clinicianId: "mk", teamColorBy: "person" });
+    const mia = normalizePreferences({ clinicianId: "mk", teamTimeLayout: "columns" });
     getMock.mockResolvedValueOnce(DEFAULT_PREFERENCES).mockResolvedValue(mia);
     const { result, rerender } = renderHook(({ user }) => useUserPreferences(user), {
       initialProps: { user: "lena" },
@@ -582,14 +584,14 @@ describe("useUserPreferences", () => {
       });
       await waitFor(() => expect(result.current.loaded).toBe(true));
       vi.useFakeTimers();
-      act(() => result.current.update({ teamColorBy: "person" }));
+      act(() => result.current.update({ teamTimeLayout: "columns" }));
       await flushTimers(); // lena's PUT runs
       expect(saveMock).toHaveBeenCalledTimes(1);
       rerender({ user: "mia" });
       await flushTimers(); // mia's GET answers
       expect(result.current.prefs).toEqual(mia);
       await act(async () => {
-        if (outcome === "answers") held.resolve({ ...lena, teamColorBy: "person" });
+        if (outcome === "answers") held.resolve({ ...lena, teamTimeLayout: "columns" });
         else held.reject(new Error("502"));
       });
       await flushTimers();

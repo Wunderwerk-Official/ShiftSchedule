@@ -10,7 +10,7 @@ import { startOfWeek } from "../../lib/date";
 import { parseISODate } from "../../lib/myPlan";
 import type { PreferencesUpdate } from "../../lib/userPreferences";
 
-// Pure helpers around ViewConfig (scope + range + orientation + colorBy):
+// Pure helpers around ViewConfig (scope + range + orientation):
 // the "current view", labels for the star/toast/views menu, and applying a
 // saved or start view. Shared by My plan and (via the integration) the team
 // header, so both describe and apply views the same way.
@@ -87,23 +87,14 @@ export function orientationUpdate(range: PlanRange, orientation: Orientation, is
  * remembered range and its orientation on this device class.
  */
 export function currentViewConfig(prefs: UserPreferences, scope: PlanScope, isMobile = false): ViewConfig {
-  if (scope === "team") {
-    return { scope, range: "week", orientation: "top", colorBy: prefs.teamColorBy };
-  }
+  if (scope === "team") return { scope, range: "week", orientation: "top" };
   const range = rangeOf(prefs, isMobile);
-  return {
-    scope,
-    range,
-    orientation: orientationOf(prefs, range, isMobile),
-    colorBy: prefs.teamColorBy,
-  };
+  return { scope, range, orientation: orientationOf(prefs, range, isMobile) };
 }
 
-/** "My plan · Week · Date on top", "My plan · Month · Calendar", "Team · Color by person". */
+/** "My plan · Week · Date on top", "My plan · Month · Calendar", "Team plan". */
 export function describeView(view: ViewConfig): string {
-  if (view.scope === "team") {
-    return `Team · Color by ${view.colorBy === "person" ? "person" : "section"}`;
-  }
+  if (view.scope === "team") return "Team plan";
   const orientation =
     view.range === "month"
       ? ORIENTATION_SUBTITLES.month[view.orientation]
@@ -129,7 +120,8 @@ export function createViewId(): string {
 /** Preferences patch that makes `view` the current view on this device class (scope is page state). */
 export function viewPreferencesUpdate(view: ViewConfig, isMobile = false): PreferencesUpdate {
   return (prev) => {
-    if (view.scope === "team") return { ...prev, teamColorBy: view.colorBy };
+    // Team views have no settings of their own (always the person colors).
+    if (view.scope === "team") return prev;
     const key = orientationKey(isMobile);
     return {
       ...prev,

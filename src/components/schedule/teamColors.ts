@@ -2,11 +2,11 @@ import type { Clinician, Location } from "../../api/client";
 import { locationTint, personTone, tintTone, type PersonTone } from "../../lib/myPlan";
 import { initialsOf } from "../myPlan/planChrome";
 
-// Opt-in colors of the classic team grid (plan §2.9): "Color by: Person"
-// pill styles and location tints. A person or location without an entry
-// renders exactly as before, so the default look never changes.
+// Colors of the classic team grid (plan §2.9): the person pill styles
+// (always on since v1.69) and location tints. A location without a color
+// gets no entry and keeps its plain look.
 
-/** Pill colors of one person in "Color by: Person". */
+/** Pill colors of one person (team grid, always on since v1.69). */
 export type PersonPillStyle = {
   /**
    * Person palette entry by clinician list order, resolved for the theme

@@ -18,7 +18,7 @@ export type SavedViewsMenuProps = {
   currentView: ViewConfig;
   prefs: UserPreferences;
   onUpdatePrefs: (update: PreferencesUpdate) => void;
-  /** Apply scope/range/orientation/colorBy (see applyViewConfig). */
+  /** Apply scope/range/orientation (see applyViewConfig). */
   onApplyView: (view: ViewConfig) => void;
   isMobile: boolean;
   onNotify?: NotifyFn;

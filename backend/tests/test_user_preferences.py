@@ -35,7 +35,7 @@ def _client_as(username: str = USER) -> TestClient:
 
 def _view(view_id: str = "v1", name: str = "My week", **overrides) -> dict:
     return {"id": view_id, "name": name, "scope": "me", "range": "week",
-            "orientation": "left", "colorBy": "section", "startAt": "today", **overrides}
+            "orientation": "left", "startAt": "today", **overrides}
 
 
 FULL = {
@@ -45,11 +45,10 @@ FULL = {
     "orientationByRangeMobile": {"day": "top", "week": "top", "month": "left"},
     "myPlanRange": "month",
     "myPlanRangeMobile": "day",
-    "teamColorBy": "person",
     "teamTimeLayout": "columns",
     "savedViews": [_view(), _view("v2", "Next shift", startAt="nextShift")],
-    "startViewDesktop": {"scope": "me", "range": "week", "orientation": "top", "colorBy": "section"},
-    "startViewMobile": {"scope": "me", "range": "day", "orientation": "left", "colorBy": "section"},
+    "startViewDesktop": {"scope": "me", "range": "week", "orientation": "top"},
+    "startViewMobile": {"scope": "me", "range": "day", "orientation": "left"},
 }
 
 
@@ -63,7 +62,6 @@ def test_get_returns_defaults_when_nothing_stored():
         "orientationByRangeMobile": {"day": "top", "week": "left", "month": "top"},
         "myPlanRange": "week",
         "myPlanRangeMobile": "week",
-        "teamColorBy": "section",
         "teamTimeLayout": "stacked",
         "savedViews": [],
         "startViewDesktop": None,
@@ -90,6 +88,23 @@ def test_partial_input_is_completed_with_defaults_and_unknown_fields_ignored():
     assert body["orientationByRangeMobile"] == {"day": "top", "week": "left", "month": "top"}
     assert body["clinicianId"] is None
     assert "futureField" not in body
+    assert client.get(URL).json() == body
+
+
+def test_retired_color_by_fields_are_ignored():
+    """Until v1.69 the team grid had "Color by: Section | Person": stored
+    documents and older tabs may still send teamColorBy / a view's colorBy."""
+    client = _client_as()
+    res = client.put(URL, json={
+        "teamColorBy": "person",
+        "savedViews": [{**_view(), "colorBy": "person"}],
+        "startViewDesktop": {"scope": "team", "range": "week", "orientation": "top", "colorBy": "section"},
+    })
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert "teamColorBy" not in body
+    assert body["savedViews"] == [_view()]
+    assert body["startViewDesktop"] == {"scope": "team", "range": "week", "orientation": "top"}
     assert client.get(URL).json() == body
 
 
@@ -120,7 +135,6 @@ def test_put_clears_keys_sent_as_null_or_empty():
 @pytest.mark.parametrize("payload", [
     {"myPlanRange": "year"},
     {"myPlanRangeMobile": "year"},
-    {"teamColorBy": "rainbow"},
     {"teamTimeLayout": "diagonal"},
     {"orientationByRange": {"week": "diagonal"}},
     {"orientationByRangeMobile": {"day": "diagonal"}},

@@ -9,9 +9,9 @@ import {
   viewPreferencesUpdate,
 } from "../components/myPlan/viewConfig";
 
-/** Range/orientation (My plan, this device class) or colorBy (team) of `view` already in the preferences? */
+/** Range/orientation (My plan, this device class) of `view` already in the preferences? Team views have none. */
 function prefsMatchView(prefs: UserPreferences, view: ViewConfig, isMobile: boolean): boolean {
-  if (view.scope === "team") return prefs.teamColorBy === view.colorBy;
+  if (view.scope === "team") return true;
   return (
     rangeOf(prefs, isMobile) === view.range &&
     orientationOf(prefs, view.range, isMobile) === view.orientation
@@ -24,7 +24,7 @@ export const START_VIEW_WAIT_MS = 1000;
 /**
  * Page scope "Team | My plan" (plan §2.1). Starts as "team" — today's
  * behaviour — and applies the start view of the device class ONCE after the
- * preferences loaded (scope plus range/orientation or colorBy); later
+ * preferences loaded (scope plus range/orientation); later
  * preference changes never yank the view, and neither does a late load after
  * the user already switched. `applyView` applies a saved view.
  *

@@ -67,24 +67,30 @@ describe("resetUnfixedAssignments", () => {
   const onVacation = (clinicianId: string, dateISO: string) =>
     clinicianId === "clin-1" && dateISO === "2026-01-07";
 
-  it("keeps locked entries and manual/legacy entries on vacation days, removes the rest", () => {
+  it("keeps every locked shift (hand-placed or locked later) and empties the Rest Day row", () => {
     const map = buildAssignmentMap([
       entry("solver-vacation"),
       entry("manual-vacation", { source: "manual", rowId: "slot-b" }),
       entry("legacy-vacation", { source: undefined, rowId: "slot-c" }),
       entry("manual", { source: "manual", clinicianId: "clin-2" }),
+      // Hand-placed, then unlocked: handed to the planner (toggleAssignmentLock).
+      entry("unlocked-manual", { source: "solver", locked: false, clinicianId: "clin-5" }),
       entry("solver", { clinicianId: "clin-3" }),
       entry("locked", { locked: true, clinicianId: "clin-4" }),
       entry("rest-day", { rowId: "pool-rest-day", source: "manual", clinicianId: "clin-2" }),
+      // Pool rows have no lock: a hand-made entry hidden by a vacation stays.
+      entry("rest-day-vacation", { rowId: "pool-rest-day", source: "manual" }),
     ]);
     expect(ids(resetUnfixedAssignments(map, RANGE, onVacation))).toEqual([
       "legacy-vacation",
       "locked",
+      "manual",
       "manual-vacation",
+      "rest-day-vacation",
     ]);
   });
 
-  it("removes at least what Reset Solver Only removes", () => {
+  it("removes at least what Reset → Unlocked shifts removes", () => {
     const map = buildAssignmentMap([
       entry("solver-vacation"),
       entry("solver", { clinicianId: "clin-3", dateISO: "2026-01-08" }),

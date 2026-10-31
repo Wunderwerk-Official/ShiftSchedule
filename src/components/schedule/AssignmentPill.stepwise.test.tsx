@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import AssignmentPill from "./AssignmentPill";
 import { buildPersonPillStyles } from "./teamColors";
 
-// Color by: Person without canvas text metrics (jsdom's own user agent, no
+// Person colors without canvas text metrics (jsdom's own user agent, no
 // canvas mock): the pill falls back to the stepwise check, one level per
 // frame. Kept apart from AssignmentPill.test.tsx because the pill caches its
 // canvas context per module. Layout is faked: 6 px per character, a 20 px
@@ -42,14 +42,14 @@ const personStyle = buildPersonPillStyles([
 
 const renderPerson = (name: string, width: number) => {
   rowWidth = width;
-  render(<AssignmentPill name={name} personStyle={personStyle} isManual />);
+  render(<AssignmentPill name={name} personStyle={personStyle} isLocked onToggleLock={() => {}} />);
   return screen.getByText(/./, { selector: "span.min-w-0" });
 };
 
 // A few more frames, so a level change that should not happen would show.
 const nextFrames = () => new Promise((resolve) => setTimeout(resolve, 100));
 
-describe("AssignmentPill in Color by: Person without canvas metrics", () => {
+describe("AssignmentPill with person colors, without canvas metrics", () => {
   it("stops at \"First L.\" with an ellipsis while at least 30 px are left", async () => {
     // 66 - 24 = 42 px: "Sarah Neumann" (78 px) and "Sarah N." (48 px) overflow.
     const name = renderPerson("Sarah Neumann", 66);

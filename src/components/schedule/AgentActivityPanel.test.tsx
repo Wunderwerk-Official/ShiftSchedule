@@ -8,6 +8,9 @@ import type { AgentActivityData } from "../../api/client";
 const LONG =
   "START-MARKER " + "reasoning detail ".repeat(3000) + "END-MARKER";
 
+/** The log starts collapsed (latest entry only); most tests open it first. */
+const openLog = () => fireEvent.click(screen.getByRole("button", { name: /Activity log/ }));
+
 function ev(data: Partial<AgentActivityData>): AgentActivityData {
   return {
     kind: "thought",
@@ -30,6 +33,7 @@ describe("AgentActivityPanel full-text dialog", () => {
       />,
     );
     // The feed preview shows the start but is clamped before the end marker.
+    openLog();
     fireEvent.click(screen.getByRole("checkbox", { name: "Include model text" }));
     expect(screen.queryByText(/END-MARKER/)).toBeNull();
     const opener = screen.getByRole("button", { name: /show full text/i });
@@ -63,6 +67,7 @@ describe("AgentActivityPanel full-text dialog", () => {
           ]}
         />,
       );
+      openLog();
       fireEvent.click(screen.getByRole("checkbox", { name: "Include model text" }));
       fireEvent.click(screen.getByRole("button", { name: /show full text/i }));
       await act(async () => {
@@ -85,6 +90,7 @@ describe("AgentActivityPanel full-text dialog", () => {
         ]}
       />,
     );
+    openLog();
     expect(screen.queryByText("Filling Monday gaps.")).toBeNull();
     fireEvent.click(screen.getByRole("checkbox", { name: "Include model text" }));
     expect(screen.getByText("Filling Monday gaps.")).toBeTruthy();
@@ -94,6 +100,7 @@ describe("AgentActivityPanel full-text dialog", () => {
   it("distinguishes a provider limit from the preview and retains an open response as activity advances", () => {
     const events = [ev({ text: LONG, output_truncated: true })];
     const { rerender } = render(<AgentActivityPanel events={events} />);
+    openLog();
     fireEvent.click(screen.getByRole("checkbox", { name: "Include model text" }));
     expect(screen.getByText(/characters received/)).toBeVisible();
     expect(screen.getByText("Model response limit reached.")).toBeVisible();
@@ -122,6 +129,7 @@ it("keeps the current day and operation visible with an honest waiting duration"
 it("distinguishes temporary working changes from a better saved plan", () => {
   render(<AgentActivityPanel events={[ev({ kind: "moves_applied", retained_best: false, improved: false,
     moves: [{ action: "assign", clinician: "Dr. Schmit", section: "MRI", dateISO: "2026-01-06", start: "08:00", end: "16:00" }] })]} />);
+  openLog();
   const feed = screen.getByRole("region", { name: "Planning activity" });
   expect(within(feed).getByText(/earlier best kept/)).toBeTruthy();
   expect(within(feed).queryByText(/Better plan saved/)).toBeNull();
@@ -131,10 +139,69 @@ it('shows only checks for the current plan after a revision invalidates previous
   const { rerender } = render(<AgentActivityPanel events={[ev({
     kind: 'phase', checks_progress: { revision: 4, total: 7, complete: 3 },
   })]} />);
-  expect(screen.getByText(/Current plan: 3\/7 day checks complete/)).toBeVisible();
+  expect(screen.getByText(/Current plan: 3\/7 days checked/)).toBeVisible();
   rerender(<AgentActivityPanel events={[ev({
     kind: 'moves_applied', checks_progress: { revision: 5, total: 7, complete: 0 },
   })]} />);
-  expect(screen.getByText(/Current plan: 0\/7 day checks complete/)).toBeVisible();
+  expect(screen.getByText(/Current plan: 0\/7 days checked/)).toBeVisible();
   expect(screen.queryByText(/Current plan: 3\/7/)).toBeNull();
+});
+
+it("keeps the log collapsed to its latest entry until it is opened", () => {
+  render(<AgentActivityPanel events={[
+    ev({ kind: "tool_result", tool: "get_day_priorities", activity_id: 1, summary: "Open positions on this day: 4.", time_ms: 30000 }),
+    ev({ kind: "moves_applied", improved: true, time_ms: 61000,
+      moves: [{ action: "assign", clinician: "Dr. Schmit", section: "MRI", dateISO: "2026-01-06", start: "08:00", end: "16:00" }] }),
+    ev({ kind: "thought", text: "Model text is not a teaser.", time_ms: 62000 }),
+  ]} />);
+  const toggle = screen.getByRole("button", { name: /Activity log/ });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  expect(screen.queryByRole("region", { name: "Planning activity" })).toBeNull();
+  // The latest activity (not model text) stays readable while collapsed.
+  expect(within(toggle).getByText("Dr. Schmit → MRI · Tue 06.01. · Better plan saved")).toBeTruthy();
+  expect(within(toggle).getByText("2 recent")).toBeTruthy();
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(within(screen.getByRole("region", { name: "Planning activity" })).getByText(/Open positions on this day/)).toBeTruthy();
+});
+
+it("lets the caller hold the log state, so it survives a remount", () => {
+  const onLogOpenChange = vi.fn();
+  render(<AgentActivityPanel events={[]} logOpen onLogOpenChange={onLogOpenChange} />);
+  expect(screen.getByRole("region", { name: "Planning activity" })).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: /Activity log/ }));
+  expect(onLogOpenChange).toHaveBeenCalledWith(false);
+});
+
+describe("day track", () => {
+  const RANGE = { startISO: "2026-01-05", endISO: "2026-01-09" };
+  const day = (index: number, iso: string) => ev({ kind: "tool_start", stage: "improve", tool: "suggest_day_blocks",
+    phase_label: "Build the daily plan", day_index: index, total_days: 5, planning_date: iso });
+
+  it("shows planned, current and open days of the range", () => {
+    render(<AgentActivityPanel events={[day(1, "2026-01-05"), day(3, "2026-01-07")]} range={RANGE} />);
+    const track = screen.getByRole("progressbar", { name: "Days planned" });
+    expect(track).toHaveAttribute("aria-valuenow", "2");
+    expect(track).toHaveAttribute("aria-valuetext", "2 of 5 days planned");
+    expect(track.children).toHaveLength(5);
+    expect(track.children[2].className).toContain("animate-pulse");
+    expect(screen.getByText("Day 3 of 5 · Wed 07.01.")).toBeTruthy();
+    expect(screen.getByText("Wed 07").className).toContain("font-semibold");
+  });
+
+  it("counts every day as planned once the agent reviews the whole range", () => {
+    render(<AgentActivityPanel range={RANGE} events={[
+      day(5, "2026-01-09"),
+      ev({ kind: "phase", phase_label: "Review the whole planning range", day_index: null, planning_date: null }),
+    ]} />);
+    expect(screen.getByRole("progressbar", { name: "Days planned" })).toHaveAttribute("aria-valuenow", "5");
+    const progress = screen.getByRole("region", { name: "Planning progress" });
+    expect(within(progress).getByText("Review the whole planning range")).toBeTruthy();
+  });
+
+  it("starts empty while the first draft is made", () => {
+    render(<AgentActivityPanel range={RANGE} events={[ev({ kind: "stage", stage: "seed", iteration: 0 })]} />);
+    expect(screen.getByRole("progressbar", { name: "Days planned" })).toHaveAttribute("aria-valuenow", "0");
+    expect(screen.getByText("Drafting a first plan")).toBeTruthy();
+  });
 });

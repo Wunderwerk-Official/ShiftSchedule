@@ -97,21 +97,21 @@ export default function HelpView() {
                   result and click <span className="font-medium">Apply</span> or{" "}
                   <span className="font-medium">Discard</span>. Nothing changes in the
                   calendar before you apply; a backup of the previous calendar is saved in
-                  Snapshots first, and manual entries always stay.
+                  Snapshots first, and locked shifts always stay.
                 </li>
                 <li>
                   <span className="font-medium">Reset</span> →{" "}
-                  <span className="font-medium">Reset Solver Only</span> removes, in the
-                  selected timeframe, only assignments made by the automated planner;{" "}
-                  <span className="font-medium">Reset Unfixed</span> also removes manual
-                  ones. Both keep fixed assignments and vacations.
+                  <span className="font-medium">Unlocked shifts</span> removes every shift
+                  without a lock in the selected timeframe;{" "}
+                  <span className="font-medium">Unlocked shifts and rest days</span> also
+                  empties the Rest Day row. Both keep locked shifts and vacations.
                 </li>
               </ul>
             </div>
 
             <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950">
               <div className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                Pools & fixed assignments
+                Pools & locked shifts
               </div>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-200">
                 <li>
@@ -123,13 +123,14 @@ export default function HelpView() {
                   on vacation are excluded from automatic allocation.
                 </li>
                 <li>
-                  The <span className="font-medium">lock</span> button on a name the
-                  automated planner placed fixes the assignment: replanning and both
-                  Resets keep it. Click it again to unfix.
+                  A <span className="font-medium">closed lock</span> on a name means the
+                  shift stays: replanning, applying a plan and both Resets keep it. Names
+                  you place or move by hand are locked right away; the planner&rsquo;s
+                  names start unlocked (the open lock shows when you point at them).
                 </li>
                 <li>
-                  Names placed by hand show a small lock: replanning and Reset Solver
-                  Only keep them, Reset Unfixed removes them.
+                  Click the lock to switch: unlocking a shift hands it to the planner,
+                  which may then replace it; locking a planner&rsquo;s shift keeps it.
                 </li>
               </ul>
             </div>
@@ -355,15 +356,15 @@ export default function HelpView() {
               own column, as before.
             </li>
             <li>
-              <span className="font-medium">Color by: Person</span> (team plan, standard
-              weekly grid) gives every person their own color. Once you have linked yourself
+              In the team plan (standard weekly grid) every person has their own color; the
+              workplaces keep their colors in the row labels. Once you have linked yourself
               (&ldquo;That&rsquo;s me&rdquo;), your own entries also get an outline. The
               monthly sheet layout keeps its look.
             </li>
           </ul>
           <p className="mt-2">
-            Team | My plan, range, date on top / left, Times, Color by, saved views and start
-            pages are saved per account and never change the shared calendar.
+            Team | My plan, range, date on top / left, Times, saved views and start pages
+            are saved per account and never change the shared calendar.
           </p>
           <p className="mt-2">
             <span className="font-medium">Location colors</span> are different: they are part

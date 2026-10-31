@@ -64,6 +64,45 @@
   color: rgb(240 249 255) !important; /* sky-50 */
 }
 
+/* Lock of an unlocked shift (AssignmentPill, clinic sheet names): it appears
+   at the name's right end while the name is pointed at or holds focus, and
+   always on touch screens (no hover there). The name fades out under it
+   instead of a box being laid over the name. A locked shift's lock sits in
+   the row instead. */
+.pill-lock-reveal {
+  opacity: 0;
+}
+:is([data-assignment-pill], [data-sheet-name]):hover .pill-lock-reveal,
+:is([data-assignment-pill], [data-sheet-name]):focus-within .pill-lock-reveal {
+  opacity: 0.6;
+}
+:is([data-assignment-pill], [data-sheet-name]) .pill-lock-reveal:hover,
+:is([data-assignment-pill], [data-sheet-name]) .pill-lock-reveal:focus-visible {
+  opacity: 1;
+}
+:is([data-assignment-pill], [data-sheet-name]):hover .pill-lock-fade,
+:is([data-assignment-pill], [data-sheet-name]):focus-within .pill-lock-fade {
+  -webkit-mask-image: linear-gradient(to left, transparent 15px, #000 28px);
+  mask-image: linear-gradient(to left, transparent 15px, #000 28px);
+}
+@media (hover: none) {
+  .pill-lock-reveal {
+    opacity: 0.6;
+  }
+  .pill-lock-fade {
+    -webkit-mask-image: linear-gradient(to left, transparent 15px, #000 28px);
+    mask-image: linear-gradient(to left, transparent 15px, #000 28px);
+  }
+}
+/* The drag image is a clone: an unlocked pill's hover lock stays hidden. */
+[data-pill-drag-preview="true"] .pill-lock-reveal {
+  opacity: 0 !important;
+}
+[data-pill-drag-preview="true"] .pill-lock-fade {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+
 /* "Times: Stacked" team grid: section colors as light tints (the section
    look's cells, every lane label). The color comes in as --section-color. */
 /* Browsers without color-mix() keep the plain section color. (A fallback

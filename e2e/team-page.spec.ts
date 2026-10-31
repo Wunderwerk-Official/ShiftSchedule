@@ -4,7 +4,7 @@ import type { AppState, Assignment } from "../src/api/client";
 
 // Team page behaviour on a mocked API: the rule-violation and split-shift
 // popovers, badge jumps in the phone day view, the "template too large"
-// banner and "Reset Solver Only" on vacation days.
+// banner and Reset on vacation days.
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -168,6 +168,23 @@ test("dragging into and out of the Vacation row adds and removes the vacation da
   expect(api.errors).toEqual([]);
 });
 
+test("moving a planner shift by hand locks it (v1.69)", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [assignment("ct", "mon", "CT", FIRST, { source: "solver" })];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const cell = (rowId: string) =>
+    page.locator(`[data-schedule-cell="true"][data-row-id="${rowId}"][data-date-iso="2026-01-05"]`);
+  const lockIn = (rowId: string) => cell(rowId).getByRole("button", { name: /^Lock assignment for/ });
+  await expect(lockIn(slotId("mon", "CT"))).toHaveAttribute("aria-pressed", "false");
+
+  await cell(slotId("mon", "CT")).locator('div[draggable="true"]').first().dragTo(cell(slotId("mon", "MRI")));
+  await expect
+    .poll(() => api.state().assignments.map((item) => [item.rowId, item.source, item.locked ?? null]))
+    .toEqual([[slotId("mon", "MRI"), "manual", null]]);
+  await expect(lockIn(slotId("mon", "MRI"))).toHaveAttribute("aria-pressed", "true");
+  expect(api.errors).toEqual([]);
+});
+
 test("Times switches between side-by-side and stacked columns and stores the choice", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [assignment("ct", "mon", "CT", FIRST)];
@@ -290,7 +307,7 @@ test.describe("template above the column limit", () => {
   });
 });
 
-test("Reset Solver Only also removes planner entries on vacation days", async ({ page }) => {
+test("Reset → Unlocked shifts also removes planner entries on vacation days", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.clinicians = state.clinicians.map((clinician) =>
     clinician.id === FIRST
@@ -306,14 +323,14 @@ test("Reset Solver Only also removes planner entries on vacation days", async ({
   await expect.poll(() => api.statePosts.length).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: "Reset", exact: true }).click();
-  await page.getByRole("button", { name: /Reset Solver Only/ }).click();
+  await page.getByRole("button", { name: /^Unlocked shifts Removes/ }).click();
   await expect
     .poll(() => api.state().assignments.map((item) => item.id).sort())
     .toEqual(["manual"]);
   expect(api.errors).toEqual([]);
 });
 
-test("Reset Unfixed removes planner entries on vacation days and keeps manual ones there", async ({ page }) => {
+test("Reset → Unlocked shifts and rest days removes planner entries on vacation days and keeps locked ones", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.clinicians = state.clinicians.map((clinician) =>
     clinician.id === FIRST
@@ -330,9 +347,10 @@ test("Reset Unfixed removes planner entries on vacation days and keeps manual on
   await expect.poll(() => api.statePosts.length).toBeGreaterThan(0);
 
   await page.getByRole("button", { name: "Reset", exact: true }).click();
-  await page.getByRole("button", { name: /Reset Unfixed/ }).click();
+  await page.getByRole("button", { name: /^Unlocked shifts and rest days/ }).click();
+  // Hand-placed shifts are locked (v1.69), like the planner shift locked later.
   await expect
     .poll(() => api.state().assignments.map((item) => item.id).sort())
-    .toEqual(["fixed", "hidden-manual"]);
+    .toEqual(["fixed", "hidden-manual", "manual"]);
   expect(api.errors).toEqual([]);
 });

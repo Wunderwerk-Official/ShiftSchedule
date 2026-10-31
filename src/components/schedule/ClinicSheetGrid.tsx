@@ -1,4 +1,4 @@
-import type { AssignmentIdentity } from "../../lib/assignmentPolicy";
+import { isProtectedAssignment, type AssignmentIdentity } from "../../lib/assignmentPolicy";
 import AssignmentLockButton from "./AssignmentLockButton";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type { DragEvent as ReactDragEvent, ReactNode } from "react";
@@ -285,6 +285,8 @@ export default function ClinicSheetGrid({
       dragging?.assignmentId === assignment.id &&
       dragging.rowId === slotRowId &&
       dragging.dateISO === dateISO;
+    const hasLock = !isPoolCell && !readOnly && !!onToggleAssignmentLock;
+    const isLocked = isProtectedAssignment(assignment);
     return (
       <span
         key={assignment.id}
@@ -312,17 +314,29 @@ export default function ClinicSheetGrid({
               }
         }
         className={cx(
-          "flex min-w-0 items-center px-0.5 text-[11px] leading-[24px]",
+          "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px]",
           textClass,
           isUnqualified && "underline decoration-amber-500 decoration-wavy",
           !readOnly && "cursor-grab active:cursor-grabbing hover:bg-black/5",
           isBeingDragged && "opacity-40",
         )}
       >
-        <span className="min-w-0 truncate">{displayName}</span>
-        {!isPoolCell && assignment.source === "solver" && !readOnly && onToggleAssignmentLock && (
-          <AssignmentLockButton name={name} locked={assignment.locked ?? false}
-            onToggle={() => onToggleAssignmentLock(assignment)} />
+        <span className={cx("min-w-0 truncate", hasLock && !isLocked && "pill-lock-fade")}>
+          {displayName}
+        </span>
+        {/* The same lock as the weekly grid: a locked name shows it, an
+            unlocked one on hover (index.css); hand-placed shifts start locked. */}
+        {hasLock && (
+          <AssignmentLockButton
+            name={name}
+            locked={isLocked}
+            onToggle={() => onToggleAssignmentLock(assignment)}
+            className={
+              isLocked
+                ? "relative ml-auto"
+                : "pill-lock-reveal absolute right-0 top-1/2 -translate-y-1/2"
+            }
+          />
         )}
       </span>
     );

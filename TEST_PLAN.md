@@ -200,21 +200,22 @@ npx playwright show-report
 
 **E2E Tests** (`e2e/my-plan.spec.ts`, mocked API, in CI):
 - [x] Link yourself, change views, jump back into the team plan
-- [x] My plan as start page; Color by person colors the team pills
+- [x] My plan as start page; the team pills carry person colors (no "Color by" switch since v1.69)
 - [x] A location color is saved with the calendar and tints the team rows
 - [x] Phone: the scope switch leads to My plan and hides the planning panels
 
 ### 3.10 Team page regressions (v1.64)
 
-**Frontend Tests**: `src/pages/resetSolverAssignments.test.ts` (Reset Solver Only / Reset Unfixed), `src/lib/openSlots.test.ts`, `src/components/ui/ConfirmDialog.test.tsx`, `src/App.test.tsx` (502/network keep the session), `src/lib/clinicianSlotOptions.test.ts`, `ScheduleGrid.test.tsx` / `ClinicSheetGrid.test.tsx` (drag and drop).
+**Frontend Tests**: `src/pages/resetSolverAssignments.test.ts` (Reset → Unlocked shifts / Unlocked shifts and rest days), `src/lib/assignmentPolicy.test.ts` (one lock, v1.69), `src/lib/openSlots.test.ts`, `src/components/ui/ConfirmDialog.test.tsx`, `src/App.test.tsx` (502/network keep the session), `src/lib/clinicianSlotOptions.test.ts`, `ScheduleGrid.test.tsx` / `ClinicSheetGrid.test.tsx` (drag and drop).
 
 **E2E Tests** (`e2e/team-page.spec.ts`, mocked API, in CI):
 - [x] Rule-violation and split-shift popover items can be clicked
 - [x] Dragging into and out of the Vacation row adds and removes the vacation day
 - [x] Phone: the open-slots badge switches the day view to the open slot's day
 - [x] Template above the column limit: banner and no save, snapshot import refused, snapshot restore backs up the last saved calendar, sign-out asks first
-- [x] Reset Solver Only and Reset Unfixed also remove planner entries on vacation days (Reset Unfixed keeps manual ones there)
+- [x] Reset → Unlocked shifts and Unlocked shifts and rest days also remove planner entries on vacation days; both keep locked shifts, hand-placed ones included (v1.69)
 - [x] Times switches between side-by-side and stacked columns and stores the choice (v1.65)
+- [x] Moving a planner shift by hand locks it (v1.69)
 
 **Frontend Tests (v1.66 compact cells and portrait PDF)**: `ScheduleGrid.test.tsx` (no section block or name in stacked cells, tooltip, +N badge, corner mark, hatched days without a slot, section tints, hover-only fix button, fixed pill keeps it, "Open"), `AssignmentPill.test.tsx` (full name in the pill's tooltip), `IcalExportModal.test.tsx` (page layout choice), `src/pages/printPage.test.ts` (A4 portrait geometry), `PrintWeekPage.test.tsx` / `PrintWeeksPage.test.tsx` (portrait page rule, seven columns, margins), `src/api/client.pdf.test.ts` (layout reaches the request); backend `test_pdf_revision.py` (layout → orientation, viewport and print route).
 

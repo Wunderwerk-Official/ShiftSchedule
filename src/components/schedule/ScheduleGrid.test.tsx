@@ -115,25 +115,27 @@ describe("ScheduleGrid", () => {
     expect(container.querySelector('[style*="rgb(255, 153, 204)"]')).not.toBeNull();
   });
 
-  it("keeps the default pill look: 2 px border, inner hairline, centered name, no initials", () => {
+  it("keeps the section pill look: 2 px border, inner hairline, centered name, no initials", () => {
     const { container } = renderGrid({
       rows: [{ ...baseRow, blockColor: "#FF99CC" }],
       onToggleAssignmentLock: vi.fn(),
     });
     const pill = screen.getByText("Dr. Alice").closest('[data-assignment-pill="true"]') as HTMLElement;
     expect(pill.getAttribute("style")).toBeNull();
-    // pr-4: room for the manual lock badge, so long names abbreviate instead of running under it.
-    for (const token of ["border-2", "pl-1.5", "pr-4", "py-0.5", "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]", "bg-sky-50", "border-sky-200"]) {
+    // A legacy entry is locked: its lock sits in the row and brings its own
+    // spacing, so the pill keeps a small right padding (pr-px).
+    for (const token of ["border-2", "pl-1.5", "pr-px", "py-0.5", "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.7)]", "bg-sky-50", "border-sky-200"]) {
       expect(pill.classList).toContain(token);
     }
     expect(pill.classList).not.toContain("border");
-    expect(pill.classList).not.toContain("pr-5");
+    expect(pill.classList).not.toContain("min-h-7");
     const name = screen.getByText("Dr. Alice");
     expect(name.className).toBe("whitespace-nowrap text-center");
     expect(name.parentElement?.className).toContain("justify-center");
     expect(name.parentElement?.getAttribute("title")).toBeNull();
     expect(pill.getAttribute("title")).toBeNull();
-    // Manual pill: lock badge, no initials circle (no inline-styled spans at all).
+    // The lock glyph, no initials circle (no inline-styled spans at all).
+    expect(within(pill).getByRole("button", { name: "Lock assignment for Dr. Alice" })).toHaveAttribute("aria-pressed", "true");
     expect(pill.querySelector("svg")).not.toBeNull();
     expect(pill.querySelector("[style]")).toBeNull();
     // The section block keeps its fill and its title.
@@ -538,34 +540,61 @@ describe("ScheduleGrid stacked times", () => {
     expect(screen.queryByText("Open Slot")).toBeNull();
   });
 
-  it("keeps the fix button and its room on a fixed pill", () => {
+  const lockedPill = (assignment: Partial<RenderedAssignment>) => {
+    const onToggleAssignmentLock = vi.fn();
     renderStacked({
-      onToggleAssignmentLock: vi.fn(),
+      onToggleAssignmentLock,
       assignmentMap: new Map([
-        [`ct-mon-early__${MON}`, [{ id: "a1", rowId: "ct-mon-early", dateISO: MON, clinicianId: "x", source: "solver" as const, locked: true }]],
+        [`ct-mon-early__${MON}`, [{ id: "a1", rowId: "ct-mon-early", dateISO: MON, clinicianId: "x", ...assignment }]],
       ]),
     });
     const pill = document.querySelector(
       `[data-schedule-grid="true"] [data-assignment-key="ct-mon-early__${MON}__x"]`,
     ) as HTMLElement;
-    expect(pill.classList).toContain("pr-6");
-    const button = screen.getByRole("button", { name: /Unfix assignment/ });
-    expect(button.parentElement?.className).not.toContain("opacity-0");
+    const button = within(pill).getByRole("button", { name: "Lock assignment for Person X" });
+    return { pill, button, onToggleAssignmentLock };
+  };
+
+  it("shows a locked planner pill's closed lock in the row, at the same height", () => {
+    const { pill, button } = lockedPill({ source: "solver", locked: true });
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(pill.dataset.locked).toBe("true");
+    // In the row (relative), not laid over the name; the pill keeps its height.
+    expect(button.className).toContain("relative");
+    expect(button.className).not.toContain("pill-lock-reveal");
+    expect(pill.classList).not.toContain("min-h-7");
   });
 
-  it("keeps no room for the fix button of an unfixed pill (shown on hover)", () => {
+  it("shows an unlocked planner pill's open lock only on hover, over the faded name", () => {
+    const { pill, button } = lockedPill({ source: "solver" });
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(pill.dataset.locked).toBe("false");
+    expect(button.className).toContain("pill-lock-reveal");
+    expect(button.className).toContain("absolute");
+    expect(pill.querySelector(".pill-lock-fade")).not.toBeNull();
+    expect(pill.classList).toContain("pr-1.5");
+  });
+
+  it("starts a hand-placed pill locked and toggles it with the same button", () => {
+    const { button, onToggleAssignmentLock } = lockedPill({ source: "manual" });
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(button);
+    expect(onToggleAssignmentLock).toHaveBeenCalledWith(expect.objectContaining({ id: "a1", source: "manual" }));
+  });
+
+  it("shows no lock on read-only grids (print, public week)", () => {
     renderStacked({
+      readOnly: true,
       onToggleAssignmentLock: vi.fn(),
       assignmentMap: new Map([
-        [`ct-mon-early__${MON}`, [{ id: "a1", rowId: "ct-mon-early", dateISO: MON, clinicianId: "x", source: "solver" as const }]],
+        [`ct-mon-early__${MON}`, [{ id: "a1", rowId: "ct-mon-early", dateISO: MON, clinicianId: "x", source: "manual" as const }]],
       ]),
     });
     const pill = document.querySelector(
       `[data-schedule-grid="true"] [data-assignment-key="ct-mon-early__${MON}__x"]`,
     ) as HTMLElement;
-    expect(pill.classList).not.toContain("pr-6");
-    expect(pill.classList).toContain("[@media(hover:none)]:pr-6");
-    expect(screen.getByRole("button", { name: /Fix assignment/ })).toBeTruthy();
+    expect(pill.querySelector("button")).toBeNull();
+    expect(pill.querySelector("svg")).toBeNull();
   });
 
   it("moves a pill between the time bands of a day", () => {

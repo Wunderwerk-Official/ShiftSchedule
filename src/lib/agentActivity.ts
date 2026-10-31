@@ -97,6 +97,12 @@ export type AgentStatus = {
   phaseLabel: string | null;
   dayIndex: number | null;
   totalDays: number | null;
+  /**
+   * Highest day of the range the agent has worked on (1-based), or null.
+   * Once the context drops the day again (whole-range review), the days are
+   * done: the progress track shows them all as planned.
+   */
+  maxDayIndex: number | null;
   planningDate: string | null;
   checksProgress?: AgentActivityData["checks_progress"];
   currentAction: string;
@@ -116,6 +122,7 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
   let maxIterations: number | null = null;
   let movesAccepted = 0;
   let context: AgentActivityData | undefined;
+  let maxDayIndex: number | null = null;
   let lastResult: string | null = null;
   const activeTools = new Map<number, AgentActivityData>();
   const detailedIterations = new Set(events.filter((e) => e.kind === "tool_start" || e.kind === "tool_result").map((e) => e.iteration));
@@ -130,6 +137,7 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
       stage = "improve";
     }
     if (event.phase_label) context = event;
+    if (typeof event.day_index === "number") maxDayIndex = Math.max(maxDayIndex ?? 0, event.day_index);
     iteration = Math.max(iteration, event.iteration ?? 0);
     if (typeof event.max_iterations === "number") {
       maxIterations = event.max_iterations;
@@ -206,6 +214,7 @@ export function deriveAgentStatus(events: AgentActivityData[]): AgentStatus {
     phaseLabel: context?.phase_label ?? null,
     dayIndex: context?.day_index ?? null,
     totalDays: context?.total_days ?? null,
+    maxDayIndex,
     planningDate: context?.planning_date ?? null,
     checksProgress: last?.checks_progress,
     currentAction,

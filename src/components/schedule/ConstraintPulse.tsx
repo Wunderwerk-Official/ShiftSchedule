@@ -1,9 +1,9 @@
 import { useAnimatedNumber } from "../../lib/useAnimatedNumber";
 
-// Compact live view of constraint fulfilment during a solve, shown in the
-// main SolverOverlay for every solver mode. The same numbers previously only
-// existed behind the "Details" dashboard; here they update in place with
-// gentle motion as new solutions stream in.
+// "Best plan so far" in the SolverOverlay (every solver mode): coverage as a
+// big number with its bar, then one row of rule and goal chips. The numbers
+// update in place with gentle motion as new solutions stream in; the charts
+// behind the overlay's "Charts" button show their history.
 
 export type ConstraintPulseStats = {
   filledSlots: number;
@@ -94,16 +94,25 @@ export default function ConstraintPulse({
   const fullyCovered = stats.totalRequiredSlots > 0 && stats.filledSlots >= stats.totalRequiredSlots;
 
   return (
-    <div className="flex w-full max-w-xl flex-col gap-2">
+    <div className="flex w-full flex-col gap-3">
       {stats.totalRequiredSlots > 0 && (
-        <div className="flex items-center gap-3">
-          <span
-            title="How many required positions in the timeframe are already staffed."
-            className="shrink-0 text-[11px] font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500"
-          >
-            Coverage
-          </span>
-          <div className="h-2 flex-1 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
+        <div title="How many required positions in the timeframe are already staffed.">
+          <div className="flex items-baseline justify-between gap-3">
+            <p className="text-sm text-slate-600 dark:text-slate-300">
+              <span className="text-lg font-semibold tabular-nums text-slate-900 dark:text-slate-50">{filled}</span>
+              <span className="tabular-nums text-slate-400 dark:text-slate-500"> / {stats.totalRequiredSlots}</span>{" "}
+              required positions filled
+              {fullyCovered && (
+                <span key="covered" className="solver-pop ml-1.5 inline-block text-emerald-500">
+                  ✓
+                </span>
+              )}
+            </p>
+            <span className="shrink-0 text-xs font-semibold tabular-nums text-slate-500 dark:text-slate-400">
+              {Math.round(coveragePct * 100)}%
+            </span>
+          </div>
+          <div className="mt-1.5 h-2 overflow-hidden rounded-full bg-slate-100 dark:bg-slate-800">
             <div
               className={`solver-bar-fill h-full rounded-full ${
                 fullyCovered
@@ -113,18 +122,10 @@ export default function ConstraintPulse({
               style={{ width: `${Math.round(coveragePct * 100)}%` }}
             />
           </div>
-          <span className="shrink-0 text-xs font-semibold tabular-nums text-slate-600 dark:text-slate-300">
-            {filled}/{stats.totalRequiredSlots}
-            {fullyCovered && (
-              <span key="covered" className="solver-pop ml-1 inline-block text-emerald-500">
-                ✓
-              </span>
-            )}
-          </span>
         </div>
       )}
 
-      <div className="flex flex-wrap items-center justify-center gap-1.5">
+      <div className="flex flex-wrap items-center gap-1.5">
         <ConstraintChip
           ok={stats.nonConsecutiveShifts === 0}
           okLabel="Continuous shifts"

@@ -1,4 +1,4 @@
-import type { AssignmentIdentity } from "../../lib/assignmentPolicy";
+import { isProtectedAssignment, type AssignmentIdentity } from "../../lib/assignmentPolicy";
 import type { DayType, TeamTimeLayout } from "../../api/client";
 import type { RenderedAssignment, TimeRange } from "../../lib/schedule";
 import { cx } from "../../lib/classNames";
@@ -91,9 +91,9 @@ type ScheduleGridProps = {
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
   onRemoveAssignment?: (args: { rowId: string; dateISO: string; assignmentId: string; clinicianId: string }) => void;
-  /** Team "Color by: Person": pill colors by clinician id (absent = section look). */
+  /** Person colors of the team grid by clinician id (absent = section look: print and public pages). */
   personPillStyles?: Map<string, PersonPillStyle>;
-  /** Clinician whose pills get the "you" outline; the page passes the linked one in "Color by: Person" only. */
+  /** Clinician whose pills get the "you" outline (the linked person, with person colors). */
   myClinicianId?: string | null;
   /** Tints of colored locations by location id (label cells + separator row). */
   locationRowTints?: Map<string, LocationRowTint>;
@@ -825,10 +825,12 @@ function RowSection({
         showIneligibleWarning={
           isClassRow && !getIsQualified(assignment.clinicianId, slotRowId)
         }
-        isManual={isClassRow && assignment.source !== "solver"}
-        isLocked={assignment.locked}
+        // One lock for every shift: hand-placed ones start locked, the
+        // planner's unlocked (lib/assignmentPolicy). Pools and read-only
+        // pages (print, public) show no lock.
+        isLocked={isClassRow && isProtectedAssignment(assignment)}
         onToggleLock={
-          !readOnly && isClassRow && assignment.source === "solver" && onToggleAssignmentLock
+          !readOnly && isClassRow && onToggleAssignmentLock
             ? () => onToggleAssignmentLock(assignment)
             : undefined
         }
@@ -1140,8 +1142,8 @@ function RowSection({
           >
             {(() => {
               const showSlotPanel = row.kind === "class" && isCellActive;
-              // Color by: Person — neutral section blocks, only the person
-              // colors carry hue (SPEC E7: cells without the section fill).
+              // Person colors: neutral section blocks, only the people carry
+              // hue (SPEC E7: cells without the section fill).
               const sectionFill = personPillStyles ? undefined : activeRow.blockColor;
               const cellContent = (
                 <>
@@ -1202,10 +1204,18 @@ function RowSection({
                       />
                     ) : null}
                     {ownTime ? (
-                      // Wraps after the dash in narrow columns instead of
-                      // cutting the time off.
-                      <div className="mb-0.5 break-words px-0.5 text-[10px] font-medium leading-3 tabular-nums text-slate-600 dark:text-slate-300">
-                        {compactTimeLabel(ownTime)}
+                      // The cell's own time (the lane's is in the label
+                      // column) as a quiet tag with room below it, so it does
+                      // not crowd the first pill or its "me" outline. Wraps
+                      // after the dash in narrow columns instead of cutting
+                      // the time off.
+                      <div className="mb-1.5 flex">
+                        <span
+                          data-own-time="true"
+                          className="max-w-full break-words rounded-md bg-slate-900/[0.05] px-1.5 py-0.5 text-[10px] font-semibold leading-3 tabular-nums text-slate-600 ring-1 ring-inset ring-slate-900/[0.07] dark:bg-white/[0.07] dark:text-slate-300 dark:ring-white/10"
+                        >
+                          {compactTimeLabel(ownTime)}
+                        </span>
                       </div>
                     ) : null}
                     <div className="flex flex-col gap-1">{cellContent}</div>

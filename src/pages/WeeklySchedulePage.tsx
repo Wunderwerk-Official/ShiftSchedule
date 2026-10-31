@@ -1,4 +1,8 @@
-import { isProtectedAssignment, type AssignmentIdentity } from "../lib/assignmentPolicy";
+import {
+  isProtectedAssignment,
+  toggleAssignmentLock,
+  type AssignmentIdentity,
+} from "../lib/assignmentPolicy";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { appendAgentEvent } from "../lib/agentActivity";
@@ -778,20 +782,18 @@ export default function WeeklySchedulePage({
     () => new Map(clinicians.map((clinician) => [clinician.id, clinician])),
     [clinicians],
   );
-  // Team header / grid additions (plan §2.9); all opt-in.
+  // Team grid colors (plan §2.9): every person has their own color and the
+  // linked person ("That's me") gets an outline. The section colors stay in
+  // the row labels (and in print/public pages, which keep the section look).
   const linkedClinicianIndex = prefs.clinicianId
     ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
     : -1;
   const linkedClinician = linkedClinicianIndex >= 0 ? clinicians[linkedClinicianIndex] : null;
   const personPillStyles = useMemo(
-    () =>
-      prefs.teamColorBy === "person"
-        ? buildPersonPillStyles(clinicians, isDark)
-        : undefined,
-    [prefs.teamColorBy, clinicians, isDark],
+    () => buildPersonPillStyles(clinicians, isDark),
+    [clinicians, isDark],
   );
-  // The own outline belongs to "Color by: Person" (plan §2.9): the section look stays as is.
-  const outlinedClinicianId = personPillStyles ? linkedClinician?.id ?? null : null;
+  const outlinedClinicianId = linkedClinician?.id ?? null;
   const locationRowTints = useMemo(
     () => (locationsEnabled ? buildLocationRowTints(locations, isDark) : undefined),
     [locations, locationsEnabled, isDark],
@@ -1696,23 +1698,37 @@ export default function WeeklySchedulePage({
   const handleAbortWithoutApplying = () => { void requestRunStop(false); };
   const handleApplySolution = () => { void requestRunStop(true); };
 
+  // One lock for manual and planner shifts (toggleAssignmentLock). Only the
+  // shift's own cell changes, so the other pills keep their memoized props.
+  // Ids are unique per cell only (imported ids repeat across dates), so the
+  // match also needs the row and the date.
   const handleToggleAssignmentLock = useCallback((assignment: AssignmentIdentity) => {
-    setAssignmentMap(prev => new Map([...prev].map(([key, list]) => [key,
-      list.map(item => item.id === assignment.id && item.rowId === assignment.rowId && item.dateISO === assignment.dateISO && item.source === "solver"
-        ? { ...item, locked: !item.locked } : item),
-    ])));
+    const isTarget = (item: Assignment) =>
+      item.id === assignment.id &&
+      item.rowId === assignment.rowId &&
+      item.dateISO === assignment.dateISO;
+    setAssignmentMap((prev) => {
+      const ownKey = `${assignment.rowId}__${assignment.dateISO}`;
+      const key = prev.get(ownKey)?.some(isTarget)
+        ? ownKey
+        : [...prev.keys()].find((candidate) => prev.get(candidate)?.some(isTarget));
+      if (!key) return prev;
+      const next = new Map(prev);
+      next.set(key, prev.get(key)!.map((item) => (isTarget(item) ? toggleAssignmentLock(item) : item)));
+      return next;
+    });
   }, []);
 
-  // Reset solver-generated assignments in range; keep protected (manual/legacy
-  // or locked) entries and pool entries. Same rule as applying a solver draft
+  // Reset unlocked shifts in range; locked shifts (hand-placed or locked
+  // afterwards) and pool entries stay. Same rule as applying a solver draft
   // (backend is_replaced_by_draft), so entries on vacation days go as well.
   const handleResetSolver = (args: { startISO: string; endISO: string }) => {
     setAutoPlanError(null);
     setAssignmentMap((prev) => resetSolverAssignments(prev, args));
   };
 
-  // Reset unfixed: remove everything in range except locked entries and
-  // manual entries on vacation days (see resetUnfixedAssignments).
+  // Reset unlocked shifts and rest days: like handleResetSolver, and the
+  // Rest Day row is emptied too (see resetUnfixedAssignments).
   const handleResetAll = (args: { startISO: string; endISO: string }) => {
     setAutoPlanError(null);
     setAssignmentMap((prev) => resetUnfixedAssignments(prev, args, isOnVacation));
@@ -1967,7 +1983,12 @@ export default function WeeklySchedulePage({
         (item) => item.clinicianId === clinicianId,
       );
       if (alreadyInTarget) return prev;
-      next.set(toKey, [...toList, { ...moving, rowId: toRowId, dateISO }]);
+      // Moved by hand: placed by the user now, so it is locked like any
+      // hand-placed shift (its lock button unlocks it again).
+      next.set(toKey, [
+        ...toList,
+        { ...moving, rowId: toRowId, dateISO, source: "manual", locked: undefined },
+      ]);
       return next;
     });
   };
@@ -3454,7 +3475,7 @@ export default function WeeklySchedulePage({
             holidayDates={holidayDates}
             holidayNameByDate={holidayNameByDate}
             header={
-              <TeamPlanHeader {...teamHeaderProps} showColorBy>
+              <TeamPlanHeader {...teamHeaderProps} showTimeLayout>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     {isMobile ? (
