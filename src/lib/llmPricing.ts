@@ -12,8 +12,11 @@ export type AgentModelOption = {
   outputPerMTok: number;
   /** Cache reads as a share of the input rate; 0.1 unless set. */
   cacheReadMultiplier?: number;
-  /** Rough cost of one planning run — ballpark for the picker; the exact
-   * per-run cost is computed from real token counts in the solver history. */
+  /** Rough cost per planned day — ballpark for the picker; the exact
+   * per-run cost is computed from real token counts in the solver history.
+   * Opus 5.5 and Sonnet (5.5, same prices as Sonnet 5) were measured in the
+   * arena on 2026-11-01 (1-, 3- and 5-day runs); the others are estimated
+   * from their prices. */
   approxRunCost: string;
 };
 
@@ -24,7 +27,7 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     description: "Balanced quality & cost (default)",
     inputPerMTok: 2,
     outputPerMTok: 10,
-    approxRunCost: "≈ $0.35–1.00 per run",
+    approxRunCost: "≈ $0.50 per planned day",
   },
   {
     id: "claude-opus-5-5",
@@ -34,7 +37,7 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     outputPerMTok: 20,
     // $0.20 per MTok cache reads (0.05x).
     cacheReadMultiplier: 0.05,
-    approxRunCost: "≈ $0.80–2.50 per run",
+    approxRunCost: "≈ $0.80 per planned day",
   },
   {
     id: "claude-opus-4-8",
@@ -42,7 +45,7 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     description: "Previous Opus",
     inputPerMTok: 5,
     outputPerMTok: 25,
-    approxRunCost: "≈ $1–3 per run",
+    approxRunCost: "≈ $1–1.50 per planned day",
   },
   {
     id: "claude-haiku-4-5",
@@ -50,7 +53,7 @@ export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
     description: "Fastest, lowest cost",
     inputPerMTok: 1,
     outputPerMTok: 5,
-    approxRunCost: "≈ $0.10–0.50 per run",
+    approxRunCost: "≈ $0.20 per planned day",
   },
 ];
 

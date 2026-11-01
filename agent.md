@@ -2465,3 +2465,15 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   (`source: "manual"`) and now simply show as locked. Stored preferences lose
   `teamColorBy` on their next save; users who had "Section" selected see the
   person colors after the deploy.
+
+## v1.70 — measured Claude costs and model comparison
+
+- Arena evaluation round 8 (`backend/arena/README.md`): Opus 5.5 medium,
+  Opus 5.5 low, Sonnet 5.5 and Qwen Flash NVFP4, 3 runs each on a 3-day and
+  an understaffed 5-day case, all valid. Opus 5.5 medium ranks first on the
+  decision tiers; Opus 5.5 stays the recommended model.
+- Settings → Solver cost hints are per planned day (`approxRunCost` in
+  `src/lib/llmPricing.ts`): Opus 5.5 about $0.80 and Sonnet about $0.50
+  (measured), Opus 4.8 and Haiku 4.5 estimated from their prices. The old
+  "per run" ranges understated week runs (Opus 5.5: about $5–6 per week).
+- No code path changed; version 1.70 (70).

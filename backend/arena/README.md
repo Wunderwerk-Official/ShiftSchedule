@@ -39,6 +39,46 @@ self-hosted Qwen model on the real endpoint, or (since v1.68,
 `provider=anthropic`) a Claude model with the saved Anthropic key.
 
 
+## Evaluation round 8: Claude vs Qwen (v1.69, 2026-11-01)
+
+Model comparison on synthetic-v3, `variant baseline`, `scenario base`,
+`strategy day_by_day`, `timeout 0` (unlimited), `implementation deployed`
+(v1.69). Claude runs used `provider anthropic`; Qwen runs used `provider
+openai` with `nvidia/Qwen3.8-Flash-Next-NVFP4` (endpoint default reasoning,
+original tool texts). All 24 stage-1 runs (3 per variant and case, interleaved)
+were `valid_for_comparison: true`; hard violations, soft-rule violations and
+new hard violations were 0 everywhere, fixed context unchanged. Two Opus
+5-day runs that hit the Anthropic usage limit (invalid, exit 1) were repeated.
+
+Stage 0 (1 day, 2026-02-02, one run each): Opus 5.5 medium 0 short days,
+1318 min hours deviation, $0.88; Opus 5.5 low identical plan, $0.73; Sonnet
+5.5 0 short days, 1605 min, $0.52; Qwen 2 short days, 1643 min, free, 3x the
+time.
+
+Stage 1, values per run (order of the decision rule):
+
+| case | variant | open required | short days | hours deviation (min) | cost | duration |
+|---|---|---|---|---|---|---|
+| 02-02, 3 days | Opus 5.5 medium | 0 / 0 / 0 | **1 / 1 / 1** | **2425 / 2455 / 1979** | $2.55 | 4.7 min |
+| | Opus 5.5 low | 0 / 0 / 0 | **1 / 1 / 1** | 2425 / 3043 / 2476 | $2.25 | 3.5 min |
+| | Sonnet 5.5 | 0 / 0 / 0 | 3 / 3 / 1 | 3397 / 4057 / 2862 | $1.46 | 3.6 min |
+| | Qwen Flash NVFP4 | 0 / 0 / 0 | 3 / 5 / 3 | 3600 / 1880 / 3227 | free | 10.8 min |
+| 02-16, 5 days (9 of 24 away) | Opus 5.5 medium | **33 / 31 / 31** | **4 / 4 / 6** | 6655 / 6766 / 6556 | $3.90 | 8.0 min |
+| | Opus 5.5 low | **30 / 33 / 32** | 7 / 7 / 8 | 6676 / 6274 / 6175 | $3.37 | 5.3 min |
+| | Sonnet 5.5 | 34 / 34 / 34 | 6 / 7 / 6 | 6625 / 6214 / 6445 | $2.52 | 7.8 min |
+| | Qwen Flash NVFP4 | 35 / 34 / 36 | 6 / 8 / 7 | 6244 / 5824 / 6595 | free | 13.7 min |
+
+Result: **Opus 5.5 medium** ranks first in both cases (case 1: fewest short
+days, tied with low, then the lowest hours deviation; case 2: the fewest
+open positions, tied with low on average, then clearly fewer short days).
+Opus 5.5 low is close and 12–14% cheaper and about a third faster, but
+leaves more short days in the understaffed week. Sonnet 5.5 and Qwen trail
+on the top tiers (more open positions in the understaffed week, more short
+days); Qwen is free but 2–3x slower. Measured cost per planned day: Opus 5.5
+about $0.80, Sonnet 5.5 about $0.50 (Settings labels updated in v1.70). The
+5-day case's open positions are largely structural (absences); the
+differences of 2–4 positions are what the models could still fill.
+
 ## Current harness evaluation (v1.61, updated 2026-10-06)
 
 Use `prompt_eval` / the workflow with model
