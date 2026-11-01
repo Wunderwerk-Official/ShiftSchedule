@@ -2741,6 +2741,15 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 
   For comparison on 02-16 × 5: Opus 5.5 day-by-day 31–33 open (round 8),
   CP-SAT from scratch 27 open after 600 s.
+- **Measurements with Opus 5.5** (arena round 9, `backend/arena/README.md`;
+  one run per configuration): the repair fills +3 on the Thu/Fri case
+  (11 → 8 open, the production pattern) and +8 on the understaffed 5-day
+  week (32 → 24); without tools (direct v3) Opus ends at the same coverage
+  after the repair (8 / 23) for $0.47 / $0.59 instead of $1.34 / $3.55, with
+  fewer short days in its own plan (0–1 vs 1–5) and, on the 3-day case,
+  half the hours deviation (1262 vs 2425 min). Production stays on
+  day-by-day + repair; direct + repair is the candidate to compare on real
+  weeks.
 - **Review of the change** (four reviewers, each finding reproduced, then
   fixed with a test):
   - The repair model must accept every plan the gate accepts: in repair
