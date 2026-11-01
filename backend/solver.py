@@ -933,8 +933,14 @@ def _add_overlap_constraints(
     vars_by_clinician_date: Dict[str, Dict[str, List[Tuple[str, cp_model.IntVar, int, int, str]]]],
     manual_by_clinician_date: Dict[str, Dict[str, List[Tuple[int, int, str]]]],
     day_index_by_iso: Dict[str, int],
+    gate_parity: bool = False,
 ) -> None:
     """Block overlapping intervals and (optionally) multiple locations per day.
+
+    ``gate_parity`` (repair mode): on a day whose fixed work already spans
+    several sites (a manual override), allow new work at any of those sites,
+    as the agent's gate does (it tolerates the baseline violation and checks
+    that no new site is added); the default allows none.
 
     Uses CP-SAT IntervalVar + NoOverlap for O(n log n) propagation instead of
     O(n²) pairwise boolean constraints.  A single NoOverlap per clinician
@@ -1016,9 +1022,11 @@ def _add_overlap_constraints(
                 if manual_locs:
                     # Manual assignments pin the location for this day.
                     # A solver var at location X is only allowed if every
-                    # manual assignment is also at X (matches old behaviour).
+                    # manual assignment is also at X (matches old behaviour);
+                    # with gate_parity, if X is one of the manual sites.
                     for loc, loc_vars in vars_by_loc.items():
-                        if manual_locs != {loc}:
+                        allowed = loc in manual_locs if gate_parity else manual_locs == {loc}
+                        if not allowed:
                             for var in loc_vars:
                                 model.Add(var == 0)
                 elif len(vars_by_loc) > 1:
@@ -1556,8 +1564,15 @@ def _add_continuity_constraints(
     solver_settings: SolverSettings,
     vars_by_clinician_date: Dict[str, Dict[str, List[Tuple[str, cp_model.IntVar, int, int, str]]]],
     manual_by_clinician_date: Dict[str, Dict[str, List[Tuple[int, int, str]]]],
+    merge_sites: bool = False,
 ) -> None:
-    """Enforce max 1 continuous work block per clinician/day (or manual blocks)."""
+    """Enforce max 1 continuous work block per clinician/day (or manual blocks).
+
+    Adjacent slots join one block only at the same site by default.
+    ``merge_sites`` (repair mode) joins them by time alone, as the agent's
+    gate does (validation.validate_split_shifts): with the same-site rule
+    off, site A 06-07 followed by site B 07-08 is one legal block there.
+    """
     if not solver_settings.preferContinuousShifts:
         return
 
@@ -1568,6 +1583,9 @@ def _add_continuity_constraints(
             manual_slots = clinician_manual.get(date_iso, [])
             if not manual_slots and not day_vars:
                 continue
+            if merge_sites:
+                day_vars = [(sid, var, start, end, "") for sid, var, start, end, _loc in day_vars]
+                manual_slots = [(start, end, "") for start, end, _loc in manual_slots]
 
             candidate_ends_by_key: Dict[Tuple[int, str], List[cp_model.IntVar]] = {}
             for _sid, var, start, end, loc in day_vars:
@@ -2409,6 +2427,8 @@ def _solve_range_impl(
         vars_by_clinician_date,
         manual_by_clinician_date,
         day_index_by_iso,
+        # A repair must accept every plan the agent's gate accepted.
+        gate_parity=repair_reference is not None,
     )
     timer.checkpoint("overlap_constraints")
 
@@ -2493,6 +2513,8 @@ def _solve_range_impl(
         solver_settings,
         vars_by_clinician_date,
         manual_by_clinician_date,
+        # A repair must accept every plan the agent's gate accepted.
+        merge_sites=repair_mode,
     )
 
     timer.checkpoint("continuity_constraints")

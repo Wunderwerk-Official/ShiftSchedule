@@ -115,7 +115,7 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
     preview = ex._tool_apply_moves({"moves": moves, "dry_run": True})
     if not preview.get("valid") or not preview.get("improves_best"):
         reason = "invalid" if not preview.get("valid") else "not an improvement"
-        rejected = preview.get("rejected") or preview.get("new_violations") or []
+        rejected = preview.get("rejected") or preview.get("new_hard_violations") or []
         return done("rejected", reason=reason, solver_status=status, changes_proposed=len(moves),
                     sample=[str(item)[:160] for item in rejected[:3]])
     proposal = ex.workflow.propose(moves, next_tool=None, next_args={}, preview=preview)

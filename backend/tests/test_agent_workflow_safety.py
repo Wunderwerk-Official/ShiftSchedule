@@ -213,6 +213,10 @@ def test_premature_day_end_is_repaired_and_verified_before_reporting_completion(
     assert meta["cross_day_repair"]["status"] == "applied"
     assert meta["cross_day_repair"]["open_after"] == 0
     assert meta["final_audit"]["repairs"] == 0
+    # The model left Monday incomplete itself: recorded, so the arena does
+    # not count the repaired day as the model's work.
+    assert meta["modelDaysIncomplete"] == [MON]
+    assert meta["cross_day_repair"]["days"] == [MON]
     assert meta["completion"]["required_checks_complete"] and meta["completion"]["coverage_complete"]
     assert not meta["unsolved"]["open_slots"]
 

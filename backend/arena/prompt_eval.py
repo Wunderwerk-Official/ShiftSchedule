@@ -12,7 +12,8 @@ from pathlib import Path
 import threading
 import time
 
-from backend.agent import harness, tools as agent_tools
+from backend.agent import cross_day, direct, harness, tools as agent_tools
+from backend import solver as range_solver
 from backend.agent.config import ANTHROPIC_EFFORTS, AgentConfig
 from backend.agent.provider import LLMProvider, copy_provider_traits, get_provider
 from backend.agent.tools import PlanToolExecutor
@@ -144,8 +145,11 @@ def main():
     end = (date.fromisoformat(args.start) + timedelta(days=args.days - 1)).isoformat()
     scenario_desc = apply_scenario(state, args.scenario, args.start, end)
     day, review = prompt_variant(args.variant)
+    # Every module that changes what a strategy does or what the model sees
+    # (direct: system prompt and digest; cross_day and solver: the repair).
     hashes = {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
-              for name, module in (("harness", harness), ("tools", agent_tools))}
+              for name, module in (("harness", harness), ("tools", agent_tools), ("direct", direct),
+                                   ("cross_day", cross_day), ("solver", range_solver))}
     hashes["fixture"] = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
     fixture_version = json.loads(FIXTURE.read_text()).get("fixtureVersion", "legacy-export-v1")
     hashes["day_prompt"] = hashlib.sha256(day.encode()).hexdigest()

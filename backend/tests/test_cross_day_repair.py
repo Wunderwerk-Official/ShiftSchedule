@@ -274,11 +274,11 @@ class DirectProvider(LLMProvider):
         keys = {line.split(" | ")[2]: line[2:].split(" | ")[0]
                 for line in digest.splitlines() if line.startswith("- S")}
         if len(self.calls) > 1:  # correction round: keep the plan
-            return ProviderResponse(text="```plan\n```", tool_calls=[], stop_reason="end_turn")
-        return ProviderResponse(text=(
-            "```plan\n"
-            f"{keys['SENO']} = Marie Laurain\n{keys['ECHO']} = Marie Laurain\n{keys['COR']} = Other Person\n```"),
-            tool_calls=[], stop_reason="end_turn")
+            return ProviderResponse(text="```plan\n```", replay_text="```plan\n```", tool_calls=[],
+                                    stop_reason="end_turn")
+        plan = ("```plan\n"
+                f"{keys['SENO']} = Marie Laurain\n{keys['ECHO']} = Marie Laurain\n{keys['COR']} = Other Person\n```")
+        return ProviderResponse(text=plan, replay_text=plan, tool_calls=[], stop_reason="end_turn")
 
 
 def test_direct_strategy_plans_without_tools_and_drops_illegal_lines():
@@ -306,3 +306,201 @@ def test_direct_strategy_plans_without_tools_and_drops_illegal_lines():
     # v2: her hours target for Thu+Fri (32 h x 2/7 = 9.1 h, tolerance 8 x 2/7)
     # and her preferred day, as the quality gate's hours deviation measures it.
     assert "target 9.1±2.3" in digest
+
+
+def test_direct_answer_text_never_reads_the_reasoning():
+    """Both adapters promote reasoning into .text when a reply has no answer
+    text; a draft line in the reasoning must not count as the plan."""
+    from backend.agent.direct import answer_text
+
+    draft = "Maybe S1__2026-11-05 = Marie Laurain? No."
+    # Anthropic: content blocks; only text blocks are the answer.
+    thinking_only = ProviderResponse(text=draft, replay_text=draft, tool_calls=[], stop_reason="max_tokens",
+                                     raw_content=[{"type": "thinking", "thinking": draft, "signature": "x"}])
+    assert answer_text(thinking_only) == ""
+    both = ProviderResponse(text="```plan\nS2__2026-11-06 = Marie Laurain\n```", tool_calls=[], stop_reason="end_turn",
+                            raw_content=[{"type": "thinking", "thinking": draft, "signature": "x"},
+                                         {"type": "text", "text": "```plan\nS2__2026-11-06 = Marie Laurain\n```"}])
+    assert answer_text(both) == "```plan\nS2__2026-11-06 = Marie Laurain\n```"
+    # OpenAI adapter: replay_text is the answer content alone (None here).
+    reasoning_only = ProviderResponse(text=draft, tool_calls=[], stop_reason="max_tokens", replay_text=None)
+    assert answer_text(reasoning_only) == ""
+
+
+def test_direct_abort_during_the_model_call_applies_nothing():
+    class AbortingProvider(DirectProvider):
+        def __init__(self, cancel):
+            super().__init__()
+            self.cancel = cancel
+
+        def complete(self, **kwargs):
+            response = super().complete(**kwargs)
+            self.cancel.set()  # the abort arrives while the call is in flight
+            return response
+
+    cancel = threading.Event()
+    payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=600,
+                                agent_strategy="direct")
+    result = agent_solve_range(payload, trap_state(), cancel, lambda *_: None, time.time(),
+                               provider=AbortingProvider(cancel), config=AgentConfig(provider="mock", max_iterations=10))
+    agent = result["debugInfo"]["agent"]
+    assert result["debugInfo"]["solver_status"] == "ABORTED"
+    assert agent["moves_accepted"] == 0
+    assert agent["direct"]["rounds"] == 0 and agent["cross_day_repair"] is None
+
+
+def test_direct_marks_days_the_model_left_fillable_as_incomplete():
+    """The model places Marie Laurain on Friday's SENO only and leaves ECHO
+    open although she could take it: its own plan left Friday incomplete.
+    The repair completes it, and the arena does not count that run as the
+    model's plan."""
+    from backend.arena.run import comparison_problems
+
+    class HalfProvider(DirectProvider):
+        def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            keys = {line.split(" | ")[2]: line[2:].split(" | ")[0]
+                    for line in kwargs["messages"][0].content.splitlines() if line.startswith("- S")}
+            plan = "```plan\n```" if len(self.calls) > 1 else f"```plan\n{keys['SENO']} = Marie Laurain\n```"
+            return ProviderResponse(text=plan, replay_text=plan, tool_calls=[], stop_reason="end_turn")
+
+    payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=600,
+                                agent_strategy="direct")
+    result = agent_solve_range(payload, trap_state(), threading.Event(), lambda *_: None, time.time(),
+                               provider=HalfProvider(), config=AgentConfig(provider="mock", max_iterations=10))
+    agent = result["debugInfo"]["agent"]
+    assert agent["direct"]["open_after_round"] == [2, 2]
+    assert agent["modelDaysIncomplete"] == [FRI]
+    repair = agent["cross_day_repair"]
+    assert (repair["status"], repair["open_before"], repair["open_after"], repair["days"]) == ("applied", 2, 1, [FRI])
+    assert {(a["rowId"], a["dateISO"], a["clinicianId"]) for a in result["assignments"]} == FRIDAY_PLAN
+    assert agent["daysIncomplete"] == []
+    assert (f"days the model left incomplete (completed by the cross-day repair): {FRI}"
+            in comparison_problems(agent, agent.get("model")))
+
+
+def test_arena_flags_days_the_repair_completed_for_the_model():
+    from backend.arena.run import comparison_problems
+
+    agent = {"result_producer": "agent", "model": "m", "model_usage": {"m": {}},
+             "daysSkipped": [], "daysIncomplete": [], "modelDaysSkipped": [],
+             "modelDaysIncomplete": [THU, FRI],
+             "cross_day_repair": {"status": "applied", "days": [FRI]}}
+    assert comparison_problems(agent, "m") == [
+        f"days the model left incomplete (completed by the cross-day repair): {FRI}"]
+    # A model-complete plan the repair improved across days stays valid.
+    agent["modelDaysIncomplete"] = []
+    assert comparison_problems(agent, "m") == []
+
+
+# ---------------------------------------------------------------------------
+# The repair model must accept every plan the gate accepts (review of v1.74):
+# a stricter model makes the agent's legal plan an infeasible hint, and the
+# repair then breaks legal placements or is rejected.
+# ---------------------------------------------------------------------------
+
+
+def _two_site_state(*, fixed_two_site_day: bool) -> AppState:
+    """The trap plus Xavier, who can work site A 06-07 and site B 07-08 and
+    16-20 on Friday (B 16-20 is required)."""
+    s = trap_state()
+    s.locations.append(Location(id="loc-b", name="Site B"))
+    for sec, loc in (("sec-xa", "loc-default"), ("sec-xb", "loc-b")):
+        s.rows.append(WorkplaceRow(id=sec, name=sec.upper(), kind="class", dotColorClass="bg-slate-200",
+                                   locationId=loc))
+        s.weeklyTemplate.blocks.append(TemplateBlock(id=f"block-{sec}", sectionId=sec, requiredSlots=0))
+    default = s.weeklyTemplate.locations[0]
+    default.rowBands.append(TemplateRowBand(id="rb-xa", label="xa", order=9))
+    default.slots.append(TemplateSlot(id="slot-xa-fri", locationId="loc-default", rowBandId="rb-xa",
+                                      colBandId="col-fri-1", blockId="block-sec-xa",
+                                      requiredSlots=0 if fixed_two_site_day else 1,
+                                      startTime="06:00", endTime="07:00", endDayOffset=0))
+    s.weeklyTemplate.locations.append(WeeklyTemplateLocation(
+        locationId="loc-b", rowBands=[TemplateRowBand(id="rb-xb", label="xb", order=1)],
+        colBands=[TemplateColBand(id=f"colb-{d}-1", label="", order=1, dayType=d) for d in DAY_TYPES]
+        + [TemplateColBand(id="colb-fri-2", label="", order=2, dayType="fri")],
+        slots=[TemplateSlot(id="slot-xb1-fri", locationId="loc-b", rowBandId="rb-xb", colBandId="colb-fri-1",
+                            blockId="block-sec-xb", requiredSlots=0 if fixed_two_site_day else 1,
+                            startTime="07:00", endTime="08:00", endDayOffset=0),
+               TemplateSlot(id="slot-xb2-fri", locationId="loc-b", rowBandId="rb-xb", colBandId="colb-fri-2",
+                            blockId="block-sec-xb", requiredSlots=1 if fixed_two_site_day else 0,
+                            startTime="16:00", endTime="20:00", endDayOffset=0)]))
+    s.clinicians.append(Clinician(id="xavier", name="Xavier Two", qualifiedClassIds=["sec-xa", "sec-xb"],
+                                  vacations=[], workingHoursPerWeek=None))
+    if fixed_two_site_day:
+        # A planner override: two sites on one day, fixed.
+        s.assignments += [
+            Assignment(id="m1", rowId="slot-xa-fri", dateISO=FRI, clinicianId="xavier", source="manual"),
+            Assignment(id="m2", rowId="slot-xb1-fri", dateISO=FRI, clinicianId="xavier", source="manual"),
+        ]
+        s.solverSettings = {"enforceSameLocationPerDay": True, "onCallRestEnabled": False,
+                            "preferContinuousShifts": False}
+    else:
+        s.solverSettings = {"enforceSameLocationPerDay": False, "onCallRestEnabled": False,
+                            "preferContinuousShifts": True}
+    return s
+
+
+def _repair_with_agent_plan(state, moves):
+    ctx = build_scoring_context(state, THU, FRI, only_fill_required=True)
+    ex = PlanToolExecutor(state, ctx, [])
+    assert ex._tool_apply_moves({"moves": moves}).get("applied")  # the gate accepts the agent's plan
+    report = cross_day.coverage_repair(ex, cancel_event=threading.Event(), time_limit=10)
+    return report, {(a.rowId, a.dateISO, a.clinicianId) for a in ex._working_list()}
+
+
+def test_repair_keeps_a_block_across_two_sites_the_gate_accepts():
+    """Same-site rule off, one block per day on: site A 06-07 directly
+    followed by site B 07-08 is one block for the gate, so the repair keeps
+    it and still moves Laurain's hours to Friday."""
+    report, plan = _repair_with_agent_plan(_two_site_state(fixed_two_site_day=False), [
+        {"action": "assign", "slot_key": f"slot-cor-thu__{THU}", "clinicianId": "laurain"},
+        {"action": "assign", "slot_key": f"slot-xa-fri__{FRI}", "clinicianId": "xavier"},
+        {"action": "assign", "slot_key": f"slot-xb1-fri__{FRI}", "clinicianId": "xavier"}])
+    assert (report["status"], report["open_before"], report["open_after"], report["changes"]) == ("applied", 2, 1, 3)
+    assert {("slot-xa-fri", FRI, "xavier"), ("slot-xb1-fri", FRI, "xavier")} <= plan
+    assert FRIDAY_PLAN <= plan
+
+
+def test_repair_keeps_work_at_a_site_of_a_fixed_two_site_day():
+    """Xavier's fixed Friday already spans two sites (an override); the gate
+    accepts more work at one of them, so the repair must keep it."""
+    report, plan = _repair_with_agent_plan(_two_site_state(fixed_two_site_day=True), [
+        {"action": "assign", "slot_key": f"slot-cor-thu__{THU}", "clinicianId": "laurain"},
+        {"action": "assign", "slot_key": f"slot-xb2-fri__{FRI}", "clinicianId": "xavier"}])
+    assert (report["status"], report["open_before"], report["open_after"], report["changes"]) == ("applied", 2, 1, 3)
+    assert ("slot-xb2-fri", FRI, "xavier") in plan
+    assert FRIDAY_PLAN <= plan
+
+
+def test_direct_answer_cut_off_before_the_plan_gets_another_call():
+    """The thinking counts towards max_tokens: a first answer that ends there
+    without a plan is told so and gets one more call, which is not the
+    correction round (that one still follows the plan)."""
+    class CutOffProvider(DirectProvider):
+        def complete(self, **kwargs):
+            self.calls.append(kwargs)
+            keys = {line.split(" | ")[2]: line[2:].split(" | ")[0]
+                    for line in kwargs["messages"][0].content.splitlines() if line.startswith("- S")}
+            if len(self.calls) == 1:
+                draft = f"Maybe {keys['COR']} = Marie Laurain"
+                return ProviderResponse(text=draft, replay_text=draft, tool_calls=[], stop_reason="max_tokens",
+                                        raw_content=[{"type": "thinking", "thinking": draft, "signature": "s"}])
+            plan = ("```plan\n```" if len(self.calls) > 2 else
+                    f"```plan\n{keys['SENO']} = Marie Laurain\n{keys['ECHO']} = Marie Laurain\n"
+                    f"{keys['COR']} = Other Person\n```")
+            return ProviderResponse(text=plan, replay_text=plan, tool_calls=[], stop_reason="end_turn")
+
+    provider = CutOffProvider()
+    payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=600,
+                                agent_strategy="direct")
+    result = agent_solve_range(payload, trap_state(), threading.Event(), lambda *_: None, time.time(),
+                               provider=provider, config=AgentConfig(provider="mock", max_iterations=10))
+    direct = result["debugInfo"]["agent"]["direct"]
+    assert len(provider.calls) == 3  # cut off, plan, correction round
+    assert direct["cut_off_rounds"] == 1 and direct["rounds"] == 3
+    assert direct["open_after_round"][0] == 3  # the draft in the thinking was not applied
+    # The conversation: digest, cut-off answer, the note about the limit, ...
+    conversation = provider.calls[-1]["messages"]
+    assert "output limit" in conversation[2].content and "output limit" not in conversation[4].content
+    assert {(a["rowId"], a["dateISO"], a["clinicianId"]) for a in result["assignments"]} == FRIDAY_PLAN

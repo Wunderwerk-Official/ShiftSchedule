@@ -33,7 +33,7 @@ A checker validates every placement you return, one by one in your order, agains
 - Same site per day, one contiguous work block per person per day and rest days around on-call duties, when the rules section says they are enforced.
 - A place takes at most its open count.
 
-Goals, in this order: (1) fill every open place; when not all can be filled, fill the higher-priority places; weekly hours are shared across the days of a week, so do not spend a scarce person's last hours on a low-priority place another day needs them for; (2) no short days (below the person's daily minimum) and no over-long days (above the comfortable length); (3) each person's hours in the range close to their range target (within the given tolerance; the target is the contract pro rata for the days they are not on vacation, fixed work included); (4) people behind their year-to-date target first, section preferences, preferred working times, admin instructions and clinician wishes.
+Goals, in this order: (1) fill every open place; when not all can be filled, fill the higher-priority places; weekly hours are shared across the days of a week, so do not spend a scarce person's last hours on a low-priority place another day needs them for; (2) no short days (below the person's daily minimum) and no over-long days (above the comfortable length); (3) each person's hours in the range close to their range target (within the given tolerance; the target is the contract pro rata for the days they are not on vacation, fixed work included) - never leave a place open for it: hours above the target are fine up to the hard weekly cap; (4) people behind their year-to-date target first, section preferences, preferred working times, admin instructions and clinician wishes.
 
 Plan like an experienced planner: scarcest places first (fewest legal people), give each person one contiguous block per day.
 
@@ -82,7 +82,9 @@ def _legal_people(executor, inst) -> List[str]:
     return names
 
 
-def open_place_lines(executor) -> List[str]:
+def open_places(executor) -> List[Tuple[object, int, List[str]]]:
+    """(slot instance, open count, legal people) for every open place, by
+    day, priority (higher first) and start."""
     ex = executor
     counts = ex._counts_by_instance(ex._working_list())
     rows = []
@@ -91,9 +93,33 @@ def open_place_lines(executor) -> List[str]:
         if missing:
             rows.append((inst, missing))
     rows.sort(key=lambda row: (row[0].date_iso, -row[0].order_weight, row[0].start))
+    return [(inst, missing, _legal_people(ex, inst)) for inst, missing in rows]
+
+
+def fillable_days(places) -> List[str]:
+    """Days with an open place someone could still take as it is: the model
+    left work there undone (the analog of a day-by-day day that ended
+    without verified completion)."""
+    return sorted({inst.date_iso for inst, _missing, legal in places if legal})
+
+
+def answer_text(response) -> str:
+    """The model's answer without its reasoning. Both adapters promote the
+    reasoning into ``text`` when a reply has no answer text (e.g. cut off by
+    max_tokens while thinking); draft lines in it must not count as the plan.
+    Anthropic keeps the content blocks (only text blocks are the answer);
+    the OpenAI adapter's replay_text is the answer content alone."""
+    blocks = getattr(response, "raw_content", None)
+    if isinstance(blocks, list) and blocks:
+        return "\n".join(str(block.get("text") or "") for block in blocks
+                         if isinstance(block, dict) and block.get("type") == "text")
+    return getattr(response, "replay_text", None) or ""
+
+
+def open_place_lines(executor, places=None) -> List[str]:
+    ex = executor
     lines = []
-    for inst, missing in rows:
-        legal = _legal_people(ex, inst)
+    for inst, missing, legal in (open_places(ex) if places is None else places):
         lines.append(
             f"- {ex._alias_slot_key(inst.slot_key)} | {_weekday(inst.date_iso)} | "
             f"{ex.section_names.get(inst.section_id, inst.section_id)} | {inst.location_id} | "
@@ -296,14 +322,18 @@ def apply_direct_plan(executor, adds, removes) -> Dict[str, object]:
     return {"accepted": accepted, "rejected": rejected}
 
 
-def build_direct_feedback(executor, applied: Dict[str, object]) -> str:
+def build_direct_feedback(executor, applied: Dict[str, object], places=None, cut_off: bool = False) -> str:
     rejected = applied["rejected"]
-    lines = [f"The checker accepted {applied['accepted']} change(s) and dropped {len(rejected)}."]
+    lines = []
+    if cut_off:
+        lines.append("Your answer reached the output limit before the plan block (the thinking counts towards "
+                     "it). Write the plan now and keep the remaining reasoning short.")
+    lines.append(f"The checker accepted {applied['accepted']} change(s) and dropped {len(rejected)}.")
     if rejected:
         lines.append("Dropped (slot = name: reasons):")
         lines += [f"- {r['slot']} = {r['name']}: {'; '.join(r['reasons'])}" for r in rejected[:60]]
     lines += ["", "Still open (current plan; legal people for each place now):"]
-    lines += open_place_lines(executor) or ["- none"]
+    lines += open_place_lines(executor, places) or ["- none"]
     lines += ["", "Answer with one ```plan block of CHANGES only: new placements as 'slot = name', removals as "
                   "'- slot = name'. An empty block keeps the plan."]
     return "\n".join(lines)

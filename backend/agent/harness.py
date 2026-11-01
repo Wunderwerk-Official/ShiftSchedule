@@ -925,6 +925,7 @@ def agent_solve_range(
                     "daysPlanned": len(run_meta["days_planned"]),
                     "daysSkipped": sorted(set(run_meta["days_skipped"])),
                     "modelDaysSkipped": run_meta.get("model_days_skipped", sorted(set(run_meta["days_skipped"]))),
+                    "modelDaysIncomplete": run_meta.get("model_days_incomplete"),
                     "daysIncomplete": sorted(set(run_meta["days_incomplete"])),
                     # Checks that ran out of time at the final revision (not
                     # incomplete days): see completion.required_checks_unverified.
@@ -1677,6 +1678,13 @@ def agent_solve_range(
         # Only on top of the model's own plan: a run where the model placed
         # nothing keeps falling back to the heuristic draft (and never
         # counts as model planning in the arena).
+        # What the model left incomplete itself (the repair and the audit
+        # may complete those days later; the arena tells them apart).
+        run_meta["model_days_incomplete"] = sorted(set(run_meta["days_incomplete"]))
+        # Repair the plan the run would return: the working copy can be
+        # worse than the best snapshot (the review restores it anyway).
+        if not aborted and not cancel_event.is_set() and executor.moves_accepted > 0:
+            restore_best()
         if (not aborted and not cancel_event.is_set() and executor.moves_accepted > 0
                 and range_open_positions(executor) > 0):
             # Keep at least half of what is left for the review and audit.
@@ -1879,9 +1887,9 @@ def agent_solve_range(
         """Experiment (arena): the whole range in one answer without tools,
         then one correction round (backend/agent/direct.py)."""
         nonlocal iterations_done
-        from .direct import (DIRECT_MAX_ROUNDS, DIRECT_MAX_TOKENS, DIRECT_SYSTEM_PROMPT,
+        from .direct import (DIRECT_MAX_ROUNDS, DIRECT_MAX_TOKENS, DIRECT_SYSTEM_PROMPT, answer_text,
                              apply_direct_plan, build_direct_digest, build_direct_feedback,
-                             parse_direct_reply)
+                             fillable_days, open_places, parse_direct_reply)
         extra_notes: List[str] = []
         emit_agent("stage", {"stage": "improve"})
         agent_phase("Plan the whole range in one answer")
@@ -1889,8 +1897,11 @@ def agent_solve_range(
         config.max_tokens = max(config.max_tokens or 0, DIRECT_MAX_TOKENS)
         messages = [ChatMessage(role="user", content=build_direct_digest(executor) + admin_block + wishes_block)]
         stats: Dict[str, Any] = {"rounds": 0, "proposed": 0, "accepted": 0, "dropped": 0, "unparsed_lines": 0,
-                                 "open_after_round": [], "dropped_sample": []}
-        for round_index in range(DIRECT_MAX_ROUNDS):
+                                 "open_after_round": [], "dropped_sample": [], "cut_off_rounds": 0}
+        plan_rounds = 0
+        # One extra call for an answer cut off at max_tokens before its plan
+        # (the thinking counts towards the limit); it is not a correction.
+        for _call in range(DIRECT_MAX_ROUNDS + 1):
             if cancel_event.is_set():
                 return finalize("ABORTED", extra_notes + [ABORT_NOTE])
             if deadline - time.time() <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
@@ -1911,11 +1922,21 @@ def agent_solve_range(
             )
             iterations_done += 1
             absorb_response(response)
+            if cancel_event.is_set():
+                # Like every other loop: nothing of a reply that arrives after
+                # an abort is applied.
+                run_meta["direct"] = stats
+                return finalize("ABORTED", extra_notes + [ABORT_NOTE])
             if response.stop_reason in ("error", "refusal"):
                 run_meta["stop_reason"] = response.stop_reason
                 extra_notes.append(f"Direct planning stopped: the model call ended with {response.stop_reason}.")
                 break
-            adds, removes, unparsed = parse_direct_reply(response.text)
+            adds, removes, unparsed = parse_direct_reply(answer_text(response))
+            cut_off = response.stop_reason == "max_tokens" and not adds and not removes
+            if cut_off:
+                stats["cut_off_rounds"] += 1
+            else:
+                plan_rounds += 1
             applied = apply_direct_plan(executor, adds, removes)
             stats["rounds"] += 1
             stats["proposed"] += len(adds) + len(removes)
@@ -1924,13 +1945,21 @@ def agent_solve_range(
             stats["unparsed_lines"] += unparsed
             stats["dropped_sample"] += applied["rejected"][:5]
             stats["open_after_round"].append(range_open_positions(executor))
-            if not stats["open_after_round"][-1] and not applied["rejected"]:
+            if not cut_off and not stats["open_after_round"][-1] and not applied["rejected"]:
                 break
-            if round_index + 1 < DIRECT_MAX_ROUNDS:
-                messages.append(ChatMessage(role="assistant", content=response.replay_text or "(plan)",
-                                            raw_content=response.raw_content))
-                messages.append(ChatMessage(role="user", content=build_direct_feedback(executor, applied)))
+            if plan_rounds >= DIRECT_MAX_ROUNDS or (cut_off and stats["cut_off_rounds"] > 1):
+                break
+            messages.append(ChatMessage(role="assistant", content=response.replay_text or "(plan)",
+                                        raw_content=response.raw_content))
+            messages.append(ChatMessage(role="user", content=build_direct_feedback(executor, applied,
+                                                                                   cut_off=cut_off)))
         run_meta["direct"] = stats
+        # The model's own plan: days where it left a place someone could take
+        # as it is count as incomplete (what the day loop's checks record),
+        # so the arena can tell its work from the repair's.
+        restore_best()
+        run_meta["days_incomplete"] = fillable_days(open_places(executor))
+        run_meta["model_days_incomplete"] = list(run_meta["days_incomplete"])
         # The same cross-day repair as day-by-day, so both strategies compare
         # with and without it (open_after_round = the model's own plan).
         if not cancel_event.is_set() and executor.moves_accepted > 0 and range_open_positions(executor) > 0:
