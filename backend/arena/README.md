@@ -237,7 +237,7 @@ would cut slower models short and measure speed instead of quality.
 Count a run only when the report says `valid_for_comparison: true`
 (the model, not the heuristic, produced the plan; no heuristic fallback; no
 refusal-fallback turns; no model change; no skipped or incomplete day, also
-none the model skipped and the final audit filled; not aborted by a
+none the model skipped and the cross-day repair or the final audit filled; not aborted by a
 deployment or the 330-minute limit) and
 prompt_eval exited 0 (also no new hard violations, fixed context
 unchanged). Compare valid runs in this order: hard violations → open

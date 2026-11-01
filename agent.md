@@ -2736,8 +2736,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 
   For comparison on 02-16 × 5: Opus 5.5 day-by-day 31–33 open (round 8),
   CP-SAT from scratch 27 open after 600 s.
+- A day the model skipped after a provider failure is now filled by the
+  repair instead of the final audit; it still counts as skipped by the
+  model (`modelDaysSkipped`), so the arena marks such a run invalid
+  ("filled by the cross-day repair or the final audit").
 - Tests: `test_cross_day_repair.py` (solver repair mode, gate,
-  integration, magnitudes, direct strategy), `test_agent_workflow_safety.py`
+  integration, magnitudes, direct strategy), `test_agent_workflow_safety.py`,
+  `test_agent_retry.py`, `test_agent_integration.py`, `test_arena_claude.py`
   and `test_prompt_eval.py` adjusted; frontend `weeklyHours.test.ts`,
   `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`.
 - Deploy notes: no schema or data change. Version 1.74 (74).

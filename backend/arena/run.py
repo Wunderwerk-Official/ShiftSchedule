@@ -392,11 +392,13 @@ def comparison_problems(agent: dict, requested_model) -> list:
     for key in ("daysSkipped", "daysIncomplete"):
         if agent.get(key):
             problems.append(f"{key}: {', '.join(agent[key])}")
-    # A day the model gave up on (refusal, error) that the final audit filled
-    # leaves daysSkipped; the plan is then partly not the model's.
+    # A day the model gave up on (refusal, error) that the cross-day repair
+    # (v1.74) or the final audit filled leaves daysSkipped; the plan is then
+    # partly not the model's.
     audit_filled = sorted(set(agent.get("modelDaysSkipped") or []) - set(agent.get("daysSkipped") or []))
     if audit_filled:
-        problems.append(f"days the model skipped (filled by the final audit): {', '.join(audit_filled)}")
+        problems.append("days the model skipped (filled by the cross-day repair or the final audit): "
+                        f"{', '.join(audit_filled)}")
     return problems
 
 

@@ -255,7 +255,7 @@ npx playwright show-report
 - [x] A day-by-day run (scripted model: Thursday gets the long slot) ends with the repaired plan, `cross_day_repair` applied and the note in the run notes
 - [x] Batched `candidates` report `week_over_cap_hours` (1.5 h)
 - [x] Direct strategy (arena): reply parsing (placements, removals, unparsed lines), one plan answer through the gate (3 proposed, 2 accepted, 1 dropped), digest with weekly hours (`W45 27.5/40`) and the legal people per open place
-- [x] A run where the model placed nothing still falls back to the heuristic (`test_prompt_eval.py`); a day the model ended unplanned is filled by the repair before the final audit (`test_agent_workflow_safety.py`)
+- [x] A run where the model placed nothing still falls back to the heuristic (`test_prompt_eval.py`); a day the model ended unplanned (`test_agent_workflow_safety.py`) or skipped after a provider failure (`test_agent_retry.py`, `test_agent_integration.py` through the endpoint) is filled by the repair before the final audit and still counts as skipped by the model (arena: invalid for comparison, `test_arena_claude.py`)
 
 **Frontend Tests**: `src/lib/weeklyHours.test.ts` (ISO weeks as Python's `isocalendar`, counting on the start date, pool rows and slots without time ignored, cap contract + tolerance with 5 h default and explicit 0, over only above the cap, label), `src/lib/clinicianSlotOptions.test.ts` (over-limit flag and label, none for people without a contract or already in the slot), `ClinicianPickerPopover.test.tsx` ("Over weekly limit (…)" shown, sorted after people without warnings).
 
