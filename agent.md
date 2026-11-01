@@ -2783,39 +2783,62 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   model (`modelDaysSkipped`), so the arena marks such a run invalid
   ("filled by the cross-day repair or the final audit").
 - **Why a slot stayed open, in the product** (completeness critic of the
-  investigation, each point checked against the code):
+  investigation, each point checked against the code; then reviewed by four
+  lenses with a skeptic per finding):
   - Closing report: `backend/agent/open_reasons.py` names, per open slot,
-    the qualified people not on it, how many could still be added directly
-    and how many each hard rule blocks, plus the rule blocking the most
-    (`debugInfo.agent.unsolved.open_slots[].blockers`, run log line
-    "- open: … (1 missing): 6 qualified; blocked by weekly-hours limit 4,
-    vacation 1"). Same check as the final audit (its cached results);
-    bounded to 40 slots and 10 s, skipped after an abort or when the
-    working copy is not the returned plan. The final review's digest gets
-    the same lines.
+    the qualified people not on it (`on_slot`: already on it), how many
+    could still be added directly and how many each hard rule blocks, plus
+    the rule blocking the most (`debugInfo.agent.unsolved.open_slots[].blockers`,
+    run log line "- open: … (1 missing): 6 qualified; blocked by
+    weekly-hours limit 4, vacation 1"; "nobody is qualified" / "no other
+    qualified person (1 already on it)"). Same check as the final audit
+    (3,424 slot × person pairs matched an apply_moves dry run). Budgets:
+    40 slots / 10 s after a finished final audit (cached checks), 12 slots /
+    2 s without one (fallbacks: every check is a full validation), 12 slots
+    and at most 5 s (a quarter of the review's time above its 30 s floor)
+    for the final review's digest; stops on abort; slots past a bound are
+    left out, never guessed.
   - Banner after a run: "Main reason per slot: weekly-hours limit (7),
-    vacation (2)" instead of the hard-coded "(vacations)".
-  - A run that finished every check but left positions open is no longer
-    called "incomplete or was stopped": the apply prompt says "The planner
-    finished, but N required position(s) remain open" (`stopped: false` in
-    the 409 detail), the run card says "Finished with open positions on N
-    day(s)". `unfinished_dates` (skipped, incomplete, checks pending) is the
-    new run-list field that tells the two apart; aborted runs and older
-    servers keep the cautious wording.
+    vacation (2)" ("for 9 of 12 slots" when the check did not reach every
+    slot; "a qualified person is still free" counts slots someone could
+    still take), prefixed "The run ended early." for stopped, out-of-budget
+    or partial runs; without reasons it says the run ended before checking
+    (or just points to the run log) instead of blaming rules.
+  - Apply prompt (409 `partial_result`, new `stopped` flag): "This draft is
+    incomplete or was stopped" when the run was aborted, ended on a budget,
+    provider failure or refusal (`stopReason` ≠ completed), skipped or left
+    a day incomplete, has a pending check, or has open positions on a day
+    whose check ran out of time (`unfinished_dates`). Otherwise "The planner
+    finished, but N required position(s) remain open; the run log lists each
+    one" only when the gate's gaps equal the run's own report; "… remain open
+    in this draft" for CP-SAT/heuristic results; "… the calendar changed
+    since the run" when they differ. The gate asks about the gaps IT finds
+    plus unfinished days, so a stored open slot filled by hand since no
+    longer triggers the question.
+  - Run card: "Finished with open positions on N day(s)" only when nothing
+    is unfinished (aborted runs and older servers keep "Incomplete draft");
+    no line once a run is applied or discarded.
   - Day digest: the roster shows booked/hard max of the day's ISO week per
-    person (`|8/40`, the gate's numbers, work outside the range included),
-    and the slot list no longer claims to be the tools' processing order
-    (suggest_day_blocks without slot_key takes single-candidate slots
-    first). Not measured in the arena yet.
+    person (`|8/40`, the gate's numbers incl. work outside the range,
+    1,400 random states matched validate_weekly_hours), between the ytd
+    value and the work-pattern suffix. The slot list and DAY_SYSTEM_PROMPT
+    step 2 now both say suggest_day_blocks without slot_key takes a slot
+    only one person can take first (it said "exactly that order"). Not
+    measured in the arena yet.
   - Verified unchanged: the picker's week totals already count weekend
     days and assignments the grid hides on vacation days (all stored
     assignments), like the gate.
+  - Arena reports also hash `prompts.py` and `open_reasons.py`.
 - Tests: `test_cross_day_repair.py` (solver repair mode, gate,
   integration, magnitudes, direct strategy), `test_agent_workflow_safety.py`,
   `test_agent_retry.py`, `test_agent_integration.py`, `test_arena_claude.py`
   and `test_prompt_eval.py` adjusted; `test_agent_harness.py` (blocking
-  rules per open slot, bounds), `test_agent_workflow_safety.py` (finished
-  run with open positions), `test_agent_tools.py` (week hours in the day
-  roster); frontend `weeklyHours.test.ts`, `clinicianSlotOptions.test.ts`,
-  `ClinicianPickerPopover.test.tsx`, `solverOutcome.test.ts`.
+  rules per open slot, `on_slot`, bounds, stop; week column in the real
+  day messages), `test_agent_workflow_safety.py` (finished run with open
+  positions; unverified or cut-short runs; CP-SAT and changed-calendar
+  wording; stale report applies without the question), `test_agent_tools.py`
+  (week hours in the day roster, production row shape, the day prompt's
+  auto-select order); frontend `weeklyHours.test.ts`,
+  `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`,
+  `solverOutcome.test.ts`, `SolverInfoModal.test.tsx` (run-card wording).
 - Deploy notes: no schema or data change. Version 1.74 (74).

@@ -1,6 +1,8 @@
 import type { SolverDebugInfo, SolverRunSummary, SolverUnsolvedOpenSlot } from "../api/client";
 
-// Same wording as the backend's closing report (backend/agent/open_reasons.py).
+// Same wording and tie-break order as the backend's closing report
+// (RULE_LABELS in backend/agent/open_reasons.py), plus the two outcomes that
+// are not a rule: no qualified person left, someone could still be added.
 const RULE_LABELS: Record<string, string> = {
   WEEKLY_HOURS: "weekly-hours limit",
   VACATION: "vacation",
@@ -12,33 +14,80 @@ const RULE_LABELS: Record<string, string> = {
   SOLVER_RULE: "shift rule",
   CAPACITY_EXCEEDED: "slot full",
   QUALIFICATION: "not qualified",
-  NO_QUALIFIED: "nobody qualified",
+  NO_QUALIFIED: "no qualified person left",
+  ADDABLE: "a qualified person is still free",
 };
+const RULE_ORDER = Object.keys(RULE_LABELS);
 
 export function ruleLabel(code: string): string {
   return RULE_LABELS[code] ?? code.toLowerCase().replace(/_/g, " ");
 }
 
-/** "weekly-hours limit (7), vacation (2)": each open slot's main blocking
- *  rule, most frequent first. Null when the run reported no reasons. */
-export function openSlotReasonSummary(slots: SolverUnsolvedOpenSlot[], limit = 3): string | null {
-  const tally = new Map<string, number>();
-  for (const slot of slots) {
-    const main = slot.blockers?.main;
-    if (main) tally.set(main, (tally.get(main) ?? 0) + 1);
-  }
-  if (!tally.size) return null;
-  return [...tally.entries()]
-    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-    .slice(0, limit)
-    .map(([code, count]) => `${ruleLabel(code)} (${count})`)
-    .join(", ");
+function ruleRank(code: string): number {
+  const index = RULE_ORDER.indexOf(code);
+  return index < 0 ? RULE_ORDER.length : index;
 }
 
-/** Run-card line for a draft that needs a look before applying. A run that
- *  finished every check but left positions open was not cut short. Older
- *  servers send no unfinished_dates: keep the cautious wording there. */
+export type OpenSlotReasonSummary = {
+  /** "weekly-hours limit (7), vacation (2)" */
+  text: string;
+  /** Open slots the closing check reached (it is bounded by count and time). */
+  checked: number;
+  total: number;
+};
+
+/** Each checked open slot's main blocking rule, most frequent first (ties in
+ *  the backend's rule order); a slot where someone could still be added
+ *  counts as "a qualified person is still free". Null when no slot carries
+ *  reasons (older server, stopped run, closing check out of time). */
+export function openSlotReasonSummary(slots: SolverUnsolvedOpenSlot[]): OpenSlotReasonSummary | null {
+  const tally = new Map<string, number>();
+  let checked = 0;
+  for (const slot of slots) {
+    const blockers = slot.blockers;
+    if (!blockers) continue;
+    checked += 1;
+    const code = blockers.main ?? (blockers.addable > 0 ? "ADDABLE" : null);
+    if (code) tally.set(code, (tally.get(code) ?? 0) + 1);
+  }
+  if (!tally.size) return null;
+  const text = [...tally.entries()]
+    .sort((a, b) => b[1] - a[1] || ruleRank(a[0]) - ruleRank(b[0]) || a[0].localeCompare(b[0]))
+    .map(([code, count]) => `${ruleLabel(code)} (${count})`)
+    .join(", ");
+  return { text, checked, total: slots.length };
+}
+
+/** The run ended before it finished: stopped, out of budget, a provider
+ *  failure, or days it skipped or left incomplete. */
+export function runEndedEarly(status: string, debug?: SolverDebugInfo): boolean {
+  const agent = debug?.agent;
+  return status === "aborted"
+    || (agent?.stopReason != null && agent.stopReason !== "completed")
+    || !!agent?.daysSkipped?.length
+    || !!agent?.daysIncomplete?.length;
+}
+
+/** The coverage banner's explanation after a run left required positions
+ *  open: the reasons where the run checked them, never a guess where it did
+ *  not (a stopped run did not plan those slots). */
+export function coverageExplanation(slots: SolverUnsolvedOpenSlot[], endedEarly: boolean): string {
+  const summary = openSlotReasonSummary(slots);
+  if (summary) {
+    const scope = summary.checked === summary.total ? "per slot" : `for ${summary.checked} of ${summary.total} slots`;
+    return `${endedEarly ? "The run ended early. " : ""}Main reason ${scope}: ${summary.text}. The run log names the blocking rules.`;
+  }
+  return endedEarly
+    ? "The run ended before it checked these positions - the run log lists every open slot."
+    : "The run log lists every open slot.";
+}
+
+/** Run-card line for a draft that needs a look before applying (applied or
+ *  discarded runs need none). A run that finished every check but left
+ *  positions open was not cut short. Older servers send no
+ *  unfinished_dates: keep the cautious wording there. */
 export function runReviewLine(run: Pick<SolverRunSummary, "status" | "incomplete_dates" | "unfinished_dates">): string | null {
+  if (run.status !== "finished" && run.status !== "aborted") return null;
   const days = run.incomplete_dates?.length ?? 0;
   if (!days) return null;
   const unfinished = run.status === "aborted" || run.unfinished_dates === undefined || run.unfinished_dates.length > 0;

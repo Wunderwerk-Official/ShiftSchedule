@@ -835,6 +835,13 @@ def test_day_by_day_runs_one_conversation_per_day():
     assert len(provider.seen_messages[3]) == 1  # history did not carry over
     # The day-2 digest reports what day 1 achieved.
     assert "Days already built in this run" in first_day2
+    # The roster carries booked/max of the day's ISO week AS OF that day:
+    # Alice's Monday (8 h, no contract so no cap) is in Tuesday's digest.
+    def alice_row(digest):
+        return next(line for line in digest.splitlines() if line.startswith("- Alice|"))
+    assert "|2026-W02 hours booked/hard max" in first_day1
+    assert alice_row(first_day1).endswith("|0/-")
+    assert alice_row(first_day2).endswith("|8/-")
 
 
 def test_day_track_events_report_a_skipped_day():
@@ -1234,8 +1241,8 @@ def test_finalize_reports_unsolved_overview():
     assert any("open: " in n and "Section B" in n for n in result["notes"])
     # The closing report says why: nobody is qualified for Section B.
     assert unsolved["open_slots"][0]["blockers"] == {
-        "qualified": 0, "addable": 0, "blocked_by": {}, "main": "NO_QUALIFIED"}
-    assert any("Section B" in n and "nobody qualified is available" in n for n in result["notes"])
+        "qualified": 0, "on_slot": 0, "addable": 0, "blocked_by": {}, "main": "NO_QUALIFIED"}
+    assert any("Section B" in n and n.endswith("(1 missing): nobody is qualified") for n in result["notes"])
     # Alice works one full 8h day: no short or over-long days reported.
     assert unsolved["short_days"] == []
     assert unsolved["overlong_days"] == []
@@ -1282,7 +1289,7 @@ def test_finalize_names_the_rules_that_block_an_open_slot():
     open_slots = result["debugInfo"]["agent"]["unsolved"]["open_slots"]
     assert [entry["section"] for entry in open_slots] == ["Section B"]
     assert open_slots[0]["blockers"] == {
-        "qualified": 2, "addable": 0,
+        "qualified": 2, "on_slot": 0, "addable": 0,
         "blocked_by": {"VACATION": 1, "WEEKLY_HOURS": 1},
         # A tie is broken by the fixed rule order: weekly hours first.
         "main": "WEEKLY_HOURS",
@@ -1301,6 +1308,9 @@ def test_open_slot_reasons_are_bounded():
     assert _main_reason(2, 0, Counter({"OVERLAP": 1, "SAME_LOCATION_PER_DAY": 1})) == "OVERLAP"
     assert blocker_text({"qualified": 3, "addable": 1, "blocked_by": {"OVERLAP": 2}, "main": None}) == (
         "3 qualified; 1 could be added directly; blocked by overlapping shift 2")
+    # Nobody left to add because everyone qualified already works the slot.
+    assert blocker_text({"qualified": 0, "on_slot": 1, "addable": 0, "blocked_by": {},
+                         "main": "NO_QUALIFIED"}) == "no other qualified person (1 already on it)"
 
     class _Gap:
         def __init__(self, n):
@@ -1320,6 +1330,15 @@ def test_open_slot_reasons_are_bounded():
     assert executor.calls == 4
     # Past the time limit nothing is guessed: those slots are left out.
     assert open_slot_blockers(executor, gaps, deadline=time.time() - 1) == {}
+    # A stop ends the check at once.
+    stopped = MockCancelEvent()
+    stopped.set()
+    assert open_slot_blockers(executor, gaps, cancel_event=stopped) == {}
+    assert executor.calls == 4
+    # People already on the slot are counted apart, never as candidates.
+    executor.current = {(f"s0", MON, "clin-1"): object()}
+    result = open_slot_blockers(executor, gaps, max_slots=1)
+    assert result[f"s0__{MON}"]["on_slot"] == 1 and result[f"s0__{MON}"]["qualified"] == 1
 
 
 def test_finalize_reports_all_clear_when_nothing_unsolved():

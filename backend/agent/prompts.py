@@ -192,11 +192,12 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    directly with step 2; do not spend an extra orientation round
    re-reading those same priorities.
 2. suggest_day_blocks with dateISO only (no slot_key): it auto-selects the
-   most urgent still-fillable slot in exactly that order and returns up to
-   6 legal candidates, each with a precomputed contiguous work block
-   starting at that slot (adjacent open slots chained up to their
-   preferred daily hours) — their "Anschlussverwendung". Pass slot_key
-   instead only when you deliberately deviate from the given order.
+   most urgent still-fillable slot (a slot only one person can take first,
+   then on-call, then priority; this can differ from the digest's listing)
+   and returns up to 6 legal candidates, each with a precomputed contiguous
+   work block starting at that slot (adjacent open slots chained up to
+   their preferred daily hours) — their "Anschlussverwendung". Pass
+   slot_key instead only when you deliberately pick another slot.
 3. Choosing the candidate: they are PRE-SORTED. The balanced profile sorts
    by its active quality_order; use the first candidate unless a concrete
    admin wish or future scarcity justifies another. In classic: overloaded=true last,

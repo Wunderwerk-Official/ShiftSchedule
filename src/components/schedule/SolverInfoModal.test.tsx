@@ -157,3 +157,18 @@ it("explains that the weights only affect the classic CP-SAT optimizer", () => {
   fireEvent.click(screen.getByText("Optimization Weights"));
   expect(screen.getByText(/ignores these weights/)).toBeVisible();
 });
+
+it.each([
+  ["finished", [], "Finished with open positions on 1 day(s): check them before applying."],
+  ["finished", ["2026-11-06"], "Incomplete draft: 1 day(s) need review before applying."],
+  ["applied", [], null],
+])("run card wording for a %s run with unfinished days %j", (status, unfinished, expected) => {
+  const run: SolverRunDetail = { id: `card-${status}-${unfinished.length}`, status, has_result: true,
+    start_iso: "2026-11-05", end_iso: "2026-11-06", attempt: 1, created_at: "2026-11-01T10:00:00Z",
+    incomplete_dates: ["2026-11-06"], unfinished_dates: unfinished };
+  render(<SolverInfoModal isOpen onClose={vi.fn()} serverRuns={[run]}
+    onApplyRun={vi.fn()} onDiscardRun={vi.fn()} onRefreshRuns={vi.fn()}
+    onFetchRunDetail={vi.fn().mockResolvedValue(run)} onSendFeedback={vi.fn()} />);
+  if (expected) expect(screen.getByText(expected)).toBeVisible();
+  else expect(screen.queryByText(/before applying/)).toBeNull();
+});

@@ -780,12 +780,14 @@ export type SolverSubScores = {
   hours_penalty: number;
 };
 
-/** Why an open slot stayed open: qualified people not on it, how many could
- *  still be added directly, how many each hard rule blocks (rule code ->
- *  people), and the rule blocking the most of them (null when someone can
- *  still be added). Absent when the closing check was skipped. */
+/** Why an open slot stayed open: qualified people not on it (and already
+ *  on it), how many could still be added directly, how many each hard rule
+ *  blocks (rule code -> people), and the rule blocking the most of them
+ *  ("NO_QUALIFIED" when nobody is left to add, null when someone can still
+ *  be added). Absent when the bounded closing check did not reach the slot. */
 export type SolverOpenSlotBlockers = {
   qualified: number;
+  on_slot?: number;
   addable: number;
   blocked_by: Record<string, number>;
   main: string | null;

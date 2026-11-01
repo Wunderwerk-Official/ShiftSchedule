@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { appendAgentEvent } from "../lib/agentActivity";
 import { abortableDelay } from "../lib/abortableDelay";
-import { agentReviewNotice, heuristicFallbackNotice, openSlotReasonSummary } from "../lib/solverOutcome";
+import { agentReviewNotice, coverageExplanation, heuristicFallbackNotice, runEndedEarly } from "../lib/solverOutcome";
 import ClinicianEditModal from "../components/schedule/ClinicianEditModal";
 import AutomatedPlanningPanel from "../components/schedule/AutomatedPlanningPanel";
 import SolverOverlay, { type LiveSolution, type StatsHistoryEntry } from "../components/schedule/SolverOverlay";
@@ -455,8 +455,8 @@ export default function WeeklySchedulePage({
   const [coverageWarning, setCoverageWarning] = useState<{
     count: number;
     dates: string[];
-    /** Each slot's main blocking rule, e.g. "weekly-hours limit (7)". */
-    reasons: string | null;
+    /** Why: the main blocking rule per checked slot, or that the run ended early. */
+    explanation: string;
   } | null>(null);
   const [autoPlanRunning, setAutoPlanRunning] = useState(false);
   const [autoPlanElapsedMs, setAutoPlanElapsedMs] = useState(0);
@@ -1541,7 +1541,7 @@ export default function WeeklySchedulePage({
         setCoverageWarning({
           count: openSlots.length,
           dates: [...new Set(openSlots.map((slot) => slot.dateISO))].sort(),
-          reasons: openSlotReasonSummary(openSlots),
+          explanation: coverageExplanation(openSlots, runEndedEarly(run.status, result?.debugInfo)),
         });
       }
       const warningNotes = (result?.notes ?? []).filter(
@@ -3623,10 +3623,7 @@ export default function WeeklySchedulePage({
                     {coverageWarning.dates.length > 8
                       ? ` and ${coverageWarning.dates.length - 8} more day(s)`
                       : ""}
-                    .{" "}
-                    {coverageWarning.reasons
-                      ? `Main reason per slot: ${coverageWarning.reasons}. The run log lists the rules blocking each one.`
-                      : "Usually no qualified person is left within the rules (vacation, weekly hours, rest, overlaps) - the run log lists every open slot."}
+                    . {coverageWarning.explanation}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <button

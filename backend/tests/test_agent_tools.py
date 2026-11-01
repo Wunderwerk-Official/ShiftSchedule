@@ -439,9 +439,11 @@ def test_digest_roster_rows_render_identically_in_all_three_digests():
     bob_row = "- Dr. Bob|Section A,gone-section|-|-|-"
 
     duty = build_duty_digest(state, executor.ctx, [], 5, aliases, {"clin-a": 87})
+    # The production form: the harness always passes the week column.
     day = build_day_digest(
         state, executor.ctx, MON, 0, 1, 1, [], [], [], 5, aliases,
         ytd_worked_pct_by_id={"clin-a": 87},
+        week_hours_by_id=executor.week_hours_lines(MON),
     )
     problem = build_problem_digest(
         state,
@@ -459,8 +461,12 @@ def test_digest_roster_rows_render_identically_in_all_three_digests():
         "of target{}, 100=on target, lower=behind):"
     )
     assert duty.splitlines()[:3] == [roster_head.format(""), alice_row + pattern, bob_row]
+    week_head = ("|2026-W02 hours booked/hard max (whole ISO week, work outside the range "
+                 "included; later days of this week share what is left)")
+    # The week column sits between the ytd value and the work-pattern suffix.
     assert day.splitlines()[:3] == [
-        roster_head.format(f" as of {MON}"), alice_row + pattern, bob_row
+        roster_head.format(f" as of {MON}").replace("lower=behind):", f"lower=behind{week_head}):"),
+        alice_row + "|0/45" + pattern, bob_row + "|0/-",
     ]
     problem_lines = problem.splitlines()
     assert "Sections: Section A" in problem_lines
@@ -498,6 +504,15 @@ def test_day_digest_roster_shows_week_hours_booked_against_the_cap():
     assert alice_row == "- Dr. Alice|Section A|-|33.0|-|8/40"
     assert bob_row == "- Dr. Bob|Section A|-|-|-|4/-"
     assert "suggest_day_blocks without slot_key takes a slot with only one eligible person first" in day
+
+
+def test_day_prompt_describes_the_auto_select_order_truthfully():
+    """suggest_day_blocks without slot_key takes single-candidate slots
+    first (_day_open_entries), not the digest's on-call/priority listing."""
+    from backend.agent.prompts import DAY_SYSTEM_PROMPT
+
+    assert "in exactly that order" not in DAY_SYSTEM_PROMPT
+    assert "a slot only one person can take first" in DAY_SYSTEM_PROMPT
 
 
 def test_activity_feed_uses_real_names_for_the_ui():

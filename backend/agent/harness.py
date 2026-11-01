@@ -62,7 +62,14 @@ from .tools import (
 from .workflow import audit_time_budget
 # range_open_positions: the day loop has a local int named open_positions.
 from .cross_day import coverage_repair, open_positions as range_open_positions, repair_note, repair_seconds
-from .open_reasons import blocker_text, open_slot_blockers
+from .open_reasons import (
+    COLD_SECONDS as REASON_COLD_SECONDS,
+    COLD_SLOTS as REASON_COLD_SLOTS,
+    MAX_SECONDS as REASON_MAX_SECONDS,
+    MAX_SLOTS as REASON_MAX_SLOTS,
+    blocker_text,
+    open_slot_blockers,
+)
 
 # History compaction: once the tool results in the conversation exceed this
 # budget, everything but the most recent exchanges is replaced by a stub in
@@ -601,7 +608,8 @@ def agent_solve_range(
             "thoughts": list(thought_log),
         }
 
-    def _unsolved_overview(best: List[Assignment]) -> Tuple[List[str], dict]:
+    def _unsolved_overview(best: List[Assignment], *, reason_slots: int = REASON_MAX_SLOTS,
+                           reason_seconds: float = REASON_MAX_SECONDS) -> Tuple[List[str], dict]:
         """The admin's closing report: everything the run could NOT solve —
         open required slots, short days, over-long days — as human-readable
         note lines (they end up in the run log and the run inbox) plus a
@@ -609,12 +617,14 @@ def agent_solve_range(
         remaining_open = open_slots(ctx, best)
         # Why each slot stayed open (which hard rules block the qualified
         # people). Only when the working copy IS the returned plan and the
-        # run was not stopped: the check reads the final audit's results.
+        # run was not stopped; bounded by the caller's slot/time budget.
         blockers: Dict[str, dict] = {}
         returned = {(a.rowId, a.dateISO, a.clinicianId) for a in best}
         if remaining_open and not cancel_event.is_set() and returned == set(executor.current):
             try:
-                blockers = open_slot_blockers(executor, remaining_open, deadline=run_deadline)
+                blockers = open_slot_blockers(executor, remaining_open, max_slots=reason_slots,
+                                              max_seconds=reason_seconds, deadline=run_deadline,
+                                              cancel_event=cancel_event)
             except Exception:  # the closing report must never fail the run
                 blockers = {}
         open_entries = [
@@ -859,7 +869,15 @@ def agent_solve_range(
         # Closing report (admin request): what stays unsolved — open slots,
         # short days, over-long days — right in the notes so the run log
         # and the run inbox show it without digging through thoughts.
-        unsolved_notes, unsolved = _unsolved_overview(best)
+        # After a finished final audit the reasons mostly read its cached
+        # checks; without one (fallbacks, aborts) every check is a full
+        # validation, so only the slots the notes show, briefly.
+        audited = bool(run_meta.get("final_audit"))
+        unsolved_notes, unsolved = _unsolved_overview(
+            best,
+            reason_slots=REASON_MAX_SLOTS if audited else REASON_COLD_SLOTS,
+            reason_seconds=REASON_MAX_SECONDS if audited else REASON_COLD_SECONDS,
+        )
         notes.extend(unsolved_notes)
         metrics = unsolved["quality_metrics"]
         tasks = executor.workflow.tasks()
@@ -1733,7 +1751,14 @@ def agent_solve_range(
             if restore_best():
                 extra_notes.append("Final review starts from the best verified snapshot.")
             review_start_key = tuple(sorted(executor.current))
-            unsolved_lines, _ = _unsolved_overview(executor.best_assignments)
+            # The digest shows 12 open slots; the plan just changed (cold
+            # checks), and the review needs its own time: a quarter of what
+            # is left above its 30 s floor, at most 5 s.
+            unsolved_lines, _ = _unsolved_overview(
+                executor.best_assignments,
+                reason_slots=REASON_COLD_SLOTS,
+                reason_seconds=min(5.0, max(0.0, (deadline - time.time() - 30.0) / 4)),
+            )
             review_digest = (
                 build_review_digest(
                     ctx, unsolved_lines, previous_day_lines, review_rounds

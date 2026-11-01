@@ -134,7 +134,7 @@ def test_partial_result_requires_explicit_confirmation_and_creates_backup(client
     assert TUE in detail["dates"]
     # A skipped day really is unfinished work: keep the cautious wording.
     assert detail["stopped"] is True
-    assert detail["message"].startswith("This draft is incomplete or was stopped.")
+    assert detail["message"].startswith("This draft is incomplete or was stopped;")
     listed = client.get("/v1/solve/runs").json()["runs"][0]
     assert listed["unfinished_dates"] == [TUE]
     assert len(_load_state(USER).assignments) == 2
@@ -177,6 +177,54 @@ def test_finished_run_with_open_positions_is_not_called_stopped(client):
         "allow_partial": True, "expected_revision": detail["revision"],
     })
     assert accepted.status_code == 200, accepted.text
+
+
+OPEN_MON = {"dateISO": MON, "section": "Section A", "time": "08:00-16:00", "missing": 1}
+
+
+@pytest.mark.parametrize("agent", [
+    # The final check of that open day ran out of time: nothing is proven.
+    {"stopReason": "completed", "daysUnverified": [MON], "unsolved": {"open_slots": [OPEN_MON]}},
+    # The run itself was cut short (time or iteration budget).
+    {"stopReason": "budget_exhausted", "unsolved": {"open_slots": [OPEN_MON]}},
+])
+def test_open_positions_of_unchecked_or_cut_short_runs_keep_the_cautious_wording(client, agent):
+    state = make_app_state(slots=[make_template_slot("slot-a__mon", required_slots=2)])
+    seed_run(state, [draft()], debug={"agent": {"daysSkipped": [], "daysIncomplete": [], **agent}})
+    assert client.get("/v1/solve/runs").json()["runs"][0]["unfinished_dates"] == [MON]
+    detail = client.post("/v1/solve/runs/review-run/apply").json()["detail"]
+    assert detail["code"] == "partial_result" and detail["stopped"] is True
+    assert detail["message"].startswith(
+        "This draft is incomplete or was stopped; 1 required position(s) remain open.")
+
+
+@pytest.mark.parametrize("debug, lead", [
+    # CP-SAT or heuristic result: no closing report to point to.
+    (None, "1 required position(s) remain open in this draft."),
+    # The calendar gained a position since the run reported everything filled.
+    ({"agent": {"stopReason": "completed", "unsolved": {"open_slots": []}}},
+     "1 required position(s) remain open after applying; the calendar changed since the run, "
+     "so its log may list different ones."),
+])
+def test_apply_prompt_names_the_run_log_only_for_the_gaps_it_reported(client, debug, lead):
+    state = make_app_state(slots=[make_template_slot("slot-a__mon", required_slots=2)])
+    seed_run(state, [draft()], debug=debug)
+    detail = client.post("/v1/solve/runs/review-run/apply").json()["detail"]
+    assert detail["code"] == "partial_result" and detail["stopped"] is False
+    assert detail["message"].startswith(lead)
+
+
+def test_stale_open_slot_report_does_not_ask_about_open_positions(client):
+    """The run reported Monday open; the draft (or a hand edit since) fills
+    it. The gate's own gaps are authoritative: nothing is open, so applying
+    needs no partial-draft confirmation."""
+    seed_run(make_app_state(), [draft()], debug={"agent": {
+        "stopReason": "completed", "daysSkipped": [], "daysIncomplete": [],
+        "unsolved": {"open_slots": [OPEN_MON]},
+    }})
+    response = client.post("/v1/solve/runs/review-run/apply")
+    assert response.status_code == 200, response.text
+    assert [a.dateISO for a in _load_state(USER).assignments] == [MON]
 
 
 def test_empty_aborted_result_cannot_erase_previous_plan(client):
