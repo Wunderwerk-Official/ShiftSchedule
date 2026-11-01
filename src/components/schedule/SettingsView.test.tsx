@@ -112,7 +112,7 @@ describe("AI budget field", () => {
   });
 
   async function budgetInput() {
-    const input = await screen.findByLabelText("AI budget per user (USD)");
+    const input = await screen.findByLabelText("AI budget per account (USD)");
     await waitFor(() => expect(input).toHaveValue(5));
     return input;
   }

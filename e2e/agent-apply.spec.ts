@@ -95,7 +95,7 @@ async function calendar(page: Page, options: {
   await page.goto("/");
   await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
   if (!options.backgroundRun) {
-    await page.getByTitle("Solver history, weights & timeout").click();
+    await page.getByTitle("Run inbox, weights & timeout").click();
     await expect(page.getByRole("button", { name: "Apply", exact: true })).toBeVisible();
   }
   return { saves, applyCalls, detailCalls, pdfCalls, releaseFirstSave, pageErrors,

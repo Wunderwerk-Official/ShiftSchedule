@@ -909,7 +909,7 @@ export default function WeeklySchedulePage({
   ): Promise<ScheduleSnapshotImportResult> => {
     const assignments = extractAssignmentsFromSnapshot(payload);
     if (!assignments) {
-      throw new Error("No assignments found in the snapshot file.");
+      throw new Error("No shifts found in this file.");
     }
 
     const clinicianIds = new Set(clinicians.map((clinician) => clinician.id));

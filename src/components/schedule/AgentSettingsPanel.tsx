@@ -11,7 +11,7 @@ import { modelSelectionNotice } from "../../lib/runLog";
 import CustomSelect from "./CustomSelect";
 import ToggleSwitch from "./ToggleSwitch";
 
-// AI agent block of Settings → Solver Settings: provider, model, endpoint,
+// AI agent block of Settings → Planning rules & AI: provider, model, endpoint,
 // API keys, model connection test and budget. Global settings, loaded from
 // and saved to the server directly (not part of the calendar state). Kept in
 // its own component so the chat-test timer and typing here do not re-render
@@ -251,11 +251,11 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              AI provider
+              AI service
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              Anthropic (paid API), or a self-hosted OpenAI-compatible
-              endpoint such as vLLM. Applies to every planning run, for all users.
+              Which AI plans for all accounts. Claude runs in Anthropic&apos;s cloud and is
+              billed per use; your own server keeps names in-house.
             </div>
           </div>
           <CustomSelect
@@ -265,8 +265,8 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
               void applyAgentSettings({ provider: value as "anthropic" | "openai" })
             }
             options={[
-              { value: "anthropic", label: "Anthropic (Claude)" },
-              { value: "openai", label: "Self-hosted / OpenAI-compatible (vLLM, …)" },
+              { value: "anthropic", label: "Claude (Anthropic cloud, paid per use)" },
+              { value: "openai", label: "Own AI server (OpenAI-compatible, e.g. vLLM)" },
             ]}
           />
         </div>
@@ -274,14 +274,14 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
       <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-            AI agent model
+            AI model
           </div>
           <div className="text-xs text-slate-500 dark:text-slate-400">
             {isAdmin
               ? agentSettings?.provider === "openai"
-                ? "Model name served by your endpoint (e.g. meta-llama/Llama-3.3-70B-Instruct)."
-                : "Claude model used by every planning run, for all users. Costs are rough estimates — the exact cost of each run shows in the solver history (gear icon)."
-              : "Set by your administrator and used for every planning run."}
+                ? "Pick a model your server offers, or type its exact name; it is checked right away."
+                : "Used by all accounts. Stronger models plan better but cost more; prices are estimates, each run's real cost is in the run inbox (gear icon in the planning panel)."
+              : "Set by your administrator for all planning runs. The AI sees people's real names."}
           </div>
         </div>
         {isAdmin && agentSettings?.provider !== "openai" ? (
@@ -338,7 +338,7 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
                 }
               >
                 {modelCheck.status === "checking"
-                  ? "Checking model responsiveness…"
+                  ? "Checking whether the model answers…"
                   : modelCheck.status === "ok"
                     ? `Model responds${modelCheck.latency ? ` (${modelCheck.latency}s)` : ""} ✓`
                     : `Model not usable: ${modelCheck.message}`}
@@ -356,18 +356,18 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
       </div>
       {agentSettings?.provider === "openai" && (agentSettings.model_fallback_order?.length ?? 0) > 1 && (
         <p className="text-xs text-slate-500 dark:text-slate-400" title={agentSettings.model_fallback_order!.join(" → ")}>
-          If a model is unavailable, planning and chat tests use: {agentSettings.model_fallback_order!.map(presetLabel).join(" → ")}. The responsiveness check tests only the selected model.
+          If a model is unavailable, planning and chat tests use: {agentSettings.model_fallback_order!.map(presetLabel).join(" → ")}. The quick check tests only the selected model.
         </p>
       )}
       {isAdmin && agentSettings?.provider === "openai" ? (
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Endpoint base URL
+              AI server address
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              OpenAI-compatible server, e.g. http://10.0.0.5:8000/v1 for vLLM
-              (start vLLM with --enable-auto-tool-choice and a tool-call parser).
+              Base URL of your own AI server, e.g. http://10.0.0.5:8000/v1. It must support
+              tool calls (vLLM: --enable-auto-tool-choice and a tool-call parser).
             </div>
           </div>
           <input
@@ -388,15 +388,15 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
         <div className="flex flex-wrap items-center justify-between gap-4">
           <div>
             <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Verify TLS certificate
+              Check server certificate (TLS)
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              Switch off only for self-signed certificates on a trusted
-              internal network (https:// endpoints without a public CA).
+              Keep on. Turn off only for an internal server with a self-signed certificate; off
+              makes the connection easier to intercept.
             </div>
           </div>
           <ToggleSwitch
-            label="Verify TLS certificate"
+            label="Check server certificate (TLS)"
             checked={agentSettings?.openai_verify_tls !== false}
             onToggle={() =>
               void applyAgentSettings({
@@ -411,8 +411,8 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
           <div>
             <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               {agentSettings?.provider === "openai"
-                ? "Endpoint API key (optional)"
-                : "Anthropic API key"}
+                ? "AI server API key (optional)"
+                : "Claude API key"}
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
               {agentSettings?.provider === "openai"
@@ -420,10 +420,10 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
                   ? "A key is stored. Most self-hosted servers don't need one."
                   : "Most self-hosted servers don't need one — leave empty."
                 : agentSettings?.anthropic_api_key_set
-                  ? "A key is stored in the app settings and overrides the server .env."
+                  ? "A key is saved here and used instead of the server's own key."
                   : agentSettings?.anthropic_env_key_present
-                    ? "Currently using the key from the server .env. Enter one here to override it."
-                    : "No key configured yet — agent runs fall back to the draft plan."}
+                    ? "Using the key configured on the server. Enter one here to replace it."
+                    : "No key yet: plans are made by the basic planner without AI."}
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -484,14 +484,13 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
         <div className="flex flex-col gap-2 border-t border-slate-100 pt-3 dark:border-slate-800">
           <div>
             <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Model connection test
+              Test the AI connection
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              Chat directly with the configured model to check that the endpoint
-              works and how fast it generates. Replies show latency and token
-              throughput{agentSettings?.provider === "openai"
-                ? "."
-                : "; Anthropic test messages count toward the AI budget."}
+              Send a short message to check that the AI answers and how fast. The calendar is
+              not changed.{agentSettings?.provider === "openai"
+                ? ""
+                : " Claude test messages count toward your AI budget."}
             </div>
           </div>
           {chatTestEntries.length > 0 && (
@@ -588,12 +587,12 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
         <div className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 pt-3 dark:border-slate-800">
           <div>
             <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              AI budget per user
+              AI budget per account
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
               {isAdmin
-                ? "Maximum cumulative AI cost per account (USD — Anthropic bills in USD). Once reached, planning falls back to the draft plan until you raise the budget."
-                : `Your usage: ${formatCostUSD(agentSettings?.spent_usd ?? 0) ?? "$0.00"} of ${formatCostUSD(agentSettings?.budget_usd ?? 0) ?? "…"} used. When the budget is reached, planning falls back to the draft plan.`}
+                ? "Total AI cost each account may use, ever (no monthly reset). When reached, plans are made by the basic planner without AI until you raise it."
+                : `You have used ${formatCostUSD(agentSettings?.spent_usd ?? 0) ?? "$0.00"} of ${formatCostUSD(agentSettings?.budget_usd ?? 0) ?? "…"} (total, no monthly reset). At the limit, plans are made without AI until an admin raises it.`}
             </div>
           </div>
           {isAdmin ? (
@@ -604,7 +603,7 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
                 min={0}
                 max={MAX_BUDGET_USD}
                 step={0.5}
-                aria-label="AI budget per user (USD)"
+                aria-label="AI budget per account (USD)"
                 value={budgetInput ?? String(agentSettings?.budget_usd ?? DEFAULT_BUDGET_USD)}
                 onChange={(event) => setBudgetInput(event.target.value)}
                 onBlur={() => void commitBudget()}
@@ -622,7 +621,7 @@ export default function AgentSettingsPanel({ isAdmin }: { isAdmin: boolean }) {
       {isAdmin && agentSettings?.provider !== "openai" && agentSettings?.usage?.length ? (
         <div className="border-t border-slate-100 pt-3 dark:border-slate-800">
           <div className="mb-1 text-xs font-medium text-slate-600 dark:text-slate-300">
-            AI spend by user
+            AI cost so far, per account
           </div>
           <div className="flex flex-wrap gap-2">
             {agentSettings.usage.map((entry) => (

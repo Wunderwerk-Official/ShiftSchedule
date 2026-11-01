@@ -30,14 +30,14 @@ describe("ClinicianEditor vacationOnly", () => {
     renderEditor(false);
     expect(screen.getByText("Eligible Sections")).toBeInTheDocument();
     expect(screen.getByText("Vacation")).toBeInTheDocument();
-    expect(screen.getByText("Preferred Working Times")).toBeInTheDocument();
+    expect(screen.getByText("Working Hours & Times")).toBeInTheDocument();
   });
 
   it("renders only the vacation section when vacationOnly", () => {
     renderEditor(true);
     expect(screen.queryByText("Eligible Sections")).not.toBeInTheDocument();
     expect(screen.getByText("Vacation")).toBeInTheDocument();
-    expect(screen.queryByText("Preferred Working Times")).not.toBeInTheDocument();
+    expect(screen.queryByText("Working Hours & Times")).not.toBeInTheDocument();
   });
 });
 

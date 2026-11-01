@@ -15,7 +15,7 @@ import type {
 } from "../../api/client";
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
 import AgentSettingsPanel from "./AgentSettingsPanel";
-import WeeklyTemplateBuilder from "./WeeklyTemplateBuilder";
+import WeeklyTemplateBuilder, { SECTION_PRIORITY_HELP } from "./WeeklyTemplateBuilder";
 import CustomSelect from "./CustomSelect";
 import CustomNumberInput from "./CustomNumberInput";
 import CustomDatePicker from "./CustomDatePicker";
@@ -160,9 +160,13 @@ export default function SettingsView({
   };
   const poolNoteById: Record<string, string> = {
     "pool-rest-day":
-      "Rest day pool for people placed before or after on-call duties.",
+      "Filled by the on-call rest rule. Names you drag in are only a marker; the planner ignores them.",
     "pool-vacation":
-      "People on vacation. Drag in or out of this row to update vacations.",
+      "Filled from each person's vacation periods. Drag someone in to add a vacation day, or out to end it.",
+  };
+  const poolInputLabelById: Record<string, string> = {
+    "pool-rest-day": "Rest Day row name",
+    "pool-vacation": "Vacation row name",
   };
   const sectionBlocks = weeklyTemplate?.blocks ?? [];
   const sectionNameById = new Map(classRows.map((row) => [row.id, row.name]));
@@ -209,16 +213,19 @@ export default function SettingsView({
     try {
       payload = JSON.parse(await file.text());
     } catch (error) {
-      setSnapshotImportError("Snapshot file could not be parsed. Please upload valid JSON.");
+      setSnapshotImportError(
+        "This file could not be read. Choose a .json file made with 'Download shifts file'.",
+      );
       return;
     }
 
     const confirmed = await confirm({
-      title: "Import schedule snapshot?",
+      title: "Replace all shifts with this file?",
       message:
-        "This replaces the current assignments with the snapshot. " +
-        "Assignments for clinicians or slots that no longer exist are skipped.",
-      confirmLabel: "Import snapshot",
+        "Every shift in every week, locked ones too, is replaced by the file. " +
+        "Shifts of people or slots that no longer exist are skipped. " +
+        "No automatic backup is made: save a Calendar snapshot first.",
+      confirmLabel: "Replace shifts",
       cancelLabel: "Cancel",
       variant: "warning",
     });
@@ -230,7 +237,7 @@ export default function SettingsView({
       setSnapshotImportResult(result);
     } catch (error) {
       setSnapshotImportError(
-        error instanceof Error ? error.message : "Snapshot import failed.",
+        error instanceof Error ? error.message : "Import failed.",
       );
     } finally {
       setSnapshotImporting(false);
@@ -255,7 +262,7 @@ export default function SettingsView({
             Settings
           </h2>
           <p className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-            Configure sites, shifts, pools, people, and holidays for your schedule.
+            Set up locations, shifts, people, holidays and planning rules for your schedule.
           </p>
         </div>
       </div>
@@ -267,7 +274,8 @@ export default function SettingsView({
               Weekly Calendar Template
             </div>
             <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-              Build the slot grid per location and day type.
+              Defines every shift: rows are workplaces per location, columns are shift times
+              per weekday and for holidays.
             </div>
           </div>
         </div>
@@ -296,9 +304,12 @@ export default function SettingsView({
       </div>
 
       <div className="mt-8 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-800 dark:bg-slate-900/60">
-          <div className="text-base font-semibold text-slate-900 dark:text-slate-100">Pools</div>
+          <div className="text-base font-semibold text-slate-900 dark:text-slate-100">
+            Rest Day &amp; Vacation rows
+          </div>
           <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-            Label the system pools used for distribution and vacation.
+            Rename the two built-in rows below the shifts in the calendar. Only the displayed
+            name changes.
           </div>
           <div className="mt-4 space-y-3">
             {poolRows.map((row) => (
@@ -307,6 +318,7 @@ export default function SettingsView({
                   type="text"
                   value={row.name}
                   onChange={(e) => onRenamePool(row.id, e.target.value)}
+                  aria-label={poolInputLabelById[row.id] ?? "Row name"}
                   className={cx(
                     "w-full max-w-sm rounded-xl border border-slate-200 px-3 py-2 text-sm font-normal text-slate-900",
                     "focus:border-sky-300 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100",
@@ -356,10 +368,11 @@ export default function SettingsView({
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="text-base font-semibold text-slate-900 dark:text-slate-100">
-                Solver Settings
+                Planning rules &amp; AI
               </div>
               <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                Control solver behavior and on-call rest days.
+                Rules and goals for automatic planning, and the AI it uses. Locked shifts are
+                never changed.
               </div>
             </div>
           </div>
@@ -367,14 +380,15 @@ export default function SettingsView({
             <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <div>
                 <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Enforce same location per day
+                  One location per person per day
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  When multiple shifts per day, all must share the same location.
+                  Several shifts on one day stay at one location (the person picker warns
+                  otherwise). Off: a day may span locations.
                 </div>
               </div>
               <ToggleSwitch
-                label="Enforce same location per day"
+                label="One location per person per day"
                 checked={solverSettings.enforceSameLocationPerDay}
                 onToggle={() =>
                   onChangeSolverSettings({
@@ -387,14 +401,15 @@ export default function SettingsView({
             <div className="flex items-center justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <div>
                 <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Enforce continuous shifts
+                  No gaps within a working day
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Prevents new gaps: assignments must be consecutive at the same location.
+                  A person&apos;s shifts on one day follow each other without a break (08–12 +
+                  12–16, not 08–12 + 14–18). Gaps you set by hand stay.
                 </div>
               </div>
               <ToggleSwitch
-                label="Enforce continuous shifts"
+                label="No gaps within a working day"
                 checked={solverSettings.preferContinuousShifts}
                 onToggle={() =>
                   onChangeSolverSettings({
@@ -407,7 +422,7 @@ export default function SettingsView({
             <AgentSettingsPanel isAdmin={isAdmin} />
             <div className="space-y-3 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <label className="flex flex-wrap items-center gap-3 text-sm font-semibold">
-                Planning quality profile
+                Planning goals (AI)
                 <select value={solverSettings.agentQualityProfile ?? "classic"}
                   onChange={event => onChangeSolverSettings({ ...solverSettings,
                     agentQualityProfile: event.target.value as "classic" | "balanced" })}
@@ -417,31 +432,30 @@ export default function SettingsView({
                 </select>
               </label>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Both prioritize safe coverage. Balanced also scores section priority, short and long days,
-                preferred days off, recent duty distribution and changes to existing assignments.
-                The same safety rules apply to both profiles.
+                Both fill required slots first and keep all rules. Classic then avoids short days
+                and matches contract hours; Balanced also weighs fair weekend/night/on-call shares,
+                days off and fewer changes.
               </p>
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={solverSettings.agentNeighborhoodSearch ?? false}
                   onChange={event => onChangeSolverSettings({ ...solverSettings,
                     agentNeighborhoodSearch: event.target.checked })} />
-                Try extended swaps across nearby days (experimental)
+                Extra search across neighbouring days (experimental)
               </label>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Searches up to three days together to repair gaps. May use more planning time.
+                If a day still has open slots, the AI also tries reshuffling it with the day before
+                and after. Locked shifts stay; runs take longer.
               </p>
             </div>
             <div className="flex flex-col gap-2 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                    AI agent instructions
+                    Instructions for the AI planner
                   </div>
                   <div className="text-xs text-slate-500 dark:text-slate-400">
-                    Free-text guidance the AI agent follows in addition to the fixed rules above.
-                    You can refer to people and sections by name — the AI sees the plan with
-                    real names (use a self-hosted endpoint if data must stay in-house).
-                    Clear the field to run without extra instructions.
+                    Plain-language wishes, e.g. who should not work Fridays. Rules, vacations and
+                    locked shifts always win. Empty = none.
                   </div>
                 </div>
                 <button
@@ -474,10 +488,10 @@ export default function SettingsView({
             <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-slate-200 px-4 py-3 dark:border-slate-800 dark:bg-slate-900/70">
               <div>
                 <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Section priority order
+                  Section priority when short-staffed
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Drag to reorder. Top blocks get higher solver priority.
+                  {SECTION_PRIORITY_HELP}
                 </div>
               </div>
               <button
@@ -491,7 +505,7 @@ export default function SettingsView({
                   "dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800",
                 )}
               >
-                Order sections
+                Change order
               </button>
             </div>
           </div>
@@ -500,14 +514,15 @@ export default function SettingsView({
             <div className="flex items-start justify-between gap-4">
               <div>
                 <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  On-call rest days
+                  Rest days around on-call duty
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Place people into the Rest Day pool before or after an on-call duty.
+                  Days before/after a shift in the on-call section stay completely free; they show
+                  in the Rest Day row.
                 </div>
               </div>
               <ToggleSwitch
-                label="On-call rest days"
+                label="Rest days around on-call duty"
                 checked={solverSettings.onCallRestEnabled}
                 onToggle={() =>
                   onChangeSolverSettings({
@@ -525,7 +540,7 @@ export default function SettingsView({
               )}
             >
               <div className="flex flex-col gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                Section
+                On-call section
                 <CustomSelect
                   value={onCallRestClassId}
                   onChange={(value) =>
@@ -542,7 +557,7 @@ export default function SettingsView({
                 />
               </div>
               <div className="flex flex-col gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                Days before
+                Rest days before
                 <CustomNumberInput
                   value={solverSettings.onCallRestDaysBefore}
                   onChange={(value) =>
@@ -557,7 +572,7 @@ export default function SettingsView({
                 />
               </div>
               <div className="flex flex-col gap-1 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                Days after
+                Rest days after
                 <CustomNumberInput
                   value={solverSettings.onCallRestDaysAfter}
                   onChange={(value) =>
@@ -572,6 +587,9 @@ export default function SettingsView({
                 />
               </div>
             </div>
+            <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+              Calendar days, 0–7 (0 = none). Example: 1 after = the day after the duty stays free.
+            </div>
           </div>
         </div>
 
@@ -582,7 +600,8 @@ export default function SettingsView({
                 People
               </div>
               <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                Add clinicians and open their details for editing.
+                Everyone who can be planned. Edit sets sections, working hours, vacations and
+                wishes.
               </div>
             </div>
           </div>
@@ -656,7 +675,7 @@ export default function SettingsView({
                   step={0.5}
                   value={newClinicianHours}
                   onChange={(event) => setNewClinicianHours(event.target.value)}
-                  placeholder="Hours/week"
+                  placeholder="Hours/week (optional)"
                   className={cx(
                     "w-32 rounded-xl border border-slate-200 px-3 py-2 text-sm font-normal text-slate-900",
                     "focus:border-sky-300 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:[color-scheme:dark]",
@@ -693,6 +712,10 @@ export default function SettingsView({
                   Cancel
                 </button>
               </div>
+              <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                Contract hours per week. Empty = no hours target or weekly limit; change it later
+                under Edit.
+              </div>
             </div>
           ) : null}
         </div>
@@ -704,7 +727,8 @@ export default function SettingsView({
                 Holidays
               </div>
               <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                Load public holidays and maintain the calendar list.
+                On these dates the calendar uses the template&apos;s Holiday column instead of the
+                weekday.
               </div>
             </div>
             <div className="flex flex-col items-end gap-2">
@@ -750,7 +774,11 @@ export default function SettingsView({
 
           <div className="mt-4 flex flex-col gap-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-              Preload holidays
+              Load public holidays
+            </div>
+            <div className="text-xs text-slate-500 dark:text-slate-400">
+              Replaces this year&apos;s list, including holidays you added. Includes regional
+              holidays of all states; remove those that don&apos;t apply.
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <CustomSelect
@@ -791,7 +819,7 @@ export default function SettingsView({
                 )}
                 disabled={!normalizedCountry || isFetchingHolidays}
               >
-                {isFetchingHolidays ? "Loading..." : "Load Holidays"}
+                {isFetchingHolidays ? "Loading..." : `Load holidays for ${holidayYear}`}
               </button>
             </div>
             {holidayError ? (
@@ -803,7 +831,7 @@ export default function SettingsView({
 
           <div className="mt-6 flex flex-col gap-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500">
-              List of holidays that will be added to the calendar
+              Holidays in {holidayYear}
             </div>
             <div className="divide-y divide-slate-200 rounded-xl border border-slate-200 dark:border-slate-800 dark:divide-slate-800">
             {holidaysForYear.length === 0 ? (
@@ -928,10 +956,10 @@ export default function SettingsView({
             <div className="flex items-center justify-between gap-4">
               <div>
                 <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-                  Section priority order
+                  Section priority when short-staffed
                 </div>
                 <div className="text-xs text-slate-500 dark:text-slate-400">
-                  Drag to reorder. Top blocks get higher solver priority.
+                  {SECTION_PRIORITY_HELP}
                 </div>
               </div>
               <button
@@ -949,7 +977,7 @@ export default function SettingsView({
             <div className="mt-4 flex flex-col gap-2">
               {sectionBlocks.length === 0 ? (
                 <div className="rounded-xl border border-dashed border-slate-200 px-3 py-3 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-300">
-                  No section blocks yet.
+                  No sections yet.
                 </div>
               ) : (
                 sectionBlocks.map((block, index) => {
@@ -1019,11 +1047,11 @@ export default function SettingsView({
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <h3 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
-              Schedule snapshot
+              Shifts file
             </h3>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-              Export the current assignments to a file and restore them later. Import replaces
-              assignments and skips clinicians or slots that no longer exist.
+              Download every week&apos;s shifts as a file. Import replaces all shifts, locked ones
+              too, with no backup: save a Calendar snapshot first.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1032,7 +1060,7 @@ export default function SettingsView({
               onClick={onExportScheduleSnapshot}
               className={buttonSecondary.base}
             >
-              Download snapshot
+              Download shifts file
             </button>
             <label
               className={cx(
@@ -1040,7 +1068,7 @@ export default function SettingsView({
                 snapshotImporting && "pointer-events-none opacity-70",
               )}
             >
-              {snapshotImporting ? "Importing..." : "Import snapshot"}
+              {snapshotImporting ? "Importing..." : "Import shifts file…"}
               <input
                 type="file"
                 accept="application/json"
@@ -1053,9 +1081,9 @@ export default function SettingsView({
         </div>
         {snapshotImportResult ? (
           <div className="mt-3 text-xs text-emerald-600 dark:text-emerald-400">
-            Imported {snapshotImportResult.imported} assignments. Skipped{" "}
-            {snapshotImportResult.droppedClinicians} clinician(s) and{" "}
-            {snapshotImportResult.droppedSlots} slot(s).
+            Imported {snapshotImportResult.imported} shifts. Skipped{" "}
+            {snapshotImportResult.droppedClinicians} shift(s) of people no longer listed and{" "}
+            {snapshotImportResult.droppedSlots} in slots that no longer exist.
           </div>
         ) : null}
         {snapshotImportError ? (
@@ -1078,7 +1106,8 @@ export default function SettingsView({
           <span>
             <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">Advanced</span>
             <span className="block text-xs text-slate-500 dark:text-slate-400">
-              Database health check and database inspector
+              Read-only troubleshooting: check saved data for errors and browse slots and shifts
+              by week.
             </span>
           </span>
           <svg

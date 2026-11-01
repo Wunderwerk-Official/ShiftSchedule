@@ -155,7 +155,9 @@ export default function ClinicianEditModal({
                 )}
               </div>
               <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                {vacationOnly ? "Update vacations." : "Update eligible sections and vacations."}
+                {vacationOnly
+                  ? "Update vacations."
+                  : "Sections, vacations, working hours and planning wishes for this person."}
               </div>
             </div>
             <button

@@ -924,7 +924,7 @@ export default function SolverInfoModal({
                         The agent builds each day the way an experienced human planner does: on-call duties
                         and scarce slots are staffed first, every clinician is placed with a contiguous block
                         of work (no short stints, no 24-hour double duties), hours are balanced towards people
-                        behind on their yearly target, and the free-text instructions from Settings → Solver
+                        behind on their yearly target, and the free-text instructions from Settings → Planning rules &amp; AI
                         are followed. The AI works with the plan data including names, and the hard rules
                         can never be broken.
                       </p>
@@ -1409,7 +1409,7 @@ export function SolverInfoButton({ onClick }: { onClick: () => void }) {
       type="button"
       onClick={onClick}
       className="rounded p-0.5 text-slate-400 transition-colors hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
-      title="Solver history, weights & timeout"
+      title="Run inbox, weights & timeout"
     >
       <GearIcon className="h-4 w-4" />
     </button>

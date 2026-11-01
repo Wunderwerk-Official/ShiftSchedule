@@ -125,7 +125,7 @@ def check_database_health(current_user: UserPublic = Depends(_get_current_user))
         issues.append(HealthCheckIssue(
             type="orphaned_assignment",
             severity="warning",
-            message=f"{len(orphaned)} assignment(s) reference slots not in the template",
+            message=f"{len(orphaned)} shift(s) are in slots that are no longer in the template",
             details={"assignments": orphaned[:10]},  # Limit to first 10
         ))
 
@@ -151,7 +151,7 @@ def check_database_health(current_user: UserPublic = Depends(_get_current_user))
         issues.append(HealthCheckIssue(
             type="slot_collision",
             severity="error",
-            message=f"{len(collisions)} slot collision(s) detected - sections hidden in calendar",
+            message=f"{len(collisions)} template cell(s) hold two sections; one is hidden in the calendar",
             details={"collisions": collisions[:10]},
         ))
 
@@ -179,7 +179,7 @@ def check_database_health(current_user: UserPublic = Depends(_get_current_user))
         issues.append(HealthCheckIssue(
             type="duplicate_assignment",
             severity="warning",
-            message=f"{len(duplicates)} duplicate assignment(s) found",
+            message=f"{len(duplicates)} duplicate shift(s) (same person, slot and date)",
             details={"duplicates": duplicates[:10]},
         ))
 
@@ -206,7 +206,7 @@ def check_database_health(current_user: UserPublic = Depends(_get_current_user))
         issues.append(HealthCheckIssue(
             type="colband_explosion",
             severity="error",
-            message=f"{len(colband_issues)} location(s) have excessive colBands",
+            message=f"{len(colband_issues)} template day(s) have more than {MAX_COLBANDS_PER_DAY} columns in one location",
             details={"locations": colband_issues},
         ))
 
@@ -225,7 +225,7 @@ def check_database_health(current_user: UserPublic = Depends(_get_current_user))
         issues.append(HealthCheckIssue(
             type="pool_assignment_info",
             severity="info",
-            message=f"{len(pool_assignments)} pool assignment(s) (Rest Day, Vacation, etc.)",
+            message=f"{len(pool_assignments)} Rest Day or Vacation entries placed by hand",
             details={"assignments": pool_assignments[:10]},  # Limit to first 10
         ))
 

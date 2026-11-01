@@ -122,6 +122,9 @@ export default function LocationColorPicker({ value, onChange, label }: Location
               );
             })}
           </div>
+          <p className="mt-2 max-w-[15rem] px-1 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
+            Tints this location in My plan and its row labels in the weekly grid. All planners see it.
+          </p>
         </div>
       ) : null}
     </div>
