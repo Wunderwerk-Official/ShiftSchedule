@@ -21,7 +21,7 @@ export default function WorkPatternEditor({ value, onChange, contractHours }: {
           ["daysPerWeek", "Workdays per week", 7, 1, "Also sets day length: contract ÷ days."],
           ["dailyHours", "Hours per working day", 24, 1, "Overrides contract ÷ days."],
           ["dailyHoursTolerance", "Daily hours tolerance (±)", 24, 0,
-            "Short/long day = outside target ± this. Empty: short under half, long over +1 h."],
+            "A day counts as short or long outside target ± this. Empty: short below half the target, long above target + 1 h."],
         ] as const).map(([field, label, max, min, helper]) => (
           // The helper sits outside the <label> so the label text stays the accessible name.
           <div key={field} className="flex w-44 flex-col gap-1">

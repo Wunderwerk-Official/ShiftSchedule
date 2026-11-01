@@ -40,3 +40,13 @@ it("uses the current Settings names", () => {
   expect(text).toContain("Shifts file");
   expect(text).not.toMatch(/Rest Day Pool|Vacation Pool|section block/);
 });
+
+it("describes the import backup and the regional holiday loading", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain("saved first as the latest automatic backup");
+  expect(text).toContain("nothing is imported");
+  expect(text).not.toMatch(/without a backup|save a Calendar snapshot first/);
+  expect(text).toContain("holidays you added by hand (date + name) stay");
+  expect(text).not.toContain("regional holidays of all states");
+});

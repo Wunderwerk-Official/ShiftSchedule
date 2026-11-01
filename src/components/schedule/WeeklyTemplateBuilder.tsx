@@ -993,7 +993,7 @@ export default function WeeklyTemplateBuilder({
                     ?.label ?? "Same day"
                 }`}
                 title="Pick 'Next day' for night shifts that end after midnight."
-                className="w-24"
+                className="w-32"
               />
             </div>
           </div>
@@ -1891,7 +1891,7 @@ export default function WeeklyTemplateBuilder({
           </div>
         ) : null}
         <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-          Drag into a cell to add a shift. Top = staffed first when short-staffed.
+          Drag into a cell to add a slot. Top = staffed first when short-staffed.
         </div>
         <div className="mt-2 flex flex-col gap-1.5">
           {blocks.map((block) => {

@@ -11,7 +11,7 @@ export function heuristicFallbackNotice(debug?: SolverDebugInfo): string | null 
       : reason === "aborted"
         ? "The model run was stopped."
         : "The model did not produce the returned draft.";
-  return `Heuristic fallback: the returned draft was produced by heuristic v2. ${explanation} Review it in the run inbox.`;
+  return `Basic plan (without AI): the returned draft was made without the AI. ${explanation} Review it in the run inbox.`;
 }
 
 export function agentReviewNotice(debug?: SolverDebugInfo): string | null {

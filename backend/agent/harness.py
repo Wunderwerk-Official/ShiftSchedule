@@ -349,7 +349,13 @@ def agent_solve_range(
         executor.best_score = executor.encode_quality(executor.best_quality)
         executor.workflow.changed()
         emit_solution(executor.best_score, best)
-        return finalize("AGENT_FALLBACK_SEED", list(result.get("notes") or []) + list(extra_notes))
+        # The heuristic's own timing/count lines name an internal solver next
+        # to "basic plan (without AI)"; keep only its warnings.
+        heuristic_notes = [
+            note for note in (result.get("notes") or [])
+            if not note.startswith(("Human Heuristic Solver (v2)", "Created "))
+        ]
+        return finalize("AGENT_FALLBACK_SEED", heuristic_notes + list(extra_notes))
 
     if strategy == "repair":
         on_progress(
@@ -806,7 +812,7 @@ def agent_solve_range(
             run_meta["fallback"] = {"producer": "heuristic_v2", "model_stop_reason": run_meta["stop_reason"]}
         notes = [
             (
-                "Agent solver: heuristic fallback, "
+                "Agent solver: basic plan (without AI), "
                 if run_meta.get("fallback")
                 else f"Agent solver (day-by-day): built from scratch, "
                 if strategy == "day_by_day"
@@ -816,7 +822,7 @@ def agent_solve_range(
             f"{executor.moves_accepted} move(s) accepted, {executor.moves_rejected} rejected.",
         ]
         if run_meta.get("fallback"):
-            notes.append("The returned draft was produced by heuristic v2.")
+            notes.append("The returned draft is the basic plan (without AI).")
         elif executor.best_quality < executor.seed_quality:
             notes.append(
                 "Plan improved over the seed: "

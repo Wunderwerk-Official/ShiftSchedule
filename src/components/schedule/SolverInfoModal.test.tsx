@@ -25,9 +25,9 @@ it.each(["legacy", "current"])("shows heuristic provenance for %s fallback metad
     onApplyRun={vi.fn()} onDiscardRun={vi.fn()} onRefreshRuns={vi.fn()}
     onFetchRunDetail={vi.fn().mockResolvedValue(run)} onSendFeedback={vi.fn()} />);
   fireEvent.click(screen.getByTitle("Show run details (stats, changes, log)."));
-  expect(await screen.findByText("Heuristic fallback", { exact: true })).toBeVisible();
+  expect(await screen.findByText("Basic plan (without AI)", { exact: true })).toBeVisible();
   expect(screen.queryByText(/could not start/)).toBeNull();
-  expect(heuristicFallbackNotice(debugInfo)).toContain("produced by heuristic v2");
+  expect(heuristicFallbackNotice(debugInfo)).toContain("the returned draft was made without the AI");
   if (format === "current") {
     expect(screen.getByText(/The model request failed/)).toBeVisible();
     expect(screen.getByText(/Tokens and costs below belong to the model attempts/)).toBeVisible();
@@ -67,10 +67,10 @@ it.each([true, false])("reports actual model selection and preserves every attem
   expect(screen.getByText(/Model not found/)).toBeVisible();
   if (available) {
     expect(screen.getByText(/Automatically switched from/)).toBeVisible();
-    expect(screen.queryByText("Heuristic fallback", { exact: true })).toBeNull();
+    expect(screen.queryByText("Basic plan (without AI)", { exact: true })).toBeNull();
   } else {
     expect(screen.getByText(/No model answered successfully/)).toBeVisible();
-    expect(screen.getByText("Heuristic fallback", { exact: true })).toBeVisible();
+    expect(screen.getByText("Basic plan (without AI)", { exact: true })).toBeVisible();
   }
   const log = buildRunLog(serverRunToHistoryEntry(run));
   expect(log).toContain(`Requested model: ${requested}`);

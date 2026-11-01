@@ -229,7 +229,7 @@ export default function DatabaseInspectorPage({
                 <div className="text-2xl font-bold text-indigo-700 dark:text-indigo-300">
                   {result.stats.poolAssignments}
                 </div>
-                <div className="text-sm text-indigo-600 dark:text-indigo-400">Pool Assigns</div>
+                <div className="text-sm text-indigo-600 dark:text-indigo-400">Rest &amp; vacation</div>
               </div>
             </div>
 
@@ -409,11 +409,11 @@ export default function DatabaseInspectorPage({
               })}
             </div>
 
-            {/* Pool assignments */}
+            {/* Rest Day & Vacation entries (the pool rows) */}
             {result.poolAssignments.length > 0 && (
               <div className="mt-6">
                 <h2 className="mb-3 text-lg font-semibold text-slate-900 dark:text-slate-100">
-                  Pool Assignments (Persisted)
+                  Rest Day &amp; Vacation entries (placed by hand)
                 </h2>
                 <div className="overflow-hidden rounded-lg border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800">
                   <table className="w-full text-sm">
@@ -423,10 +423,10 @@ export default function DatabaseInspectorPage({
                           Date
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400">
-                          Pool
+                          Row
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400">
-                          Clinician
+                          Person
                         </th>
                         <th className="px-4 py-3 text-left text-xs font-medium text-slate-500 dark:text-slate-400">
                           Source

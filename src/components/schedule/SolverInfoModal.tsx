@@ -81,7 +81,7 @@ const WEIGHT_LABELS: Record<
   weightYtdBalance: {
     label: "YTD Balance",
     description: "Fair year-to-date distribution",
-    tooltip: "Gives priority to clinicians who are behind on their year-to-date hours target. Helps balance workload across the year.",
+    tooltip: "Gives priority to people who are behind on their year-to-date hours target. Helps balance workload across the year.",
   },
 };
 
@@ -922,14 +922,14 @@ export default function SolverInfoModal({
                     <div className="mt-2 flex flex-col gap-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
                       <p>
                         The agent builds each day the way an experienced human planner does: on-call duties
-                        and scarce slots are staffed first, every clinician is placed with a contiguous block
+                        and scarce slots are staffed first, every person is placed with a contiguous block
                         of work (no short stints, no 24-hour double duties), hours are balanced towards people
                         behind on their yearly target, and the free-text instructions from Settings → Planning rules &amp; AI
                         are followed. The AI works with the plan data including names, and the hard rules
                         can never be broken.
                       </p>
                       <p className="text-xs text-slate-500 dark:text-slate-400">
-                        Longer date ranges or more clinicians take more time. You can abort at any time and
+                        Longer date ranges or more people take more time. You can abort at any time and
                         keep the best solution found so far.
                       </p>
                     </div>
@@ -1071,7 +1071,7 @@ export default function SolverInfoModal({
 
                 {!selectedEntry.debugInfo?.agent && heuristicFallbackNotice(selectedEntry.debugInfo) && (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/20">
-                    <div className="mb-2 font-medium">Heuristic fallback</div>
+                    <div className="mb-2 font-medium">Basic plan (without AI)</div>
                     {heuristicFallbackNotice(selectedEntry.debugInfo)}
                   </div>
                 )}
@@ -1136,7 +1136,7 @@ export default function SolverInfoModal({
                   return (
                     <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900/50 dark:bg-violet-950/20">
                       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-violet-500 dark:text-violet-400">
-                        {fallbackNotice ? "Heuristic fallback" : "AI Agent"}
+                        {fallbackNotice ? "Basic plan (without AI)" : "AI Agent"}
                       </div>
                       {fallbackNotice && <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">{fallbackNotice} Tokens and costs below belong to the model attempts.</p>}
                       {selectionNotice && <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">{selectionNotice}</p>}

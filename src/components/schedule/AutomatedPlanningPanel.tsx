@@ -324,7 +324,7 @@ export default function AutomatedPlanningPanel({
               type="button"
               onClick={handleResetButtonClick}
               disabled={isRunning}
-              title="Remove assignments in the selected timeframe. Locked shifts stay."
+              title="Remove shifts in the selected timeframe. Locked shifts stay."
               className={buttonSecondary.base}
             >
               Reset

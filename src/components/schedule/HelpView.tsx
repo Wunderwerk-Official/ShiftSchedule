@@ -227,9 +227,10 @@ export default function HelpView() {
               Holiday names appear under the date header.
             </li>
             <li>
-              Public holidays can be loaded by country and year (this replaces that
-              year&apos;s list and includes regional holidays of all states); holidays can
-              also be added/removed manually (date + name).
+              Public holidays can be loaded by country, region and year: the nationwide
+              holidays plus those of the chosen region (e.g. a German state). Loading again
+              replaces that year&apos;s loaded holidays; holidays you added by hand (date +
+              name) stay. Any holiday can be removed.
             </li>
           </ul>
         </Section>
@@ -255,8 +256,8 @@ export default function HelpView() {
               wishes for the AI. Removing a person also deletes their shifts.
             </li>
             <li>
-              <span className="font-medium">Holidays</span>: load public holidays,
-              add/remove.
+              <span className="font-medium">Holidays</span>: load public holidays by
+              country and region, add/remove.
             </li>
           </ul>
         </Section>
@@ -265,13 +266,15 @@ export default function HelpView() {
           <p>
             The <span className="font-medium">Calendar snapshots</span> button in the top
             bar saves the whole calendar under a name and restores it later. Before a
-            restore, and before a planning result is applied, the current calendar is
-            saved as an automatic backup.
+            restore, a planning result or a shifts file import is applied, the current
+            calendar is saved as an automatic backup. There is one automatic backup: the
+            latest one replaces the previous.
           </p>
           <p className="mt-2">
             Settings → <span className="font-medium">Shifts file</span> downloads all shifts
-            as a file; importing one replaces all shifts, locked ones too, without a backup
-            (save a Calendar snapshot first).
+            as a file; importing one replaces all shifts, locked ones too. The calendar
+            before the import is saved first as the latest automatic backup; if that backup
+            cannot be saved, nothing is imported.
           </p>
         </Section>
 

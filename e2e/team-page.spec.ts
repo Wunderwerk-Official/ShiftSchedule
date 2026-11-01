@@ -4,7 +4,8 @@ import type { AppState, Assignment } from "../src/api/client";
 
 // Team page behaviour on a mocked API: the rule-violation and split-shift
 // popovers, badge jumps in the phone day view, the "template too large"
-// banner and Reset on vacation days.
+// banner, Reset on vacation days, the backup before a shifts file import and
+// loading public holidays by region.
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -372,5 +373,109 @@ test("Reset → Unlocked shifts and rest days removes planner entries on vacatio
   await expect
     .poll(() => api.state().assignments.map((item) => item.id).sort())
     .toEqual(["fixed", "hidden-manual", "manual"]);
+  expect(api.errors).toEqual([]);
+});
+
+test.describe("shifts file import", () => {
+  const BACKUP_NAME = "Auto-backup before shifts file import";
+  const importFile = (page: Page) =>
+    page.locator('input[type="file"][accept="application/json"]').setInputFiles({
+      name: "shifts.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({ assignments: [assignment("new", "mon", "MRI", SECOND)] })),
+    });
+  const hasNew = (posted: AppState) => (posted.assignments ?? []).some((item) => item.id === "new");
+
+  test("saves a backup of the shown calendar before replacing the shifts", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    const backups: AppState[] = [];
+    let postsAtBackup = -1;
+    await page.route("**/v1/state/snapshots/import-backup", (route) => {
+      backups.push((route.request().postDataJSON() as { state: AppState }).state);
+      postsAtBackup = api.statePosts.length;
+      const at = "2026-01-05T08:00:00Z";
+      return route.fulfill({
+        status: 201,
+        json: { id: "auto", name: BACKUP_NAME, kind: "auto_backup", created_at: at, updated_at: at, size_bytes: 1 },
+      });
+    });
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page);
+    await expect(page.getByRole("dialog")).toContainText("The current calendar is saved in Calendar snapshots first.");
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(page.getByText(`A backup of the previous calendar is in Calendar snapshots: “${BACKUP_NAME}”.`)).toBeVisible();
+    expect(backups).toHaveLength(1);
+    expect(backups[0].assignments?.map((item) => item.id)).toEqual(["old"]);
+    // The imported calendar is saved only after the backup.
+    expect(api.statePosts.slice(0, postsAtBackup).some(hasNew)).toBe(false);
+    await expect.poll(() => api.statePosts.slice(postsAtBackup).some(hasNew)).toBe(true);
+    expect(api.state().assignments.map((item) => item.id)).toEqual(["new"]);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("imports nothing when the backup cannot be saved", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    await page.route("**/v1/state/snapshots/import-backup", (route) =>
+      route.fulfill({ status: 500, json: { detail: "Database is locked" } }),
+    );
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page);
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(
+      page.getByText("The backup could not be saved, so nothing was imported. (Database is locked)"),
+    ).toBeVisible();
+    await page.waitForTimeout(800);
+    expect(api.statePosts.some(hasNew)).toBe(false);
+    expect(api.state().assignments.map((item) => item.id)).toEqual(["old"]);
+    expect(api.errors).toEqual([]);
+  });
+});
+
+test("loads the nationwide holidays plus those of the chosen region and keeps hand-added ones", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.holidayCountry = "DE";
+  state.holidays = [
+    { dateISO: "2026-03-02", name: "Clinic day", source: "manual" },
+    // Loaded earlier for all states (older data without a source).
+    { dateISO: "2026-03-08", name: "Internationaler Frauentag" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  await page.route("https://date.nager.at/api/v3/PublicHolidays/2026/DE", (route) =>
+    route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: [
+        { date: "2026-01-01", localName: "Neujahr", name: "New Year's Day", global: true, counties: null },
+        { date: "2026-01-06", localName: "Heilige Drei Könige", name: "Epiphany", global: false, counties: ["DE-BW", "DE-BY", "DE-ST"] },
+        { date: "2026-03-08", localName: "Internationaler Frauentag", name: "Women's Day", global: false, counties: ["DE-BE", "DE-MV"] },
+        { date: "2026-06-04", localName: "Fronleichnam", name: "Corpus Christi", global: false, counties: ["DE-NW", "DE-BY"] },
+      ],
+    }),
+  );
+
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Region: Nationwide only" }).click();
+  await page.getByRole("button", { name: "Nordrhein-Westfalen", exact: true }).click();
+  await page.getByRole("button", { name: "Load holidays for 2026" }).click();
+
+  await expect(page.getByText("Loaded 2 public holidays for 2026.")).toBeVisible();
+  await expect(page.getByText("Neujahr", { exact: true })).toBeVisible();
+  await expect(page.getByText("Fronleichnam", { exact: true })).toBeVisible();
+  await expect(page.getByText("Clinic day")).toContainText("added by hand");
+  await expect(page.getByText("Heilige Drei Könige")).toHaveCount(0);
+  await expect(page.getByText("Internationaler Frauentag")).toHaveCount(0);
+  await expect
+    .poll(() => {
+      const saved = api.state();
+      return { region: saved.holidayRegion, holidays: (saved.holidays ?? []).map((h) => `${h.name}:${h.source}`).sort() };
+    })
+    .toEqual({ region: "DE-NW", holidays: ["Clinic day:manual", "Fronleichnam:public", "Neujahr:public"] });
   expect(api.errors).toEqual([]);
 });

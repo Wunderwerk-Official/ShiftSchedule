@@ -14,6 +14,7 @@ import type {
   WeeklyCalendarTemplate,
 } from "../../api/client";
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
+import { holidayRegionOptions } from "../../lib/holidays";
 import AgentSettingsPanel from "./AgentSettingsPanel";
 import WeeklyTemplateBuilder, { SECTION_PRIORITY_HELP } from "./WeeklyTemplateBuilder";
 import CustomSelect from "./CustomSelect";
@@ -27,6 +28,8 @@ type ScheduleSnapshotImportResult = {
   imported: number;
   droppedClinicians: number;
   droppedSlots: number;
+  /** Name of the auto-backup of the calendar shown before the import. */
+  backupName?: string;
 };
 
 type SettingsViewProps = {
@@ -36,6 +39,10 @@ type SettingsViewProps = {
   clinicians: Array<{ id: string; name: string }>;
   holidays: Holiday[];
   holidayCountry: string;
+  /** Region for public holidays, e.g. "DE-NW"; "" = nationwide only. */
+  holidayRegion: string;
+  /** Regions the public-holiday service listed (offered for other countries). */
+  holidayRegions?: string[];
   holidayYear: number;
   solverSettings: SolverSettings;
   weeklyTemplate?: WeeklyCalendarTemplate;
@@ -49,8 +56,10 @@ type SettingsViewProps = {
   onEditClinician: (clinicianId: string) => void;
   onRemoveClinician: (clinicianId: string) => void;
   onChangeHolidayCountry: (countryCode: string) => void;
+  onChangeHolidayRegion: (region: string) => void;
   onChangeHolidayYear: (year: number) => void;
-  onFetchHolidays: (countryCode: string, year: number) => Promise<void>;
+  /** Loads the public holidays; resolves to how many were added. */
+  onFetchHolidays: (countryCode: string, year: number, region: string) => Promise<number | void>;
   onAddHoliday: (holiday: Holiday) => void;
   onRemoveHoliday: (holiday: Holiday) => void;
   onChangeSolverSettings: (settings: SolverSettings) => void;
@@ -70,6 +79,8 @@ export default function SettingsView({
   clinicians,
   holidays,
   holidayCountry,
+  holidayRegion,
+  holidayRegions = [],
   holidayYear,
   solverSettings,
   weeklyTemplate,
@@ -83,6 +94,7 @@ export default function SettingsView({
   onEditClinician,
   onRemoveClinician,
   onChangeHolidayCountry,
+  onChangeHolidayRegion,
   onChangeHolidayYear,
   onFetchHolidays,
   onAddHoliday,
@@ -112,6 +124,7 @@ export default function SettingsView({
   );
   const [isFetchingHolidays, setIsFetchingHolidays] = useState(false);
   const [holidayError, setHolidayError] = useState<string | null>(null);
+  const [holidayNotice, setHolidayNotice] = useState<string | null>(null);
   const [holidayInputError, setHolidayInputError] = useState<string | null>(null);
   const [snapshotImportError, setSnapshotImportError] = useState<string | null>(null);
   const [snapshotImportResult, setSnapshotImportResult] =
@@ -135,6 +148,8 @@ export default function SettingsView({
   const hasCountryOption = countryOptions.some(
     (option) => option.code === normalizedCountry,
   );
+  const regionOptions = holidayRegionOptions(normalizedCountry, holidayRegions);
+  const hasRegionOption = regionOptions.some((option) => option.value === holidayRegion);
   const holidayYearPrefix = `${holidayYear}-`;
   const holidaysForYear = holidays
     .filter((holiday) => holiday.dateISO.startsWith(holidayYearPrefix))
@@ -224,7 +239,7 @@ export default function SettingsView({
       message:
         "Every shift in every week, locked ones too, is replaced by the file. " +
         "Shifts of people or slots that no longer exist are skipped. " +
-        "No automatic backup is made: save a Calendar snapshot first.",
+        "The current calendar is saved in Calendar snapshots first.",
       confirmLabel: "Replace shifts",
       cancelLabel: "Cancel",
       variant: "warning",
@@ -629,7 +644,7 @@ export default function SettingsView({
                       // all weeks; there is no undo.
                       const confirmed = await confirm({
                         title: "Remove person",
-                        message: `Remove ${clinician.name}? Their assignments in all weeks, vacations and preferences are deleted. This cannot be undone.`,
+                        message: `Remove ${clinician.name}? Their shifts in all weeks, vacations and preferences are deleted. This cannot be undone.`,
                         confirmLabel: "Remove",
                         cancelLabel: "Cancel",
                         variant: "danger",
@@ -675,7 +690,7 @@ export default function SettingsView({
                   step={0.5}
                   value={newClinicianHours}
                   onChange={(event) => setNewClinicianHours(event.target.value)}
-                  placeholder="Hours/week (optional)"
+                  placeholder="Hours/week"
                   className={cx(
                     "w-32 rounded-xl border border-slate-200 px-3 py-2 text-sm font-normal text-slate-900",
                     "focus:border-sky-300 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100 dark:[color-scheme:dark]",
@@ -777,8 +792,11 @@ export default function SettingsView({
               Load public holidays
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
-              Replaces this year&apos;s list, including holidays you added. Includes regional
-              holidays of all states; remove those that don&apos;t apply.
+              Replaces this year&apos;s loaded public holidays; holidays you added by hand stay.
+              Region: nationwide holidays plus those of this region.
+              {normalizedCountry !== "DE" && regionOptions.length <= 1
+                ? " For this country, load once to list its regions, then choose one and load again."
+                : ""}
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <CustomSelect
@@ -793,15 +811,43 @@ export default function SettingsView({
                     label: option.label,
                   })),
                 ]}
+                ariaLabel={`Country: ${
+                  countryOptions.find((option) => option.code === normalizedCountry)?.label ??
+                  normalizedCountry
+                }`}
+                className="w-56"
+              />
+              <CustomSelect
+                value={holidayRegion}
+                onChange={onChangeHolidayRegion}
+                options={[
+                  ...regionOptions,
+                  ...(!hasRegionOption ? [{ value: holidayRegion, label: holidayRegion }] : []),
+                ]}
+                ariaLabel={`Region: ${
+                  regionOptions.find((option) => option.value === holidayRegion)?.label ??
+                  holidayRegion
+                }`}
+                title="Nationwide holidays plus those of this region."
                 className="w-56"
               />
               <button
                 type="button"
                 onClick={async () => {
                   setHolidayError(null);
+                  setHolidayNotice(null);
                   setIsFetchingHolidays(true);
                   try {
-                    await onFetchHolidays(normalizedCountry, holidayYear);
+                    const added = await onFetchHolidays(
+                      normalizedCountry,
+                      holidayYear,
+                      holidayRegion,
+                    );
+                    if (typeof added === "number") {
+                      setHolidayNotice(
+                        `Loaded ${added} public holiday${added === 1 ? "" : "s"} for ${holidayYear}.`,
+                      );
+                    }
                   } catch (error) {
                     setHolidayError(
                       error instanceof Error
@@ -827,6 +873,11 @@ export default function SettingsView({
                 {holidayError}
               </div>
             ) : null}
+            {holidayNotice && !holidayError ? (
+              <div role="status" className="text-xs text-emerald-600 dark:text-emerald-400">
+                {holidayNotice}
+              </div>
+            ) : null}
           </div>
 
           <div className="mt-6 flex flex-col gap-3">
@@ -849,6 +900,11 @@ export default function SettingsView({
                   </div>
                   <div className="text-sm text-slate-600 dark:text-slate-300">
                     {holiday.name}
+                    {holiday.source === "manual" ? (
+                      <span className="ml-2 text-xs text-slate-400 dark:text-slate-500">
+                        added by hand
+                      </span>
+                    ) : null}
                   </div>
                   <button
                     type="button"
@@ -1051,7 +1107,7 @@ export default function SettingsView({
             </h3>
             <p className="mt-1 text-xs text-slate-500 dark:text-slate-400">
               Download every week&apos;s shifts as a file. Import replaces all shifts, locked ones
-              too, with no backup: save a Calendar snapshot first.
+              too; the current calendar is saved in Calendar snapshots first.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -1084,6 +1140,9 @@ export default function SettingsView({
             Imported {snapshotImportResult.imported} shifts. Skipped{" "}
             {snapshotImportResult.droppedClinicians} shift(s) of people no longer listed and{" "}
             {snapshotImportResult.droppedSlots} in slots that no longer exist.
+            {snapshotImportResult.backupName
+              ? ` A backup of the previous calendar is in Calendar snapshots: “${snapshotImportResult.backupName}”.`
+              : null}
           </div>
         ) : null}
         {snapshotImportError ? (

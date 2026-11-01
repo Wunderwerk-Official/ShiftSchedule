@@ -60,6 +60,7 @@ import {
   unpublishWeb,
   subscribeSolverProgress,
   createSnapshot,
+  createImportBackup,
   restoreSnapshot,
   type AppState,
   type AuthUser,
@@ -103,6 +104,8 @@ import { computeOpenSlots } from "../lib/openSlots";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
+import { mergeLoadedHolidays, NATIONWIDE_ONLY, type PublicHolidayApiEntry } from "../lib/holidays";
+import { saveShiftsFileImport } from "../lib/shiftsFileImport";
 import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
 import { resetSolverAssignments, resetUnfixedAssignments } from "./resetSolverAssignments";
 import {
@@ -232,6 +235,8 @@ type ScheduleSnapshotImportResult = {
   imported: number;
   droppedClinicians: number;
   droppedSlots: number;
+  /** Name of the auto-backup of the calendar shown before the import. */
+  backupName?: string;
 };
 
 const defaultAppState = normalizeAppState({
@@ -491,6 +496,13 @@ export default function WeeklySchedulePage({
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
   );
+  // Region for public holidays (e.g. "DE-NW"); "" = nationwide only.
+  const [holidayRegion, setHolidayRegion] = useState<string>(
+    defaultAppState.holidayRegion ?? NATIONWIDE_ONLY,
+  );
+  // Regions listed by the public-holiday service in this session (offered
+  // in the Region choice for countries without a built-in list).
+  const [seenHolidayRegions, setSeenHolidayRegions] = useState<string[]>([]);
   const [holidayYear, setHolidayYear] = useState(currentYear);
   const [publishedWeekStartISOs, setPublishedWeekStartISOs] = useState<string[]>([]);
   const [solverSettings, setSolverSettings] = useState<SolverSettings>(
@@ -926,22 +938,35 @@ export default function WeeklySchedulePage({
     const normalizedAssignments = normalized.assignments ?? [];
     const droppedSlots = filteredByClinician.length - normalizedAssignments.length;
 
-    if (hasLoaded && loadedUserId === currentUser.username) {
-      pauseCalendarSaving();
-      try {
-        await saveState(normalized);
-        setAssignmentMap(buildAssignmentMap(normalizedAssignments));
-      } finally {
-        resumeCalendarSaving();
-      }
-    } else {
-      throw new Error("Wait until the calendar has loaded before importing.");
+    if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
+      // A pending save failure would reject the import's save right after the
+      // backup replaced the only auto-backup: refuse before writing anything.
+      throw new Error(saveError ?? "Wait until the calendar has loaded before importing.");
+    }
+    // The calendar as shown (the stored row can lag by the save debounce)
+    // is saved as an auto-backup first; without it nothing is imported.
+    const current = buildCurrentStatePayload();
+    if (!current) {
+      throw new Error("The current calendar cannot be saved. Fix its template first.");
+    }
+
+    let backupName: string;
+    pauseCalendarSaving();
+    try {
+      ({ backupName } = await saveShiftsFileImport(current, normalized, {
+        createBackup: createImportBackup,
+        saveState,
+      }));
+      setAssignmentMap(buildAssignmentMap(normalizedAssignments));
+    } finally {
+      resumeCalendarSaving();
     }
 
     return {
       imported: normalizedAssignments.length,
       droppedClinicians,
       droppedSlots,
+      backupName,
     };
   };
 
@@ -2499,6 +2524,7 @@ export default function WeeklySchedulePage({
     solverRulesRef.current = normalized.solverRules ?? [];
     if (normalized.holidays) setHolidays(normalized.holidays);
     if (normalized.holidayCountry) setHolidayCountry(normalized.holidayCountry);
+    setHolidayRegion(normalized.holidayRegion ?? NATIONWIDE_ONLY);
     if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
     setPublishedWeekStartISOs(normalized.publishedWeekStartISOs ?? []);
   };
@@ -2588,6 +2614,7 @@ export default function WeeklySchedulePage({
       slotOverridesByKey,
       holidays,
       holidayCountry,
+      holidayRegion: holidayRegion || null,
       holidayYear,
       publishedWeekStartISOs,
       solverSettings,
@@ -2672,6 +2699,7 @@ export default function WeeklySchedulePage({
     slotOverridesByKey,
     holidays,
     holidayCountry,
+    holidayRegion,
     holidayYear,
     publishedWeekStartISOs,
     solverSettings,
@@ -2973,7 +3001,7 @@ export default function WeeklySchedulePage({
         (item) => item.dateISO === holiday.dateISO && item.name === trimmedName,
       );
       if (exists) return prev;
-      return [...prev, { dateISO: holiday.dateISO, name: trimmedName }];
+      return [...prev, { dateISO: holiday.dateISO, name: trimmedName, source: "manual" }];
     });
   };
   const handleRemoveHoliday = (holiday: Holiday) => {
@@ -2983,7 +3011,10 @@ export default function WeeklySchedulePage({
       ),
     );
   };
-  const handleFetchHolidays = async (countryCode: string, year: number) => {
+  // Loads the public holidays of `year` (nationwide plus those of `region`)
+  // and replaces this year's previously loaded ones; holidays added by hand
+  // stay. Returns how many holidays were added.
+  const handleFetchHolidays = async (countryCode: string, year: number, region: string) => {
     const normalizedCountry = countryCode.trim().toUpperCase();
     const response = await fetch(
       `https://date.nager.at/api/v3/PublicHolidays/${year}/${normalizedCountry}`,
@@ -2991,26 +3022,26 @@ export default function WeeklySchedulePage({
     if (!response.ok) {
       throw new Error(`Failed to fetch holidays (${response.status}).`);
     }
-    const data = (await response.json()) as Array<{
-      date: string;
-      localName?: string;
-      name?: string;
-    }>;
-    const fetched = data.map((item) => ({
-      dateISO: item.date,
-      name: item.localName ?? item.name ?? "Holiday",
-    }));
-    const unique = new Map<string, Holiday>();
-    for (const item of fetched) {
-      unique.set(`${item.dateISO}__${item.name}`, item);
-    }
-    setHolidays((prev) => {
-      const yearPrefix = `${year}-`;
-      const keep = prev.filter((holiday) => !holiday.dateISO.startsWith(yearPrefix));
-      return [...keep, ...Array.from(unique.values())];
-    });
+    const data = (await response.json()) as PublicHolidayApiEntry[];
+    const entries = Array.isArray(data) ? data : [];
+    const regionForCountry = region.startsWith(`${normalizedCountry}-`) ? region : NATIONWIDE_ONLY;
+    // The count comes from the list as shown; the update applies to the
+    // latest list (a holiday added while loading is kept).
+    const { added, regions } = mergeLoadedHolidays(holidays, entries, year, regionForCountry);
+    setHolidays((prev) => mergeLoadedHolidays(prev, entries, year, regionForCountry).holidays);
+    setSeenHolidayRegions((prev) => Array.from(new Set([...prev, ...regions])).sort());
     setHolidayCountry(normalizedCountry);
+    setHolidayRegion(regionForCountry);
     setHolidayYear(year);
+    return added;
+  };
+  const handleChangeHolidayCountry = (countryCode: string) => {
+    const normalizedCountry = countryCode.trim().toUpperCase();
+    setHolidayCountry(normalizedCountry);
+    // A region of another country does not apply.
+    setHolidayRegion((prev) =>
+      prev && !prev.startsWith(`${normalizedCountry}-`) ? NATIONWIDE_ONLY : prev,
+    );
   };
   const openSlotsBadge = (
     <button
@@ -3676,6 +3707,8 @@ export default function WeeklySchedulePage({
             clinicians={clinicians}
             holidays={holidays}
             holidayCountry={holidayCountry}
+            holidayRegion={holidayRegion}
+            holidayRegions={seenHolidayRegions}
             holidayYear={holidayYear}
             weeklyTemplate={weeklyTemplate}
             onRenamePool={(rowId, nextName) => {
@@ -3733,11 +3766,10 @@ export default function WeeklySchedulePage({
                 return next;
               });
             }}
-            onChangeHolidayCountry={setHolidayCountry}
+            onChangeHolidayCountry={handleChangeHolidayCountry}
+            onChangeHolidayRegion={setHolidayRegion}
             onChangeHolidayYear={setHolidayYear}
-            onFetchHolidays={async (countryCode, year) => {
-              await handleFetchHolidays(countryCode, year);
-            }}
+            onFetchHolidays={handleFetchHolidays}
             onAddHoliday={handleAddHoliday}
             onRemoveHoliday={handleRemoveHoliday}
             onCreateSection={(name) => {

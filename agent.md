@@ -178,7 +178,7 @@ Slots / Template integrity
 People (`clinicians` in data)
 - List with Add Person, Edit and Remove buttons (Add uses a dashed, full-width button below the list). Remove asks for confirmation since v1.64: it deletes the person's shifts in all weeks, vacations and preferences, without undo.
 - Editing uses the same modal as clicking a pill in the calendar.
-- Optional contract hours in the new-person form ("Hours/week (optional)"; empty = no hours target or weekly limit).
+- Optional contract hours in the new-person form ("Hours/week"; the helper below says it is optional: empty = no hours target or weekly limit).
 
 Clinician Editor (modal)
 - Panel order: Eligible Sections → Vacations → Working Hours & Times (contract hours, "Weekly hours tolerance (±)", work pattern, per-weekday windows) → Planning Wishes.
@@ -207,15 +207,15 @@ Working Hours Overview
 
 Holidays
 - Year selector with stepper buttons.
-- Country picker with flag emoji (top EU countries + CH, LU), alphabetical.
-- "Load holidays for {year}" (under "Load public holidays") fetches from https://date.nager.at/api/v3/PublicHolidays. It replaces that year's list, including holidays added by hand, and includes regional holidays of all states (no `global`/`counties` filter); the helper says so. The list header reads "Holidays in {year}".
-- Add holidays manually; list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form).
+- Country picker with flag emoji (top EU countries + CH, LU), alphabetical; next to it a "Region" picker (`holidayRegionOptions`: "Nationwide only", the 16 German states for DE, and for other countries the regions the service listed this session). Stored as `AppState.holidayRegion` (e.g. "DE-NW"; `null` = nationwide only). Changing the country resets the region only when it belongs to another country.
+- "Load holidays for {year}" (under "Load public holidays") fetches from https://date.nager.at/api/v3/PublicHolidays and merges with `mergeLoadedHolidays` (`src/lib/holidays.ts`): it replaces only that year's loaded holidays (`source: "public"`, and older untagged entries the service lists), keeps holidays added by hand (`source: "manual"`), and adds the nationwide holidays plus those of the chosen region. Afterwards "Loaded N public holidays for {year}." The helper says "Replaces this year's loaded public holidays; holidays you added by hand stay. Region: nationwide holidays plus those of this region." The list header reads "Holidays in {year}".
+- Add holidays manually (saved with `source: "manual"`, shown with a small "added by hand" marker); list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form).
 - Add Holiday button is a dashed, full-width button below the list and opens an inline add panel.
 - Holidays behave like weekends in solver + min slot logic and show in the calendar header.
 
 Shifts file (formerly "Schedule snapshot")
-- "Download shifts file" exports every week's shifts as JSON (file name still `schedule-snapshot-*.json`); "Import shifts file…" asks "Replace all shifts with this file?" (confirm "Replace shifts") and replaces all shifts, locked ones too, without an automatic backup — the texts say to save a Calendar snapshot first.
-- Result line: "Imported N shifts. Skipped X shift(s) of people no longer listed and Y in slots that no longer exist." (both skipped numbers count shifts).
+- "Download shifts file" exports every week's shifts as JSON (file name still `schedule-snapshot-*.json`); "Import shifts file…" asks "Replace all shifts with this file?" (confirm "Replace shifts") and replaces all shifts, locked ones too. Before saving, the calendar as shown is saved via `POST /v1/state/snapshots/import-backup` as "Auto-backup before shifts file import" (`saveShiftsFileImport` in `src/lib/shiftsFileImport.ts`); if that fails, nothing is imported ("The backup could not be saved, so nothing was imported."). The auto-backup slot is shared with the backups before a restore and before applying a plan: the newest wins.
+- Result line: "Imported N shifts. Skipped X shift(s) of people no longer listed and Y in slots that no longer exist. A backup of the previous calendar is in Calendar snapshots: “Auto-backup before shifts file import”." (both skipped numbers count shifts).
 
 Database Health Check
 - Lives in the collapsed "Advanced" section at the very bottom of Settings (v1.71, helper "Read-only troubleshooting: …"); the check only mounts, and so only loads, when the section is opened.
@@ -232,11 +232,11 @@ Database Inspector
 - Route: `/db-inspector` (requires authentication).
 - Full-page view showing all slots and assignments directly from the database.
 - Week selector with navigation arrows and "Today" button.
-- Stats overview: Total Slots, Assigned, Open, Pool Assignments.
+- Stats overview: Total Slots, Assigned, Open, Rest & vacation.
 - Filter toggle: "Show only open slots".
 - Expandable day sections with tables showing:
   - Time, Row, Column, Status (open/assigned), Assigned To, Source (manual/solver).
-- Pool assignments table at the bottom showing persisted pool entries.
+- "Rest Day & Vacation entries (placed by hand)" table at the bottom (columns Date, Row, Person, Source).
 - Data comes directly from the database, not from the UI view.
 - Backend endpoint: `GET /v1/state/inspect/week?week_start=YYYY-MM-DD`.
 
@@ -1329,7 +1329,7 @@ Endpoints
 - `GET /v1/solve/progress` (SSE stream for live solver updates; `Authorization: Bearer` header, no query token)
 - `GET /v1/state/health` (database health check)
 - `GET /v1/state/inspect/week` (database inspector)
-- `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots)
+- `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots), `POST /v1/state/snapshots/import-backup` (auto-backup before a shifts file import)
 - `GET /v1/me/preferences`, `PUT /v1/me/preferences` (per-user UI preferences for My plan; outside AppState, 32 KB body cap → 413)
 - `GET /v1/solve/runs`, `GET /v1/solve/runs/{id}`, `POST /v1/solve/runs/{id}/apply|discard|feedback` (run inbox)
 - `GET|PUT /v1/agent/settings`, `POST /v1/agent/chat-test`, `POST /v1/agent/model-check` (AI planning settings; `PUT /v1/agent/settings`, `chat-test` and `model-check` are admin only)
@@ -2543,8 +2543,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   there: `harness.py` budget note, `anthropic_provider.py`,
   `openai_provider.py`); "Pools" → **Rest Day & Vacation rows**; "Schedule
   snapshot" → **Shifts file** (avoids the clash with "Calendar snapshots";
-  the import dialog now says that all shifts, locked ones too, are replaced
-  without a backup, and the result line counts skipped *shifts*); "Enforce
+  the import dialog said that all shifts, locked ones too, are replaced
+  without a backup (superseded below: a backup is now saved first), and the
+  result line counts skipped *shifts*); "Enforce
   same location per day" → **One location per person per day**; "Enforce
   continuous shifts" → **No gaps within a working day**; "Section priority
   order" → **Section priority when short-staffed** (shared
@@ -2553,8 +2554,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   before/after"); "Planning quality profile" → **Planning goals (AI)**;
   "AI agent instructions" → **Instructions for the AI planner**; "Preload
   holidays" / "Load Holidays" → **Load public holidays** / **Load holidays
-  for {year}** (warns that it replaces the year's list, hand-added holidays
-  included, and includes regional holidays); "List of holidays that will be
+  for {year}** (the first helper warned that it replaced the year's list;
+  superseded below by the region choice and kept hand-added holidays); "List of holidays that will be
   added…" → "Holidays in {year}". AI block: AI service, AI model, AI server
   address, Check server certificate (TLS), Claude API key, Test the AI
   connection, AI budget per account ("total, no monthly reset"; aria-label
@@ -2588,8 +2589,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   holds Log/Comment on the left and Discard/Apply (primary) on the right. The
   total AI cost is a small panel, and "How it works" is a compact card whose
   long text folds away while runs exist.
-- Tests: `SettingsView.test.tsx` (import result sentence and "No automatic
-  backup" in the confirm dialog), `WeeklyTemplateBuilder.test.tsx` (the
+- Tests: `SettingsView.test.tsx` (import result sentence and the confirm
+  dialog), `WeeklyTemplateBuilder.test.tsx` (the
   delete-section dialog names Eligible Sections and the deleted shifts),
   `HelpView.test.tsx` (Planning rules & AI, gear button, no "Solver
   Settings"), `ClinicianEditor.test.tsx` follows the renamed box;
@@ -2598,3 +2599,49 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `e2e/team-page.spec.ts` ("Replace shifts") follow the labels. The gear
   button's title starts with "Run", so `app.spec.ts` and
   `colband-explosion.spec.ts` look up the Run button with `exact: true`.
+- Holidays by region, hand-added ones kept (UI for part 5): Settings →
+  Holidays has a "Region" picker next to the country (`holidayRegionOptions`;
+  accessible names "Country: …" / "Region: …"). `WeeklySchedulePage` keeps
+  `holidayRegion` (hydrated from the state, saved as `holidayRegion` or
+  `null` in every payload via `buildStatePayload`) and the regions the
+  service listed this session; `handleFetchHolidays(country, year, region)`
+  merges with `mergeLoadedHolidays` and returns how many were added
+  ("Loaded N public holidays for {year}."). Manual adds carry
+  `source: "manual"` and show "added by hand". Changing the country resets
+  the region only if it belongs to another country. HelpView §8/§9 and the
+  load helper say that loading replaces this year's loaded public holidays
+  and that holidays added by hand stay.
+- Shifts file import with backup: `createImportBackup(state)` (client,
+  `POST /v1/state/snapshots/import-backup`, 401 handling like
+  `createSnapshot`). `handleImportScheduleSnapshot` builds the on-screen
+  payload (`buildCurrentStatePayload()`), then `saveShiftsFileImport`
+  (`src/lib/shiftsFileImport.ts`) saves the backup first and the imported
+  calendar second; a failed backup throws "The backup could not be saved, so
+  nothing was imported." without saving. The result carries `backupName`;
+  Settings adds "A backup of the previous calendar is in Calendar snapshots:
+  “Auto-backup before shifts file import”." The confirm dialog and the card
+  helper say the current calendar is saved in Calendar snapshots first;
+  HelpView §10 calls it the latest automatic backup (one slot shared with
+  restore and apply).
+- Review fixes of the wording pass: the slot editor's "Ends" select is
+  `w-32` (labels no longer clipped; fits the 260px popover); new-person
+  placeholder "Hours/week" (the helper explains it is optional); the
+  fallback is called **Basic plan (without AI)** everywhere
+  (`heuristicFallbackNotice`, the SolverInfoModal headings, the harness
+  notes "Agent solver: basic plan (without AI), …" and "The returned draft is
+  the basic plan (without AI)."); People Remove confirm says "Their shifts in
+  all weeks…"; Reset title "Remove shifts in the selected timeframe. Locked
+  shifts stay."; planning texts say people instead of clinicians; Database
+  Inspector: "Rest & vacation", "Rest Day & Vacation entries (placed by
+  hand)", columns Row / Person; README "Rest Day and Vacation rows"; Sections
+  panel helper "Drag into a cell to add a slot. Top = staffed first when
+  short-staffed."; WorkPatternEditor tolerance helper "A day counts as short
+  or long outside target ± this. Empty: short below half the target, long
+  above target + 1 h."
+- Tests: `src/lib/shiftsFileImport.test.ts` (backup before save, no save when
+  the backup fails, a failing save is passed on); `SettingsView.test.tsx`
+  (region options and `onChangeHolidayRegion`, regions of other countries,
+  load count and "added by hand", import result names the backup, backup
+  failure message); `HelpView.test.tsx` (import backup and regional
+  holidays); `DatabaseInspectorPage.test.tsx` (new labels);
+  `SolverInfoModal.test.tsx` follows "Basic plan (without AI)".
