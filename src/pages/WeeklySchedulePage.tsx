@@ -27,10 +27,22 @@ import TeamPlanHeader from "../components/schedule/TeamPlanHeader";
 import CalendarPlaceholder from "../components/schedule/CalendarPlaceholder";
 import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
 import MyPlanView, { type TeamPlanTarget } from "../components/myPlan/MyPlanView";
+import Toast, { useToast } from "../components/myPlan/Toast";
 import { viewStartDate } from "../components/myPlan/viewConfig";
+import SwapAssistantDrawer from "../components/swaps/SwapAssistantDrawer";
+import SwapHistoryButton from "../components/swaps/SwapHistoryButton";
 import { findNextShiftFor, parseISODate } from "../lib/myPlan";
+import { assignmentKey, swapTargetKey, swapToastMessage, undoToastMessage } from "../lib/swaps/format";
+import type {
+  SwapApplyRequest,
+  SwapAssignmentRef,
+  SwapCandidatesRequest,
+  SwapOpenTarget,
+  SwapSlotRef,
+} from "../lib/swaps/types";
 import { useUserPreferences } from "../lib/userPreferences";
 import { scrollToTeamAssignment } from "./scrollToTeamAssignment";
+import { runSwapApply, runSwapSearch, runSwapUndo, type SwapFlowDeps } from "./swapFlow";
 import { usePlanScope } from "./usePlanScope";
 import AdminUsersPanel from "../components/auth/AdminUsersPanel";
 import { ChevronLeftIcon, ChevronRightIcon } from "../components/schedule/icons";
@@ -49,14 +61,19 @@ import {
   publishWeb,
   abortSolver,
   applySolverRun,
+  applySwap,
   discardSolverRun,
+  findSwapCandidates,
   getSolverRun,
   listSolverRuns,
+  listSwapHistory,
   rotateIcalToken,
   saveState,
+  savedStateRevision,
   sendRunFeedback,
   solveRange,
   rotateWeb,
+  undoSwap,
   unpublishIcal,
   unpublishWeb,
   subscribeSolverProgress,
@@ -211,6 +228,80 @@ function scrollToGridCell(rowId: string, dateISO: string, maxWaitMs: number = 10
     requestAnimationFrame(tick);
   };
   requestAnimationFrame(tick);
+}
+
+/** Width of the desktop swap drawer (SwapAssistantDrawer `w-[440px]`). */
+const SWAP_DRAWER_WIDTH = 440;
+
+function errorText(err: unknown, fallback: string): string {
+  return err instanceof Error ? err.message : fallback;
+}
+
+/** The focused element, or null while nothing is (focus on <body>). */
+function activeElementOrNull(): HTMLElement | null {
+  const active = document.activeElement;
+  return active instanceof HTMLElement && active !== document.body ? active : null;
+}
+
+function cellSelector(rowId: string, dateISO: string): string {
+  return `[data-schedule-cell="true"][data-row-id="${CSS.escape(rowId)}"][data-date-iso="${dateISO}"]`;
+}
+
+function findSwapButtonOf(key: string): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    `[data-assignment-key="${CSS.escape(key)}"] button[aria-label^="Find swap"]`,
+  );
+}
+
+/**
+ * Focus after the swap drawer closed, best effort (SPEC §5.4): the partner's
+ * new pill after an apply, else the element that opened the drawer, else the
+ * shift, else its cell.
+ */
+function focusAfterSwapDrawer(
+  closed: SwapOpenTarget,
+  appliedKey: string | null,
+  openedFrom: HTMLElement | null,
+): void {
+  const applied = appliedKey ? findSwapButtonOf(appliedKey) : null;
+  if (applied) {
+    // The grid is still scrolling to it (scrollToTeamAssignment).
+    applied.focus({ preventScroll: true });
+    return;
+  }
+  const cell = closed.kind === "assignment" ? closed.assignment : closed.kind === "slot" ? closed.slot : null;
+  const fallback =
+    (openedFrom?.isConnected ? openedFrom : null) ??
+    (closed.kind === "assignment"
+      ? findSwapButtonOf(assignmentKey(closed.assignment.rowId, closed.assignment.dateISO, closed.assignment.clinicianId))
+      : null) ??
+    (cell ? document.querySelector<HTMLElement>(cellSelector(cell.rowId, cell.dateISO)) : null);
+  fallback?.focus();
+}
+
+/**
+ * Scroll a pill (else its cell) into view beside the open desktop drawer
+ * (SPEC §5.4, Reveal on hover); never changes the week. Below lg the drawer
+ * overlays the grid; from lg on the page keeps the drawer's width free, so a
+ * pill scrolled sideways inside the grid can still end up in that strip.
+ */
+function revealBesideSwapDrawer(key: string): void {
+  // The key's cell part; rowIds may contain "__" (see extractDateFromAssignmentKey).
+  const match = /__(\d{4}-\d{2}-\d{2})__/.exec(key);
+  const element =
+    document.querySelector<HTMLElement>(`[data-assignment-key="${CSS.escape(key)}"]`) ??
+    (match ? document.querySelector<HTMLElement>(cellSelector(key.slice(0, match.index), match[1])) : null);
+  if (!element) return;
+  const rect = element.getBoundingClientRect();
+  const visibleRight = window.innerWidth - SWAP_DRAWER_WIDTH;
+  if (rect.left >= 0 && rect.top >= 0 && rect.right <= visibleRight && rect.bottom <= window.innerHeight) return;
+  const drawerInset = window.innerWidth < 1024 ? SWAP_DRAWER_WIDTH : 0;
+  // scrollIntoView honours scroll margins: the pill stops left of the drawer.
+  element.style.scrollMarginRight = `${drawerInset + 16}px`;
+  element.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  requestAnimationFrame(() => {
+    element.style.scrollMarginRight = "";
+  });
 }
 import { buildICalendar, type ICalEvent } from "../lib/ical";
 import {
@@ -400,6 +491,29 @@ export default function WeeklySchedulePage({
   >(null);
   const [vacationOverviewOpen, setVacationOverviewOpen] = useState(false);
   const [workingHoursOverviewOpen, setWorkingHoursOverviewOpen] = useState(false);
+  // Swap assistant (SPEC §5.4). The drawer draws the preview outline itself,
+  // so hovering a result never re-renders the page.
+  const [swapTarget, setSwapTarget] = useState<SwapOpenTarget | null>(null);
+  const [swapHistoryToken, setSwapHistoryToken] = useState(0);
+  const swapReturnFocusRef = useRef<HTMLElement | null>(null);
+  /** The partner's new pill after an apply: focused once the drawer has closed. */
+  const swapFocusKeyRef = useRef<string | null>(null);
+  const { toast: pageToast, show: notify, dismiss: dismissPageToast } = useToast();
+  // Stable: the pill memo keeps the first closures it sees.
+  const openSwapForAssignment = useCallback((assignment: SwapAssignmentRef) => {
+    swapReturnFocusRef.current = activeElementOrNull();
+    setSwapTarget({ kind: "assignment", assignment });
+  }, []);
+  const openSwapForSlot = useCallback((slot: SwapSlotRef) => {
+    swapReturnFocusRef.current = activeElementOrNull();
+    setSwapTarget({ kind: "slot", slot });
+    scrollToGridCell(slot.rowId, slot.dateISO);
+  }, []);
+  const openSwapHistory = useCallback(() => {
+    swapReturnFocusRef.current = activeElementOrNull();
+    setSwapTarget({ kind: "history" });
+  }, []);
+  const closeSwap = useCallback(() => setSwapTarget(null), []);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [calendarTransition, setCalendarTransition] = useState(false);
@@ -1118,6 +1232,8 @@ export default function WeeklySchedulePage({
   };
 
   const openClinicianEditor = (clinicianId: string, section?: "vacations") => {
+    // The editor modal (z-50) would open below the drawer.
+    closeSwap();
     setEditingClinicianSection(section ?? null);
     setEditingClinicianId(clinicianId);
   };
@@ -1396,6 +1512,7 @@ export default function WeeklySchedulePage({
   };
 
   const handleApplyRun = async (runId: string) => {
+    closeSwap();
     if (calendarTransitionRef.current) return;
     pauseCalendarSaving();
     try {
@@ -2510,6 +2627,9 @@ export default function WeeklySchedulePage({
     if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
     setPublishedWeekStartISOs(normalized.publishedWeekStartISOs ?? []);
   };
+  // For the swap callbacks, which keep one identity for the page's lifetime.
+  const hydrateStateSlicesRef = useRef(hydrateStateSlices);
+  hydrateStateSlicesRef.current = hydrateStateSlices;
 
   useEffect(() => {
     let alive = true;
@@ -2620,6 +2740,8 @@ export default function WeeklySchedulePage({
     }
     return buildStatePayload(assignments);
   };
+  const buildCurrentStatePayloadRef = useRef(buildCurrentStatePayload);
+  buildCurrentStatePayloadRef.current = buildCurrentStatePayload;
 
   const handleSaveSnapshot = async (name: string) => {
     const payload = buildCurrentStatePayload();
@@ -2633,6 +2755,7 @@ export default function WeeklySchedulePage({
 
   // Flush pending edits and pause autosave while replacing calendar state.
   const handleRestoreSnapshot = async (snapshotId: string) => {
+    closeSwap();
     pauseCalendarSaving();
     try {
       let saved: AppState | null = null;
@@ -2655,17 +2778,46 @@ export default function WeeklySchedulePage({
     }
   };
 
+  // Whether the server holds what the screen shows, without a save per swap
+  // search: a generation per change of a saved slice, and the newest one
+  // known saved. Declared right before the autosave effect, so in one commit
+  // the bump runs first and the autosave captures the bumped generation.
+  const editGenRef = useRef(0);
+  const savedGenRef = useRef(-1);
+  useEffect(() => {
+    editGenRef.current += 1;
+  }, [
+    locations,
+    locationsEnabled,
+    rows,
+    clinicians,
+    assignmentMap,
+    minSlotsByRowId,
+    slotOverridesByKey,
+    holidays,
+    holidayCountry,
+    holidayYear,
+    publishedWeekStartISOs,
+    solverSettings,
+    weeklyTemplate,
+  ]);
+
   useEffect(() => {
     if (!hasLoaded || loadedUserId !== currentUser.username || calendarTransitionRef.current || saveError) return;
+    const gen = editGenRef.current;
     // Build (normalize) the payload only when the debounce fires, not on
     // every key press; the closure still holds this render's state.
     const handle = window.setTimeout(() => {
       if (calendarTransitionRef.current) return;
       const normalized = buildCurrentStatePayload();
       if (!normalized) return;
-      saveState(normalized).catch((err) => {
-        setSaveError(err instanceof Error ? err.message : "Changes could not be saved.");
-      });
+      saveState(normalized)
+        .then(() => {
+          savedGenRef.current = Math.max(savedGenRef.current, gen);
+        })
+        .catch((err) => {
+          setSaveError(err instanceof Error ? err.message : "Changes could not be saved.");
+        });
     }, 500);
     saveTimerRef.current = handle;
     return () => window.clearTimeout(handle);
@@ -2690,6 +2842,148 @@ export default function WeeklySchedulePage({
     calendarTransition,
     saveError,
   ]);
+
+  // Swap assistant: saving, searching, applying and undoing (SPEC §5.4,
+  // §5.7). Every callback the drawer gets keeps one identity for the page's
+  // lifetime, so a page re-render never re-runs a search (which may save).
+  const ensureSavedForSwap = useCallback(async (): Promise<AppState> => {
+    const gen = editGenRef.current;
+    const current = buildCurrentStatePayloadRef.current();
+    if (!current) throw new Error("The current calendar cannot be saved. Fix its template first.");
+    try {
+      // Flushes queued edits and returns the saved revision.
+      const saved = await saveState(current);
+      savedGenRef.current = Math.max(savedGenRef.current, gen);
+      return saved;
+    } catch (err) {
+      // The banner offers Retry saving / Reload. A search does not pause
+      // saving, so the autosave effect would never run again to show it.
+      setSaveError(errorText(err, "Changes could not be saved."));
+      throw err;
+    }
+  }, []);
+  const syncForSearch = useCallback(async (): Promise<{ revision: string | null; gen: number }> => {
+    const gen = editGenRef.current;
+    if (savedGenRef.current !== gen) return { revision: (await ensureSavedForSwap()).revision ?? null, gen };
+    try {
+      // A queued autosave lands first.
+      await flushStateSaves();
+    } catch (err) {
+      setSaveError(errorText(err, "Changes could not be saved."));
+      throw err;
+    }
+    return { revision: savedStateRevision() ?? null, gen };
+  }, [ensureSavedForSwap]);
+  const reloadCalendarFromServer = useCallback(async () => {
+    hydrateStateSlicesRef.current(normalizeAppState(await getState()).state);
+    setSaveError(null);
+  }, []);
+  const reloadForSearchIfUnchanged = useCallback(
+    async (gen: number): Promise<boolean> => {
+      // Only when nothing was edited since the search synced and no other
+      // calendar operation runs. Paused, so the autosave cannot race the
+      // hydrate and the grid is not edited meanwhile.
+      if (calendarTransitionRef.current || editGenRef.current !== gen) return false;
+      pauseCalendarSaving();
+      try {
+        await reloadCalendarFromServer();
+        return true;
+      } catch {
+        return false;
+      } finally {
+        resumeCalendarSaving();
+      }
+    },
+    [reloadCalendarFromServer],
+  );
+  const searchSwaps = useCallback(
+    (request: SwapCandidatesRequest) =>
+      runSwapSearch(
+        { sync: syncForSearch, find: findSwapCandidates, reloadIfUnchanged: reloadForSearchIfUnchanged },
+        request,
+      ),
+    [syncForSearch, reloadForSearchIfUnchanged],
+  );
+
+  // Apply and undo always save the screen first, whatever the generation says.
+  const swapFlowDeps = (): SwapFlowDeps => ({
+    isBusy: () => calendarTransitionRef.current,
+    pause: pauseCalendarSaving,
+    resume: resumeCalendarSaving,
+    ensureSaved: ensureSavedForSwap,
+    reload: reloadCalendarFromServer,
+    hydrate: (state) => {
+      hydrateStateSlices(normalizeAppState(state).state);
+      setSaveError(null);
+    },
+    apply: applySwap,
+    undo: undoSwap,
+  });
+  /** Rejects with the SwapApiError or Error that the drawer shows. */
+  const handleApplySwap = async (request: SwapApplyRequest) => {
+    const result = await runSwapApply(swapFlowDeps(), request);
+    // A cover's give[0] is the slot instance: B's new pill there, too.
+    const first = result.swap.give[0];
+    swapFocusKeyRef.current = first ? assignmentKey(first.rowId, first.dateISO, result.swap.partnerId) : null;
+    closeSwap();
+    setSwapHistoryToken((token) => token + 1);
+    notify(swapToastMessage(result.swap), {
+      label: "Undo",
+      onAction: () => {
+        void onUndoSwap(result.swap.id).catch((err) => notify(errorText(err, "Undo failed.")));
+      },
+    });
+    if (first) {
+      setAnchorDate(parseISODate(first.dateISO));
+      scrollToTeamAssignment({ rowId: first.rowId, dateISO: first.dateISO, clinicianId: result.swap.partnerId });
+    }
+  };
+  const handleUndoSwap = async (swapId: string) => {
+    const result = await runSwapUndo(swapFlowDeps(), swapId);
+    setSwapHistoryToken((token) => token + 1);
+    notify(undoToastMessage(result.swap));
+  };
+  const swapHandlersRef = useRef({ handleApplySwap, handleUndoSwap });
+  swapHandlersRef.current = { handleApplySwap, handleUndoSwap };
+  const onApplySwap = useCallback(
+    (request: SwapApplyRequest) => swapHandlersRef.current.handleApplySwap(request),
+    [],
+  );
+  const onUndoSwap = useCallback((swapId: string) => swapHandlersRef.current.handleUndoSwap(swapId), []);
+  const loadSwapHistory = useCallback(async () => (await listSwapHistory()).swaps, []);
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+  const revealSwapKey = useCallback((key: string) => {
+    // The phone sheet covers the whole page: nothing can show beside it.
+    if (!isMobileRef.current) revealBesideSwapDrawer(key);
+  }, []);
+  // A new token whenever a slice changes that can change a verdict, an open
+  // count or a hidden-removal requirement: the drawer then offers Refresh.
+  const swapPlanToken = useMemo(
+    () => ({}),
+    [assignmentMap, clinicians, weeklyTemplate, holidays, solverSettings, slotOverridesByKey, rows, minSlotsByRowId],
+  );
+
+  // The drawer belongs to the team plan; week navigation keeps it open.
+  useEffect(() => {
+    if (planScope === "me" || viewMode !== "calendar") closeSwap();
+  }, [planScope, viewMode, closeSwap]);
+
+  // Focus after the drawer closed, once the (possibly hydrated) grid has
+  // rendered. Only when focus went down with the drawer: an element that
+  // took it meanwhile (a clicked button, an opened modal) keeps it.
+  const shownSwapTargetRef = useRef<SwapOpenTarget | null>(null);
+  useEffect(() => {
+    const closed = shownSwapTargetRef.current;
+    shownSwapTargetRef.current = swapTarget;
+    if (swapTarget || !closed) return;
+    const appliedKey = swapFocusKeyRef.current;
+    swapFocusKeyRef.current = null;
+    const frame = requestAnimationFrame(() => {
+      if (!activeElementOrNull()) focusAfterSwapDrawer(closed, appliedKey, swapReturnFocusRef.current);
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [swapTarget]);
 
   useEffect(() => {
     if (templateSectionIds.size === 0) return;
@@ -3277,6 +3571,15 @@ export default function WeeklySchedulePage({
     setPlanScope("team");
     scrollToTeamAssignment(target);
   };
+  // "Find swap" from a My-plan shift: the drawer opens over the team plan at
+  // that date. The detail's button goes away with My plan, so focus later
+  // returns to the shift's pill in the grid.
+  const handleFindSwapFromPlan = (ref: SwapAssignmentRef) => {
+    swapReturnFocusRef.current = null;
+    setAnchorDate(parseISODate(ref.dateISO));
+    setPlanScope("team");
+    setSwapTarget({ kind: "assignment", assignment: ref });
+  };
   // Saved views from the team header open at their relative start (SPEC R17).
   const applySavedView = (view: ViewConfig) => {
     applyView(view);
@@ -3297,8 +3600,17 @@ export default function WeeklySchedulePage({
     me: linkedClinician ? { name: linkedClinician.name, index: linkedClinicianIndex } : null,
   };
 
+  const swapHistoryOpen = swapTarget?.kind === "history";
+  const desktopSwapDrawerOpen = swapTarget !== null && !isMobile;
+
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-950">
+    <div
+      className={cx(
+        "min-h-screen bg-slate-50 dark:bg-slate-950",
+        // Wide screens make room for the drawer; below lg it overlays the grid.
+        desktopSwapDrawerOpen && "transition-[padding] duration-150 lg:pr-[440px]",
+      )}
+    >
       <TopBar
         viewMode={viewMode}
         onSetViewMode={setViewMode}
@@ -3307,11 +3619,20 @@ export default function WeeklySchedulePage({
         theme={theme}
         onToggleTheme={onToggleTheme}
         snapshotSlot={
-          <SnapshotPopover
-            onSaveSnapshot={handleSaveSnapshot}
-            onRestoreSnapshot={handleRestoreSnapshot}
-            restoreDisabled={autoPlanRunning}
-          />
+          <>
+            {/* History is the only way to undo after the toast: reachable without a shift. */}
+            {viewMode === "calendar" && planScope === "team" ? (
+              <SwapHistoryButton
+                pressed={swapHistoryOpen}
+                onClick={swapHistoryOpen ? closeSwap : openSwapHistory}
+              />
+            ) : null}
+            <SnapshotPopover
+              onSaveSnapshot={handleSaveSnapshot}
+              onRestoreSnapshot={handleRestoreSnapshot}
+              restoreDisabled={autoPlanRunning}
+            />
+          </>
         }
       />
 
@@ -3411,6 +3732,7 @@ export default function WeeklySchedulePage({
               currentScope={planScope}
               onScopeChange={setPlanScope}
               onShowInTeam={handleShowInTeam}
+              onFindSwap={handleFindSwapFromPlan}
             />
           ) : isClinicSheet && clinicSheetModel ? (
             <ClinicSheetGrid
@@ -3466,6 +3788,8 @@ export default function WeeklySchedulePage({
               onRemoveAssignment={handleRemoveAssignment}
               onToggleAssignmentLock={handleToggleAssignmentLock}
               onMoveWithinDay={handleMoveWithinDay}
+              onFindSwap={openSwapForAssignment}
+              onFindCover={openSwapForSlot}
             />
           ) : (
           <ScheduleGrid
@@ -3551,6 +3875,8 @@ export default function WeeklySchedulePage({
             personPillStyles={personPillStyles}
             myClinicianId={outlinedClinicianId}
             locationRowTints={locationRowTints}
+            onFindSwap={openSwapForAssignment}
+            onFindCover={openSwapForSlot}
           />
           )}
           {/* Planning panels belong to the team plan: hidden (but kept
@@ -3966,6 +4292,27 @@ export default function WeeklySchedulePage({
         onWebUnpublish={handleWebUnpublish}
       />
 
+      {swapTarget && viewMode === "calendar" ? (
+        <SwapAssistantDrawer
+          key={swapTargetKey(swapTarget)}
+          target={swapTarget}
+          clinicians={clinicians}
+          isMobile={isMobile}
+          isDark={isDark}
+          publishedWeekStartISOs={publishedWeekStartISOs}
+          planToken={swapPlanToken}
+          historyToken={swapHistoryToken}
+          onSearch={searchSwaps}
+          onApply={onApplySwap}
+          onUndo={onUndoSwap}
+          onLoadHistory={loadSwapHistory}
+          onRevealKey={revealSwapKey}
+          onClose={closeSwap}
+        />
+      ) : null}
+      {/* Above the drawer (z-[80]): the Undo of an apply must stay reachable. */}
+      <Toast toast={pageToast} onDismiss={dismissPageToast} isMobile={isMobile} layerClassName="z-[90]" />
+
       {solverNotice ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/20 dark:bg-black/40"
@@ -4051,7 +4398,11 @@ export default function WeeklySchedulePage({
           type="button"
           onClick={() => setAutoPlanMinimized(false)}
           title="A solver run is working in the background - click to watch it."
-          className="fixed bottom-4 right-4 z-50 flex items-center gap-2 rounded-full border border-sky-300 bg-white px-4 py-2 text-sm font-medium text-sky-700 shadow-lg hover:bg-sky-50 dark:border-sky-700 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-slate-800"
+          className={cx(
+            "fixed bottom-4 z-50 flex items-center gap-2 rounded-full border border-sky-300 bg-white px-4 py-2 text-sm font-medium text-sky-700 shadow-lg hover:bg-sky-50 dark:border-sky-700 dark:bg-slate-900 dark:text-sky-300 dark:hover:bg-slate-800",
+            // Left of the swap drawer (z-[80]), which would cover it.
+            desktopSwapDrawerOpen ? "right-[456px]" : "right-4",
+          )}
         >
           <span className="relative flex h-2.5 w-2.5">
             <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-sky-400 opacity-75" />

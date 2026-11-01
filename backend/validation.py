@@ -57,7 +57,8 @@ capacity, and the invariant that matters is "no NEW violations".
 Design notes
 ------------
 - Pure functions, no I/O. Bounded memoization of date/time parsing only;
-  state-dependent rules are read afresh on every call.
+  state-dependent rules are read afresh on every call, unless the caller
+  passes a :class:`ValidationContext` built for that same state object.
 - Does NOT import from ``solver.py`` to avoid a circular dependency with the
   subprocess-spawning code in that module. The small helpers (time parsing,
   slot-interval construction) are duplicated with a comment noting the source.
@@ -70,7 +71,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
 from .constants import (
     DEFAULT_LOCATION_ID,
@@ -317,6 +318,73 @@ def _resolve_settings(
     return SolverSettings.model_validate(state.solverSettings or {})
 
 
+@dataclass(frozen=True, eq=False)
+class ValidationContext:
+    """Template and roster lookups of ONE AppState object, built once per request
+    and passed to many validate_* calls on assignment lists of that same state.
+    Never cached across requests or states."""
+
+    state: AppState
+    settings: SolverSettings
+    slot_lookup: Dict[str, Tuple[int, int, str]]
+    slot_sections: Dict[str, str]
+    slot_day_types: Dict[str, str]
+    slot_by_id: Dict[str, Any]
+    class_section_ids: FrozenSet[str]
+    clinicians_by_id: Dict[str, Clinician]
+    holiday_dates: FrozenSet[str]
+    solver_rules: Tuple[SolverRule, ...]
+
+
+def _build_slot_by_id(state: AppState) -> Dict[str, Any]:
+    """slot_id → template slot, for every slot (with or without valid times)."""
+    slot_by_id: Dict[str, Any] = {}
+    template = state.weeklyTemplate
+    if template is not None:
+        for template_location in template.locations:
+            for slot in template_location.slots:
+                slot_by_id[slot.id] = slot
+    return slot_by_id
+
+
+def build_validation_context(state: AppState) -> ValidationContext:
+    return ValidationContext(
+        state=state,
+        settings=_resolve_settings(state, None),
+        slot_lookup=_build_slot_lookup(state),
+        slot_sections=_build_slot_section_map(state),
+        slot_day_types=_build_slot_day_type_map(state),
+        slot_by_id=_build_slot_by_id(state),
+        class_section_ids=frozenset(row.id for row in state.rows if row.kind == "class"),
+        clinicians_by_id={c.id: c for c in state.clinicians},
+        holiday_dates=frozenset(h.dateISO for h in state.holidays or []),
+        solver_rules=tuple(_parse_solver_rules(state)),
+    )
+
+
+def _checked(state: AppState, context: Optional[ValidationContext]) -> Optional[ValidationContext]:
+    if context is not None and context.state is not state:
+        raise ValueError("ValidationContext was built for another AppState")
+    return context
+
+
+def _day_type_with(date_iso: str, state: AppState, context: Optional[ValidationContext]) -> str:
+    if context is None:
+        return _day_type(date_iso, state)
+    return "holiday" if date_iso in context.holiday_dates else _weekday_key(date_iso)
+
+
+def _settings_with(
+    state: AppState,
+    solver_settings: Optional[SolverSettings],
+    context: Optional[ValidationContext],
+) -> SolverSettings:
+    """Explicit settings win over the context's, which equal the state's own."""
+    if solver_settings is None and context is not None:
+        return context.settings
+    return _resolve_settings(state, solver_settings)
+
+
 # ---------------------------------------------------------------------------
 # Individual validators
 # ---------------------------------------------------------------------------
@@ -325,17 +393,28 @@ def _resolve_settings(
 def validate_references(
     state: AppState,
     assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Clinician and active slot references must resolve in the state.
 
     Pool rows (``pool-*``) are allowed without a matching template slot: they
     are virtual rows for Rest Day / Vacation tracking, not schedulable slots.
     """
-    clinician_ids = {c.id for c in state.clinicians}
-    slot_lookup = _build_slot_lookup(state)
-    slot_sections = _build_slot_section_map(state)
-    section_ids = {row.id for row in state.rows if row.kind == "class"}
-    slot_day_types = _build_slot_day_type_map(state)
+    context = _checked(state, context)
+    clinician_ids = (
+        context.clinicians_by_id.keys() if context is not None else {c.id for c in state.clinicians}
+    )
+    slot_lookup = context.slot_lookup if context is not None else _build_slot_lookup(state)
+    slot_sections = context.slot_sections if context is not None else _build_slot_section_map(state)
+    section_ids = (
+        context.class_section_ids
+        if context is not None
+        else {row.id for row in state.rows if row.kind == "class"}
+    )
+    slot_day_types = (
+        context.slot_day_types if context is not None else _build_slot_day_type_map(state)
+    )
     day_types: Dict[str, str] = {}
     out: List[Violation] = []
     for a in assignments:
@@ -360,7 +439,7 @@ def validate_references(
             reason = "unresolved_column"
         else:
             if a.dateISO not in day_types:
-                day_types[a.dateISO] = _day_type(a.dateISO, state)
+                day_types[a.dateISO] = _day_type_with(a.dateISO, state, context)
             if slot_day_types[a.rowId] != day_types[a.dateISO]:
                 reason = "inactive_day_type"
         if reason is not None:
@@ -380,10 +459,15 @@ def validate_references(
 def validate_qualifications(
     state: AppState,
     assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Each non-pool assignment's section must be in the clinician's qualified list."""
-    clinicians_by_id = {c.id: c for c in state.clinicians}
-    slot_section = _build_slot_section_map(state)
+    context = _checked(state, context)
+    clinicians_by_id = (
+        context.clinicians_by_id if context is not None else {c.id: c for c in state.clinicians}
+    )
+    slot_section = context.slot_sections if context is not None else _build_slot_section_map(state)
     out: List[Violation] = []
     for a in assignments:
         if a.rowId.startswith("pool-"):
@@ -414,13 +498,18 @@ def validate_qualifications(
 def validate_vacations(
     state: AppState,
     assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Clinicians on vacation cannot hold slot assignments on those dates.
 
     Pool rows are exempt: ``pool-vacation`` is the normal way vacation is
     recorded, so flagging those would be circular.
     """
-    clinicians_by_id = {c.id: c for c in state.clinicians}
+    context = _checked(state, context)
+    clinicians_by_id = (
+        context.clinicians_by_id if context is not None else {c.id: c for c in state.clinicians}
+    )
     out: List[Violation] = []
     for a in assignments:
         if a.rowId.startswith("pool-"):
@@ -447,6 +536,8 @@ def validate_vacations(
 def validate_overlaps(
     state: AppState,
     assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """No overlapping time intervals per clinician.
 
@@ -458,7 +549,8 @@ def validate_overlaps(
     assignments on the same clinician you'll see N-1 violations (consecutive
     sorted pairs), which is enough feedback for a fix loop without spamming.
     """
-    slot_intervals = _build_slot_lookup(state)
+    context = _checked(state, context)
+    slot_intervals = context.slot_lookup if context is not None else _build_slot_lookup(state)
     by_clinician: Dict[str, List[Assignment]] = {}
     for a in assignments:
         if a.rowId.startswith("pool-"):
@@ -518,12 +610,15 @@ def validate_same_location_per_day(
     state: AppState,
     assignments: List[Assignment],
     solver_settings: Optional[SolverSettings] = None,
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """When ``enforceSameLocationPerDay`` is on, a clinician's same-day slots must share a location."""
-    settings = _resolve_settings(state, solver_settings)
+    context = _checked(state, context)
+    settings = _settings_with(state, solver_settings, context)
     if not settings.enforceSameLocationPerDay:
         return []
-    slot_intervals = _build_slot_lookup(state)
+    slot_intervals = context.slot_lookup if context is not None else _build_slot_lookup(state)
     by_key: Dict[Tuple[str, str], Set[str]] = {}
     first_seen: Dict[Tuple[str, str], Assignment] = {}
     for a in assignments:
@@ -562,6 +657,8 @@ def validate_on_call_rest(
     state: AppState,
     assignments: List[Assignment],
     solver_settings: Optional[SolverSettings] = None,
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Enforce rest days before/after on-call shifts.
 
@@ -575,7 +672,8 @@ def validate_on_call_rest(
     (solver.py, _add_on_call_rest_constraints), so back-to-back on-call is a
     violation there too.
     """
-    settings = _resolve_settings(state, solver_settings)
+    context = _checked(state, context)
+    settings = _settings_with(state, solver_settings, context)
     if not settings.onCallRestEnabled:
         return []
     rest_before = max(0, settings.onCallRestDaysBefore or 0)
@@ -584,7 +682,7 @@ def validate_on_call_rest(
         return []
     if settings.onCallRestClassId is None:
         return []
-    slot_section = _build_slot_section_map(state)
+    slot_section = context.slot_sections if context is not None else _build_slot_section_map(state)
     on_call_slot_ids: Set[str] = {
         sid for sid, sec in slot_section.items() if sec == settings.onCallRestClassId
     }
@@ -641,6 +739,8 @@ def validate_on_call_rest(
 def validate_mandatory_windows(
     state: AppState,
     assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Slots must fit entirely inside a clinician's *mandatory* working window.
 
@@ -649,8 +749,11 @@ def validate_mandatory_windows(
     overnight slot can never fit a same-day window (its absolute end exceeds
     24:00), matching the CP-SAT solver which excludes such variables outright.
     """
-    clinicians_by_id = {c.id: c for c in state.clinicians}
-    slot_intervals = _build_slot_lookup(state)
+    context = _checked(state, context)
+    clinicians_by_id = (
+        context.clinicians_by_id if context is not None else {c.id: c for c in state.clinicians}
+    )
+    slot_intervals = context.slot_lookup if context is not None else _build_slot_lookup(state)
     # This cache lasts ONE validation call; changed clinician windows are
     # always read again on the next proposal, including the acceptance gate.
     windows = {}
@@ -694,6 +797,8 @@ def validate_mandatory_windows(
 def validate_weekly_hours(
     state: AppState,
     assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Per ISO week, assigned hours must not exceed contract + tolerance.
 
@@ -702,8 +807,11 @@ def validate_weekly_hours(
     computed from the assignments *passed in* — the caller controls the scope.
     One violation per (clinician, ISO week).
     """
-    clinicians_by_id = {c.id: c for c in state.clinicians}
-    slot_intervals = _build_slot_lookup(state)
+    context = _checked(state, context)
+    clinicians_by_id = (
+        context.clinicians_by_id if context is not None else {c.id: c for c in state.clinicians}
+    )
+    slot_intervals = context.slot_lookup if context is not None else _build_slot_lookup(state)
     minutes_by_week: Dict[Tuple[str, Tuple[int, int]], int] = {}
     first_date_by_week: Dict[Tuple[str, Tuple[int, int]], str] = {}
     for a in assignments:
@@ -758,6 +866,8 @@ def validate_split_shifts(
     state: AppState,
     assignments: List[Assignment],
     solver_settings: Optional[SolverSettings] = None,
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """When ``preferContinuousShifts`` is on, a clinician's same-day slots must
     merge into ONE contiguous time block (adjacent slots count as contiguous).
@@ -766,10 +876,11 @@ def validate_split_shifts(
     tolerate pre-existing manual splits should diff against a baseline report
     rather than expecting zero violations.
     """
-    settings = _resolve_settings(state, solver_settings)
+    context = _checked(state, context)
+    settings = _settings_with(state, solver_settings, context)
     if not settings.preferContinuousShifts:
         return []
-    slot_intervals = _build_slot_lookup(state)
+    slot_intervals = context.slot_lookup if context is not None else _build_slot_lookup(state)
     by_key: Dict[Tuple[str, str], List[Tuple[int, int, str]]] = {}
     for a in assignments:
         if a.rowId.startswith("pool-"):
@@ -815,6 +926,7 @@ def validate_capacity(
     assignments: List[Assignment],
     *,
     only_fill_required: bool = False,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Per slot instance ``(slot_id, date)``, the assignment count must not
     exceed capacity.
@@ -826,13 +938,11 @@ def validate_capacity(
     slot day type does not match the date's day type are skipped — the solver
     never schedules those, and stray data there is a reference-level concern.
     """
-    slot_by_id: Dict[str, Any] = {}
-    template = state.weeklyTemplate
-    if template is not None:
-        for template_location in template.locations:
-            for slot in template_location.slots:
-                slot_by_id[slot.id] = slot
-    slot_day_type = _build_slot_day_type_map(state)
+    context = _checked(state, context)
+    slot_by_id = context.slot_by_id if context is not None else _build_slot_by_id(state)
+    slot_day_type = (
+        context.slot_day_types if context is not None else _build_slot_day_type_map(state)
+    )
 
     counts: Dict[Tuple[str, str], int] = {}
     for a in assignments:
@@ -845,7 +955,9 @@ def validate_capacity(
 
     # A day can occur in many slot instances. Recompute holiday-dependent
     # types once per date on every validation, never cache them across states.
-    day_types = {day: _day_type(day, state) for day in {date_iso for _, date_iso in counts}}
+    day_types = {
+        day: _day_type_with(day, state, context) for day in {date_iso for _, date_iso in counts}
+    }
     out: List[Violation] = []
     for (slot_id, date_iso), count in counts.items():
         if slot_day_type.get(slot_id) != day_types[date_iso]:
@@ -879,6 +991,8 @@ def validate_capacity(
 def validate_solver_rules(
     state: AppState,
     assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
 ) -> List[Violation]:
     """Check the if/then ``SolverRule`` entries (``state.solverRules``).
 
@@ -891,7 +1005,8 @@ def validate_solver_rules(
     rules, so existing plans may violate them freely. Callers should treat
     the result as soft feedback.
     """
-    rules = _parse_solver_rules(state)
+    context = _checked(state, context)
+    rules = context.solver_rules if context is not None else _parse_solver_rules(state)
     if not rules:
         return []
     slots_by_clinician_date: Dict[Tuple[str, str], Set[str]] = {}
@@ -958,6 +1073,7 @@ def validate_assignments(
     *,
     skip_references: bool = False,
     only_fill_required: bool = False,
+    context: Optional[ValidationContext] = None,
 ) -> ValidationReport:
     """Run every hard-constraint validator and collect results.
 
@@ -982,6 +1098,10 @@ def validate_assignments(
         Capacity semantics: when ``True``, slot instances cap at their target
         (required + override); when ``False`` (distribute-all), targeted slots
         get the solver's extra-assignment headroom.
+    context:
+        Precomputed lookups of ``state`` (:func:`build_validation_context`) for
+        callers that validate many assignment lists of the same state. The
+        result is identical with or without it.
 
     Returns
     -------
@@ -992,22 +1112,30 @@ def validate_assignments(
     """
     report = ValidationReport()
     if not skip_references:
-        report.extend(validate_references(state, assignments))
-    report.extend(validate_qualifications(state, assignments))
-    report.extend(validate_vacations(state, assignments))
-    report.extend(validate_overlaps(state, assignments))
-    report.extend(validate_same_location_per_day(state, assignments, solver_settings))
-    report.extend(validate_on_call_rest(state, assignments, solver_settings))
-    report.extend(validate_mandatory_windows(state, assignments))
-    report.extend(validate_weekly_hours(state, assignments))
-    report.extend(validate_split_shifts(state, assignments, solver_settings))
-    report.extend(validate_capacity(state, assignments, only_fill_required=only_fill_required))
+        report.extend(validate_references(state, assignments, context=context))
+    report.extend(validate_qualifications(state, assignments, context=context))
+    report.extend(validate_vacations(state, assignments, context=context))
+    report.extend(validate_overlaps(state, assignments, context=context))
+    report.extend(
+        validate_same_location_per_day(state, assignments, solver_settings, context=context)
+    )
+    report.extend(validate_on_call_rest(state, assignments, solver_settings, context=context))
+    report.extend(validate_mandatory_windows(state, assignments, context=context))
+    report.extend(validate_weekly_hours(state, assignments, context=context))
+    report.extend(validate_split_shifts(state, assignments, solver_settings, context=context))
+    report.extend(
+        validate_capacity(
+            state, assignments, only_fill_required=only_fill_required, context=context
+        )
+    )
     return report
 
 
 __all__ = [
     "Violation",
     "ValidationReport",
+    "ValidationContext",
+    "build_validation_context",
     "VIOLATION_QUALIFICATION",
     "VIOLATION_VACATION",
     "VIOLATION_OVERLAP",

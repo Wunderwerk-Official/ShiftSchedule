@@ -19,3 +19,12 @@ it("describes the current planning panel and drop rules", () => {
   expect(text).not.toContain("not responding");
   expect(screen.getByRole("heading", { name: "12. My plan" })).toBeVisible();
 });
+
+it("explains Find a swap: the S key and Undo (v1.71)", () => {
+  const { container } = render(<HelpView />);
+  expect(screen.getByRole("heading", { name: "13. Find a swap" })).toBeVisible();
+  const text = container.textContent ?? "";
+  expect(text).toMatch(/press S while its\s+lock or ⇄ button has focus/);
+  expect(text).toMatch(/Undo is in the toast for 10 seconds and later\s+under Swap history/);
+  expect(text).toMatch(/inside 48 h before the start also tick the notice override/);
+});

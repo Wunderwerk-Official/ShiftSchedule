@@ -102,6 +102,47 @@
   mask-image: none !important;
 }
 
+/* "Find swap" (⇄) of a pill or clinic sheet name: revealed like the open
+   lock, always directly left of the lock. The name fades under both buttons
+   (an unlocked name: 36→48 px of its row; a locked name, whose row ends at
+   the in-row lock: 18→30 px). Touch screens always show it and keep room
+   for it in the components, so nothing fades there. */
+.pill-swap-reveal {
+  opacity: 0;
+}
+:is([data-assignment-pill], [data-sheet-name]):hover .pill-swap-reveal,
+:is([data-assignment-pill], [data-sheet-name]):focus-within .pill-swap-reveal {
+  opacity: 0.6;
+}
+:is([data-assignment-pill], [data-sheet-name]) .pill-swap-reveal:hover,
+:is([data-assignment-pill], [data-sheet-name]) .pill-swap-reveal:focus-visible {
+  opacity: 1;
+}
+@media (hover: hover) {
+  :is([data-assignment-pill], [data-sheet-name]):hover .pill-swap-fade,
+  :is([data-assignment-pill], [data-sheet-name]):focus-within .pill-swap-fade {
+    -webkit-mask-image: linear-gradient(to left, transparent 36px, #000 48px);
+    mask-image: linear-gradient(to left, transparent 36px, #000 48px);
+  }
+  :is([data-assignment-pill], [data-sheet-name]):hover .pill-swap-fade-inrow,
+  :is([data-assignment-pill], [data-sheet-name]):focus-within .pill-swap-fade-inrow {
+    -webkit-mask-image: linear-gradient(to left, transparent 18px, #000 30px);
+    mask-image: linear-gradient(to left, transparent 18px, #000 30px);
+  }
+}
+@media (hover: none) {
+  .pill-swap-reveal {
+    opacity: 0.6;
+  }
+}
+[data-pill-drag-preview="true"] .pill-swap-reveal {
+  opacity: 0 !important;
+}
+[data-pill-drag-preview="true"] :is(.pill-swap-fade, .pill-swap-fade-inrow) {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+
 /* "Times: Stacked" team grid: section colors as light tints (the section
    look's cells, every lane label). The color comes in as --section-color. */
 /* Browsers without color-mix() keep the plain section color. (A fallback

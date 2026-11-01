@@ -9,6 +9,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - Compact team week: a day's times stacked as rows ("Times: Stacked", default; colored row labels, cells with people only) or side by side as columns
 - Person colors in the team week (every clinician their own color, your own entries outlined) and optional location colors (presentation only; planning is unaffected)
 - One lock for every shift: names you place or move by hand are locked, the planner's start unlocked; locked shifts survive replanning, applying a plan and Reset
+- Swap assistant for the rota planner: Find swap / Hand over / Find cover with server-side rule checks (no new violations, working-time warnings for rest, nights and long stretches), a preview with both people's weekly hours, consent and notice override, a one-step apply that locks the swapped shifts and writes the change log, and Undo (toast and history)
 - A planning view that shows the day being planned, the agent's current step and the best plan so far, with the activity log on request
 - Rest-day and vacation pools
 - Required staffing per weekly-template slot (set per weekday and for holidays) and per-day overrides

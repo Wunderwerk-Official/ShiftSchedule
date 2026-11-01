@@ -28,7 +28,8 @@ export type PlanIconName =
   | "search"
   | "rest"
   | "continue"
-  | "layers";
+  | "layers"
+  | "swap";
 
 const PATHS: Record<PlanIconName, (filled: boolean) => ReactNode> = {
   users: () => (
@@ -137,6 +138,13 @@ const PATHS: Record<PlanIconName, (filled: boolean) => ReactNode> = {
     <>
       <path d="M12 3 3 8l9 5 9-5-9-5z" />
       <path d="M3 13l9 5 9-5" />
+    </>
+  ),
+  /** "⇄" Find swap. */
+  swap: () => (
+    <>
+      <path d="M4 8h14M15 5l3 3-3 3" />
+      <path d="M20 16H6M9 13l-3 3 3 3" />
     </>
   ),
 };

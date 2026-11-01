@@ -3,6 +3,7 @@ import { useState } from "react";
 import { afterEach, beforeEach, vi } from "vitest";
 import type { PlanScope, UserPreferences } from "../../api/client";
 import { makeSource } from "../../lib/myPlan/testFixtures";
+import type { SwapAssignmentRef } from "../../lib/swaps/types";
 import { normalizePreferences, type PreferencesUpdate } from "../../lib/userPreferences";
 import MyPlanView from "./MyPlanView";
 import type { TeamPlanTarget } from "./types";
@@ -43,6 +44,7 @@ export function renderPlan({
   const onUpdatePrefs = vi.fn<(update: PreferencesUpdate) => void>();
   const onScopeChange = vi.fn<(scope: PlanScope) => void>();
   const onShowInTeam = vi.fn<(target: TeamPlanTarget) => void>();
+  const onFindSwap = vi.fn<(ref: SwapAssignmentRef) => void>();
   const onAnchorDateChange = vi.fn<(date: Date) => void>();
   const state: { prefs: UserPreferences; anchor: Date; scope: PlanScope } = {
     prefs: normalizePreferences(initialPrefs),
@@ -81,6 +83,7 @@ export function renderPlan({
           setScope(next);
         }}
         onShowInTeam={onShowInTeam}
+        onFindSwap={onFindSwap}
       />
     );
   }
@@ -91,6 +94,7 @@ export function renderPlan({
     onUpdatePrefs,
     onScopeChange,
     onShowInTeam,
+    onFindSwap,
     onAnchorDateChange,
     /** Latest preferences after all updates. */
     prefs: () => state.prefs,

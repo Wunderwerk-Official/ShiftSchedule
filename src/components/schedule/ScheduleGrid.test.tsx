@@ -636,3 +636,74 @@ describe("ScheduleGrid stacked times", () => {
     expect(screen.queryByText("Campus", { selector: "span.rounded-full" })).toBeNull();
   });
 });
+
+describe("ScheduleGrid find swap and cover", () => {
+  const MON = "2026-01-05";
+  const ct: ScheduleRow = { ...baseRow, id: "ct", name: "CT", sectionId: "class-ct", sectionName: "CT", requiredSlots: 2 };
+  const mri: ScheduleRow = { ...baseRow, id: "mri", name: "MRI", sectionId: "class-mri", sectionName: "MRI", requiredSlots: 1 };
+  const restDay: ScheduleRow = { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" };
+  const swapMap = new Map<string, RenderedAssignment[]>([
+    [`ct__${MON}`, [{ id: "a-ct", rowId: "ct", dateISO: MON, clinicianId: "x" }]],
+    [`mri__${MON}`, [{ id: "a-mri", rowId: "mri", dateISO: MON, clinicianId: "y" }]],
+    [`pool-rest-day__${MON}`, [{ id: "a-rest", rowId: "pool-rest-day", dateISO: MON, clinicianId: "z" }]],
+  ]);
+  const renderSwapGrid = (extra: Partial<Parameters<typeof ScheduleGrid>[0]> = {}) => {
+    const onFindSwap = vi.fn();
+    const onFindCover = vi.fn();
+    const onClinicianClick = vi.fn();
+    render(
+      <ScheduleGrid
+        leftHeaderTitle="Week"
+        weekDays={[new Date(2026, 0, 5)]}
+        rows={[ct, mri, restDay]}
+        assignmentMap={swapMap}
+        getClinicianName={(id) => `Person ${id.toUpperCase()}`}
+        getIsQualified={() => true}
+        getHasEligibleClasses={() => true}
+        onCellClick={vi.fn()}
+        onMoveWithinDay={vi.fn()}
+        onAddAssignment={vi.fn()}
+        onClinicianClick={onClinicianClick}
+        onToggleAssignmentLock={vi.fn()}
+        onFindSwap={onFindSwap}
+        onFindCover={onFindCover}
+        {...extra}
+      />,
+    );
+    return { onFindSwap, onFindCover, onClinicianClick };
+  };
+  const pill = (rowId: string, clinicianId: string) =>
+    document.querySelector(`[data-assignment-key="${rowId}__${MON}__${clinicianId}"]`) as HTMLElement;
+  const cell = (rowId: string) =>
+    document.querySelector(`[data-schedule-cell="true"][data-row-id="${rowId}"][data-date-iso="${MON}"]`) as HTMLElement;
+
+  it("shows the swap button on class pills only, and none on read-only grids", () => {
+    renderSwapGrid();
+    expect(within(pill("ct", "x")).getByRole("button", { name: "Find swap for Person X" })).toBeInTheDocument();
+    expect(within(pill("mri", "y")).getByRole("button", { name: "Find swap for Person Y" })).toBeInTheDocument();
+    expect(within(pill("pool-rest-day", "z")).queryByRole("button", { name: /Find swap/ })).toBeNull();
+    cleanup();
+    renderSwapGrid({ readOnly: true });
+    expect(screen.queryByRole("button", { name: /Find swap/ })).toBeNull();
+  });
+
+  it("finds a swap for the pill's assignment without opening the picker or the person", () => {
+    const { onFindSwap, onClinicianClick } = renderSwapGrid();
+    fireEvent.click(within(pill("ct", "x")).getByRole("button", { name: "Find swap for Person X" }));
+    expect(onFindSwap).toHaveBeenCalledWith({ assignmentId: "a-ct", rowId: "ct", dateISO: MON, clinicianId: "x" });
+    expect(onClinicianClick).not.toHaveBeenCalled();
+    expect(screen.queryByPlaceholderText("Search clinicians...")).toBeNull();
+  });
+
+  it("offers \"Find cover…\" only in the picker of a slot with an open position", () => {
+    const { onFindCover } = renderSwapGrid();
+    fireEvent.click(cell("mri"));
+    expect(screen.getByPlaceholderText("Search clinicians...")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Find cover for this slot" })).toBeNull();
+
+    fireEvent.click(cell("ct"));
+    fireEvent.click(screen.getByRole("button", { name: "Find cover for this slot" }));
+    expect(onFindCover).toHaveBeenCalledWith({ rowId: "ct", dateISO: MON });
+    expect(screen.queryByPlaceholderText("Search clinicians...")).toBeNull();
+  });
+});

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { cx } from "../../lib/classNames";
+import { SwapGlyph } from "../swaps/PillSwapButton";
 
 function InstantTooltip({ children, content }: { children: ReactNode; content: string }) {
   const [show, setShow] = useState(false);
@@ -61,6 +62,8 @@ type ClinicianPickerPopoverProps = {
   anchorRect: DOMRect | null;
   rowName: string;
   dateLabel: string;
+  /** "Find cover…" footer for a slot with an open position; the parent closes the picker. */
+  onFindCover?: () => void;
 };
 
 export default function ClinicianPickerPopover({
@@ -71,6 +74,7 @@ export default function ClinicianPickerPopover({
   anchorRect,
   rowName,
   dateLabel,
+  onFindCover,
 }: ClinicianPickerPopoverProps) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -236,6 +240,19 @@ export default function ClinicianPickerPopover({
           })
         )}
       </div>
+      {onFindCover ? (
+        <div className="flex-shrink-0 border-t border-slate-100 px-3 py-2 dark:border-slate-800">
+          <button
+            type="button"
+            aria-label="Find cover for this slot"
+            onClick={onFindCover}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-sm font-medium text-teal-800 hover:bg-teal-100 dark:border-teal-700/60 dark:bg-teal-900/40 dark:text-teal-200"
+          >
+            <SwapGlyph className="h-4 w-4" />
+            Find cover…
+          </button>
+        </div>
+      ) : null}
     </div>,
     document.body
   );

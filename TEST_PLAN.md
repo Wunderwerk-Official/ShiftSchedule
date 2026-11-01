@@ -230,6 +230,33 @@ npx playwright show-report
 - [x] Discard after apply / of a failed run → 409; discarding an open run twice → 200
 - [x] A vacation-hidden unlocked solver row is replaced on apply (`is_replaced_by_draft`)
 
+### 3.12 Swap assistant (v1.71)
+
+**Backend Tests** (`backend/tests/`; fixtures `make_swap_state`, `asg` and `rich_swap_state` in `swap_fixtures.py`):
+- [x] `test_validation_context.py` — `validate_assignments` and every single validator give the same violations with a precomputed `ValidationContext` (arena fixture and 50 seeded subsets of a chained plan, with and without `skip_references` / `only_fill_required`); a context built for another state raises
+- [x] `test_constraint_policy.py` — `new_violations` equals `run_apply._new_violations`; `classify_violations` splits new and carried violations; `baseline_violations=` skips revalidating the baseline; `resolved_violations` lists what a revert brings back (gone or eased, never worse)
+- [x] `test_swap_blocks.py` — work blocks (touching shifts merge, a night with its morning handover, Whole day), items that are no unit (vacation-hidden, pool row, untimed slot), fingerprints, unit kind; fixture self-tests (normalization and a save/load round trip keep every slot and assignment)
+- [x] `test_swap_worktime.py` — rest under 11 h (only new ones), night without a free day, stretch over 24 h, week hours equal to the weekly-hours rule (vacation-hidden shifts counted), custom rules
+- [x] `test_swap_policy.py` — calendar time zone around DST, started and the 48 h notice boundary, swap settings defaults and fallbacks, open-slot detection (overrides, hidden holders, inactive days)
+- [x] `test_swap_matching.py` — prefilter and gate reasons with their exact messages, groups and ranking, caps, totals and closest options, the partner / range / same-type filters, started shifts, every finding, rest-day moves and removals (D7), pre-existing checks (D12), people without contract hours (D13), blocked targets, the baseline cache, `truncated`
+- [x] `test_swap_property.py` — the two-person slice gives the same verdict as the full calendar (and the same warnings, pre-existing checks and solver-rule hits) on the arena fixture, a chained plan and `rich_swap_state`: 200 swap/hand-over cases (seeds 7 and 11) and 60 cover cases per dataset, with non-vacuity counts; the whole file runs in under 20 s
+- [x] `test_swap_endpoints.py` — `POST /v1/swaps/candidates`, `/apply`, `/{id}/undo` and `GET /v1/swaps/history`: swap, hand-over with a rest-day move and removal, cover with the hidden removal; every refusal (`state_changed`, `swap_stale`, `swap_started`, `notice_override_required`, `consent_required`, `swap_invalid`, `plan_invalid`, `warnings_unacknowledged`, `undo_conflict`, `already_reverted`, `swap_not_found`, 422); stored rows, events and change-log kinds; undo may bring back what the swap resolved (a cover's removed vacation-hidden shift, an eased weekly overload) but nothing worse; history paging; account deletion; a run apply after a swap
+
+**Frontend Tests**:
+- [x] `src/lib/swaps/format.test.ts` — every text helper, the apply request of all three modes, the preview outline stylesheet, the drawer key
+- [x] `src/api/client.swaps.test.ts` — JSON answers, `SwapApiError` (code, message, `revision` / `warnings` / `reasons`), string details, 401, paths and bodies; `src/lib/stateSaveQueue.test.ts` — `currentRevision()`
+- [x] `src/pages/swapFlow.test.ts` — a search syncs first (a failed save blocks it; `state_changed` reloads and searches again only when the screen is unchanged); apply and undo run pause → save → send → hydrate → resume, refuse while busy, reload after a conflict and always resume
+- [x] `src/components/swaps/SwapAssistantDrawer.test.tsx` — search on mount and per filter change but never on a re-render, summary, groups, live region, blocked target, save errors, the preview (checks, warnings, notice, consent, approver name) and its apply request, refused applies, the phone sheet and Escape, history with Undo, the preview outline
+- [x] `AssignmentPill.test.tsx`, `ScheduleGrid.test.tsx`, `ClinicSheetGrid.test.tsx`, `ClinicianPickerPopover.test.tsx` — the ⇄ button (editable class pills only, S key, touch room) and "Find cover…" in the person list; `ShiftDetail.test.tsx`, `MyPlanView.flows.test.tsx` — "Find swap" in My plan; `HelpView.test.tsx` — "13. Find a swap"
+
+**E2E Tests** (`e2e/swap-assistant.spec.ts`, mocked API, in CI):
+- [x] Find a swap from a pill and apply it against the revision the page just saved; the partner's pill and the toast; Undo from the toast
+- [x] S on a pill's lock opens the drawer with focus on its heading; Escape returns focus to the lock
+- [x] A refused apply (`swap_invalid`) shows its reasons, keeps the drawer open and searches again
+- [x] "Find cover…" in an open slot's person list searches for cover; the TopBar "Swap history" button opens and closes the history
+- [x] Phone: hand over in the sheet
+- [x] Touch screen (`hover: none`): on pills and clinic sheet names the ⇄ button sits left of the lock and right of the name; tapping ⇄ opens the drawer, tapping the lock only toggles it
+
 ---
 
 ## 4. Intentionally Not Covered
@@ -297,11 +324,12 @@ backend `python -m pytest tests -q --ignore=tests/test_solver_benchmark.py`
 `npm test`, `npm run build`, then the critical Playwright specs
 (`e2e/agent-apply.spec.ts`, `e2e/agent-activity.spec.ts`,
 `e2e/fixed-assignments.spec.ts`, `e2e/model-settings.spec.ts`,
-`e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`) against a local Vite dev
-server with a mocked API (`page.route`; no backend needed). Run the same set
-locally with `npx playwright test e2e/agent-apply.spec.ts
-e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts
-e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts` while
+`e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`, `e2e/swap-assistant.spec.ts`)
+against a local Vite dev server with a mocked API (`page.route`; no backend
+needed). Run the same set locally with `npx playwright test
+e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts
+e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts
+e2e/swap-assistant.spec.ts` while
 `npm run dev -- --host 127.0.0.1 --port 5173` is running. The full E2E suite is not part of CI. Note that
 `npm run test:e2e` forces `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=mac15-arm64` and
 only works on Apple Silicon; elsewhere run `npx playwright test`.
@@ -327,3 +355,4 @@ Areas identified for future test expansion:
 | 2026-01-03 | Claude | Added pool removal regression tests |
 | 2026-01-03 | Claude | Added iCal and web API tests |
 | 2026-10-15 | Claude | v1.64: My plan / preferences, team page and background-run coverage; CI spec list |
+| 2026-11-01 | Claude | v1.71: swap assistant |

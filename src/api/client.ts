@@ -1,5 +1,13 @@
 import { StateSaveQueue } from "../lib/stateSaveQueue";
 import { abortableDelay } from "../lib/abortableDelay";
+import type {
+  SwapApplyRequest,
+  SwapApplyResponse,
+  SwapCandidatesRequest,
+  SwapCandidatesResponse,
+  SwapHistoryResponse,
+  SwapWarning,
+} from "../lib/swaps/types";
 
 export type RowKind = "class" | "pool";
 
@@ -536,6 +544,8 @@ const stateSaves = new StateSaveQueue<AppState>();
 export const adoptSavedState = (state: AppState) => stateSaves.adopt(state);
 export const flushStateSaves = () => stateSaves.drain();
 export const retryStateSaves = () => stateSaves.retry();
+/** The last revision the save queue saved or adopted (what the server holds for this screen). */
+export const savedStateRevision = () => stateSaves.currentRevision();
 
 export function saveState(state: AppState): Promise<AppState> {
   const headers = buildHeaders();
@@ -1043,6 +1053,88 @@ export async function applySolverRun(
     throw new ApplyRunError(message, code, revision);
   }
   if (!res.ok) throw new Error(`Failed to apply solver run: ${res.status}`);
+}
+
+/** A refused swap request: `code` and `detail` are the server's `{detail: {code, message, …}}`. */
+export class SwapApiError extends Error {
+  constructor(
+    message: string,
+    public status: number,
+    public code: string,
+    public detail: Record<string, unknown> = {},
+  ) {
+    super(message);
+  }
+
+  get revision(): string | undefined {
+    return typeof this.detail.revision === "string" ? this.detail.revision : undefined;
+  }
+
+  get warnings(): SwapWarning[] {
+    return Array.isArray(this.detail.warnings) ? (this.detail.warnings as SwapWarning[]) : [];
+  }
+
+  get reasons(): string[] {
+    return Array.isArray(this.detail.reasons) ? (this.detail.reasons as string[]) : [];
+  }
+}
+
+async function swapApiError(res: Response, fallback: string): Promise<SwapApiError> {
+  let detail: unknown;
+  try {
+    detail = ((await res.json()) as { detail?: unknown }).detail;
+  } catch {
+    // non-JSON error body
+  }
+  if (typeof detail === "string") return new SwapApiError(detail, res.status, "");
+  if (typeof detail === "object" && detail !== null && !Array.isArray(detail)) {
+    const fields = detail as Record<string, unknown>;
+    return new SwapApiError(
+      typeof fields.message === "string" ? fields.message : fallback,
+      res.status,
+      typeof fields.code === "string" ? fields.code : "",
+      fields,
+    );
+  }
+  return new SwapApiError(fallback, res.status, "");
+}
+
+async function swapFetch<T>(path: string, init: RequestInit, failure: string): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { ...init, headers: buildHeaders() });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) throw await swapApiError(res, `${failure}: ${res.status}`);
+  return res.json();
+}
+
+export async function findSwapCandidates(request: SwapCandidatesRequest): Promise<SwapCandidatesResponse> {
+  return swapFetch(
+    "/v1/swaps/candidates",
+    { method: "POST", body: JSON.stringify(request) },
+    "Failed to find swaps",
+  );
+}
+
+export async function applySwap(request: SwapApplyRequest): Promise<SwapApplyResponse> {
+  return swapFetch("/v1/swaps/apply", { method: "POST", body: JSON.stringify(request) }, "Failed to apply the swap");
+}
+
+export async function undoSwap(swapId: string, expectedRevision: string): Promise<SwapApplyResponse> {
+  return swapFetch(
+    `/v1/swaps/${encodeURIComponent(swapId)}/undo`,
+    { method: "POST", body: JSON.stringify({ expectedRevision }) },
+    "Failed to undo the swap",
+  );
+}
+
+export async function listSwapHistory(
+  options: { limit?: number; before?: string; beforeId?: string } = {},
+): Promise<SwapHistoryResponse> {
+  const params = new URLSearchParams();
+  if (options.limit !== undefined) params.set("limit", String(options.limit));
+  if (options.before) params.set("before", options.before);
+  if (options.beforeId) params.set("beforeId", options.beforeId);
+  const query = params.toString();
+  return swapFetch(`/v1/swaps/history${query ? `?${query}` : ""}`, {}, "Failed to load swap history");
 }
 
 export async function discardSolverRun(runId: string): Promise<void> {

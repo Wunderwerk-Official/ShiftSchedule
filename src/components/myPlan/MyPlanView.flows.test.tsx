@@ -111,6 +111,19 @@ describe("MyPlanView flows", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("'Find swap' hands the shift's assignment to the page and closes the detail", () => {
+    const view = renderPlan({ prefs: LENA });
+    fireEvent.click(screen.getByRole("button", { name: /^Sonographie, Tuesday 13 October/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Find swap" }));
+    expect(view.onFindSwap).toHaveBeenCalledWith({
+      assignmentId: "lh:sonopm:2026-10-13",
+      rowId: "sonopm-tue",
+      dateISO: "2026-10-13",
+      clinicianId: "lh",
+    });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
   it("reports scope changes from the Team | My plan switch", () => {
     const view = renderPlan({ prefs: LENA });
     const group = screen.getByRole("group", { name: "Choose plan" });

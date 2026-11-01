@@ -16,7 +16,7 @@ const option = (id: string, name: string): ClinicianOption => ({
 const clinicians = [option("c1", "Anna Alpha"), option("c2", "Bert Beta")];
 const anchorRect = { top: 100, bottom: 120, left: 100, right: 200, width: 100, height: 20 } as DOMRect;
 
-const renderPicker = (onClose: () => void) => (
+const renderPicker = (onClose: () => void, onFindCover?: () => void) => (
   <ClinicianPickerPopover
     open
     onClose={onClose}
@@ -25,6 +25,7 @@ const renderPicker = (onClose: () => void) => (
     anchorRect={anchorRect}
     rowName="MRI"
     dateLabel="Mon 5 Oct"
+    onFindCover={onFindCover}
   />
 );
 
@@ -56,5 +57,16 @@ describe("ClinicianPickerPopover", () => {
     fireEvent.mouseDown(document.body);
     expect(latest).toHaveBeenCalledTimes(2);
     expect(first).not.toHaveBeenCalled();
+  });
+
+  it("offers \"Find cover…\" below the list only with onFindCover", () => {
+    const { rerender } = render(renderPicker(() => {}));
+    expect(screen.queryByRole("button", { name: "Find cover for this slot" })).toBeNull();
+    const onFindCover = vi.fn();
+    rerender(renderPicker(() => {}, onFindCover));
+    const button = screen.getByRole("button", { name: "Find cover for this slot" });
+    expect(button).toHaveTextContent("Find cover…");
+    fireEvent.click(button);
+    expect(onFindCover).toHaveBeenCalledOnce();
   });
 });

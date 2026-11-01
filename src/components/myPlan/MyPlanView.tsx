@@ -22,6 +22,7 @@ import {
   type PlanSource,
 } from "../../lib/myPlan";
 import type { ScheduleRow } from "../../lib/shiftRows";
+import type { SwapAssignmentRef } from "../../lib/swaps/types";
 import type { PreferencesUpdate } from "../../lib/userPreferences";
 import DayLeftView from "./DayLeftView";
 import DayTopView from "./DayTopView";
@@ -93,6 +94,8 @@ export type MyPlanViewProps = {
   onScopeChange: (scope: PlanScope) => void;
   /** "Show in team plan": switch to the team scope at that date, jump to the row and pulse the pill. */
   onShowInTeam: (target: TeamPlanTarget) => void;
+  /** "Find swap" of a shift (the detail's first action): the page opens the swap assistant in the team plan. */
+  onFindSwap?: (ref: SwapAssignmentRef) => void;
   /** Page controls shown right of header row 1 (before the star). */
   headerExtras?: ReactNode;
 };
@@ -101,7 +104,7 @@ export default function MyPlanView(props: MyPlanViewProps) {
   const {
     scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings,
     anchorDate, onAnchorDateChange, isMobile, isDark, prefs, onUpdatePrefs, prefsLoaded = true,
-    currentScope, onScopeChange, onShowInTeam, headerExtras,
+    currentScope, onScopeChange, onShowInTeam, onFindSwap, headerExtras,
   } = props;
   const now = useMinuteClock();
   const todayISO = toISODate(now);
@@ -161,6 +164,17 @@ export default function MyPlanView(props: MyPlanViewProps) {
     setSelected(null);
     onShowInTeam({ rowId: shift.rowId, dateISO: shift.dateISO, clinicianId: shift.clinicianId });
   };
+  const findSwap = onFindSwap
+    ? (shift: PlanShift) => {
+        setSelected(null);
+        onFindSwap({
+          assignmentId: shift.id,
+          rowId: shift.rowId,
+          dateISO: shift.dateISO,
+          clinicianId: shift.clinicianId,
+        });
+      }
+    : undefined;
   const pickPerson = (clinicianId: string) => setViewedOverride(clinicianId === linkedId ? null : clinicianId);
   // Saved views open at their relative start (today / next shift / week start).
   const applyView = (view: ViewConfig) => {
@@ -329,6 +343,7 @@ export default function MyPlanView(props: MyPlanViewProps) {
           locationsById={locationsById}
           onClose={closeDetail}
           onShowInTeam={showInTeam}
+          onFindSwap={findSwap}
         />
       ) : null;
 

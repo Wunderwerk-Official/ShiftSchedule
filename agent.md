@@ -90,6 +90,7 @@ Cells
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
 - Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
+- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.71) that opens the swap drawer in cover mode for that slot instance (both grids).
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -106,6 +107,7 @@ Clinic sheet layout (Klinik-Monatslayout)
 Pills
 - Team grid (since v1.69 always): person colors — light fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
+- Find swap (⇄, v1.71, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
 - Warning icons are small circular badges at top-right of the pill.
@@ -788,6 +790,13 @@ A solver-independent module that encodes the **hard** constraints of the CP-SAT
 solver as pure functions. Use it anywhere a proposed set of assignments needs a
 pass/fail check — LLM-generated schedules, external imports, UI conflict
 badges, debug tooling.
+
+Every validator and `validate_assignments` take an optional keyword
+`context=` (v1.71): `build_validation_context(state)` precomputes the template
+and roster lookups of ONE state object for callers that validate many
+assignment lists of it (the swap search). The result is identical with or
+without it; a context of another state object raises `ValueError`. Every
+other caller (solvers, agent, run apply, the swap apply gate) passes none.
 
 ### What it checks
 All return `list[Violation]`; `validate_assignments()` aggregates them into a
@@ -1504,6 +1513,9 @@ Frontend
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
 - `src/lib/clipboard.ts` (v1.64: `copyTextToClipboard`, reports success)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
+- `src/components/swaps/*` (v1.71 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
+- `src/lib/swaps/*` (v1.71: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
+- `src/pages/swapFlow.ts` (v1.71: search, apply and undo order — save, send, hydrate)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
@@ -1527,6 +1539,7 @@ Backend
 - `backend/snapshots.py` (calendar snapshots)
 - `backend/agent_budget.py` (agent settings, chat test, model check, spend)
 - `backend/schedule_changes.py` (schedule change log, admin endpoint)
+- `backend/swaps/*` (v1.71 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
 - `backend/account_lifecycle.py` (account generation/identity checks)
 - `backend/request_logging.py` (redacted access logging)
 - `backend/ical.py` (ICS generation for subscription feeds)
@@ -2477,3 +2490,92 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   (measured), Opus 4.8 and Haiku 4.5 estimated from their prices. The old
   "per run" ranges understated week runs (Opus 5.5: about $5–6 per week).
 - No code path changed; version 1.70 (70).
+
+## v1.71 — Swap assistant
+
+"Find swap" for the rota planner: swap a shift for one of a colleague's
+(swap), give it away (handover) or fill an open position (cover), with the
+server checking every option against all planning rules.
+
+- **Units are blocks.** A person's visible items (non-pool, slot with times,
+  holder not on vacation that day) merge into work blocks on the absolute
+  minute axis: touching or overlapping items join, across midnight too (a
+  night and its next-morning handover). A swap always moves whole blocks;
+  "Whole day" moves every block of the person that starts that day.
+  Vacation-hidden assignments are never part of a unit; cover can remove one
+  (`backend/swaps/blocks.py`).
+- **Gate.** `constraint_policy.new_violations` (run apply's rule: no new or
+  worse violation; `run_apply._new_violations` is now a thin wrapper) with
+  `only_fill_required=True`. The search validates a two-person slice (both
+  people's stored assignments in the whole ISO weeks of the moved dates plus
+  at least 7 days; cover adds the instance's co-holders) with references
+  skipped and a `ValidationContext`; one baseline per partner and window is
+  cached. Apply and undo re-check the whole calendar without a context.
+  `backend/tests/test_swap_property.py` asserts that both verdicts (and the
+  warnings, pre-existing checks and solver-rule hits) agree on the arena
+  fixture, a dense plan and `rich_swap_state`.
+- **ValidationContext** (`backend/validation.py`): see 6.5; built once per
+  search request, never cached across requests.
+- **Tables** (`backend/db.py`): `swap_requests` (one row per applied swap with
+  its full `applied_patch` for undo and a `summary` of names at apply time),
+  append-only `swap_events` (`applied`, `reverted`) and `swap_settings` (read
+  only: `timeZone`, `noticeHours`, `minRestHours`, `maxBlockHours` over the
+  defaults Europe/Berlin, 48, 11, 24; deliberately not in `solverSettings`,
+  which feed the planning fingerprint). Columns a later request type leaves
+  empty are nullable, so stage 2 only adds columns; `store.insert_swap`
+  enforces the stage-1 invariants (partner, consent, status `applied`).
+  Account deletion clears all three; finished swaps and their events are
+  pruned 730 days after their last update (§ 16 ArbZG).
+- **Endpoints** (`backend/swaps/routes.py`, owner's JWT only, never via web or
+  iCal tokens): `POST /v1/swaps/candidates` (target, checks, best/possible/
+  blocked/closest options with chips, warnings, findings, weekly hours and
+  rest-day changes; at most 600 gate runs, then `truncated`),
+  `POST /v1/swaps/apply`, `POST /v1/swaps/{id}/undo`,
+  `GET /v1/swaps/history` (keyset paging by `before` + `beforeId`). Apply
+  errors in check order: 400 `consent_required`, 409 `state_changed`, 400
+  `invalid_request`, 409 `swap_stale` (anything changed since the preview,
+  including slot fingerprints and the unit's composition), `swap_started`,
+  `notice_override_required` (`hoursLeft`), `plan_invalid` (normalization
+  would change the result), `swap_invalid` (`violations`, `reasons`) and
+  `warnings_unacknowledged` (`warnings`). Undo adds 404 `swap_not_found`,
+  409 `already_reverted` and `undo_conflict`.
+- **Working-time warnings** (swap-only, never a validator rule): rest under
+  `minRestHours` between blocks, no free day after a night, a block longer
+  than `maxBlockHours`. Only new ones count. Their ids are pure functions of
+  the plan; the search computes them on the slice, apply recomputes them on
+  the whole calendar and refuses with `warnings_unacknowledged` unless every
+  id is in `acknowledgedWarnings`; the row stores them.
+- **Pre-existing problems.** The checks list says "no new …"; a check
+  the two people already break in a touched week without the change making
+  it worse is listed in `SwapOption.preexisting` and shown amber, never as a
+  green tick. Vacation-hidden shifts never count as a vacation problem.
+- **Rest Days.** A giver's Rest Day after a moved night or on-call follows the
+  shift when the taker neither rests nor works that day (ticked by default,
+  apply accepts any detected subset). The taker's own Rest Day on the date of
+  a shift they receive is always removed, as when a shift is added by hand;
+  the patch records it, so undo restores it.
+- **Apply** writes the swapped shifts as locked manual entries (ids start
+  with the swap id), logs a `swap_applied` row in `schedule_changes` (never
+  merged with manual edits) and writes no auto-backup: the one reserved slot
+  belongs to run apply and restore.
+- **Undo** (toast and History) needs no acknowledgement or notice override,
+  but every added assignment must still be stored (same id, row, date,
+  person; a lock toggle is fine), no removed one may exist again, nothing may
+  have started, and normalization and the full gate must pass. The gate lets
+  undo bring back what the swap resolved (`applied_patch.resolved`, e.g. the
+  vacation-hidden shift a cover removed or a week it brought under the
+  limit), no worse than it was, because that existed before. History
+  computes `canUndo` and the reason live.
+- **Time zone.** Shift times stay naive wall-clock minutes; only "started"
+  and the notice period compare with now in the calendar time zone
+  (`zoneinfo`, `tzdata==2026.6` in requirements so the Docker image has the
+  zone files). Started shifts can't be swapped, covered or undone.
+- **Frontend.** Teal is the swap color. The preview outline is an injected
+  stylesheet keyed by `data-assignment-key` / `data-sheet-assignment-key`.
+  A search saves the calendar first only when the screen has unsaved edits,
+  then searches against that revision; apply pauses autosave, saves, applies
+  with the saved revision and hydrates the returned state.
+- Tests: backend `test_validation_context.py`, `test_constraint_policy.py`,
+  `test_swap_blocks.py`, `test_swap_worktime.py`, `test_swap_policy.py`,
+  `test_swap_matching.py`, `test_swap_property.py` (about 7 s) and
+  `test_swap_endpoints.py`; fixtures in `backend/tests/swap_fixtures.py`.
