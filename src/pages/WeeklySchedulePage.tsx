@@ -101,6 +101,11 @@ import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
 import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
 import { downloadTextFile } from "../lib/download";
+import {
+  filterHolidaysByRegion,
+  holidayRegionForCountry,
+  type NagerPublicHoliday,
+} from "../lib/holidays";
 import { computeOpenSlots } from "../lib/openSlots";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
@@ -493,6 +498,8 @@ export default function WeeklySchedulePage({
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
   );
+  // ISO 3166-2 code ("DE-NW") the next "Load Holidays" filters by.
+  const [holidayRegion, setHolidayRegion] = useState<string | undefined>(undefined);
   const [holidayYear, setHolidayYear] = useState(currentYear);
   const [publishedWeekStartISOs, setPublishedWeekStartISOs] = useState<string[]>([]);
   const [solverSettings, setSolverSettings] = useState<SolverSettings>(
@@ -2509,6 +2516,9 @@ export default function WeeklySchedulePage({
     solverRulesRef.current = normalized.solverRules ?? [];
     if (normalized.holidays) setHolidays(normalized.holidays);
     if (normalized.holidayCountry) setHolidayCountry(normalized.holidayCountry);
+    // Unconditional: a restored calendar without a region must not keep the
+    // region of the screen it replaces.
+    setHolidayRegion(normalized.holidayRegion);
     if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
     setPublishedWeekStartISOs(normalized.publishedWeekStartISOs ?? []);
   };
@@ -2598,6 +2608,7 @@ export default function WeeklySchedulePage({
       slotOverridesByKey,
       holidays,
       holidayCountry,
+      holidayRegion,
       holidayYear,
       publishedWeekStartISOs,
       solverSettings,
@@ -2682,6 +2693,7 @@ export default function WeeklySchedulePage({
     slotOverridesByKey,
     holidays,
     holidayCountry,
+    holidayRegion,
     holidayYear,
     publishedWeekStartISOs,
     solverSettings,
@@ -2993,7 +3005,14 @@ export default function WeeklySchedulePage({
       ),
     );
   };
-  const handleFetchHolidays = async (countryCode: string, year: number) => {
+  const handleChangeHolidayCountry = (countryCode: string) => {
+    setHolidayCountry(countryCode);
+    // A region belongs to one country ("DE-NW"): another country starts without.
+    setHolidayRegion((prev) => holidayRegionForCountry(countryCode, prev));
+  };
+  // Replaces the year's holidays. Already loaded lists are never rewritten
+  // when only the region changes; the user loads again.
+  const handleFetchHolidays = async (countryCode: string, year: number, region?: string) => {
     const normalizedCountry = countryCode.trim().toUpperCase();
     const response = await fetch(
       `https://date.nager.at/api/v3/PublicHolidays/${year}/${normalizedCountry}`,
@@ -3001,12 +3020,13 @@ export default function WeeklySchedulePage({
     if (!response.ok) {
       throw new Error(`Failed to fetch holidays (${response.status}).`);
     }
-    const data = (await response.json()) as Array<{
-      date: string;
-      localName?: string;
-      name?: string;
-    }>;
-    const fetched = data.map((item) => ({
+    const data = (await response.json()) as NagerPublicHoliday[];
+    // Nationwide holidays plus the region's own ones; without a region the
+    // regional holidays of every region are included.
+    const fetched = filterHolidaysByRegion(
+      data,
+      holidayRegionForCountry(normalizedCountry, region),
+    ).map((item) => ({
       dateISO: item.date,
       name: item.localName ?? item.name ?? "Holiday",
     }));
@@ -3699,6 +3719,7 @@ export default function WeeklySchedulePage({
             clinicians={clinicians}
             holidays={holidays}
             holidayCountry={holidayCountry}
+            holidayRegion={holidayRegion}
             holidayYear={holidayYear}
             weeklyTemplate={weeklyTemplate}
             onRenamePool={(rowId, nextName) => {
@@ -3756,10 +3777,11 @@ export default function WeeklySchedulePage({
                 return next;
               });
             }}
-            onChangeHolidayCountry={setHolidayCountry}
+            onChangeHolidayCountry={handleChangeHolidayCountry}
+            onChangeHolidayRegion={setHolidayRegion}
             onChangeHolidayYear={setHolidayYear}
-            onFetchHolidays={async (countryCode, year) => {
-              await handleFetchHolidays(countryCode, year);
+            onFetchHolidays={async (countryCode, year, region) => {
+              await handleFetchHolidays(countryCode, year, region);
             }}
             onAddHoliday={handleAddHoliday}
             onRemoveHoliday={handleRemoveHoliday}

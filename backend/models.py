@@ -206,11 +206,33 @@ class AppState(BaseModel):
     slotOverridesByKey: Dict[str, int] = Field(default_factory=dict)
     weeklyTemplate: Optional[WeeklyCalendarTemplate] = None
     holidayCountry: Optional[str] = None
+    # ISO 3166-2 subdivision ("DE-NW") that "Load Holidays" filters the
+    # regional holidays by; None loads the holidays of every region. Only the
+    # holidays list is a planning input. Normalized in state.py. Must be
+    # declared: pydantic drops unknown fields.
+    holidayRegion: Optional[str] = None
     holidayYear: Optional[int] = None
     holidays: List[Holiday] = Field(default_factory=list)
     publishedWeekStartISOs: List[str] = Field(default_factory=list)
     solverSettings: Dict[str, Any] = Field(default_factory=dict)
     solverRules: List[Dict[str, Any]] = Field(default_factory=list)
+
+    @field_validator("holidayRegion", mode="before")
+    @classmethod
+    def _non_string_holiday_region_is_unset(cls, value: Any) -> Any:
+        # A malformed region must never block a calendar save with a 422.
+        return value if isinstance(value, str) else None
+
+    # No return annotation, see Location._omit_unset_color.
+    @model_serializer(mode="wrap")
+    def _omit_unset_holiday_region(self, handler):
+        # Same reason as Location.color: a calendar without a region dumps
+        # byte-identical to before the field existed, so stored calendars keep
+        # their revision and open tabs do not get a spurious 409 after a deploy.
+        data = handler(self)
+        if data.get("holidayRegion") is None:
+            data.pop("holidayRegion", None)
+        return data
 
 
 class UserStateExport(BaseModel):

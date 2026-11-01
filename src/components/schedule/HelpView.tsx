@@ -228,6 +228,11 @@ export default function HelpView() {
               Holidays can be preloaded by country and year, and added/removed
               manually (date + name).
             </li>
+            <li>
+              Choose your state (canton, region) before loading: without one, the
+              regional holidays of every state are loaded, and the calendar plans
+              those days with holiday staffing. Load again after changing it.
+            </li>
           </ul>
         </Section>
 

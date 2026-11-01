@@ -194,6 +194,9 @@ export type AppState = {
   slotOverridesByKey?: Record<string, number>;
   weeklyTemplate?: WeeklyCalendarTemplate;
   holidayCountry?: string;
+  // ISO 3166-2 subdivision ("DE-NW") that "Load Holidays" filters regional
+  // holidays by (src/lib/holidays.ts); absent = the holidays of all regions.
+  holidayRegion?: string;
   holidayYear?: number;
   holidays?: Holiday[];
   publishedWeekStartISOs?: string[];

@@ -172,6 +172,32 @@ describe("normalizeAppState", () => {
     ]);
   });
 
+  describe("holidayRegion", () => {
+    const normalized = () => normalizeAppState(makeMinimalState()).state;
+    const withRegion = (holidayRegion: unknown) =>
+      normalizeAppState({ ...normalized(), holidayRegion: holidayRegion as string });
+
+    it("keeps an ISO 3166-2 code, uppercased", () => {
+      expect(withRegion("DE-NW")).toMatchObject({ state: { holidayRegion: "DE-NW" }, changed: false });
+      expect(withRegion("de-nw")).toMatchObject({ state: { holidayRegion: "DE-NW" }, changed: true });
+      expect(withRegion("IT-32").state.holidayRegion).toBe("IT-32");
+    });
+
+    it("drops anything else, leaving the key absent like the backend does", () => {
+      for (const raw of ["Nordrhein-Westfalen", "", " DE-NW", null, 12]) {
+        const { state, changed } = withRegion(raw);
+        expect("holidayRegion" in state).toBe(false);
+        expect(changed).toBe(true);
+      }
+    });
+
+    it("leaves a calendar without a region unchanged", () => {
+      const { state, changed } = normalizeAppState(normalized());
+      expect("holidayRegion" in state).toBe(false);
+      expect(changed).toBe(false);
+    });
+  });
+
   describe("deprecated pool removal", () => {
     it("removes Distribution Pool (pool-not-allocated) from rows", () => {
       const state = makeMinimalState({

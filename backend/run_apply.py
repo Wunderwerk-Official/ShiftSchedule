@@ -20,8 +20,10 @@ from .constraint_policy import violation_key, is_new_or_worsened
 def planning_fingerprint(state: AppState) -> str:
     # Include boundary assignments and history: rest, weekly hours and YTD
     # fairness all depend on context outside the requested dates.
+    # The holiday pickers only steer the next "Load Holidays"; the holidays
+    # list itself is the planning input.
     data = state.model_dump(exclude={"revision", "publishedWeekStartISOs",
-                                     "holidayCountry", "holidayYear"})
+                                     "holidayCountry", "holidayRegion", "holidayYear"})
     data["solverSettings"].pop("scheduleLayout", None)
     # Location colors are presentation only: recoloring never stales a run.
     for location in data["locations"]:

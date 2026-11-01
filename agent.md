@@ -17,7 +17,7 @@ Where to look first
 - Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
 - **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 6.5.
 - Solver live stats: `src/lib/solverStats.ts`
-- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `model-settings`, `my-plan`, `team-page`
+- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `holiday-region`, `model-settings`, `my-plan`, `team-page`
 - My plan (v1.64): `src/components/myPlan/MyPlanView.tsx`, pure model `src/lib/myPlan/`, preferences `src/lib/userPreferences.ts` + `backend/preferences.py`
 - API client: `src/api/client.ts`
 - Settings UI: `src/components/schedule/SettingsView.tsx`
@@ -201,7 +201,8 @@ Working Hours Overview
 Holidays
 - Year selector with stepper buttons.
 - Country picker with flag emoji (top EU countries + CH, LU), alphabetical.
-- "Load Holidays" fetches from https://date.nager.at/api/v3/PublicHolidays.
+- Region select next to it (v1.72) for countries whose date.nager.at data has regional holidays (`HOLIDAY_REGIONS` in `src/lib/holidays.ts`: DE states, CH cantons, ES, GB and IT regions), stored as `AppState.holidayRegion` (ISO 3166-2, e.g. `DE-NW`). Without a region the select shows "All states" plus the hint that the regional holidays of all states are included. Changing the country resets the region; a stored region of another country is ignored.
+- "Load Holidays" fetches from https://date.nager.at/api/v3/PublicHolidays and keeps an entry when `global === true`, when no region is set, or when its `counties` contain the region (`filterHolidaysByRegion`). It replaces that year's list. Choosing a region never rewrites stored holidays: an amber note says the list is unchanged until the user loads again.
 - Add holidays manually; list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form).
 - Add Holiday button is a dashed, full-width button below the list and opens an inline add panel.
 - Holidays behave like weekends in solver + min slot logic and show in the calendar header.
@@ -1270,11 +1271,13 @@ Backend stores one JSON blob per user in SQLite:
   "solverRules": [],
   "publishedWeekStartISOs": ["2025-12-22"],
   "holidayCountry": "DE",
+  "holidayRegion": "DE-NW",
   "holidayYear": 2025,
   "holidays": [{ "dateISO": "2025-12-25", "name": "Christmas Day" }]
 }
 ```
 Note: `solverRules` is legacy and not used by the current UI/solver, but remains in state for compatibility.
+`holidayRegion` (v1.72) is optional: absent when unset (a wrap `model_serializer` on `AppState` omits it, like `Location.color`), so calendars without a region keep their bytes and revision. Like `holidayCountry`/`holidayYear` it is not part of the planning fingerprint; only `holidays` is.
 `weeklyTemplate` (v4) is stored alongside the state and is the source of truth for schedule rows; `slotOverridesByKey` keys are `slotId__dateISO`.
 State normalization on load
 - Ensures `locations` exists (adds loc-default).
@@ -2525,3 +2528,59 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Deploy notes: no schema or data change. After the deploy every team grid
   shows location colors (uncolored locations get automatic ones) and every
   person a new color.
+
+## v1.72 — Holidays by state
+
+- **The bug.** "Load Holidays" kept every entry of the date.nager.at answer
+  and ignored its `global` and `counties` fields, so Germany got the regional
+  holidays of all 16 states (19 days for 2026, see `default_state.json`:
+  Heilige Drei Könige, Buß- und Bettag and others). The holiday day type
+  overrides the weekday, so a team in NRW got holiday staffing on Tue
+  06.01. and Wed 18.11.2026, and the solvers planned with it. The same held
+  for the other picker countries with regional holidays (CH, ES, GB, IT).
+- **Region select.** Settings → Holidays shows a second select next to the
+  country for countries listed in `HOLIDAY_REGIONS` (`src/lib/holidays.ts`:
+  16 German states, 26 Swiss cantons, 19 Spanish, 4 British and 20 Italian
+  regions, ISO 3166-2 codes as date.nager.at uses them in `counties`,
+  checked against its 2025–2027 data). The first option is "All states"
+  ("All cantons", "All regions"); without a region a hint says that the
+  regional holidays of all states are included. A stored code without a
+  name stays visible as its code. Changing the country resets the region
+  (`handleChangeHolidayCountry`); a region of another country is ignored by
+  the select and by the load (`holidayRegionForCountry`).
+- **Filter.** `filterHolidaysByRegion` (pure) keeps an entry when
+  `global === true`, when no region is set, or when `counties` contains the
+  region; `handleFetchHolidays` applies it before the existing dedupe.
+- **No automatic rewrite.** Picking a region only saves the region; the
+  stored list stays as it is (an amber note says so until the next load).
+  Load Holidays replaces the year's list as before, manual entries of that
+  year included.
+- **Persistence.** `AppState.holidayRegion: Optional[str]` (declared, or
+  pydantic would drop it on every save). Normalized identically in
+  `backend/state.py` (`_normalize_holiday_region`) and `normalizeAppState`
+  (`normalizeHolidayRegion`): uppercased, must match
+  `[A-Z]{2}-[A-Z0-9]{1,3}` (Nager uses numeric codes such as `IT-32`), no
+  trimming, anything else is unset; non-strings become unset before
+  validation, so a bad value never fails a save with 422. A wrap
+  `model_serializer` on `AppState` omits the key when unset (as
+  `Location.color` does), so a calendar without a region dumps
+  byte-identical to before: same stored blob, same revision, no spurious
+  `409 state_changed` for open tabs after the deploy. A region is calendar
+  content (it changes the revision), but not a planning input:
+  `planning_fingerprint` excludes it like `holidayCountry`/`holidayYear`.
+  The OpenAPI schemas only gain the optional property.
+- Help → Holidays explains the state choice.
+- Tests: `src/lib/holidays.test.ts` (filter with the real DE 2026 answer,
+  normalizer, region table), `shiftRows.test.ts` (normalizeAppState),
+  `SettingsView.test.tsx` (select, hints, load arguments, foreign region,
+  unknown code); backend `test_state_normalization.py` (normalizer,
+  non-strings, a pre-v1.72 blob keeps bytes and revision through load and
+  save, round trip, clearing restores the old revision),
+  `test_state_routes.py` (GET/POST `/v1/state` round trip, 409 for a stale
+  tab), `test_fixed_planning_tasks.py` (fingerprint); e2e
+  `holiday-region.spec.ts` (mocked API, runs in CI).
+- Deploy notes: no migration; stored calendars stay byte-identical until a
+  user picks a region. Existing holiday lists are not corrected
+  automatically: users pick their state and load again.
+  `backend/default_state.json` is unchanged (holidays of all states, no
+  region), so new accounts see the hint. Version 1.72 (72).

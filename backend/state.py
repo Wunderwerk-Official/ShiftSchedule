@@ -102,6 +102,20 @@ def _normalize_location_color(value: Optional[str]) -> Optional[str]:
     return value.upper() if value and _HEX_COLOR_RE.fullmatch(value) else None
 
 
+# ISO 3166-2 shape: country, hyphen, 1-3 letters or digits ("DE-NW", "IT-32").
+_HOLIDAY_REGION_RE = re.compile(r"[A-Z]{2}-[A-Z0-9]{1,3}")
+
+
+def _normalize_holiday_region(value: Optional[str]) -> Optional[str]:
+    """Keep an uppercased ISO 3166-2 subdivision code; anything else means
+    "no region". No trimming, same rule as normalizeHolidayRegion in
+    src/lib/holidays.ts."""
+    if not value:
+        return None
+    upper = value.upper()
+    return upper if _HOLIDAY_REGION_RE.fullmatch(upper) else None
+
+
 def _ensure_locations(locations: List[Location]) -> List[Location]:
     by_id: Dict[str, Location] = {}
     for loc in locations:
@@ -778,6 +792,11 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
         state.locations = locations
         changed = True
     location_ids = {loc.id for loc in state.locations}
+
+    holiday_region = _normalize_holiday_region(state.holidayRegion)
+    if holiday_region != state.holidayRegion:
+        state.holidayRegion = holiday_region
+        changed = True
 
     normalized_clinicians: List[Clinician] = []
     for clinician in state.clinicians:

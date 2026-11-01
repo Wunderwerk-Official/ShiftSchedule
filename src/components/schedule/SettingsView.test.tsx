@@ -38,7 +38,8 @@ function setup(overrides: Partial<ComponentProps<typeof SettingsView>> = {}) {
     solverSettings: defaultSolverSettings, isAdmin: true,
     onRenamePool: vi.fn(), onAddLocation: vi.fn(), onRenameLocation: vi.fn(), onRemoveLocation: vi.fn(),
     onReorderLocations: vi.fn(), onAddClinician: vi.fn(), onEditClinician: vi.fn(), onRemoveClinician: vi.fn(),
-    onChangeHolidayCountry: vi.fn(), onChangeHolidayYear: vi.fn(), onFetchHolidays: vi.fn(), onAddHoliday: vi.fn(),
+    onChangeHolidayCountry: vi.fn(), onChangeHolidayRegion: vi.fn(), onChangeHolidayYear: vi.fn(),
+    onFetchHolidays: vi.fn(), onAddHoliday: vi.fn(),
     onRemoveHoliday: vi.fn(), onChangeSolverSettings: vi.fn(), onChangeWeeklyTemplate: vi.fn(),
     onCreateSection: vi.fn().mockReturnValue("section"), onUpdateSectionColor: vi.fn(), onExportScheduleSnapshot: vi.fn(),
     onImportScheduleSnapshot: vi.fn().mockResolvedValue({ imported: 0, droppedClinicians: 0, droppedSlots: 0 }),
@@ -285,4 +286,55 @@ it("adds a holiday picked in the date picker", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   const month = String(now.getMonth() + 1).padStart(2, "0");
   expect(props.onAddHoliday).toHaveBeenCalledWith({ dateISO: `${now.getFullYear()}-${month}-15`, name: "Clinic day" });
+});
+
+describe("holiday region", () => {
+  const allStatesHint = "Without a state, the regional holidays of all states are included.";
+
+  it("offers the German states and says that all states are included without one", async () => {
+    const props = setup();
+    expect(screen.getByText(allStatesHint)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "All states" }));
+    fireEvent.click(screen.getByRole("button", { name: "Nordrhein-Westfalen" }));
+    expect(props.onChangeHolidayRegion).toHaveBeenCalledWith("DE-NW");
+    // The stored list stays as it is until the user loads again.
+    expect(props.onFetchHolidays).not.toHaveBeenCalled();
+    expect(screen.getByText(/unchanged until you load holidays again/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load Holidays" }));
+    await waitFor(() => expect(screen.queryByText(/unchanged until you load holidays again/)).toBeNull());
+  });
+
+  it("loads with the chosen state and can go back to all states", async () => {
+    const props = setup({ holidayRegion: "DE-NW" });
+    expect(screen.queryByText(allStatesHint)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load Holidays" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, "DE-NW"));
+
+    fireEvent.click(screen.getByRole("button", { name: "Nordrhein-Westfalen" }));
+    fireEvent.click(screen.getByRole("button", { name: "All states" }));
+    expect(props.onChangeHolidayRegion).toHaveBeenCalledWith(undefined);
+  });
+
+  it("has no region select for a country without regional holidays", async () => {
+    const props = setup({ holidayCountry: "FR", holidayRegion: "FR-75" });
+    expect(screen.queryByText(/regional holidays of all/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /^All / })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load Holidays" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("FR", 2026, undefined));
+  });
+
+  it("ignores a region of another country", async () => {
+    const props = setup({ holidayCountry: "CH", holidayRegion: "DE-NW" });
+    expect(screen.getByRole("button", { name: "All cantons" })).toBeVisible();
+    expect(screen.getByText("Without a canton, the regional holidays of all cantons are included.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Load Holidays" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("CH", 2026, undefined));
+  });
+
+  it("keeps showing a stored code it has no name for", () => {
+    setup({ holidayRegion: "DE-XX" });
+    expect(screen.getByRole("button", { name: "DE-XX" })).toBeVisible();
+    expect(screen.queryByText(allStatesHint)).toBeNull();
+  });
 });
