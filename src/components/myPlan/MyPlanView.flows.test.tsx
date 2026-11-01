@@ -121,7 +121,7 @@ describe("MyPlanView flows", () => {
   });
 
   it("phone header: scope row without star or Views; a stored start view changes nothing", () => {
-    // Start views stored before v1.71 are ignored: My plan shows the phone's own range.
+    // Start views stored before v1.74 are ignored: My plan shows the phone's own range.
     renderPlan({
       prefs: { ...LENA, startViewMobile: { scope: "me", range: "month", orientation: "top" } },
       isMobile: true,

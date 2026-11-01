@@ -13,7 +13,7 @@ import { TEXT_3, initialsOf, segmentClass, segmentGroupClass } from "../myPlan/p
 // the row is too narrow). Row 2: the existing header (navigator, badges,
 // publish), unchanged. The classic grid always colors people (the "Color by"
 // switch is gone). The start-page star and the saved "Views" menu were
-// removed in v1.71.
+// removed in v1.74.
 
 type TeamPlanHeaderProps = {
   isMobile: boolean;

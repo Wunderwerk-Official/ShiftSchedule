@@ -196,8 +196,9 @@ export type AppState = {
   slotOverridesByKey?: Record<string, number>;
   weeklyTemplate?: WeeklyCalendarTemplate;
   holidayCountry?: string;
-  /** Region for public holidays, e.g. "DE-NW"; empty = nationwide only. */
-  holidayRegion?: string | null;
+  // ISO 3166-2 subdivision ("DE-NW") that "Load Holidays" filters regional
+  // holidays by (src/lib/holidays.ts); absent = the holidays of all regions.
+  holidayRegion?: string;
   holidayYear?: number;
   holidays?: Holiday[];
   publishedWeekStartISOs?: string[];
@@ -1459,7 +1460,7 @@ export async function exportWeeksPdf(
 }
 
 // Per-user UI preferences ("I am" link, "My plan" view, Times; the saved
-// views and start pages are kept but unused since v1.71). Stored
+// views and start pages are kept but unused since v1.74). Stored
 // server-side per account in their own table, NOT in AppState, so they never
 // touch the calendar revision. Mirrors backend/models.py::UserPreferences.
 export type PlanScope = "team" | "me";
@@ -1496,14 +1497,14 @@ export type UserPreferences = {
   myPlanRangeMobile: PlanRange;
   teamTimeLayout: TeamTimeLayout;
   /**
-   * No longer used by the UI since v1.71 (start-page star and "Views" menu
+   * No longer used by the UI since v1.74 (start-page star and "Views" menu
    * removed; the calendar always opens in the team plan). Kept so stored
    * preferences and the backend stay compatible. At most 12 (backend limit).
    */
   savedViews: SavedView[];
-  /** Unused by the UI since v1.71 (see savedViews). */
+  /** Unused by the UI since v1.74 (see savedViews). */
   startViewDesktop: ViewConfig | null;
-  /** Unused by the UI since v1.71 (see savedViews). */
+  /** Unused by the UI since v1.74 (see savedViews). */
   startViewMobile: ViewConfig | null;
 };
 

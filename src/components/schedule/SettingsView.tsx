@@ -14,7 +14,7 @@ import type {
   WeeklyCalendarTemplate,
 } from "../../api/client";
 import { DEFAULT_AGENT_INSTRUCTIONS } from "../../lib/agentSettings";
-import { holidayRegionOptions } from "../../lib/holidays";
+import { HOLIDAY_REGIONS, holidayRegionForCountry } from "../../lib/holidays";
 import AgentSettingsPanel from "./AgentSettingsPanel";
 import WeeklyTemplateBuilder, { SECTION_PRIORITY_HELP } from "./WeeklyTemplateBuilder";
 import CustomSelect from "./CustomSelect";
@@ -39,10 +39,8 @@ type SettingsViewProps = {
   clinicians: Array<{ id: string; name: string }>;
   holidays: Holiday[];
   holidayCountry: string;
-  /** Region for public holidays, e.g. "DE-NW"; "" = nationwide only. */
-  holidayRegion: string;
-  /** Regions the public-holiday service listed (offered for other countries). */
-  holidayRegions?: string[];
+  /** ISO 3166-2 code ("DE-NW") Load filters by; undefined = all regions. */
+  holidayRegion?: string;
   holidayYear: number;
   solverSettings: SolverSettings;
   weeklyTemplate?: WeeklyCalendarTemplate;
@@ -56,10 +54,10 @@ type SettingsViewProps = {
   onEditClinician: (clinicianId: string) => void;
   onRemoveClinician: (clinicianId: string) => void;
   onChangeHolidayCountry: (countryCode: string) => void;
-  onChangeHolidayRegion: (region: string) => void;
+  onChangeHolidayRegion: (region: string | undefined) => void;
   onChangeHolidayYear: (year: number) => void;
   /** Loads the public holidays; resolves to how many were added. */
-  onFetchHolidays: (countryCode: string, year: number, region: string) => Promise<number | void>;
+  onFetchHolidays: (countryCode: string, year: number, region?: string) => Promise<number | void>;
   onAddHoliday: (holiday: Holiday) => void;
   onRemoveHoliday: (holiday: Holiday) => void;
   onChangeSolverSettings: (settings: SolverSettings) => void;
@@ -80,7 +78,6 @@ export default function SettingsView({
   holidays,
   holidayCountry,
   holidayRegion,
-  holidayRegions = [],
   holidayYear,
   solverSettings,
   weeklyTemplate,
@@ -123,6 +120,9 @@ export default function SettingsView({
     null,
   );
   const [isFetchingHolidays, setIsFetchingHolidays] = useState(false);
+  // The stored list is never rewritten by a region change, so say so until
+  // the next load.
+  const [holidayRegionChanged, setHolidayRegionChanged] = useState(false);
   const [holidayError, setHolidayError] = useState<string | null>(null);
   const [holidayNotice, setHolidayNotice] = useState<string | null>(null);
   const [holidayInputError, setHolidayInputError] = useState<string | null>(null);
@@ -148,8 +148,23 @@ export default function SettingsView({
   const hasCountryOption = countryOptions.some(
     (option) => option.code === normalizedCountry,
   );
-  const regionOptions = holidayRegionOptions(normalizedCountry, holidayRegions);
-  const hasRegionOption = regionOptions.some((option) => option.value === holidayRegion);
+  // Load Holidays uses exactly the region the select shows: none for a
+  // country without a region list or for a region of another country.
+  const regionSet = HOLIDAY_REGIONS[normalizedCountry];
+  const selectedRegion = regionSet
+    ? holidayRegionForCountry(normalizedCountry, holidayRegion)
+    : undefined;
+  const regionOptions = regionSet
+    ? [
+        { value: "", label: `All ${regionSet.plural}` },
+        ...(selectedRegion && !regionSet.regions.some((region) => region.code === selectedRegion)
+          ? [{ value: selectedRegion, label: selectedRegion }]
+          : []),
+        ...regionSet.regions.map((region) => ({ value: region.code, label: region.name })),
+      ]
+    : [];
+  const selectedRegionLabel =
+    regionOptions.find((option) => option.value === (selectedRegion ?? ""))?.label ?? "";
   const holidayYearPrefix = `${holidayYear}-`;
   const holidaysForYear = holidays
     .filter((holiday) => holiday.dateISO.startsWith(holidayYearPrefix))
@@ -793,10 +808,6 @@ export default function SettingsView({
             </div>
             <div className="text-xs text-slate-500 dark:text-slate-400">
               Replaces this year&apos;s loaded public holidays; holidays you added by hand stay.
-              Region: nationwide holidays plus those of this region.
-              {normalizedCountry !== "DE" && regionOptions.length <= 1
-                ? " For this country, load once to list its regions, then choose one and load again."
-                : ""}
             </div>
             <div className="flex flex-wrap items-center gap-3">
               <CustomSelect
@@ -817,20 +828,20 @@ export default function SettingsView({
                 }`}
                 className="w-56"
               />
-              <CustomSelect
-                value={holidayRegion}
-                onChange={onChangeHolidayRegion}
-                options={[
-                  ...regionOptions,
-                  ...(!hasRegionOption ? [{ value: holidayRegion, label: holidayRegion }] : []),
-                ]}
-                ariaLabel={`Region: ${
-                  regionOptions.find((option) => option.value === holidayRegion)?.label ??
-                  holidayRegion
-                }`}
-                title="Nationwide holidays plus those of this region."
-                className="w-56"
-              />
+              {regionSet ? (
+                <CustomSelect
+                  value={selectedRegion ?? ""}
+                  onChange={(value) => {
+                    const nextRegion = value || undefined;
+                    if (nextRegion === selectedRegion) return;
+                    onChangeHolidayRegion(nextRegion);
+                    setHolidayRegionChanged(true);
+                  }}
+                  options={regionOptions}
+                  ariaLabel={`${regionSet.noun[0].toUpperCase()}${regionSet.noun.slice(1)}: ${selectedRegionLabel}`}
+                  className="w-56"
+                />
+              ) : null}
               <button
                 type="button"
                 onClick={async () => {
@@ -841,8 +852,9 @@ export default function SettingsView({
                     const added = await onFetchHolidays(
                       normalizedCountry,
                       holidayYear,
-                      holidayRegion,
+                      selectedRegion,
                     );
+                    setHolidayRegionChanged(false);
                     if (typeof added === "number") {
                       setHolidayNotice(
                         `Loaded ${added} public holiday${added === 1 ? "" : "s"} for ${holidayYear}.`,
@@ -868,6 +880,17 @@ export default function SettingsView({
                 {isFetchingHolidays ? "Loading..." : `Load holidays for ${holidayYear}`}
               </button>
             </div>
+            {regionSet && !selectedRegion ? (
+              <div className="text-xs text-slate-500 dark:text-slate-400">
+                Without a {regionSet.noun}, the regional holidays of all {regionSet.plural} are
+                included.
+              </div>
+            ) : null}
+            {holidayRegionChanged ? (
+              <div className="text-xs font-semibold text-amber-700 dark:text-amber-300">
+                The list below is unchanged until you load holidays again.
+              </div>
+            ) : null}
             {holidayError ? (
               <div className="text-xs font-semibold text-rose-600 dark:text-rose-200">
                 {holidayError}

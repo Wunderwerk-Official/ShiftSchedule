@@ -227,10 +227,15 @@ export default function HelpView() {
               Holiday names appear under the date header.
             </li>
             <li>
-              Public holidays can be loaded by country, region and year: the nationwide
-              holidays plus those of the chosen region (e.g. a German state). Loading again
+              Public holidays can be loaded by country, state (canton, region) and year:
+              the nationwide holidays plus those of the chosen state. Loading again
               replaces that year&apos;s loaded holidays; holidays you added by hand (date +
               name) stay. Any holiday can be removed.
+            </li>
+            <li>
+              Choose your state before loading: without one, the regional holidays of
+              every state are loaded, and the calendar plans those days with holiday
+              staffing. Load again after changing it.
             </li>
           </ul>
         </Section>
@@ -257,7 +262,7 @@ export default function HelpView() {
             </li>
             <li>
               <span className="font-medium">Holidays</span>: load public holidays by
-              country and region, add/remove.
+              country and state, add/remove.
             </li>
           </ul>
         </Section>
@@ -357,19 +362,22 @@ export default function HelpView() {
             <li>
               <span className="font-medium">Times: Stacked</span> (team plan, standard weekly
               grid) shows one column per day and a day&rsquo;s times as rows below each other.
-              The left column names each row and its time and carries the workplace&rsquo;s color;
+              The left column names each row and its time and carries its location&rsquo;s color;
               the cells show only the people (names shorten to initials in narrow columns). A
-              cell writes its own time only where it differs from its row; a{" "}
+              cell names its own workplace or time only where it differs from its row; a{" "}
               <span className="font-medium">+N</span> next to a row name means some days belong
-              to another workplace (hover it, or a cell, to see which).{" "}
+              to another workplace (hover it to see which).{" "}
               <span className="font-medium">Side by side</span> gives every time of a day its
               own column, as before.
             </li>
             <li>
-              In the team plan (standard weekly grid) every person has their own color. With{" "}
-              <span className="font-medium">Times: Stacked</span> the workplaces keep their
-              colors in the row labels; <span className="font-medium">Side by side</span> shows
-              the workplace names in neutral blocks. Once you have linked yourself
+              In the team plan (standard weekly grid) every person has their own color: light
+              and dark entries mixed, chosen to stay apart (they repeat after 20 people). The
+              left column is colored by <span className="font-medium">location</span>: each
+              location has its own color, its header band shows it strongly, and its rows
+              alternate between a light and a stronger shade, so neighboring rows (MR, CT, …)
+              stay apart. <span className="font-medium">Side by side</span> shows the
+              workplace names in neutral blocks. Once you have linked yourself
               (&ldquo;That&rsquo;s me&rdquo;), your own entries also get an outline. The
               monthly sheet layout keeps its look.
             </li>
@@ -382,9 +390,10 @@ export default function HelpView() {
           <p className="mt-2">
             <span className="font-medium">Location colors</span> are different: they are part
             of the shared calendar, so every planner sees them. Pick one next to a location's
-            name in Settings → Weekly Calendar Template. My plan tints each day by the
-            location where a shift starts; the standard weekly grid tints that location's row
-            labels and its location header.
+            name in Settings → Weekly Calendar Template; <span className="font-medium">Auto</span>{" "}
+            (the default) gives each location the next free color in location order. The
+            standard weekly grid colors that location's row labels and its header band; My
+            plan tints each day by the location where a shift starts (picked colors only).
           </p>
         </Section>
       </div>

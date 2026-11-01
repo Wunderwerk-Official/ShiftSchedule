@@ -17,6 +17,7 @@ import type {
 import { normalizePreferredWorkingTimes, normalizeWorkPattern } from "./clinicianPreferences";
 import { BLOCK_COLOR_SWATCH_OPTIONS } from "./colorPalette";
 import { DAY_TYPES, getDayType } from "./dayTypes";
+import { normalizeHolidayRegion } from "./holidays";
 
 export const SHIFT_ROW_SEPARATOR = "::";
 export const DEFAULT_LOCATION_ID = "loc-default";
@@ -807,6 +808,13 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
   }
   const locationIdSet = new Set(locations.map((loc) => loc.id));
 
+  // Same rule as the backend; "no region" is always absent, not undefined.
+  const { holidayRegion: rawHolidayRegion, ...stateWithoutRegion } = state;
+  const holidayRegion = normalizeHolidayRegion(rawHolidayRegion);
+  if (holidayRegion !== rawHolidayRegion) {
+    changed = true;
+  }
+
   const clinicians = (state.clinicians ?? []).map((clinician) => {
     const preferredWorkingTimes = normalizePreferredWorkingTimes(
       clinician.preferredWorkingTimes,
@@ -1157,7 +1165,8 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
 
   return {
     state: {
-      ...state,
+      ...stateWithoutRegion,
+      ...(holidayRegion ? { holidayRegion } : {}),
       locationsEnabled,
       locations,
       rows,

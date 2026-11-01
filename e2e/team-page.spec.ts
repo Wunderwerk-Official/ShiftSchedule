@@ -5,7 +5,8 @@ import type { AppState, Assignment } from "../src/api/client";
 // Team page behaviour on a mocked API: the rule-violation and split-shift
 // popovers, badge jumps in the phone day view, the "template too large"
 // banner, Reset on vacation days, the backup before a shifts file import and
-// loading public holidays by region.
+// loading public holidays without losing those added by hand (the state
+// filter itself is covered by holiday-region.spec.ts).
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -439,13 +440,17 @@ test.describe("shifts file import", () => {
   });
 });
 
-test("loads the nationwide holidays plus those of the chosen region and keeps hand-added ones", async ({ page }) => {
+test("loading holidays for the chosen state keeps the holidays added by hand", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.holidayCountry = "DE";
+  state.holidayRegion = "DE-NW";
   state.holidays = [
     { dateISO: "2026-03-02", name: "Clinic day", source: "manual" },
-    // Loaded earlier for all states (older data without a source).
+    // Loaded for all states before holidays carried a source: the service
+    // lists it, so loading replaces it.
     { dateISO: "2026-03-08", name: "Internationaler Frauentag" },
+    // Added by hand before holidays carried a source: not listed, so kept.
+    { dateISO: "2026-12-24", name: "Heiligabend (Klinik)" },
   ];
   const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
   await page.route("https://date.nager.at/api/v3/PublicHolidays/2026/DE", (route) =>
@@ -461,21 +466,42 @@ test("loads the nationwide holidays plus those of the chosen region and keeps ha
   );
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Region: Nationwide only" }).click();
-  await page.getByRole("button", { name: "Nordrhein-Westfalen", exact: true }).click();
+  await expect(page.getByRole("button", { name: "State: Nordrhein-Westfalen" })).toBeVisible();
+  // A holiday added by hand now is tagged and survives the load as well.
+  await page.getByRole("button", { name: "Add Holiday", exact: true }).click();
+  await page.getByRole("button", { name: "DD.MM.YYYY", exact: true }).click();
+  await page.getByRole("button", { name: "15", exact: true }).click();
+  await page.getByPlaceholder("Holiday name").fill("Team day");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Team day")).toContainText("added by hand");
+
   await page.getByRole("button", { name: "Load holidays for 2026" }).click();
 
   await expect(page.getByText("Loaded 2 public holidays for 2026.")).toBeVisible();
   await expect(page.getByText("Neujahr", { exact: true })).toBeVisible();
   await expect(page.getByText("Fronleichnam", { exact: true })).toBeVisible();
   await expect(page.getByText("Clinic day")).toContainText("added by hand");
+  await expect(page.getByText("Team day")).toContainText("added by hand");
+  await expect(page.getByText("Heiligabend (Klinik)")).toBeVisible();
   await expect(page.getByText("Heilige Drei Könige")).toHaveCount(0);
   await expect(page.getByText("Internationaler Frauentag")).toHaveCount(0);
   await expect
     .poll(() => {
       const saved = api.state();
-      return { region: saved.holidayRegion, holidays: (saved.holidays ?? []).map((h) => `${h.name}:${h.source}`).sort() };
+      return {
+        region: saved.holidayRegion,
+        holidays: (saved.holidays ?? []).map((h) => `${h.dateISO} ${h.name}:${h.source ?? "untagged"}`).sort(),
+      };
     })
-    .toEqual({ region: "DE-NW", holidays: ["Clinic day:manual", "Fronleichnam:public", "Neujahr:public"] });
+    .toEqual({
+      region: "DE-NW",
+      holidays: [
+        "2026-01-01 Neujahr:public",
+        "2026-01-15 Team day:manual",
+        "2026-03-02 Clinic day:manual",
+        "2026-06-04 Fronleichnam:public",
+        "2026-12-24 Heiligabend (Klinik):untagged",
+      ],
+    });
   expect(api.errors).toEqual([]);
 });

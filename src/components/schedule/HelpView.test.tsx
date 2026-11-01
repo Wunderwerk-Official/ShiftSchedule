@@ -19,7 +19,7 @@ it("describes the current planning panel and drop rules", () => {
   expect(text).not.toContain("snaps back");
   expect(text).not.toContain("not responding");
   expect(screen.getByRole("heading", { name: "12. My plan" })).toBeVisible();
-  // v1.71: the linked person can be changed; the quoted label is PersonPicker's
+  // v1.74: the linked person can be changed; the quoted label is PersonPicker's
   // footer with a placeholder name. No star or saved views.
   const footerLabel = changeLinkLabel("<your name>");
   expect(footerLabel).toBe("Not <your name>? Change who you are");
@@ -48,5 +48,6 @@ it("describes the import backup and the regional holiday loading", () => {
   expect(text).toContain("nothing is imported");
   expect(text).not.toMatch(/without a backup|save a Calendar snapshot first/);
   expect(text).toContain("holidays you added by hand (date + name) stay");
-  expect(text).not.toContain("regional holidays of all states");
+  // Without a state every state's regional holidays are loaded (v1.72).
+  expect(text).toContain("without one, the regional holidays of every state are loaded");
 });

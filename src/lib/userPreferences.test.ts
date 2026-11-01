@@ -414,7 +414,7 @@ describe("useUserPreferences", () => {
   });
 
   it("a re-read keeps loaded true and saves nothing", async () => {
-    // A start view stored before v1.71 is still read and kept, just unused.
+    // A start view stored before v1.74 is still read and kept, just unused.
     const startView = { scope: "me", range: "week", orientation: "top" } as const;
     serve({ startViewDesktop: startView });
     const { result } = renderHook(() => useUserPreferences("lena"));

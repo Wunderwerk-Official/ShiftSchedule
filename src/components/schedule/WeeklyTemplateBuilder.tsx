@@ -25,6 +25,7 @@ import type {
 import CustomTimePicker from "./CustomTimePicker";
 import ColorPickerPopover from "./ColorPickerPopover";
 import LocationColorPicker from "./LocationColorPicker";
+import { autoLocationColor } from "../../lib/locationColors";
 import CustomSelect from "./CustomSelect";
 import { getContrastTextColor } from "../../lib/shiftRows";
 import { BLOCK_COLOR_OPTIONS } from "../../lib/colorPalette";
@@ -1432,6 +1433,7 @@ export default function WeeklyTemplateBuilder({
                           value={location.color ?? null}
                           onChange={(color) => onSetLocationColor(location.id, color)}
                           label={`Location color for ${location.name || "location"}`}
+                          autoColor={autoLocationColor(locations, location.id)}
                         />
                       ) : null}
                       <button

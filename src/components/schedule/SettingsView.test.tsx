@@ -34,8 +34,7 @@ beforeEach(() => {
 
 function setup(overrides: Partial<ComponentProps<typeof SettingsView>> = {}) {
   const props: ComponentProps<typeof SettingsView> = {
-    classRows: [], poolRows: [], locations: [], clinicians: [], holidays: [], holidayCountry: "DE", holidayRegion: "",
-    holidayRegions: [], holidayYear: 2026,
+    classRows: [], poolRows: [], locations: [], clinicians: [], holidays: [], holidayCountry: "DE", holidayYear: 2026,
     solverSettings: defaultSolverSettings, isAdmin: true,
     onRenamePool: vi.fn(), onAddLocation: vi.fn(), onRenameLocation: vi.fn(), onRemoveLocation: vi.fn(),
     onReorderLocations: vi.fn(), onAddClinician: vi.fn(), onEditClinician: vi.fn(), onRemoveClinician: vi.fn(),
@@ -344,26 +343,59 @@ it("shows why nothing was imported when the backup fails", async () => {
   expect(screen.queryByText(/^Imported/)).toBeNull();
 });
 
-describe("public holidays", () => {
-  it("offers the German states as regions and reports a region change", () => {
+describe("holidays: state and holidays added by hand", () => {
+  const allStatesHint = "Without a state, the regional holidays of all states are included.";
+
+  it("offers the German states and says that all states are included without one", async () => {
     const props = setup();
-    fireEvent.click(screen.getByRole("button", { name: "Region: Nationwide only" }));
+    expect(screen.getByText(allStatesHint)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "State: All states" }));
     expect(screen.getByRole("button", { name: "Bayern" })).toBeVisible();
     expect(screen.getByRole("button", { name: "Thüringen" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "Nordrhein-Westfalen" }));
     expect(props.onChangeHolidayRegion).toHaveBeenCalledWith("DE-NW");
+    // The stored list stays as it is until the user loads again.
+    expect(props.onFetchHolidays).not.toHaveBeenCalled();
+    expect(screen.getByText(/unchanged until you load holidays again/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(screen.queryByText(/unchanged until you load holidays again/)).toBeNull());
   });
 
-  it("lists regions the service named for other countries", () => {
-    setup({ holidayCountry: "CH", holidayRegion: "CH-ZH", holidayRegions: ["CH-BE", "CH-ZH", "DE-BY"] });
-    fireEvent.click(screen.getByRole("button", { name: "Region: CH-ZH" }));
-    expect(screen.getByRole("button", { name: "Nationwide only" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "CH-BE" })).toBeVisible();
-    expect(screen.queryByRole("button", { name: "DE-BY" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Bayern" })).toBeNull();
+  it("loads with the chosen state and can go back to all states", async () => {
+    const props = setup({ holidayRegion: "DE-NW" });
+    expect(screen.queryByText(allStatesHint)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, "DE-NW"));
+
+    fireEvent.click(screen.getByRole("button", { name: "State: Nordrhein-Westfalen" }));
+    fireEvent.click(screen.getByRole("button", { name: "All states" }));
+    expect(props.onChangeHolidayRegion).toHaveBeenCalledWith(undefined);
   });
 
-  it("loads with the chosen region, says how many were added and marks holidays added by hand", async () => {
+  it("has no region select for a country without regional holidays", async () => {
+    const props = setup({ holidayCountry: "FR", holidayRegion: "FR-75" });
+    expect(screen.queryByText(/regional holidays of all/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /All (states|cantons|regions)/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("FR", 2026, undefined));
+  });
+
+  it("ignores a region of another country", async () => {
+    const props = setup({ holidayCountry: "CH", holidayRegion: "DE-NW" });
+    expect(screen.getByRole("button", { name: "Canton: All cantons" })).toBeVisible();
+    expect(screen.getByText("Without a canton, the regional holidays of all cantons are included.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("CH", 2026, undefined));
+  });
+
+  it("keeps showing a stored code it has no name for", () => {
+    setup({ holidayRegion: "DE-XX" });
+    expect(screen.getByRole("button", { name: "State: DE-XX" })).toBeVisible();
+    expect(screen.queryByText(allStatesHint)).toBeNull();
+  });
+
+  it("loads with the chosen state, says how many were added and marks holidays added by hand", async () => {
     const props = setup({
       holidayRegion: "DE-NW",
       holidays: [

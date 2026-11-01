@@ -21,7 +21,7 @@ import {
 // names, so each save sends just the keys changed since the last one.
 //
 // `savedViews`, `startViewDesktop` and `startViewMobile` are no longer used
-// by the UI since v1.71 (the start-page star and the "Views" menu are gone;
+// by the UI since v1.74 (the start-page star and the "Views" menu are gone;
 // the calendar always opens in the team plan). They stay in the model and
 // are still normalized, so stored data and the backend stay compatible.
 
@@ -103,7 +103,7 @@ export function normalizePreferences(raw: unknown): UserPreferences {
     myPlanRange: pick(source.myPlanRange, PLAN_RANGES, "week"),
     myPlanRangeMobile: pick(source.myPlanRangeMobile, PLAN_RANGES, "week"),
     teamTimeLayout: pick(source.teamTimeLayout, TIME_LAYOUTS, "stacked"),
-    // Unused by the UI since v1.71; kept normalized for compatibility.
+    // Unused by the UI since v1.74; kept normalized for compatibility.
     savedViews,
     startViewDesktop: normalizeViewConfig(source.startViewDesktop),
     startViewMobile: normalizeViewConfig(source.startViewMobile),

@@ -100,11 +100,15 @@ import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
 import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
 import { downloadTextFile } from "../lib/download";
+import {
+  holidayRegionForCountry,
+  mergeLoadedHolidays,
+  type NagerPublicHoliday,
+} from "../lib/holidays";
 import { computeOpenSlots } from "../lib/openSlots";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
-import { mergeLoadedHolidays, NATIONWIDE_ONLY, type PublicHolidayApiEntry } from "../lib/holidays";
 import { saveShiftsFileImport } from "../lib/shiftsFileImport";
 import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
 import { resetSolverAssignments, resetUnfixedAssignments } from "./resetSolverAssignments";
@@ -496,13 +500,8 @@ export default function WeeklySchedulePage({
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
   );
-  // Region for public holidays (e.g. "DE-NW"); "" = nationwide only.
-  const [holidayRegion, setHolidayRegion] = useState<string>(
-    defaultAppState.holidayRegion ?? NATIONWIDE_ONLY,
-  );
-  // Regions listed by the public-holiday service in this session (offered
-  // in the Region choice for countries without a built-in list).
-  const [seenHolidayRegions, setSeenHolidayRegions] = useState<string[]>([]);
+  // ISO 3166-2 code ("DE-NW") the next "Load Holidays" filters by.
+  const [holidayRegion, setHolidayRegion] = useState<string | undefined>(undefined);
   const [holidayYear, setHolidayYear] = useState(currentYear);
   const [publishedWeekStartISOs, setPublishedWeekStartISOs] = useState<string[]>([]);
   const [solverSettings, setSolverSettings] = useState<SolverSettings>(
@@ -787,9 +786,10 @@ export default function WeeklySchedulePage({
     [clinicians],
   );
   // Team grid colors (plan §2.9): every person has their own color and the
-  // linked person ("That's me") gets an outline. With "Times: Stacked" the
-  // section colors stay in the lane labels; side by side shows neutral
-  // section blocks. Print/public pages keep the section look.
+  // linked person ("That's me") gets an outline. Since v1.71 the label column
+  // is colored by location (its own color or an automatic one, alternating
+  // shades per row band); side by side shows neutral section blocks.
+  // Print/public pages keep the section look.
   const linkedClinicianIndex = prefs.clinicianId
     ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
     : -1;
@@ -799,9 +799,10 @@ export default function WeeklySchedulePage({
     [clinicians, isDark],
   );
   const outlinedClinicianId = linkedClinician?.id ?? null;
+  // Without locations every row belongs to the default location: its color.
   const locationRowTints = useMemo(
-    () => (locationsEnabled ? buildLocationRowTints(locations, isDark) : undefined),
-    [locations, locationsEnabled, isDark],
+    () => buildLocationRowTints(locations, isDark),
+    [locations, isDark],
   );
   // My plan reads the raw assignments; a stable array keeps its plans memoized.
   const planAssignments = useMemo(
@@ -2524,7 +2525,9 @@ export default function WeeklySchedulePage({
     solverRulesRef.current = normalized.solverRules ?? [];
     if (normalized.holidays) setHolidays(normalized.holidays);
     if (normalized.holidayCountry) setHolidayCountry(normalized.holidayCountry);
-    setHolidayRegion(normalized.holidayRegion ?? NATIONWIDE_ONLY);
+    // Unconditional: a restored calendar without a region must not keep the
+    // region of the screen it replaces.
+    setHolidayRegion(normalized.holidayRegion);
     if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
     setPublishedWeekStartISOs(normalized.publishedWeekStartISOs ?? []);
   };
@@ -2614,7 +2617,7 @@ export default function WeeklySchedulePage({
       slotOverridesByKey,
       holidays,
       holidayCountry,
-      holidayRegion: holidayRegion || null,
+      holidayRegion,
       holidayYear,
       publishedWeekStartISOs,
       solverSettings,
@@ -3011,10 +3014,17 @@ export default function WeeklySchedulePage({
       ),
     );
   };
-  // Loads the public holidays of `year` (nationwide plus those of `region`)
-  // and replaces this year's previously loaded ones; holidays added by hand
-  // stay. Returns how many holidays were added.
-  const handleFetchHolidays = async (countryCode: string, year: number, region: string) => {
+  const handleChangeHolidayCountry = (countryCode: string) => {
+    setHolidayCountry(countryCode);
+    // A region belongs to one country ("DE-NW"): another country starts without.
+    setHolidayRegion((prev) => holidayRegionForCountry(countryCode, prev));
+  };
+  // Loads the year's public holidays (nationwide plus the region's own ones;
+  // without a region those of every region) and replaces this year's
+  // previously loaded ones; holidays added by hand stay. Already loaded
+  // lists are never rewritten when only the region changes; the user loads
+  // again. Resolves to how many holidays were added.
+  const handleFetchHolidays = async (countryCode: string, year: number, region?: string) => {
     const normalizedCountry = countryCode.trim().toUpperCase();
     const response = await fetch(
       `https://date.nager.at/api/v3/PublicHolidays/${year}/${normalizedCountry}`,
@@ -3022,26 +3032,16 @@ export default function WeeklySchedulePage({
     if (!response.ok) {
       throw new Error(`Failed to fetch holidays (${response.status}).`);
     }
-    const data = (await response.json()) as PublicHolidayApiEntry[];
+    const data = (await response.json()) as NagerPublicHoliday[];
     const entries = Array.isArray(data) ? data : [];
-    const regionForCountry = region.startsWith(`${normalizedCountry}-`) ? region : NATIONWIDE_ONLY;
+    const regionForCountry = holidayRegionForCountry(normalizedCountry, region);
     // The count comes from the list as shown; the update applies to the
     // latest list (a holiday added while loading is kept).
-    const { added, regions } = mergeLoadedHolidays(holidays, entries, year, regionForCountry);
+    const { added } = mergeLoadedHolidays(holidays, entries, year, regionForCountry);
     setHolidays((prev) => mergeLoadedHolidays(prev, entries, year, regionForCountry).holidays);
-    setSeenHolidayRegions((prev) => Array.from(new Set([...prev, ...regions])).sort());
     setHolidayCountry(normalizedCountry);
-    setHolidayRegion(regionForCountry);
     setHolidayYear(year);
     return added;
-  };
-  const handleChangeHolidayCountry = (countryCode: string) => {
-    const normalizedCountry = countryCode.trim().toUpperCase();
-    setHolidayCountry(normalizedCountry);
-    // A region of another country does not apply.
-    setHolidayRegion((prev) =>
-      prev && !prev.startsWith(`${normalizedCountry}-`) ? NATIONWIDE_ONLY : prev,
-    );
   };
   const openSlotsBadge = (
     <button
@@ -3708,7 +3708,6 @@ export default function WeeklySchedulePage({
             holidays={holidays}
             holidayCountry={holidayCountry}
             holidayRegion={holidayRegion}
-            holidayRegions={seenHolidayRegions}
             holidayYear={holidayYear}
             weeklyTemplate={weeklyTemplate}
             onRenamePool={(rowId, nextName) => {

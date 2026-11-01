@@ -4,7 +4,7 @@ import type { PreferencesUpdate } from "../../lib/userPreferences";
 // Pure helpers around the My-plan view settings: range and orientation labels,
 // and reading / updating the remembered range and orientations per device
 // class. The start-page and saved-view helpers were removed together with the
-// star and the "Views" menu in v1.71.
+// star and the "Views" menu in v1.74.
 
 export const RANGE_LABELS: Record<PlanRange, string> = {
   day: "Day",

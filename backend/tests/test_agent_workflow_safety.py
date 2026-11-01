@@ -365,7 +365,7 @@ def test_assignment_fixed_after_run_start_survives_forced_apply(client):
 
 
 def test_holiday_source_and_region_do_not_stale_a_stored_run():
-    """v1.71 tags holidays with their source and stores a region; neither
+    """v1.74 tags holidays with their source (v1.72 stores a region); neither
     changes planning, so a run made before the update stays applicable."""
     from backend.models import AppState, Holiday
 

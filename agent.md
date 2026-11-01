@@ -17,7 +17,7 @@ Where to look first
 - Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
 - **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 6.5.
 - Solver live stats: `src/lib/solverStats.ts`
-- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `model-settings`, `my-plan`, `team-page`
+- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `holiday-region`, `model-settings`, `my-plan`, `team-page`
 - My plan (v1.64): `src/components/myPlan/MyPlanView.tsx`, pure model `src/lib/myPlan/`, preferences `src/lib/userPreferences.ts` + `backend/preferences.py`
 - API client: `src/api/client.ts`
 - Settings UI: `src/components/schedule/SettingsView.tsx`
@@ -54,8 +54,8 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.71 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits). The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.71). See the v1.64 and v1.71 sections at the end.
-- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. See the v1.65 and v1.66 sections at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits). The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
+- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). Since v1.73 a cell whose section differs from its lane's names it in a small tag (before a differing time). See the v1.65, v1.66, v1.71 and v1.73 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
 - On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
@@ -104,7 +104,7 @@ Clinic sheet layout (Klinik-Monatslayout)
 - Month-scoped `buildRenderedAssignmentMap` (do NOT reuse the week-scoped map — pool synthesis is day-bound). Desktop only (mobile keeps the daily view); week-scoped badges and the Publish toggle are hidden in sheet mode; print/PDF/public pages always use the classic grid. The sheet stays paper-light in dark mode by design.
 
 Pills
-- Team grid (since v1.69 always): person colors — light fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Print/public pages keep the section look (blue pill).
+- Team grid (since v1.69 always): person colors — fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Since v1.71 the palette has 20 colors in two tones (light fill + dark text, or saturated fill + white text), ordered so the first 12 fills differ by ≥ 15 ΔE00 (all 20 by ≥ 9). Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
@@ -119,7 +119,7 @@ Pills
 ---
 
 ## 3) Settings
-Wording (v1.71): the UI says location (not site), section (not block), shift (not assignment), people/person (not clinician/user), locked shift (not fixed assignment), Rest Day row / Vacation row (not pool), "Planning rules & AI" (not Solver Settings), run inbox (not solver history) and basic planner without AI (not draft plan). Setting keys, data keys, ids and `data-*` attributes keep their old names (e.g. `enforceSameLocationPerDay`, `preferContinuousShifts`, `pool-rest-day`, requirement `"mandatory"`).
+Wording (v1.74): the UI says location (not site), section (not block), shift (not assignment), people/person (not clinician/user), locked shift (not fixed assignment), Rest Day row / Vacation row (not pool), "Planning rules & AI" (not Solver Settings), run inbox (not solver history) and basic planner without AI (not draft plan). Setting keys, data keys, ids and `data-*` attributes keep their old names (e.g. `enforceSameLocationPerDay`, `preferContinuousShifts`, `pool-rest-day`, requirement `"mandatory"`).
 
 Sections (Weekly Calendar Template; `weeklyTemplate.blocks` in data)
 - Sections are just section names; time, end-day offset, and required slots are set per placed slot in the grid.
@@ -148,7 +148,7 @@ Locations
 - Location order uses a dropdown ("Location position", 1 = top); names are edited inline ("Location name").
 - The location color popover explains: "Tints this location in My plan and its row labels in the weekly grid. All planners see it."
 - Delete location (confirm) is allowed even for the default location; the next location becomes the new default (`loc-default`) and slot locationIds are updated.
-- Location color (v1.64, optional): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: slate, sand, sage, lilac, or none). Stored as `Location.color` (`#RRGGBB`); presentation only — tints the location's rows in the team grid and the days in My plan, and is excluded from the planning fingerprint.
+- Location color (v1.64; Auto since v1.71): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: blue, green, amber, violet, rose, teal, orange and the muted slate, sand, sage, lilac; or Auto). Stored as `Location.color` (`#RRGGBB`; Auto stores nothing); presentation only and excluded from the planning fingerprint. The team grid colors every location: its own color, or with Auto the next free automatic color in location order (`src/lib/locationColors.ts`); its row bands' labels alternate between two shades and its separator row is a band in its strong color. My plan tints days by picked colors only.
 
 Rest Day & Vacation rows (the pools; Settings card "Rest Day & Vacation rows")
 - Rename the two built-in rows (Rest Day, Vacation); only the displayed name changes. No deletion. The inputs are labelled "Rest Day row name" / "Vacation row name".
@@ -207,9 +207,10 @@ Working Hours Overview
 
 Holidays
 - Year selector with stepper buttons.
-- Country picker with flag emoji (top EU countries + CH, LU), alphabetical; next to it a "Region" picker (`holidayRegionOptions`: "Nationwide only", the 16 German states for DE, and for other countries the regions the service listed this session). Stored as `AppState.holidayRegion` (e.g. "DE-NW"; `null` = nationwide only). Changing the country resets the region only when it belongs to another country.
-- "Load holidays for {year}" (under "Load public holidays") fetches from https://date.nager.at/api/v3/PublicHolidays and merges with `mergeLoadedHolidays` (`src/lib/holidays.ts`): it replaces only that year's loaded holidays (`source: "public"`, and older untagged entries the service lists), keeps holidays added by hand (`source: "manual"`), and adds the nationwide holidays plus those of the chosen region. Afterwards "Loaded N public holidays for {year}." The helper says "Replaces this year's loaded public holidays; holidays you added by hand stay. Region: nationwide holidays plus those of this region." The list header reads "Holidays in {year}".
-- Add holidays manually (saved with `source: "manual"`, shown with a small "added by hand" marker); list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form).
+- Country picker with flag emoji (top EU countries + CH, LU), alphabetical.
+- Region select next to it (v1.72) for countries whose date.nager.at data has regional holidays (`HOLIDAY_REGIONS` in `src/lib/holidays.ts`: DE states, CH cantons, ES, GB and IT regions), stored as `AppState.holidayRegion` (ISO 3166-2, e.g. `DE-NW`). Without a region the select shows "All states" plus the hint that the regional holidays of all states are included. Changing the country resets the region; a stored region of another country is ignored. Since v1.74 the select has an accessible name like the country picker ("State: Nordrhein-Westfalen", "Canton: All cantons").
+- "Load holidays for {year}" (under "Load public holidays"; "Load Holidays" before v1.74) fetches from https://date.nager.at/api/v3/PublicHolidays and keeps an entry when `global === true`, when no region is set, or when its `counties` contain the region (`filterHolidaysByRegion`). Since v1.74 `mergeLoadedHolidays` (`src/lib/holidays.ts`) merges the result: it replaces only that year's loaded holidays (`Holiday.source: "public"`, and older untagged entries the service lists for any region) and keeps holidays added by hand (`source: "manual"`); afterwards "Loaded N public holidays for {year}." The helper says "Replaces this year's loaded public holidays; holidays you added by hand stay." Choosing a region never rewrites stored holidays: an amber note says the list is unchanged until the user loads again. The list header reads "Holidays in {year}".
+- Add holidays manually (since v1.74 saved with `source: "manual"`, shown with a small "added by hand" marker); list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form). `Holiday.source` is omitted from the stored JSON when unset (wrap `model_serializer`, like `holidayRegion` and `Location.color`) and is not a planning input.
 - Add Holiday button is a dashed, full-width button below the list and opens an inline add panel.
 - Holidays behave like weekends in solver + min slot logic and show in the calendar header.
 
@@ -218,7 +219,7 @@ Shifts file (formerly "Schedule snapshot")
 - Result line: "Imported N shifts. Skipped X shift(s) of people no longer listed and Y in slots that no longer exist. A backup of the previous calendar is in Calendar snapshots: “Auto-backup before shifts file import”." (both skipped numbers count shifts).
 
 Database Health Check
-- Lives in the collapsed "Advanced" section at the very bottom of Settings (v1.71, helper "Read-only troubleshooting: …"); the check only mounts, and so only loads, when the section is opened.
+- Lives in the collapsed "Advanced" section at the very bottom of Settings (v1.74, helper "Read-only troubleshooting: …"); the check only mounts, and so only loads, when the section is opened.
 - "Run check" button performs read-only integrity checks on the database (labels as shown in the UI):
   - Shifts in deleted slots (`orphaned_assignment`)
   - Two sections in one cell (`slot_collision`, causes hidden sections)
@@ -602,15 +603,15 @@ type ViewStartAt = "today" | "nextShift" | "weekStart";  // relative anchor, nev
 type SavedView = ViewConfig & { id: string /* 1-64 */; name: string /* 1-60 */; startAt: ViewStartAt /* default "today" */ };
 type UserPreferences = {
   version: number;                          // 1
-  clinicianId: string | null;               // "I am …" link (max 200 chars, blank = null); "Not <name>? Change who you are" sets null (v1.71)
+  clinicianId: string | null;               // "I am …" link (max 200 chars, blank = null); "Not <name>? Change who you are" sets null (v1.74)
   orientationByRange: Record<PlanRange, Orientation>;        // computers; default all "top"
   orientationByRangeMobile: Record<PlanRange, Orientation>;  // phones; default week "left" (agenda)
   myPlanRange: PlanRange;                   // computers; default "week"
   myPlanRangeMobile: PlanRange;             // phones; default "week"
   teamTimeLayout: "columns" | "stacked";    // v1.65; default "stacked" (teamColorBy retired in v1.69, ignored when stored)
-  savedViews: SavedView[];                  // max 12, unique ids; stored but unused by the UI since v1.71
-  startViewDesktop: ViewConfig | null;      // was the start page on computers; stored but unused by the UI since v1.71
-  startViewMobile: ViewConfig | null;       // was the start page on phones; stored but unused by the UI since v1.71
+  savedViews: SavedView[];                  // max 12, unique ids; stored but unused by the UI since v1.74
+  startViewDesktop: ViewConfig | null;      // was the start page on computers; stored but unused by the UI since v1.74
+  startViewMobile: ViewConfig | null;       // was the start page on phones; stored but unused by the UI since v1.74
 };
 ```
 - Saving preferences never changes the calendar revision or a planning fingerprint; the row is deleted together with the account. An unreadable stored row is ignored (defaults returned) instead of locking the user out.
@@ -1180,7 +1181,7 @@ Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
 `AGENT_MAX_TOKENS`; `AGENT_MAX_ITERATIONS` is ignored, the budget is the
 slot-instances × 10 rule) — the spawn subprocess inherits it.
 The model is an ADMIN-ONLY global setting (default `claude-opus-5-5` since
-v1.71, `claude-sonnet-5` before) stored
+v1.74, `claude-sonnet-5` before) stored
 in the `agent_settings` table and managed via `GET/PUT /v1/agent/settings`
 (`backend/agent_budget.py`); the solve endpoint injects it into the payload
 (`SolveRangeRequest.agent_model`, server-overwritten so clients can't spoof
@@ -1284,11 +1285,17 @@ Backend stores one JSON blob per user in SQLite:
   "solverRules": [],
   "publishedWeekStartISOs": ["2025-12-22"],
   "holidayCountry": "DE",
+  "holidayRegion": "DE-NW",
   "holidayYear": 2025,
-  "holidays": [{ "dateISO": "2025-12-25", "name": "Christmas Day" }]
+  "holidays": [
+    { "dateISO": "2025-12-25", "name": "Christmas Day", "source": "public" },
+    { "dateISO": "2025-12-31", "name": "Clinic closed", "source": "manual" }
+  ]
 }
 ```
 Note: `solverRules` is legacy and not used by the current UI/solver, but remains in state for compatibility.
+`holidayRegion` (v1.72) is optional: absent when unset (a wrap `model_serializer` on `AppState` omits it, like `Location.color`), so calendars without a region keep their bytes and revision. Like `holidayCountry`/`holidayYear` it is not part of the planning fingerprint; only `holidays` is.
+`Holiday.source` (v1.74: `"public"` = loaded, reloading replaces it; `"manual"` = added by hand, kept) is optional the same way: absent when unset (wrap `model_serializer` on `Holiday`; an unknown value becomes unset instead of a 422), so calendars stored before v1.74 keep their bytes and revision. `planning_fingerprint` drops it: only the holidays' dates and names are planning input.
 `weeklyTemplate` (v4) is stored alongside the state and is the source of truth for schedule rows; `slotOverridesByKey` keys are `slotId__dateISO`.
 State normalization on load
 - Ensures `locations` exists (adds loc-default).
@@ -1493,12 +1500,13 @@ Frontend
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
 - `src/components/schedule/AutomatedPlanningPanel.tsx` (planning panel: date range, Run, Reset → Unlocked shifts / Unlocked shifts and rest days)
 - `src/components/schedule/AgentSettingsPanel.tsx` (v1.64, extracted from SettingsView: AI provider/model, endpoint, API keys, model check, chat test, budget)
-- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan switch, Times; star and Views removed in v1.71)
-- `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints)
+- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan switch, Times; star and Views removed in v1.74)
+- `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints; v1.71: every location, two label shades + band, `labelShade`)
 - `src/components/schedule/AssignmentLockButton.tsx` (v1.69: the one lock of a shift, `LockGlyph`)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment` = locked; v1.69 `toggleAssignmentLock`)
 - `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — time lanes per class row, one grid column per day, label meta)
-- `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder)
+- `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder; v1.71: Auto + 11 presets)
+- `src/lib/locationColors.ts` (v1.71: `resolveLocationColors` — picked color or the next free automatic one in location order; `autoLocationColor` for the picker)
 - `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while My plan waits for this user's calendar)
 - `src/components/ui/ConfirmDialog.tsx` (confirm dialog; Enter acts on the focused button)
 - `src/api/client.ts`
@@ -1506,10 +1514,10 @@ Frontend
 - `src/lib/schedule.ts` (rendered assignment map, time intervals, Rest Day pool logic)
 - `src/lib/solverStats.ts` (live solver stats calculation: coverage, preferences, time windows, on-call rest, working hours)
 - `src/lib/myPlan/` (v1.64, pure and tested: one person's plan — shifts split at midnight, previous-day nights, start-day hours, overlap lanes, rest/vacation bands, location tint, coworkers, next shift, rest before, month sheet, colors, labels; public API in `index.ts`)
-- `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker` (incl. "Not <name>? Change who you are", v1.71), `LinkClinicianCard`, `NextUpChip`; `SavedViewsMenu` / `StartPageStar` removed in v1.71)
+- `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker` (incl. "Not <name>? Change who you are", v1.74), `LinkClinicianCard`, `NextUpChip`; `SavedViewsMenu` / `StartPageStar` removed in v1.74)
 - `src/lib/userPreferences.ts` (`useUserPreferences`: loads `/v1/me/preferences`, optimistic updates, debounced save, never PUTs before a successful GET, flushes on pagehide)
-- `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS`, person palette `PERSON_COLORS`)
-- `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan; since v1.71 plain page state that always starts in "team", stored start views ignored)
+- `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS` with `band`, `AUTO_LOCATION_COLOR_IDS`, person palette `PERSON_COLORS` with `tone`)
+- `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan; since v1.74 plain page state that always starts in "team", stored start views ignored)
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
@@ -2143,7 +2151,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   that gets 409 shows the generic "try again" notice instead of the server's
   reason; CP-SAT still fills zero-duration slots; the legacy v<4 template
   migration in `_normalize_state` still carries dead code.
-- After deploy, run the admin "Model connection test" (since v1.71 "Test the AI connection", Settings → Planning rules & AI)
+- After deploy, run the admin "Model connection test" (since v1.74 "Test the AI connection", Settings → Planning rules & AI)
   once on Sonnet 5: the new `thinking.display` request field has only been
   checked against the installed SDK, not the live API.
 
@@ -2283,7 +2291,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   either). History compaction strips the thinking blocks it invalidated
   (conversation-bound models only); refusal notes name the category.
 - Using it needs an Anthropic API key (console.anthropic.com → API keys) in
-  Settings → Planning rules & AI → "Anthropic API key" (admin; "Claude API key" since v1.71; stored server-side, the API
+  Settings → Planning rules & AI → "Anthropic API key" (admin; "Claude API key" since v1.74; stored server-side, the API
   only reports whether one is set) or `ANTHROPIC_API_KEY` in the server
   `.env`, plus API credit on that Console organization. Claude.ai
   subscriptions and the API are billed separately.
@@ -2295,7 +2303,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Not verified against the live API in development (no key there): the
   request and response shapes follow Anthropic's published docs and were
   checked against the installed SDK's wire format. After the deploy, run
-  Settings → Planning rules & AI → "Model connection test" (since v1.71 "Test the AI connection") once with Opus 5.5.
+  Settings → Planning rules & AI → "Model connection test" (since v1.74 "Test the AI connection") once with Opus 5.5.
 
 ## v1.68 — Claude tuning and Claude comparisons in the arena
 
@@ -2492,8 +2500,135 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   "per run" ranges understated week runs (Opus 5.5: about $5–6 per week).
 - No code path changed; version 1.70 (70).
 
-## v1.71 — Opus 5.5 is the default planning model
+## v1.71 — Location-colored labels and distinct person colors
 
+- **The label column says where.** In the team grid (both time layouts) the
+  label cells are colored by location, like a "plan for all": every
+  location has a color, its row bands (modalities: MR, CT, Echo, …)
+  alternate between a light and a stronger shade of it (`ground` / `chip`,
+  counted per location in row order; the time lanes of one row band share
+  their shade, `labelShade` in `teamColors.ts`, `bandIndexByRowId` in
+  `ScheduleGrid`), and the location separator becomes a band in its strong
+  color (`band`) with the name in white capitals. Label text takes the
+  location's `ink` (≥ 5.5:1 on both shades, ≥ 7:1 in dark mode). This
+  replaces the v1.66 section tint of the stacked labels in the team grid;
+  print, PDF and public pages (no `locationRowTints`) keep the section
+  colors, cells and pills are unchanged.
+- **Every location has a color.** `Location.color` stays optional; without
+  one ("Auto", the default and what "None" was) the team grid takes the next
+  automatic color in location order — blue, green, amber, violet, rose,
+  teal, orange, slate — skipping colors other locations picked
+  (`resolveLocationColors`, `src/lib/locationColors.ts`). Nothing is stored
+  for Auto, so calendars keep their revision. With locations switched off
+  every row belongs to the default location and takes its color. The
+  template picker offers Auto (showing the color it currently means, dashed
+  ring) plus seven vivid presets and the four muted ones of v1.64. Each
+  preset carries a `band`; `locationTint` derives one for other colors
+  (white text ≥ 5:1). My plan still tints only picked colors.
+- **Person colors that stay apart.** The 16-color palette had near-twins
+  (violet/purple ΔE00 ≈ 3, emerald/green fills ≈ 2.4, three oranges). The new
+  `PERSON_COLORS` has 20 entries in two tones: "light" (200/300 fill, dark
+  text, 700 circle) and "dark" (600–800 fill, white text, darker circle),
+  chosen by a search over the Tailwind palette and ordered so any two of the
+  first 12 fills differ by ≥ 15 ΔE00 and all 20 by ≥ 9 (also checked under
+  simulated red-green color blindness while choosing). In dark mode the
+  tones swap (light people: deep fill, light text; dark people: bright fill,
+  dark text). Red/rose stay out (rule violations). Colors repeat after 20
+  people, still by clinician list order; My plan avatars use the same
+  palette.
+- Tests: `src/lib/locationColors.test.ts` (new), `src/lib/myPlan/colors.test.ts`
+  (CIEDE2000 helper checked against the Sharma et al. reference pairs;
+  palette distance, tones and contrast; preset shades and bands),
+  `ScheduleGrid.test.tsx` (automatic color, own color, alternation per row
+  band restarting per location, stacked lanes share a shade, band),
+  `LocationColorPicker.test.tsx` (Auto), `e2e/my-plan.spec.ts` (Auto blue →
+  Sand → Auto).
+- Deploy notes: no schema or data change. After the deploy every team grid
+  shows location colors (uncolored locations get automatic ones) and every
+  person a new color.
+
+## v1.72 — Holidays by state
+
+- **The bug.** "Load Holidays" kept every entry of the date.nager.at answer
+  and ignored its `global` and `counties` fields, so Germany got the regional
+  holidays of all 16 states (19 days for 2026, see `default_state.json`:
+  Heilige Drei Könige, Buß- und Bettag and others). The holiday day type
+  overrides the weekday, so a team in NRW got holiday staffing on Tue
+  06.01. and Wed 18.11.2026, and the solvers planned with it. The same held
+  for the other picker countries with regional holidays (CH, ES, GB, IT).
+- **Region select.** Settings → Holidays shows a second select next to the
+  country for countries listed in `HOLIDAY_REGIONS` (`src/lib/holidays.ts`:
+  16 German states, 26 Swiss cantons, 19 Spanish, 4 British and 20 Italian
+  regions, ISO 3166-2 codes as date.nager.at uses them in `counties`,
+  checked against its 2025–2027 data). The first option is "All states"
+  ("All cantons", "All regions"); without a region a hint says that the
+  regional holidays of all states are included. A stored code without a
+  name stays visible as its code. Changing the country resets the region
+  (`handleChangeHolidayCountry`); a region of another country is ignored by
+  the select and by the load (`holidayRegionForCountry`).
+- **Filter.** `filterHolidaysByRegion` (pure) keeps an entry when
+  `global === true`, when no region is set, or when `counties` contains the
+  region; `handleFetchHolidays` applies it before the existing dedupe.
+- **No automatic rewrite.** Picking a region only saves the region; the
+  stored list stays as it is (an amber note says so until the next load).
+  Load Holidays replaces the year's list as before, manual entries of that
+  year included.
+- **Persistence.** `AppState.holidayRegion: Optional[str]` (declared, or
+  pydantic would drop it on every save). Normalized identically in
+  `backend/state.py` (`_normalize_holiday_region`) and `normalizeAppState`
+  (`normalizeHolidayRegion`): uppercased, must match
+  `[A-Z]{2}-[A-Z0-9]{1,3}` (Nager uses numeric codes such as `IT-32`), no
+  trimming, anything else is unset; non-strings become unset before
+  validation, so a bad value never fails a save with 422. A wrap
+  `model_serializer` on `AppState` omits the key when unset (as
+  `Location.color` does), so a calendar without a region dumps
+  byte-identical to before: same stored blob, same revision, no spurious
+  `409 state_changed` for open tabs after the deploy. A region is calendar
+  content (it changes the revision), but not a planning input:
+  `planning_fingerprint` excludes it like `holidayCountry`/`holidayYear`.
+  The OpenAPI schemas only gain the optional property.
+- Help → Holidays explains the state choice.
+- Tests: `src/lib/holidays.test.ts` (filter with the real DE 2026 answer,
+  normalizer, region table), `shiftRows.test.ts` (normalizeAppState),
+  `SettingsView.test.tsx` (select, hints, load arguments, foreign region,
+  unknown code); backend `test_state_normalization.py` (normalizer,
+  non-strings, a pre-v1.72 blob keeps bytes and revision through load and
+  save, round trip, clearing restores the old revision),
+  `test_state_routes.py` (GET/POST `/v1/state` round trip, 409 for a stale
+  tab), `test_fixed_planning_tasks.py` (fingerprint); e2e
+  `holiday-region.spec.ts` (mocked API, runs in CI).
+- Deploy notes: no migration; stored calendars stay byte-identical until a
+  user picks a region. Existing holiday lists are not corrected
+  automatically: users pick their state and load again.
+  `backend/default_state.json` is unchanged (holidays of all states, no
+  region), so new accounts see the hint. Version 1.72 (72).
+
+## v1.73 — Stacked cells name a different section
+
+- **The confusion.** In "Times: Stacked" a lane is named after the section
+  it holds on most days ("IRM tout ZK +2"). A day whose slot belongs to
+  another section ("IRM prostate ZK" on Thursday) only got a small corner
+  mark (v1.66), so its open slot read as "IRM tout ZK": the picker's
+  correct "Not qualified" for people who only have IRM tout ZK looked like
+  a bug.
+- **Now** such a cell names its section in a quiet tag at its top, in the
+  style of the own-time tag (`STACKED_CELL_TAG` in `ScheduleGrid.tsx`,
+  `data-other-section`), before a differing time; the corner mark is gone.
+  Cells of the lane's own section are unchanged; the label's "+N" and the
+  cell tooltip stay. Print and the portrait PDF use the same grid, so the
+  name is on paper too, where a tooltip never helped. A single-day view
+  never shows it (a lane's section is that day's).
+- Help → Settings text updated.
+- Tests: `ScheduleGrid.test.tsx` (other section named, lane section not,
+  section and time tags in that order on an open slot).
+- Version 1.73 (73). Deployed together with v1.72 (holidays by state).
+
+## v1.74 — Opus 5.5 is the default planning model
+
+- Merges the work started as "v1.71" on the feature branch
+  (`claude/tender-wright-6w4lcy`) with main's v1.71–v1.73. Where both sides
+  changed the same feature, main's v1.72 holidays by state is the base and
+  this release adds hand-added holidays on top (see the holidays bullet).
 - `AgentConfig.DEFAULT_MODEL` (and with it `agent_budget.DEFAULT_AGENT_MODEL`)
   is `claude-opus-5-5` instead of `claude-sonnet-5`, after arena round 8
   (`backend/arena/README.md`). It applies wherever no model is saved in
@@ -2507,7 +2642,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Cost: Opus 5.5 is about $0.80 per planned day (Sonnet 5 about $0.50). The
   per-user AI budget default stays $5 (admin-settable in Settings → Planning rules & AI);
   one planned week costs about $5–6, so raise it for regular planners.
-- Version 1.71 (71).
+- Version 1.74 (74).
 - Team and My-plan headers: the start-page star and the saved "Views" menu
   are gone (`StartPageStar.tsx`, `SavedViewsMenu.tsx`, `SaveViewForm.tsx`
   deleted with the helpers, chrome classes and icons only they used;
@@ -2599,18 +2734,31 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `e2e/team-page.spec.ts` ("Replace shifts") follow the labels. The gear
   button's title starts with "Run", so `app.spec.ts` and
   `colband-explosion.spec.ts` look up the Run button with `exact: true`.
-- Holidays by region, hand-added ones kept (UI for part 5): Settings →
-  Holidays has a "Region" picker next to the country (`holidayRegionOptions`;
-  accessible names "Country: …" / "Region: …"). `WeeklySchedulePage` keeps
-  `holidayRegion` (hydrated from the state, saved as `holidayRegion` or
-  `null` in every payload via `buildStatePayload`) and the regions the
-  service listed this session; `handleFetchHolidays(country, year, region)`
-  merges with `mergeLoadedHolidays` and returns how many were added
-  ("Loaded N public holidays for {year}."). Manual adds carry
-  `source: "manual"` and show "added by hand". Changing the country resets
-  the region only if it belongs to another country. HelpView §8/§9 and the
-  load helper say that loading replaces this year's loaded public holidays
-  and that holidays added by hand stay.
+- Holidays added by hand stay when loading (built on v1.72's state select).
+  The branch had its own "Region" picker (German states only, unset meaning
+  "Nationwide only", regions the service listed this session); on merging,
+  main's `holidayRegion`, `HOLIDAY_REGIONS`, `filterHolidaysByRegion` and
+  "All states" semantics (unset = the regional holidays of all states) won,
+  and the duplicate picker, `holidayRegionOptions` and the seen-regions list
+  were dropped. Added on top:
+  - `Holiday.source` (`"public"` = loaded, `"manual"` = added by hand;
+    optional in `src/api/client.ts`). Backend `Holiday` declares it with a
+    before-validator that unsets unknown values (never a 422) and a wrap
+    `model_serializer` that omits it when unset, like `holidayRegion` and
+    `Location.color`, so calendars stored before keep their bytes and
+    revision. `planning_fingerprint` drops it.
+  - `mergeLoadedHolidays(previous, entries, year, region?)`
+    (`src/lib/holidays.ts`) filters with `filterHolidaysByRegion`, replaces
+    only that year's loaded holidays (source `"public"`, and older untagged
+    entries the service lists for any region), keeps hand-added ones and
+    adds each date and name once. `handleFetchHolidays(country, year,
+    region?)` uses it and resolves to the count ("Loaded N public holidays
+    for {year}."); it no longer replaces the year's whole list.
+  - Manual adds carry `source: "manual"` and show a small "added by hand".
+    The load helper says "Replaces this year's loaded public holidays;
+    holidays you added by hand stay."; the state select has an accessible
+    name like the country picker ("State: …", "Canton: …"). HelpView §8
+    explains both.
 - Shifts file import with backup: `createImportBackup(state)` (client,
   `POST /v1/state/snapshots/import-backup`, 401 handling like
   `createSnapshot`). `handleImportScheduleSnapshot` builds the on-screen
@@ -2639,9 +2787,18 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   or long outside target ± this. Empty: short below half the target, long
   above target + 1 h."
 - Tests: `src/lib/shiftsFileImport.test.ts` (backup before save, no save when
-  the backup fails, a failing save is passed on); `SettingsView.test.tsx`
-  (region options and `onChangeHolidayRegion`, regions of other countries,
-  load count and "added by hand", import result names the backup, backup
-  failure message); `HelpView.test.tsx` (import backup and regional
-  holidays); `DatabaseInspectorPage.test.tsx` (new labels);
-  `SolverInfoModal.test.tsx` follows "Basic plan (without AI)".
+  the backup fails, a failing save is passed on); `src/lib/holidays.test.ts`
+  (v1.72's suite plus `mergeLoadedHolidays`: state filter, all states without
+  one, hand-added and other years kept, untagged entries the service lists
+  replaced, no duplicates); `SettingsView.test.tsx` (v1.72's state tests on
+  the merged labels, load count and "added by hand", import result names the
+  backup, backup failure message); `HelpView.test.tsx` (import backup and
+  the state hint); `DatabaseInspectorPage.test.tsx` (new labels);
+  `SolverInfoModal.test.tsx` follows "Basic plan (without AI)"; backend
+  `test_state_normalization.py` (untagged holidays dump without `source`, a
+  pre-v1.74 calendar keeps its bytes and revision, round trip, unknown tags
+  dropped), `test_state_routes.py` (GET/POST `/v1/state`),
+  `test_agent_workflow_safety.py` (fingerprint); e2e `team-page.spec.ts`
+  (stored state, a holiday added by hand in the UI and older ones survive a
+  load; the state filter itself stays in `holiday-region.spec.ts`, whose
+  heading lookup follows "Load public holidays").

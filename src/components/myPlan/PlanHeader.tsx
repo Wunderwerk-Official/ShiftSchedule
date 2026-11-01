@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 // (scope switch + person chevron, Next up | extras), row 2 "when & how"
 // (navigator | range, orientation). Phone: scope row (+ extras), navigator,
 // range + compact orientation, then Next up full width. The start-page star
-// and the saved "Views" menu were removed in v1.71.
+// and the saved "Views" menu were removed in v1.74.
 
 type PlanHeaderProps = {
   isMobile: boolean;

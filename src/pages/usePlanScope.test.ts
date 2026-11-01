@@ -5,7 +5,7 @@ import { usePlanScope } from "./usePlanScope";
 describe("usePlanScope", () => {
   it("always starts on the team plan and switches on request", () => {
     // Stored start views (startViewDesktop / startViewMobile) are ignored
-    // since v1.71: the hook does not even read the preferences.
+    // since v1.74: the hook does not even read the preferences.
     const { result } = renderHook(() => usePlanScope());
     expect(result.current.planScope).toBe("team");
     act(() => result.current.setPlanScope("me"));
