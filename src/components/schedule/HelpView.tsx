@@ -355,9 +355,9 @@ export default function HelpView() {
               grid) shows one column per day and a day&rsquo;s times as rows below each other.
               The left column names each row and its time and carries its location&rsquo;s color;
               the cells show only the people (names shorten to initials in narrow columns). A
-              cell writes its own time only where it differs from its row; a{" "}
+              cell names its own workplace or time only where it differs from its row; a{" "}
               <span className="font-medium">+N</span> next to a row name means some days belong
-              to another workplace (hover it, or a cell, to see which).{" "}
+              to another workplace (hover it to see which).{" "}
               <span className="font-medium">Side by side</span> gives every time of a day its
               own column, as before.
             </li>

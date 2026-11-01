@@ -55,7 +55,7 @@ Top bar
 
 Schedule card
 - Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" (classic grid only, since v1.65), start-page star and Views menu. The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
-- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). See the v1.65, v1.66 and v1.71 sections at the end.
+- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). Since v1.73 a cell whose section differs from its lane's names it in a small tag (before a differing time). See the v1.65, v1.66, v1.71 and v1.73 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
 - On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
@@ -2584,3 +2584,23 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   automatically: users pick their state and load again.
   `backend/default_state.json` is unchanged (holidays of all states, no
   region), so new accounts see the hint. Version 1.72 (72).
+
+## v1.73 — Stacked cells name a different section
+
+- **The confusion.** In "Times: Stacked" a lane is named after the section
+  it holds on most days ("IRM tout ZK +2"). A day whose slot belongs to
+  another section ("IRM prostate ZK" on Thursday) only got a small corner
+  mark (v1.66), so its open slot read as "IRM tout ZK": the picker's
+  correct "Not qualified" for people who only have IRM tout ZK looked like
+  a bug.
+- **Now** such a cell names its section in a quiet tag at its top, in the
+  style of the own-time tag (`STACKED_CELL_TAG` in `ScheduleGrid.tsx`,
+  `data-other-section`), before a differing time; the corner mark is gone.
+  Cells of the lane's own section are unchanged; the label's "+N" and the
+  cell tooltip stay. Print and the portrait PDF use the same grid, so the
+  name is on paper too, where a tooltip never helped. A single-day view
+  never shows it (a lane's section is that day's).
+- Help → Settings text updated.
+- Tests: `ScheduleGrid.test.tsx` (other section named, lane section not,
+  section and time tags in that order on an open slot).
+- Version 1.73 (73). Deployed together with v1.72 (holidays by state).

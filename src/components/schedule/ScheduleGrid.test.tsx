@@ -550,7 +550,21 @@ describe("ScheduleGrid stacked times", () => {
     expect(within(cell("ct-mon-late", MON)).queryByText("14:00–22:00")).toBeNull();
   });
 
-  it("names no section in a cell: the label shows +N, the cell keeps it in its tooltip", () => {
+  it("names section and time of an open slot that differs in both, section first", () => {
+    const mixed: ScheduleRow = {
+      ...groupRow,
+      slotRows: groupRow.slotRows!.map((slot) =>
+        slot.id === "ct-tue-late" ? { ...slot, sectionId: "sec-mr", sectionName: "MR prostate", name: "MR prostate" } : slot,
+      ),
+    };
+    renderStacked({ rows: [mixed], minSlotsByRowId: { "ct-tue-late": { weekday: 1, weekend: 0 } } });
+    const tue = cell("ct-tue-late", TUE);
+    const tags = Array.from(tue.querySelectorAll("[data-other-section], [data-own-time]")).map((tag) => tag.textContent);
+    expect(tags).toEqual(["MR prostate", "14:00–20:00"]);
+    expect(within(tue).getByText("Open")).toBeTruthy();
+  });
+
+  it("names a day's other section in its cell; the label shows +N, the tooltip both", () => {
     const mixed: ScheduleRow = {
       ...groupRow,
       slotRows: groupRow.slotRows!.map((slot) =>
@@ -561,7 +575,9 @@ describe("ScheduleGrid stacked times", () => {
     };
     renderStacked({ rows: [mixed] });
     const tue = cell("ct-tue-early", TUE);
-    expect(within(tue).queryByText("MR")).toBeNull();
+    // The lane is called CT, so an open "MR" slot must not read as CT.
+    expect(within(tue).getByText("MR")).toHaveAttribute("data-other-section", "true");
+    expect(cell("ct-mon-early", MON).querySelector('[data-other-section="true"]')).toBeNull();
     expect(tue.getAttribute("title")).toBe("MR · 07:00 - 15:00");
     const badge = screen.getByText("+1");
     expect(badge.getAttribute("title")).toBe("Other days: Tue: MR");
@@ -600,7 +616,7 @@ describe("ScheduleGrid stacked times", () => {
     expect(document.querySelector(".stacked-label-tint")).not.toBeNull();
   });
 
-  it("marks a day of another section without naming it, and hatches days without a slot", () => {
+  it("names a day of another section, and hatches days without a slot", () => {
     const mixed: ScheduleRow = {
       ...groupRow,
       // Tuesday has no late slot; its early slot belongs to another section.

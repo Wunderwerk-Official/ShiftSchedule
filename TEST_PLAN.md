@@ -223,6 +223,8 @@ npx playwright show-report
 
 **Frontend Tests (v1.66 compact cells and portrait PDF)**: `ScheduleGrid.test.tsx` (no section block or name in stacked cells, tooltip, +N badge, corner mark, hatched days without a slot, section tints, hover-only fix button, fixed pill keeps it, "Open"), `AssignmentPill.test.tsx` (full name in the pill's tooltip), `IcalExportModal.test.tsx` (page layout choice), `src/pages/printPage.test.ts` (A4 portrait geometry), `PrintWeekPage.test.tsx` / `PrintWeeksPage.test.tsx` (portrait page rule, seven columns, margins), `src/api/client.pdf.test.ts` (layout reaches the request); backend `test_pdf_revision.py` (layout → orientation, viewport and print route).
 
+**Frontend Tests (v1.73 named sections in stacked cells)**: `ScheduleGrid.test.tsx` (a cell of another section than its lane names that section in a tag, before its own time; cells of the lane's section name none).
+
 **Frontend Tests (v1.65 stacked times)**: `src/lib/stackedTeamLayout.test.ts` (time lanes: weekend columns by time, shorter shifts by nearest start, same-time columns by section), `ScheduleGrid.test.tsx` ("stacked times": one column per day, labels, own-time captions, drag between lanes), `TeamPlanHeader.test.tsx` (Times switch).
 
 ### 3.11 Background runs (v1.64)
@@ -233,6 +235,16 @@ npx playwright show-report
 - [x] Discard after apply / of a failed run → 409; discarding an open run twice → 200
 - [x] A vacation-hidden unlocked solver row is replaced on apply (`is_replaced_by_draft`)
 
+### 3.12 Holidays by state (v1.72)
+
+**Frontend Tests**: `src/lib/holidays.test.ts` (region filter with date.nager.at's Germany 2026 answer: nationwide entries, matching and other states' counties, no region; region normalizer; region tables), `src/lib/shiftRows.test.ts` (`normalizeAppState` keeps an uppercased code, drops anything else), `SettingsView.test.tsx` (state select, "all states" hint, reload note, load arguments, region of another country, unknown code).
+
+**Backend Tests**: `test_state_normalization.py` (normalizer, non-strings, a pre-v1.72 calendar keeps its bytes and revision through load and save, round trip, clearing restores the old revision), `test_state_routes.py` (GET/POST `/v1/state` round trip, 409 for a stale tab), `test_fixed_planning_tasks.py` (the region is not a planning input).
+
+**E2E Tests** (`e2e/holiday-region.spec.ts`, mocked API and mocked date.nager.at, in CI):
+- [x] A chosen state filters the loaded holidays (NRW: Fronleichnam and Allerheiligen, no Buß- und Bettag) and is saved with the calendar; choosing it alone keeps the stored list
+- [x] A stored state is shown; another country starts without one
+
 ---
 
 ## 4. Intentionally Not Covered
@@ -241,7 +253,7 @@ The following areas are explicitly excluded from automated testing:
 
 1. **Visual styling** - Covered by manual review; snapshot tests avoided for maintainability
 2. **PDF visual accuracy** - Only validates PDF generation, not pixel-perfect layout
-3. **Real external API calls** - Holiday API (date.nager.at) is neither mocked nor referenced by any test
+3. **Real external API calls** - date.nager.at is never called; `e2e/holiday-region.spec.ts` mocks it and `src/lib/holidays.test.ts` uses its response shape
 4. **Browser compatibility** - Playwright runs Chromium only; cross-browser testing is manual
 5. **Performance benchmarks** - Not part of functional test suite
 6. **Mobile touch interactions** - HTML5 drag-and-drop doesn't support mobile
@@ -299,12 +311,14 @@ backend `python -m pytest tests -q --ignore=tests/test_solver_benchmark.py`
 (Python 3.11, from `backend/`); frontend on Node 22 with `npm run typecheck`,
 `npm test`, `npm run build`, then the critical Playwright specs
 (`e2e/agent-apply.spec.ts`, `e2e/agent-activity.spec.ts`,
-`e2e/fixed-assignments.spec.ts`, `e2e/model-settings.spec.ts`,
-`e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`) against a local Vite dev
+`e2e/fixed-assignments.spec.ts`, `e2e/holiday-region.spec.ts`,
+`e2e/model-settings.spec.ts`, `e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`)
+against a local Vite dev
 server with a mocked API (`page.route`; no backend needed). Run the same set
 locally with `npx playwright test e2e/agent-apply.spec.ts
 e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts
-e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts` while
+e2e/holiday-region.spec.ts e2e/model-settings.spec.ts e2e/my-plan.spec.ts
+e2e/team-page.spec.ts` while
 `npm run dev -- --host 127.0.0.1 --port 5173` is running. The full E2E suite is not part of CI. Note that
 `npm run test:e2e` forces `PLAYWRIGHT_HOST_PLATFORM_OVERRIDE=mac15-arm64` and
 only works on Apple Silicon; elsewhere run `npx playwright test`.
@@ -330,3 +344,4 @@ Areas identified for future test expansion:
 | 2026-01-03 | Claude | Added pool removal regression tests |
 | 2026-01-03 | Claude | Added iCal and web API tests |
 | 2026-10-15 | Claude | v1.64: My plan / preferences, team page and background-run coverage; CI spec list |
+| 2026-11-01 | Claude | v1.72 holidays by state (incl. `holiday-region` in the CI spec list); v1.73 named sections in stacked cells |

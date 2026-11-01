@@ -37,6 +37,10 @@ import type {
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getContrastTextColor } from "../../lib/shiftRows";
 
+// Stacked cells: the quiet tag for a section or time other than the lane's.
+const STACKED_CELL_TAG =
+  "max-w-full break-words rounded-md bg-slate-900/[0.05] px-1.5 py-0.5 text-[10px] font-semibold leading-3 text-slate-600 ring-1 ring-inset ring-slate-900/[0.07] dark:bg-white/[0.07] dark:text-slate-300 dark:ring-white/10";
+
 type ScheduleGridProps = {
   leftHeaderTitle: string;
   weekDays: Date[];
@@ -1087,8 +1091,9 @@ function RowSection({
                 ? "bg-slate-50/70 dark:bg-slate-800/50"
                 : "bg-white dark:bg-slate-900";
         const stackedTime = stackedMeta && isCellActive ? slotTimeLabel(activeRow) : undefined;
-        // A day of another section than the lane's: marked, not named (the
-        // label's "+N" and the cell's tooltip name it).
+        // A day of another section than the lane's names that section in the
+        // cell (the label column names only the lane's; its "+N" lists the
+        // other days).
         const isOtherSection =
           !!stackedMeta?.sectionName &&
           isCellActive &&
@@ -1218,32 +1223,30 @@ function RowSection({
                 </>
               );
               if (stackedMeta) {
-                // No block and no section name: the label column names the
-                // lane. Only a time other than the lane's is written out.
+                // No block: the label column names the lane's section and
+                // time. A cell writes out only what differs from them, its
+                // section and its time.
+                const ownSection = isOtherSection ? (activeRow.sectionName ?? activeRow.name) : null;
                 const ownTime =
                   stackedTime && stackedTime !== stackedMeta.timeLabel ? stackedTime : null;
                 return (
                   <>
-                    {isOtherSection ? (
-                      <span
-                        aria-hidden="true"
-                        data-other-section="true"
-                        className="pointer-events-none absolute right-0 top-0 h-0 w-0 border-l-[7px] border-t-[7px] border-l-transparent border-t-slate-500/70 dark:border-t-slate-300/70"
-                      />
-                    ) : null}
-                    {ownTime ? (
-                      // The cell's own time (the lane's is in the label
-                      // column) as a quiet tag with room below it, so it does
-                      // not crowd the first pill or its "me" outline. Wraps
-                      // after the dash in narrow columns instead of cutting
-                      // the time off.
-                      <div className="mb-1.5 flex">
-                        <span
-                          data-own-time="true"
-                          className="max-w-full break-words rounded-md bg-slate-900/[0.05] px-1.5 py-0.5 text-[10px] font-semibold leading-3 tabular-nums text-slate-600 ring-1 ring-inset ring-slate-900/[0.07] dark:bg-white/[0.07] dark:text-slate-300 dark:ring-white/10"
-                        >
-                          {compactTimeLabel(ownTime)}
-                        </span>
+                    {ownSection || ownTime ? (
+                      // Quiet tags with room below them, so they do not crowd
+                      // the first pill or its "me" outline. They wrap in
+                      // narrow columns (a time after its dash) instead of
+                      // cutting the text off.
+                      <div className="mb-1.5 flex flex-wrap gap-1">
+                        {ownSection ? (
+                          <span data-other-section="true" className={STACKED_CELL_TAG}>
+                            {ownSection}
+                          </span>
+                        ) : null}
+                        {ownTime ? (
+                          <span data-own-time="true" className={cx(STACKED_CELL_TAG, "tabular-nums")}>
+                            {compactTimeLabel(ownTime)}
+                          </span>
+                        ) : null}
                       </div>
                     ) : null}
                     <div className="flex flex-col gap-1">{cellContent}</div>
