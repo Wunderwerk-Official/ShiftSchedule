@@ -21,8 +21,12 @@ def planning_fingerprint(state: AppState) -> str:
     # Include boundary assignments and history: rest, weekly hours and YTD
     # fairness all depend on context outside the requested dates.
     data = state.model_dump(exclude={"revision", "publishedWeekStartISOs",
-                                     "holidayCountry", "holidayYear"})
+                                     "holidayCountry", "holidayRegion", "holidayYear"})
     data["solverSettings"].pop("scheduleLayout", None)
+    # Where a holiday came from (loaded / by hand) does not change planning;
+    # dropping it also keeps fingerprints of runs made before v1.71 valid.
+    for holiday in data["holidays"]:
+        holiday.pop("source", None)
     # Location colors are presentation only: recoloring never stales a run.
     for location in data["locations"]:
         location.pop("color", None)

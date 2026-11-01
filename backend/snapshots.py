@@ -34,6 +34,7 @@ router = APIRouter()
 MAX_NAMED_SNAPSHOTS_PER_USER = 30
 SNAPSHOT_NAME_MAX_CHARS = 100
 AUTO_BACKUP_NAME = "Auto-backup before restore"
+IMPORT_BACKUP_NAME = "Auto-backup before shifts file import"
 
 
 class SnapshotMeta(BaseModel):
@@ -60,6 +61,12 @@ class SnapshotRestoreRequest(BaseModel):
 
 class SnapshotRenameRequest(BaseModel):
     name: str
+
+
+class SnapshotBackupRequest(BaseModel):
+    # The calendar as the client shows it, before it is replaced (same
+    # payload as its auto-save; the stored row can lag by the debounce).
+    state: AppState
 
 
 def _clean_name(raw: str) -> str:
@@ -105,6 +112,23 @@ def _write_auto_backup(conn, username: str, state: AppState, *, name=AUTO_BACKUP
             """,
             (uuid4().hex, username, name, blob, now, now),
         )
+
+
+@router.post("/v1/state/snapshots/import-backup", response_model=SnapshotMeta, status_code=201)
+def create_import_backup(
+    payload: SnapshotBackupRequest,
+    current_user: UserPublic = Depends(_get_current_user),
+):
+    """Save the calendar into the reserved auto-backup slot before a shifts
+    file replaces its shifts (like a restore does). It does not count against
+    the named-snapshot limit and can be restored from Calendar snapshots."""
+    with authenticated_account_connection(current_user) as conn:
+        _write_auto_backup(conn, current_user.username, payload.state, name=IMPORT_BACKUP_NAME)
+        row = conn.execute(
+            f"SELECT {_META_COLUMNS} FROM calendar_snapshots WHERE username = ? AND kind = 'auto_backup'",
+            (current_user.username,),
+        ).fetchone()
+    return _row_to_meta(row)
 
 
 @router.get("/v1/state/snapshots", response_model=list[SnapshotMeta])

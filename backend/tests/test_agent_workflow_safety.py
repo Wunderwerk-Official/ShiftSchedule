@@ -362,3 +362,19 @@ def test_assignment_fixed_after_run_start_survives_forced_apply(client):
     saved = _load_state(USER)
     assert len(saved.assignments) == 1
     assert saved.assignments[0].locked and saved.assignments[0].source == 'solver'
+
+
+def test_holiday_source_and_region_do_not_stale_a_stored_run():
+    """v1.71 tags holidays with their source and stores a region; neither
+    changes planning, so a run made before the update stays applicable."""
+    from backend.models import AppState, Holiday
+
+    base = make_app_state()
+    base.holidays = [Holiday(dateISO="2026-01-06", name="Epiphany")]
+    tagged = AppState.model_validate(base.model_dump())
+    tagged.holidays[0].source = "public"
+    tagged.holidayRegion = "DE-NW"
+    assert planning_fingerprint(tagged) == planning_fingerprint(base)
+    moved = AppState.model_validate(base.model_dump())
+    moved.holidays[0].dateISO = "2026-01-07"
+    assert planning_fingerprint(moved) != planning_fingerprint(base)

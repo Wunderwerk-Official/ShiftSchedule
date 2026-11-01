@@ -98,6 +98,9 @@ class VacationRange(BaseModel):
 class Holiday(BaseModel):
     dateISO: str
     name: str
+    # "public": loaded from the public-holiday service (reloading replaces
+    # it); "manual": added by hand (kept on reload). None = older data.
+    source: Optional[Literal["public", "manual"]] = None
 
 
 class WorkPattern(BaseModel):
@@ -206,6 +209,8 @@ class AppState(BaseModel):
     slotOverridesByKey: Dict[str, int] = Field(default_factory=dict)
     weeklyTemplate: Optional[WeeklyCalendarTemplate] = None
     holidayCountry: Optional[str] = None
+    # Subdivision for public holidays, e.g. "DE-NW"; None = nationwide only.
+    holidayRegion: Optional[str] = Field(default=None, max_length=20)
     holidayYear: Optional[int] = None
     holidays: List[Holiday] = Field(default_factory=list)
     publishedWeekStartISOs: List[str] = Field(default_factory=list)

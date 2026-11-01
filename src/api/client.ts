@@ -52,6 +52,8 @@ export type PreferredWorkingTimes = Record<
 export type Holiday = {
   dateISO: string;
   name: string;
+  /** "public": loaded (reloading replaces it); "manual": added by hand. Missing on older data. */
+  source?: "public" | "manual";
 };
 
 export type WorkPattern = {
@@ -194,6 +196,8 @@ export type AppState = {
   slotOverridesByKey?: Record<string, number>;
   weeklyTemplate?: WeeklyCalendarTemplate;
   holidayCountry?: string;
+  /** Region for public holidays, e.g. "DE-NW"; empty = nationwide only. */
+  holidayRegion?: string | null;
   holidayYear?: number;
   holidays?: Holiday[];
   publishedWeekStartISOs?: string[];
