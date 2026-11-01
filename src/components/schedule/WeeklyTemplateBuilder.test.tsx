@@ -115,3 +115,15 @@ it("warns that Copy Day deletes the shifts planned in the target day", () => {
   expect(onChange).toHaveBeenCalledTimes(1);
   expect(nextLocation(onChange).slots).toEqual([]);
 });
+
+it("warns that deleting a section removes it from everyone's Eligible Sections", async () => {
+  const onChange = setup();
+  fireEvent.click(screen.getByRole("button", { name: "Delete section" }));
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent("Delete this section?");
+  expect(dialog).toHaveTextContent("Eligible Sections");
+  expect(dialog).toHaveTextContent("including past weeks, are deleted");
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(onChange).not.toHaveBeenCalled();
+});

@@ -797,7 +797,7 @@ def agent_solve_range(
                 list(extra_notes)
                 + [
                     "The day-by-day agent could not apply any changes; "
-                    "the heuristic draft plan was returned instead."
+                    "the basic plan (without AI) was returned instead."
                 ]
             )
         emit_agent("stage", {"stage": "finalize"})
@@ -982,9 +982,9 @@ def agent_solve_range(
     # ends at the heuristic draft instead of starting the LLM.
     budget_note = (
         "Agent LLM unavailable — the AI agent could not start: this "
-        "account's AI budget is used up. The heuristic draft plan was "
+        "account's AI budget is used up. The basic plan (without AI) was "
         "returned instead. An administrator can raise the budget in "
-        "Settings → Solver."
+        "Settings → Planning rules & AI."
     )
     if payload.agent_budget_exhausted:
         run_meta["stop_reason"] = "budget_exhausted"
@@ -1001,7 +1001,7 @@ def agent_solve_range(
             # unavailable" to show a persistent error in the planning panel.
             unavailable_note = (
                 f"Agent LLM unavailable — the AI agent could not start: {exc} "
-                "The heuristic draft plan was returned instead."
+                "The basic plan (without AI) was returned instead."
             )
             if strategy == "day_by_day":
                 return heuristic_fallback([unavailable_note])
@@ -1031,7 +1031,7 @@ def agent_solve_range(
             for t in TOOL_SPECS
         ]
 
-    # Free-text guidance from the admin (Settings -> "AI agent instructions").
+    # Free-text guidance from the admin (Settings -> "Instructions for the AI planner").
     # None/absent falls back to the default; an explicitly emptied field
     # means "no instructions". Shared by both strategies.
     admin_instructions = (state.solverSettings or {}).get("agentInstructions")

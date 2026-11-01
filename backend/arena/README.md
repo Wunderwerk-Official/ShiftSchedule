@@ -228,7 +228,7 @@ docker compose -f docker-compose.proxied.yml exec -T backend \
 
 Needs v1.68 deployed (`implementation: deployed` runs this checkout's
 `prompt_eval.py` against the deployed modules) and an Anthropic key plus API
-credit saved in Settings → Solver. The arena never charges the per-user AI
+credit saved in Settings → Planning rules & AI. The arena never charges the per-user AI
 budget, but every run costs real API credit: the report's `cost_usd` is the
 estimate (cache tokens included) and the Console shows the bill. Set
 `timeout` to `0`: production runs have no wall-clock limit, and a budget

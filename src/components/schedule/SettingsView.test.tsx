@@ -297,3 +297,28 @@ it("keeps the database health check under a collapsed Advanced section", () => {
   expect(toggle).toHaveAttribute("aria-expanded", "true");
   expect(screen.getByText("Database Health Check")).toBeVisible();
 });
+
+it("warns before replacing all shifts from a file and reports skipped shifts", async () => {
+  const props = setup({
+    onImportScheduleSnapshot: vi.fn().mockResolvedValue({ imported: 3, droppedClinicians: 2, droppedSlots: 1 }),
+  });
+  expect(screen.getByText("Shifts file")).toBeVisible();
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  // jsdom's File has no text(); the import only reads the file through it.
+  const file = { name: "shifts.json", text: async () => JSON.stringify({ assignments: [] }) };
+  fireEvent.change(input, { target: { files: [file] } });
+
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent("Replace all shifts with this file?");
+  expect(dialog).toHaveTextContent("locked ones too");
+  expect(dialog).toHaveTextContent("No automatic backup is made: save a Calendar snapshot first.");
+  expect(props.onImportScheduleSnapshot).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Replace shifts" }));
+
+  expect(
+    await screen.findByText(
+      "Imported 3 shifts. Skipped 2 shift(s) of people no longer listed and 1 in slots that no longer exist.",
+    ),
+  ).toBeVisible();
+  expect(props.onImportScheduleSnapshot).toHaveBeenCalledWith({ assignments: [] });
+});

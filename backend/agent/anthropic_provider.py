@@ -182,11 +182,11 @@ class AnthropicProvider(LLMProvider):
         if supports_adaptive_thinking(config.model):
             self.tool_history_budget_chars = LONG_CONTEXT_TOOL_HISTORY_CHARS
         self.follows_tool_texts_literally = True
-        # Admin-configured key (Settings → Solver) wins over the server .env.
+        # Admin-configured key (Settings → Planning rules & AI) wins over the server .env.
         api_key = config.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY")
         if not api_key:
             raise RuntimeError(
-                "No Anthropic API key configured; set it in Settings → Solver "
+                "No Anthropic API key configured; set it in Settings → Planning rules & AI "
                 "(admin) or via ANTHROPIC_API_KEY in the server .env "
                 "(or set AGENT_PROVIDER=mock for tests)."
             )

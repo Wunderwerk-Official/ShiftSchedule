@@ -117,7 +117,7 @@ class OpenAICompatibleProvider(LLMProvider):
         if not base_url:
             raise RuntimeError(
                 "No OpenAI-compatible endpoint configured. Set the base URL "
-                "(e.g. http://host:8000/v1 for vLLM) in Settings → Solver "
+                "(e.g. http://host:8000/v1 for vLLM) in Settings → Planning rules & AI "
                 "(admin) or via the OPENAI_BASE_URL environment variable."
             )
         import openai  # imported lazily: optional unless this provider is used

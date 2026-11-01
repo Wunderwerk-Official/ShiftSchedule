@@ -274,7 +274,7 @@ test.describe("template above the column limit", () => {
     expect(api.errors).toEqual([]);
   });
 
-  test("importing a schedule snapshot is refused", async ({ page }) => {
+  test("importing a shifts file is refused", async ({ page }) => {
     const api = await openCalendar(page, oversizedState().state, "2026-01-05T08:00:00Z");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.locator('input[type="file"][accept="application/json"]').setInputFiles({
@@ -282,7 +282,7 @@ test.describe("template above the column limit", () => {
       mimeType: "application/json",
       buffer: Buffer.from(JSON.stringify({ assignments: [assignment("ct", "mon", "CT", FIRST)] })),
     });
-    await page.getByRole("button", { name: "Import snapshot" }).click();
+    await page.getByRole("button", { name: "Replace shifts" }).click();
     await expect(
       page.getByText("The current calendar cannot be saved. Fix its template first."),
     ).toBeVisible();

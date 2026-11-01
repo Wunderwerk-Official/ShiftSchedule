@@ -13,7 +13,7 @@ from ..models import AppState
 from ..scoring import PlanStats, OpenSlot, ScoringContext
 
 # Applied when the admin has not written their own instructions (Settings ->
-# Solver -> "AI agent instructions"). Keep in sync with the frontend copy in
+# Planning rules & AI -> "Instructions for the AI planner"). Keep in sync with the frontend copy in
 # src/lib/agentSettings.ts, which pre-fills the settings textarea.
 DEFAULT_AGENT_INSTRUCTIONS = (
     "Prefer long, continuous assignments. Never schedule someone for just one "

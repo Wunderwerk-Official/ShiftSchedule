@@ -30,3 +30,13 @@ it("describes the current planning panel and drop rules", () => {
   expect(text).toContain("shows the initials of the person linked to your account");
   expect(text).not.toMatch(/start page|saved views/i);
 });
+
+it("uses the current Settings names", () => {
+  const { container } = render(<HelpView />);
+  const text = container.textContent ?? "";
+  expect(text).not.toContain("Solver Settings");
+  expect(text).toContain("Planning rules & AI");
+  expect(text).toContain("gear button");
+  expect(text).toContain("Shifts file");
+  expect(text).not.toMatch(/Rest Day Pool|Vacation Pool|section block/);
+});

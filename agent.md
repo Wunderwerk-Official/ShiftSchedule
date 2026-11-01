@@ -119,19 +119,24 @@ Pills
 ---
 
 ## 3) Settings
-Section Blocks (Weekly Calendar Template)
-- Section blocks are just section names; time, end-day offset, and required slots are set per placed slot in the grid.
-- Add block by name; delete via the small x in the block list (no clone/gear).
-- Drag blocks into the grid or click an empty cell to add; placed blocks can be dragged to move.
-- Empty grid cells show "Drop a block or click to add a block."
+Wording (v1.71): the UI says location (not site), section (not block), shift (not assignment), people/person (not clinician/user), locked shift (not fixed assignment), Rest Day row / Vacation row (not pool), "Planning rules & AI" (not Solver Settings), run inbox (not solver history) and basic planner without AI (not draft plan). Setting keys, data keys, ids and `data-*` attributes keep their old names (e.g. `enforceSameLocationPerDay`, `preferContinuousShifts`, `pool-rest-day`, requirement `"mandatory"`).
+
+Sections (Weekly Calendar Template; `weeklyTemplate.blocks` in data)
+- Sections are just section names; time, end-day offset, and required slots are set per placed slot in the grid.
+- The "Sections" panel: "+ Add section" by name; delete via the small x ("Delete section"; no clone/gear). Deleting the last block of a section warns that its slots leave the grid and the section leaves everyone's Eligible Sections; the color swatch is labelled "Section color".
+- Drag sections into the grid or click an empty cell to add ("Add section" popover); placed slots can be dragged to move.
+- Empty grid cells show "Drop a section here or click to add one."
 - Multiple shifts are represented by multiple blocks (no sub-shift editor).
+- Slot editor: the count badge ("People required: n. Click to change.") opens "People required" (field "Required", 0 = not planned automatically); the time ("Set time" when empty) opens "Shift time" with Start/End and an "Ends" select (Same day / Next day / +2 days / +3 days = `endDayOffset`).
+- The section priority helper text is `SECTION_PRIORITY_HELP` (exported from `WeeklyTemplateBuilder.tsx`, used by the Settings card and its dialog).
 
 Weekly Calendar Template
 - Single calendar with locations stacked; day-type columns are shared across locations (Mon..Sun + Holiday).
 - Per-day columns: add columns for a specific day; delete via a hover-only "Delete Column" button at the top of the first row (confirm only if the column has slots).
 - Delete button highlighting: hovering Delete Location/Row/Column buttons shows a thick red outline around the entire group (not per-cell rings). The outline uses edge borders only—top/left/right/bottom borders on the outer cells of the highlighted region.
 - Row bands are simple rows with an editable row label in the left header cell; Add row is a full-width dashed button below each location; row delete confirms only if the row has slots.
-- Section blocks sidebar stays visible while scrolling the template grid (sticky at all sizes; scrolls with the template grid container).
+- The Sections sidebar stays visible while scrolling the template grid (sticky at all sizes; scrolls with the template grid container).
+- The Holiday day chip and column header have the tooltip "Used instead of the weekday on every date in the Holidays list."; "Add column" says it adds a shift-time column to that day for all locations.
 - Blocks live in `weeklyTemplate.blocks` and slots reference `blockId`.
 - Slots define time range, end-day offset, and required slots (single value); blocks carry only the section reference.
 - Holiday day type always overrides weekdays at runtime (no fallback).
@@ -139,13 +144,15 @@ Weekly Calendar Template
 - Copy Day: button in template builder copies all columns and slots from one day type to another; requires confirmation checkbox if target has existing content.
 
 Locations
-- Manage locations inside the calendar template (top-left "+ Location" button).
-- Location order uses a dropdown; names are edited inline.
+- Manage locations inside the calendar template (top-left "+ Location" button; it adds "New Location" at the top).
+- Location order uses a dropdown ("Location position", 1 = top); names are edited inline ("Location name").
+- The location color popover explains: "Tints this location in My plan and its row labels in the weekly grid. All planners see it."
 - Delete location (confirm) is allowed even for the default location; the next location becomes the new default (`loc-default`) and slot locationIds are updated.
 - Location color (v1.64, optional): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: slate, sand, sage, lilac, or none). Stored as `Location.color` (`#RRGGBB`); presentation only — tints the location's rows in the team grid and the days in My plan, and is excluded from the planning fingerprint.
 
-Pools
-- Rename pool rows (Rest Day, Vacation). No deletion.
+Rest Day & Vacation rows (the pools; Settings card "Rest Day & Vacation rows")
+- Rename the two built-in rows (Rest Day, Vacation); only the displayed name changes. No deletion. The inputs are labelled "Rest Day row name" / "Vacation row name".
+- Names dragged into the Rest Day row by hand are only a marker: every planner skips `pool-` rows. The Vacation row follows each person's vacation periods (drag in = vacation day, drag out = end it).
 - **Deprecated pools (removed)**: Distribution Pool (`pool-not-allocated`) and Reserve Pool (`pool-manual`) were removed from the UI. State normalization automatically removes these rows and any assignments to them on load.
 - Rest Day pool is used to park clinicians before/after on-call duty when the setting is enabled.
 - Pool visibility is a UI filter only: class assignments are never hidden by rest-day/vacation logic.
@@ -158,7 +165,7 @@ Slots / Template integrity
 - ColBand explosion safeguard: max 20 colBands per day type (`MAX_COLBANDS_PER_DAY`, duplicated in the two files below and in `backend/state_routes.py`, which only uses it for the health check — keep them in sync). Extra colBands are dropped (truncated) and logged. Safeguard is enforced in:
   - `src/lib/shiftRows.ts` (normalizeTemplateColBands)
   - `src/pages/WeeklySchedulePage.tsx` (the setWeeklyTemplate wrapper truncates per day; every builder change goes through it — the builder's own copy of the sanitizer was removed in v1.64)
-- Total limit: above `MAX_TOTAL_COLBANDS` = 300 colBands summed over all locations (`src/lib/templateLimits.ts`), `buildCurrentStatePayload` refuses to save (console.error). Since v1.64 the page shows an amber banner instead of failing silently; sign-out asks before discarding unsaved changes, importing a schedule snapshot is refused, and restoring a calendar snapshot stays possible (it backs up the last saved calendar, not the screen).
+- Total limit: above `MAX_TOTAL_COLBANDS` = 300 colBands summed over all locations (`src/lib/templateLimits.ts`), `buildCurrentStatePayload` refuses to save (console.error). Since v1.64 the page shows an amber banner instead of failing silently; sign-out asks before discarding unsaved changes, importing a shifts file (Settings → Shifts file) is refused, and restoring a calendar snapshot stays possible (it backs up the last saved calendar, not the screen).
 - **Slot collision detection**: Multiple sections sharing the same `rowBandId + dayType + colBandOrder` causes only one section to be visible in the calendar UI while others are hidden but still exist in the database. This is a critical configuration error.
   - Detection: `slotCollisions` useMemo in `WeeklySchedulePage.tsx` identifies collisions by grouping classShiftRows by `locationId__rowBandId__dayType__colBandOrder` and flagging groups with multiple different `sectionId` values.
   - Warning banner: A prominent red banner appears below the top bar when collisions are detected, showing:
@@ -168,13 +175,13 @@ Slots / Template integrity
     - "Open Settings" button to navigate to template builder for fixing
   - Fix: Ensure each section has its own row band in the Weekly Template Builder.
 
-Clinicians
-- List with Add Clinician, Edit and Remove buttons (Add uses a dashed, full-width button below the list). Remove asks for confirmation since v1.64: it deletes the person's assignments in all weeks, vacations and preferences, without undo.
+People (`clinicians` in data)
+- List with Add Person, Edit and Remove buttons (Add uses a dashed, full-width button below the list). Remove asks for confirmation since v1.64: it deletes the person's shifts in all weeks, vacations and preferences, without undo.
 - Editing uses the same modal as clicking a pill in the calendar.
-- Optional working hours per week field (contract hours).
+- Optional contract hours in the new-person form ("Hours/week (optional)"; empty = no hours target or weekly limit).
 
 Clinician Editor (modal)
-- Panel order: Eligible Sections → Vacations → Preferred Working Times.
+- Panel order: Eligible Sections → Vacations → Working Hours & Times (contract hours, "Weekly hours tolerance (±)", work pattern, per-weekday windows) → Planning Wishes.
 - Eligible sections list is ordered. Drag to set priority (this order is also the preference list).
 - Add eligible sections via dropdown + Add button; remove via per-row Remove button.
 - Vacation management uses custom date pickers (DD.MM.YYYY format) with calendar dropdown; setting a start date after the current end date auto-adjusts end to start + 1 day.
@@ -182,7 +189,7 @@ Clinician Editor (modal)
 - Past vacations collapsed in a <details>.
 - Modal body is scrollable for long vacation lists.
 - Preferred working times persist per clinician as `preferredWorkingTimes` (mon..sun with startTime/endTime + requirement none/preference/mandatory).
-- Mandatory windows are hard solver constraints; preference windows add a small solver reward.
+- Mandatory windows (UI label "Only these hours"; stored as `"mandatory"`) are hard solver constraints; preference windows ("Preferred") add a small solver reward.
 - Week solver nudges total assigned minutes toward `workingHoursPerWeek` within the tolerance (manual assignments count toward totals).
 - Per-clinician working hours tolerance: stored as `clinician.workingHoursToleranceHours` (default 5 hours). Each clinician can have a different tolerance for how much their assigned hours can deviate from their contract hours.
 
@@ -201,20 +208,24 @@ Working Hours Overview
 Holidays
 - Year selector with stepper buttons.
 - Country picker with flag emoji (top EU countries + CH, LU), alphabetical.
-- "Load Holidays" fetches from https://date.nager.at/api/v3/PublicHolidays.
+- "Load holidays for {year}" (under "Load public holidays") fetches from https://date.nager.at/api/v3/PublicHolidays. It replaces that year's list, including holidays added by hand, and includes regional holidays of all states (no `global`/`counties` filter); the helper says so. The list header reads "Holidays in {year}".
 - Add holidays manually; list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form).
 - Add Holiday button is a dashed, full-width button below the list and opens an inline add panel.
 - Holidays behave like weekends in solver + min slot logic and show in the calendar header.
 
+Shifts file (formerly "Schedule snapshot")
+- "Download shifts file" exports every week's shifts as JSON (file name still `schedule-snapshot-*.json`); "Import shifts file…" asks "Replace all shifts with this file?" (confirm "Replace shifts") and replaces all shifts, locked ones too, without an automatic backup — the texts say to save a Calendar snapshot first.
+- Result line: "Imported N shifts. Skipped X shift(s) of people no longer listed and Y in slots that no longer exist." (both skipped numbers count shifts).
+
 Database Health Check
-- Located at the bottom of the Settings page.
-- "Run Check" button performs integrity checks on the database:
-  - Orphaned assignments (assignments referencing non-existent slots)
-  - Slot collisions (multiple sections at same position causing hidden sections)
-  - Duplicate assignments (same clinician assigned multiple times to same slot/date)
-  - ColBand explosion (excessive colBands per day type, limit 20)
-  - Pool assignments info (count of persisted pool assignments)
-- Stats are clickable with explanations for each metric.
+- Lives in the collapsed "Advanced" section at the very bottom of Settings (v1.71, helper "Read-only troubleshooting: …"); the check only mounts, and so only loads, when the section is opened.
+- "Run check" button performs read-only integrity checks on the database (labels as shown in the UI):
+  - Shifts in deleted slots (`orphaned_assignment`)
+  - Two sections in one cell (`slot_collision`, causes hidden sections)
+  - Double entries (`duplicate_assignment`, same person, slot and date)
+  - Too many columns (`colband_explosion`, more than 20 per day type in one location)
+  - Rest Day & Vacation entries (`pool_assignment_info`, entries placed by hand)
+- Stats (Shifts, Slots, People, Locations, Sections, Rest & vacation) are clickable with explanations for each metric.
 - "Open Database Inspector" link opens a separate full-page view.
 
 Database Inspector
@@ -229,12 +240,14 @@ Database Inspector
 - Data comes directly from the database, not from the UI view.
 - Backend endpoint: `GET /v1/state/inspect/week?week_start=YYYY-MM-DD`.
 
-Solver Settings
-- Toggle: Enforce same location per day (default: enabled).
-- Toggle: Enforce continuous shifts (default: enabled). When enabled, the solver enforces at most one continuous work block per clinician/day (or the number of manual blocks already present), using same-location time adjacency (end == start).
+Planning rules & AI (formerly "Solver Settings")
+- Toggle: "One location per person per day" (`enforceSameLocationPerDay`, default: enabled).
+- Toggle: "No gaps within a working day" (`preferContinuousShifts`, default: enabled). When enabled, the solver enforces at most one continuous work block per clinician/day (or the number of manual blocks already present), using same-location time adjacency (end == start).
 - Multiple shifts per day are always allowed (removed setting); only actual time overlaps are blocked.
-- On-call rest days: toggle + section selector + days before/after. When enabled, solver enforces rest days and the UI places clinicians into the Rest Day pool.
-- On-call rest days dropdown only shows sections that exist as current template section blocks.
+- AI block (`AgentSettingsPanel`): "AI service", "AI model", "AI server address", "Check server certificate (TLS)", "Claude API key" / "AI server API key (optional)", "Test the AI connection", "AI budget per account" (total, never reset) and "AI cost so far, per account". Then "Planning goals (AI)" (Classic / Balanced (preview), `agentQualityProfile`), "Extra search across neighbouring days (experimental)" (`agentNeighborhoodSearch`) and "Instructions for the AI planner" (`agentInstructions`).
+- "Section priority when short-staffed" with a "Change order" dialog (order of `weeklyTemplate.blocks`).
+- "Rest days around on-call duty": toggle + "On-call section" + "Rest days before" / "Rest days after" (calendar days, 0–7). When enabled, solver enforces rest days and the UI places people into the Rest Day row.
+- The on-call section dropdown only shows sections that exist as current template blocks.
 - Working hours tolerance is now per-clinician (see Clinician Editor); removed from global solver settings.
 - Rule violations are evaluated for the current week and surfaced in the header badge; affected pills are shown in red.
 - Violations include: rest-day conflicts, same-day location mismatches (when enforced), and overlapping shift times.
@@ -1103,7 +1116,7 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   crashing the run. An unexpected exception from any adapter is turned into
   an error response by the harness (type name in the note, traceback in the
   server log), so the best plan so far is kept. Key resolution:
-  admin-stored key (Settings → Solver) wins over `ANTHROPIC_API_KEY` env.
+  admin-stored key (Settings → Planning rules & AI) wins over `ANTHROPIC_API_KEY` env.
   Since v1.67 Claude Opus 5.5 (`claude-opus-5-5`) requests go through the
   beta namespace with three additions (`_request_extras`, named
   `_opus55_request_extras` until v1.68): explicit
@@ -1156,7 +1169,7 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   or across the subprocess boundary via `AGENT_PROVIDER=mock` +
   `AGENT_MOCK_SCRIPT=<json path>`.
 Provider selection and credentials are admin-configurable at runtime
-(Settings → Solver → `agent_settings` table): provider, Anthropic key,
+(Settings → Planning rules & AI → `agent_settings` table): provider, Anthropic key,
 endpoint base URL + key + model name for the OpenAI-compatible path. The
 solver WORKER overlays these onto the env config in-process
 (`agent_budget.resolve_agent_runtime_config`) so secrets never travel through
@@ -2130,7 +2143,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   that gets 409 shows the generic "try again" notice instead of the server's
   reason; CP-SAT still fills zero-duration slots; the legacy v<4 template
   migration in `_normalize_state` still carries dead code.
-- After deploy, run the admin "Model connection test" (Settings → Solver)
+- After deploy, run the admin "Model connection test" (since v1.71 "Test the AI connection", Settings → Planning rules & AI)
   once on Sonnet 5: the new `thinking.display` request field has only been
   checked against the installed SDK, not the live API.
 
@@ -2257,7 +2270,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 
 ## v1.67 — Claude Opus 5.5 as planning model
 
-- Settings → Solver offers **Opus 5.5** (`claude-opus-5-5`, "Best quality",
+- Settings → Planning rules & AI offers **Opus 5.5** (`claude-opus-5-5`, "Best quality",
   $4 / $20 per MTok, cache reads $0.20 = 0.05x, cache writes 1.25x) next to
   Sonnet 5 (default, unchanged), Opus 4.8 (now "Previous Opus") and Haiku 4.5.
   Pricing in `agent_budget.MODEL_PRICES` + `CACHE_READ_MULTIPLIERS` and
@@ -2270,7 +2283,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   either). History compaction strips the thinking blocks it invalidated
   (conversation-bound models only); refusal notes name the category.
 - Using it needs an Anthropic API key (console.anthropic.com → API keys) in
-  Settings → Solver → "Anthropic API key" (admin; stored server-side, the API
+  Settings → Planning rules & AI → "Anthropic API key" (admin; "Claude API key" since v1.71; stored server-side, the API
   only reports whether one is set) or `ANTHROPIC_API_KEY` in the server
   `.env`, plus API credit on that Console organization. Claude.ai
   subscriptions and the API are billed separately.
@@ -2282,7 +2295,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Not verified against the live API in development (no key there): the
   request and response shapes follow Anthropic's published docs and were
   checked against the installed SDK's wire format. After the deploy, run
-  Settings → Solver → "Model connection test" once with Opus 5.5.
+  Settings → Planning rules & AI → "Model connection test" (since v1.71 "Test the AI connection") once with Opus 5.5.
 
 ## v1.68 — Claude tuning and Claude comparisons in the arena
 
@@ -2473,7 +2486,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   Opus 5.5 low, Sonnet 5.5 and Qwen Flash NVFP4, 3 runs each on a 3-day and
   an understaffed 5-day case, all valid. Opus 5.5 medium ranks first on the
   decision tiers; Opus 5.5 stays the recommended model.
-- Settings → Solver cost hints are per planned day (`approxRunCost` in
+- Settings → Planning rules & AI cost hints are per planned day (`approxRunCost` in
   `src/lib/llmPricing.ts`): Opus 5.5 about $0.80 and Sonnet about $0.50
   (measured), Opus 4.8 and Haiku 4.5 estimated from their prices. The old
   "per run" ranges understated week runs (Opus 5.5: about $5–6 per week).
@@ -2484,7 +2497,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - `AgentConfig.DEFAULT_MODEL` (and with it `agent_budget.DEFAULT_AGENT_MODEL`)
   is `claude-opus-5-5` instead of `claude-sonnet-5`, after arena round 8
   (`backend/arena/README.md`). It applies wherever no model is saved in
-  Settings → Solver; a saved global choice still wins (the setting is
+  Settings → Planning rules & AI; a saved global choice still wins (the setting is
   global, so it applies to every user). The compose files and `.env.example`
   default `AGENT_MODEL` to it too; an explicit `AGENT_MODEL` in the server
   `.env` keeps working for paths without the injected model.
@@ -2492,7 +2505,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   "Balanced quality & cost". `test_frontend_default_model_matches_the_backend_default`
   keeps the picker's first option and the backend default in step.
 - Cost: Opus 5.5 is about $0.80 per planned day (Sonnet 5 about $0.50). The
-  per-user AI budget default stays $5 (admin-settable in Settings → Solver);
+  per-user AI budget default stays $5 (admin-settable in Settings → Planning rules & AI);
   one planned week costs about $5–6, so raise it for regular planners.
 - Version 1.71 (71).
 - Team and My-plan headers: the start-page star and the saved "Views" menu
@@ -2523,3 +2536,62 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   flash, person colors on the team pills); the start-page wait test became
   "My plan waits for the calendar" (switching by hand while GET /v1/state is
   held); new: the person-picker footer unlinks (PUT `clinicianId: null`).
+- Settings wording pass (text, aria-labels and titles only; setting keys,
+  data keys, ids, `data-*` attributes, API fields and behaviour unchanged).
+  Key renames: "Solver Settings" → **Planning rules & AI** (also in HelpView,
+  the planning panel, the planning window and the backend notes that point
+  there: `harness.py` budget note, `anthropic_provider.py`,
+  `openai_provider.py`); "Pools" → **Rest Day & Vacation rows**; "Schedule
+  snapshot" → **Shifts file** (avoids the clash with "Calendar snapshots";
+  the import dialog now says that all shifts, locked ones too, are replaced
+  without a backup, and the result line counts skipped *shifts*); "Enforce
+  same location per day" → **One location per person per day**; "Enforce
+  continuous shifts" → **No gaps within a working day**; "Section priority
+  order" → **Section priority when short-staffed** (shared
+  `SECTION_PRIORITY_HELP`, button "Change order"); "On-call rest days" →
+  **Rest days around on-call duty** ("On-call section", "Rest days
+  before/after"); "Planning quality profile" → **Planning goals (AI)**;
+  "AI agent instructions" → **Instructions for the AI planner**; "Preload
+  holidays" / "Load Holidays" → **Load public holidays** / **Load holidays
+  for {year}** (warns that it replaces the year's list, hand-added holidays
+  included, and includes regional holidays); "List of holidays that will be
+  added…" → "Holidays in {year}". AI block: AI service, AI model, AI server
+  address, Check server certificate (TLS), Claude API key, Test the AI
+  connection, AI budget per account ("total, no monthly reset"; aria-label
+  "AI budget per account (USD)"). Template builder: "Sections" panel ("+ Add
+  section", "Delete section" with an Eligible Sections warning on the last
+  block of a section), "People required" and "Shift time" popovers (Start /
+  End / Ends: Same day, Next day, +2 days, +3 days), "+ Location" adds "New
+  Location" (what `e2e/full-workflow.spec.ts` already expected), location
+  position/name get accessible names (`CustomSelect` takes optional
+  `ariaLabel` / `title`). Person editor: "Working Hours & Times" (was
+  "Preferred Working Times"), "Contract hours per week", "Weekly hours
+  tolerance (±)", requirement "Only these hours" (stored `"mandatory"`);
+  WorkPatternEditor field helpers sit outside the `<label>`s. Health check:
+  issue labels "Shifts in deleted slots", "Two sections in one cell",
+  "Double entries", "Too many columns", "Rest Day & Vacation entries" and the
+  matching `backend/state_routes.py` messages. The planning-window gear
+  button's title is "Run inbox, weights & timeout"
+  (`e2e/agent-apply.spec.ts` follows). Backend fallback notes say "The basic
+  plan (without AI) was returned instead."; the "Agent LLM unavailable" and
+  "could not" phrasing the frontend matches on stays.
+- Advanced section: the Database Health Check and the inspector link moved
+  into a collapsed "Advanced" section at the very bottom of Settings; the
+  check only mounts, and so only loads, when the section is opened
+  (`SettingsView.test.tsx` covers the fold).
+- "About Automated Planning" window (`SolverInfoModal.tsx`) redesigned: the
+  runs come first, each as a card with date range, status pill, start time,
+  duration and AI cost in one line; the unresolved note becomes colored
+  issue chips via `parseUnresolvedNote` (open slots red; short days,
+  over-long days and preferred times amber; "No unresolved issues" green;
+  unknown note shapes stay plain text); warnings get their own box; a footer
+  holds Log/Comment on the left and Discard/Apply (primary) on the right. The
+  total AI cost is a small panel, and "How it works" is a compact card whose
+  long text folds away while runs exist.
+- Tests: `SettingsView.test.tsx` (import result sentence and "No automatic
+  backup" in the confirm dialog), `WeeklyTemplateBuilder.test.tsx` (the
+  delete-section dialog names Eligible Sections and the deleted shifts),
+  `HelpView.test.tsx` (Planning rules & AI, gear button, no "Solver
+  Settings"), `ClinicianEditor.test.tsx` follows the renamed box;
+  `e2e/full-workflow.spec.ts` ("+ Add section", the eligibility dialog
+  scope) and `e2e/team-page.spec.ts` ("Replace shifts") follow the labels.
