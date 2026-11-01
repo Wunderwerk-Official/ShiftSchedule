@@ -5,7 +5,12 @@ from datetime import date, timedelta
 from ..planning_preferences import daily_comfort_minutes, daily_min_minutes
 from .work_patterns import workday_metrics
 
-QUALITY_VERSION = 2
+# Stamped into each run's debugInfo and arena reports so metric values are
+# only compared within one definition. 3 (v1.75): the on-call duty category
+# counts only while "Rest days around on-call duty" is on (the section select
+# is disabled otherwise), and Rest Day row dates count as unavailable for
+# duty opportunity weights, like vacation.
+QUALITY_VERSION = 3
 
 CLASSIC_FIELDS = ("hard_violations_in_range", "open_required_slots", "short_days",
                   "soft_rule_violations", "hours_deviation_minutes", "preference_and_load_bonus")
@@ -28,7 +33,10 @@ def extra_metrics(executor, working):
     fixed_burdens = defaultdict(lambda: defaultdict(int))
     fixed_ids = {(a.rowId, a.dateISO, a.clinicianId) for a in executor.fixed_assignments}
     opportunities = defaultdict(set)
-    duty_section = ctx.settings.onCallRestClassId
+    # The on-call section only exists while the on-call rest rule is on:
+    # same source as the duty pre-pass and the on_call flags in tool results.
+    duty_section = executor.on_call_class
+    rest_days = executor.manual_rest_days
 
     def categories(day, start_minutes, end_minutes, section):
         result = []
@@ -103,6 +111,8 @@ def extra_metrics(executor, working):
                 available_days = set()
                 for day, section, slot_start, slot_end in opportunities[category]:
                     if section not in clinician.qualifiedClassIds or any(v.startISO <= day <= v.endISO for v in clinician.vacations):
+                        continue
+                    if (clinician.id, day) in rest_days:
                         continue
                     window = ctx.window_by_clinician_date.get((clinician.id, day))
                     if window and window[0] == "mandatory" and not (slot_start >= window[1] and slot_end <= window[2]):

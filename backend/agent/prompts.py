@@ -34,6 +34,7 @@ the final result worse than the seed.
 Hard constraints (violations of these block acceptance of a move batch):
 - Qualification: clinicians only work sections they are qualified for.
 - Vacation: no assignments while a clinician is on vacation.
+- Rest Day row: no assignments on a day a clinician was placed there by hand.
 - No overlapping shifts, including overnight shifts crossing midnight.
 - Same location per day (when enforced by settings).
 - Rest days before/after on-call shifts (when enforced by settings).
@@ -174,6 +175,7 @@ completely, with long contiguous blocks per person, never short stints.
 Hard constraints (violations of these block acceptance of a move batch):
 - Qualification: clinicians only work sections they are qualified for.
 - Vacation: no assignments while a clinician is on vacation.
+- Rest Day row: no assignments on a day a clinician was placed there by hand.
 - No overlapping shifts, including overnight shifts crossing midnight.
 - Same location per day (when enforced by settings).
 - Rest days before/after on-call shifts (when enforced by settings).

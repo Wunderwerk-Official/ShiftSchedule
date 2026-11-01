@@ -1025,6 +1025,29 @@ def test_day_by_day_fallback_respects_deadline_and_fills_when_time_remains():
     assert any("LLM error" in n for n in result2["notes"])
 
 
+@pytest.mark.parametrize("strategy", ["day_by_day", "repair"])
+def test_basic_plan_fallback_and_repair_seed_respect_rest_day_row(strategy):
+    """v1.75: the heuristic behind the basic plan (without AI) and the repair
+    seed leave a person placed in the Rest Day row free that day."""
+    from backend.models import Assignment
+
+    state = _two_day_state()
+    state.assignments = [Assignment(id="rest", rowId="pool-rest-day", dateISO=MON,
+                                    clinicianId="clin-1", source="manual")]
+
+    class FirstCallError(LLMProvider):
+        def complete(self, **kwargs) -> ProviderResponse:
+            return ProviderResponse(text=None, tool_calls=[], stop_reason="error", error="boom")
+
+    result = agent_solve_range(
+        _payload(endISO=TUE, agent_strategy=strategy), state, MockCancelEvent(), ProgressRecorder(),
+        time.time(), provider=FirstCallError(), config=_config(),
+    )
+    monday = [a["clinicianId"] for a in result["assignments"] if a["dateISO"] == MON]
+    assert monday == ["clin-2"]
+    assert len(result["assignments"]) == 2
+
+
 def test_day_by_day_pipelined_turn_gets_post_apply_suggestion():
     """The prompt's step-4 pipeline: apply_moves and suggest_day_blocks in
     ONE response, in that order. The suggestion must be computed AFTER the

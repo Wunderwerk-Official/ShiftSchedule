@@ -152,7 +152,7 @@ Locations
 
 Rest Day & Vacation rows (the pools; Settings card "Rest Day & Vacation rows")
 - Rename the two built-in rows (Rest Day, Vacation); only the displayed name changes. No deletion. The inputs are labelled "Rest Day row name" / "Vacation row name".
-- Names dragged into the Rest Day row by hand are only a marker: every planner skips `pool-` rows. The Vacation row follows each person's vacation periods (drag in = vacation day, drag out = end it).
+- Names dragged into the Rest Day row by hand mark a day off (since v1.75): every automatic planner leaves that person free that day (stored `pool-rest-day` entries, hard rule `REST_DAY`). The Vacation row follows each person's vacation periods (drag in = vacation day, drag out = end it); stored `pool-vacation` entries are legacy and ignored.
 - **Deprecated pools (removed)**: Distribution Pool (`pool-not-allocated`) and Reserve Pool (`pool-manual`) were removed from the UI. State normalization automatically removes these rows and any assignments to them on load.
 - Rest Day pool is used to park clinicians before/after on-call duty when the setting is enabled.
 - Pool visibility is a UI filter only: class assignments are never hidden by rest-day/vacation logic.
@@ -658,6 +658,7 @@ Behavior
 - Hard constraints:
   - Qualification required.
   - Vacation overrides assignment.
+  - A Rest Day row entry (stored `pool-rest-day`, placed by hand) overrides assignment that day, like vacation (v1.75).
   - Manual assignments remain in place; solver adds additional assignments as needed.
   - Overlap checks use time intervals (start/end + endDayOffset), not shift order.
   - Multiple shifts per day are allowed as long as they don't overlap in time and remain continuous.
@@ -808,6 +809,9 @@ All return `list[Violation]`; `validate_assignments()` aggregates them into a
 `ValidationReport`:
 - `validate_qualifications` — section must be in clinician's `qualifiedClassIds`
 - `validate_vacations` — no slot assignments during vacations (pool rows exempt)
+- `validate_rest_days` — `REST_DAY` (v1.75): no slot assignments on a date the
+  person has a stored `pool-rest-day` entry (from `state.assignments` and the
+  checked list, built once per call; pool rows exempt)
 - `validate_overlaps` — same-clinician time overlap, handles overnight slots
   (`endDayOffset > 0`) by placing intervals on an absolute minute axis
 - `validate_same_location_per_day` — only when `enforceSameLocationPerDay`
@@ -1050,7 +1054,7 @@ Inspection tools (both strategies):
 | `get_violations` | Current violations of fixed context + working copy, filterable by severity/code | code, message, clinicianId, dateISO, `new` (blocks acceptance), `repairable`, `over_by_hours` (weekly) |
 | `list_open_slots` | Slot instances below required staffing | slot_key, section, date, time, missing (paginated) |
 | `list_candidates_for_slot` | Per-clinician legality for 1–8 slots against the CURRENT plan (exact apply gate) | eligible, reasons (violation codes), `week_over_cap_hours`, day_hours, adjacent_to_existing, week_hours, contract_hours, ytd_worked_pct, prefers_section, window_fit |
-| `get_clinician_summary` | One clinician's whole situation | contract+tolerance, week_hours per ISO week, ytd_worked_pct, sections, preferred times, in-range assignments (fixed vs own) |
+| `get_clinician_summary` | One clinician's whole situation | contract+tolerance, week_hours per ISO week, ytd_worked_pct, sections, preferred times, vacations, in-range `rest_days` (Rest Day row, v1.75), in-range assignments (fixed vs own) |
 | `list_short_days` | Days below the daily minimum, with pre-validated fix options (repair strategy's short-day pass) | clinician, date, hours, fixable, fix_options with blocked_by |
 | `get_ytd_progress` | Year-to-date fairness across the roster | ytd_worked_pct per clinician (100 = on target), sorted most-behind first |
 | `get_hours_overview` | Weekly hours vs contract for everyone | per clinician per ISO week: hours, contract, delta |
@@ -1605,7 +1609,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   hours; it is not an exact quota. Explicit daily hours override that derivation.
   Legacy optimization objectives are unchanged; agent/statistics use the new pattern.
 - Duty distribution uses known recent night/weekend/on-call minutes, scaled by
-  contracted hours and eligible days. It is a proxy, not a legal or comprehensive
+  contracted hours and eligible days (on-call only while the on-call rest rule
+  is on, since v1.75). It is a proxy, not a legal or comprehensive
   fairness certification. Free-text wishes remain model-interpreted and are reported
   as not mechanically verified.
 - The optional neighborhood tool explores at most three dates, 120 slots, 1,800
@@ -2802,3 +2807,100 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   (stored state, a holiday added by hand in the UI and older ones survive a
   load; the state filter itself stays in `holiday-region.spec.ts`, whose
   heading lookup follows "Load public holidays").
+
+## v1.75 — Hand-placed rest days block automatic planning; on-call fairness follows the rest rule
+
+- **The bug (rest days).** A name dragged into the Rest Day row is stored as a
+  `pool-rest-day` assignment, and the calendar and the person picker show that
+  person as off that day. Every planner skipped `pool-` rows, though: CP-SAT,
+  heuristic v2 and the AI agent could still give them a shift that day, and the
+  apply gate never noticed. The Settings helper even said so ("only a marker").
+- **Now** a stored `pool-rest-day` entry for person X on date D (any source)
+  means X is off on D, handled like vacation in every planner:
+  - `assignment_policy.manual_rest_days(*lists)` returns
+    `{(clinicianId, dateISO)}` in one pass per list (`REST_DAY_ROW_ID`); all
+    planners and the validator use it.
+  - Validation: hard rule `REST_DAY` (`validate_rest_days`, part of
+    `validate_assignments` and `__all__`), message "<name> has a rest day on
+    <date> but is assigned to slot <row>". Rest days come from
+    `state.assignments` and the checked list together, built once per call (it
+    runs in the agent's hot loops). Pool rows are exempt. The default
+    `violation_key` applies: a pre-existing conflict is baseline, so the agent,
+    the heuristic's optional fill and `run_apply` only refuse new ones.
+  - CP-SAT: `is_unavailable` (vacation or rest day) replaces `is_on_vac` in
+    `_build_assignment_vars`, so there is no decision variable on that date.
+    Existing shifts on such a day stay occupied (the vacation precedent in
+    `_collect_manual_assignments`), so the model never becomes infeasible; a
+    slot only that person could fill stays open. The "no variables"
+    diagnostic counts people "fully on vacation or rest days".
+  - Heuristic v2: `ClinicianState.rest_days` / `has_rest_day`, checked next
+    to vacation in `_is_doctor_eligible_for_slot`, which covers bottleneck
+    pre-assignment, day fill and retries, consecutive chaining and optional
+    capacity, and with them the agent's basic plan (without AI) and the repair
+    seed.
+  - Agent: candidate lists, day priorities, `suggest_day_blocks`, rescue and
+    balance swaps, `apply_moves` / `apply_proposal` and the final audit all use
+    the shared gate, so a person on a rest day is ineligible with reason
+    `REST_DAY`. `repair_neighborhood` drops them from its candidate model, like
+    vacation; `get_clinician_summary` lists their in-range `rest_days`; the
+    hard-rule lists of the repair and day prompts name the rule.
+  - `run_apply`: a stored draft that puts someone on a rest day added after the
+    run is refused as `plan_invalid` by the existing new-violation gate, with
+    force too (the rule check runs before the "calendar changed" question).
+- **Date semantics** follow vacation: a shift counts on its start date. A
+  night shift starting the evening before a rest day stays possible; one
+  starting on the rest day does not.
+- **Not vacation.** A rest day credits no contract, YTD, weekly or workday
+  target (vacation does). Stored `pool-vacation` entries stay legacy and
+  unread: vacation comes from each person's vacation periods.
+- **Fingerprint.** `planning_fingerprint` is unchanged, so stored runs keep
+  their fingerprints (`test_agent_workflow_safety.py` pins a value computed
+  with the v1.74 code). A rest day added after a run changes the fingerprint,
+  as any calendar entry does.
+- **On-call fairness (Balanced).** `quality.extra_metrics` counted the on-call
+  category from `onCallRestClassId` even with "Rest days around on-call duty"
+  off, where the section select is disabled. It now uses
+  `executor.on_call_class` (the section only while the rule is on), the
+  source the duty pre-pass and the `on_call` flags in tool results already
+  used; weekend and night are unchanged. The duty-pass follow-up in
+  `PlanningWorkflow.apply` uses the same property, so with the rule off it
+  reports `duty_complete` instead of chasing the stored section, and
+  `arena/workflow_eval.py` does too (falling back to the raw setting for older
+  checkouts). Left alone: the scenario builders in `arena/run.py` and
+  `arena/generate_fixture.py` (fixture plumbing; the fixture has the rule on)
+  and the solvers' rest-rule code, which already checks the toggle. In the
+  frontend, `solverStats.ts`, `schedule.ts` and `myPlan/shifts.ts` already
+  gate on the toggle.
+- **`QUALITY_VERSION` 2 → 3.** The number is a label stamped into each run's
+  `debugInfo.agent` and into arena reports, so metric values are compared only
+  within one definition; no code branches on it (the frontend only types it).
+  Duty burden changes meaning when the rule is off, and Rest Day row dates now
+  count as unavailable for duty opportunity weights, like vacation, so the
+  version moves. Stored runs keep their old number and nothing re-reads it.
+- Settings: the Rest Day row helper says "Filled by the on-call rest rule.
+  Names you drag in mark a day off: automatic planning leaves that person free
+  that day."; Planning goals (AI) adds "On-call shares count only while “Rest
+  days around on-call duty” is on (that is where the on-call section is
+  chosen)." Help → Rest Day/Vacation rows explains the day off. README,
+  `HEURISTIC_SOLVER_V2_README.md`, `human-heuristic-solver.md` and
+  `backend/tests/TEST.md` follow.
+- Tests: `test_validation.py` (`REST_DAY` for manual/solver/legacy sources,
+  read from state and from the checked list, only its own date and person,
+  overnight semantics as for vacation, pool rows and stored Vacation row
+  entries ignored), `test_solver.py` (`TestSolverRestDayRow`: the other person
+  is chosen, the only qualified person leaves the slot open with a solved
+  status, an existing shift on the rest day stays), `test_heuristic_v2.py`
+  (same, required and distribute-all), `test_agent_tools.py` (candidates,
+  batched candidates, day priorities, day blocks and the clinician summary
+  show `REST_DAY`; `apply_moves` refuses; a fixed conflict blocks nothing
+  else), `test_agent_planning_workflow.py` (neighborhood never previews the
+  person; duty-pass follow-up with the rule off and on),
+  `test_agent_harness.py` (basic plan fallback and repair seed),
+  `test_agent_workflow_safety.py` (draft refused after a new rest day, also
+  with force; a fixed conflict does not block an unrelated draft; pinned
+  fingerprint), `test_agent_quality_profile.py` (on-call burden only with the
+  rule on, rest days reduce opportunity weights, version 3);
+  `SettingsView.test.tsx` and `HelpView.test.tsx` (texts).
+- Deploy notes: no migration. Rest days placed by hand before v1.75 count from
+  the next planning run on; stored drafts that conflict with them are refused
+  on apply. Version 1.75 (75).

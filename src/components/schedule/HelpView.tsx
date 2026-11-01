@@ -116,7 +116,8 @@ export default function HelpView() {
               <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-200">
                 <li>
                   <span className="font-medium">Rest Day row</span>: people resting around
-                  on-call duty (filled by the on-call rest rule).
+                  on-call duty (filled by the on-call rest rule). A name you drag in marks a
+                  day off: automatic planning leaves that person free that day.
                 </li>
                 <li>
                   <span className="font-medium">Vacation row</span>: people on vacation;

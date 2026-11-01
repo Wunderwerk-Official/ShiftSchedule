@@ -268,6 +268,71 @@ def test_eligibility_malformed_vacation_does_not_crash():
     ]
 
 
+def _rest_day_state(clinicians, slots, assignments):
+    from .conftest import make_app_state
+
+    return make_app_state(clinicians=clinicians, slots=slots, assignments=assignments)
+
+
+def _rest(clinician_id, date_iso="2026-01-05", source="manual"):
+    return Assignment(id=f"rest-{clinician_id}-{date_iso}", rowId="pool-rest-day",
+                      dateISO=date_iso, clinicianId=clinician_id, source=source)
+
+
+def _heuristic(state, start="2026-01-05", end="2026-01-05", only_fill_required=True):
+    payload = SolveRangeRequest(startISO=start, endISO=end,
+                                only_fill_required=only_fill_required, use_heuristic=True)
+    result = heuristic_solve_range_v2(payload, state, MockCancelEvent(), mock_progress, 0.0)
+    return [(a["rowId"], a["dateISO"], a["clinicianId"]) for a in result["assignments"]]
+
+
+@pytest.mark.parametrize("only_fill_required", [True, False])
+@pytest.mark.parametrize("source", ["manual", "solver"])
+def test_eligibility_rest_day_row(source, only_fill_required):
+    """A person placed in the Rest Day row by hand is off that day (v1.75):
+    neither the required fill nor the optional extra capacity uses them."""
+    from .conftest import make_clinician, make_template_slot
+
+    clinicians = [make_clinician("a", "Alice", working_hours_per_week=40),
+                  make_clinician("b", "Bob", working_hours_per_week=40)]
+    for rested, free in (("a", "b"), ("b", "a")):
+        state = _rest_day_state(clinicians, [make_template_slot("slot-a__mon", col_band_id="col-mon-1")],
+                                [_rest(rested, source=source)])
+        assert _heuristic(state, only_fill_required=only_fill_required) == [
+            ("slot-a__mon", "2026-01-05", free)
+        ]
+
+
+def test_rest_day_of_the_only_qualified_person_leaves_the_slot_open():
+    from .conftest import make_clinician, make_template_slot
+
+    state = _rest_day_state(
+        [make_clinician("a", "Alice", working_hours_per_week=40)],
+        [make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+         make_template_slot("slot-a__tue", col_band_id="col-tue-1")],
+        [_rest("a")],
+    )
+    # Monday stays open (bottleneck pre-assignment and retries included);
+    # the next day is planned as usual.
+    assert _heuristic(state, end="2026-01-06") == [("slot-a__tue", "2026-01-06", "a")]
+    assert ClinicianState(state.clinicians[0], date(2026, 1, 5)).rest_days == set()
+
+
+def test_existing_shift_on_rest_day_stays_and_blocks_nothing_else():
+    from .conftest import make_clinician, make_template_slot
+
+    manual = Assignment(id="manual", rowId="slot-a__mon", dateISO="2026-01-05",
+                        clinicianId="a", source="manual")
+    state = _rest_day_state(
+        [make_clinician("a", "Alice", working_hours_per_week=40)],
+        [make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+         make_template_slot("late", col_band_id="col-mon-1", start_time="16:00", end_time="20:00")],
+        [manual, _rest("a")],
+    )
+    assert _heuristic(state) == []
+    assert manual in state.assignments
+
+
 def test_eligibility_time_overlap():
     """Test eligibility criterion #3: Time overlap prevention."""
     # Create state with two overlapping slots on same day

@@ -289,6 +289,25 @@ it("adds a holiday picked in the date picker", async () => {
 });
 
 
+it("says that names dragged into the Rest Day row keep automatic planning away (v1.75)", () => {
+  setup({ poolRows: [
+    { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" },
+    { id: "pool-vacation", name: "Vacation", kind: "pool", dotColorClass: "bg-slate-200" },
+  ] });
+  expect(screen.getByText(
+    "Filled by the on-call rest rule. Names you drag in mark a day off: automatic planning leaves that person free that day.",
+  )).toBeVisible();
+  expect(document.body.textContent).not.toMatch(/only a marker|planner ignores them/);
+});
+
+it("says that Balanced counts on-call shares only while the on-call rest rule is on (v1.75)", () => {
+  setup();
+  const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain(
+    "On-call shares count only while “Rest days around on-call duty” is on (that is where the on-call section is chosen).",
+  );
+});
+
 it("keeps the database health check under a collapsed Advanced section", () => {
   setup();
   expect(screen.queryByText("Database Health Check")).toBeNull();

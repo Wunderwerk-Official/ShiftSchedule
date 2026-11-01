@@ -10,7 +10,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - Colors in the team week: every clinician their own color (20 distinct light and dark colors, your own entries outlined); the label column is colored by location (picked or automatic color, alternating shades per row band, a band per location). Presentation only; planning is unaffected
 - One lock for every shift: names you place or move by hand are locked, the planner's start unlocked; locked shifts survive replanning, applying a plan and Reset
 - A planning view that shows the day being planned, the agent's current step and the best plan so far, with the activity log on request
-- Rest Day and Vacation rows
+- Rest Day and Vacation rows (a name dragged into the Rest Day row marks a day off; automatic planning leaves that person free that day)
 - Required staffing per weekly-template slot (set per weekday and for holidays) and per-day overrides
 - Clinician qualifications and preferences
 - Vacation tracking

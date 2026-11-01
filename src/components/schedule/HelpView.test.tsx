@@ -51,3 +51,11 @@ it("describes the import backup and the regional holiday loading", () => {
   // Without a state every state's regional holidays are loaded (v1.72).
   expect(text).toContain("without one, the regional holidays of every state are loaded");
 });
+
+it("says that a name dragged into the Rest Day row keeps automatic planning away (v1.75)", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain(
+    "A name you drag in marks a day off: automatic planning leaves that person free that day.",
+  );
+});

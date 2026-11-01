@@ -190,7 +190,7 @@ export default function SettingsView({
   };
   const poolNoteById: Record<string, string> = {
     "pool-rest-day":
-      "Filled by the on-call rest rule. Names you drag in are only a marker; the planner ignores them.",
+      "Filled by the on-call rest rule. Names you drag in mark a day off: automatic planning leaves that person free that day.",
     "pool-vacation":
       "Filled from each person's vacation periods. Drag someone in to add a vacation day, or out to end it.",
   };
@@ -464,7 +464,8 @@ export default function SettingsView({
               <p className="text-xs text-slate-500 dark:text-slate-400">
                 Both fill required slots first and keep all rules. Classic then avoids short days
                 and matches contract hours; Balanced also weighs fair weekend/night/on-call shares,
-                days off and fewer changes.
+                days off and fewer changes. On-call shares count only while “Rest days around
+                on-call duty” is on (that is where the on-call section is chosen).
               </p>
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={solverSettings.agentNeighborhoodSearch ?? false}

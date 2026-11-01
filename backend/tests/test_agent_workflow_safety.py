@@ -119,6 +119,51 @@ def test_existing_manual_violation_does_not_block_unrelated_valid_draft(client):
     assert next(a for a in assignments if a.id == "manual").source == "manual"
 
 
+def test_rest_day_added_after_the_run_refuses_the_draft(client):
+    """v1.75: a person placed in the Rest Day row after the run started may not
+    get the draft's shift that day, not even with force."""
+    seed_run(make_app_state(), [draft()])
+    state = _load_state(USER)
+    state.assignments.append(make_assignment("rest", "pool-rest-day", MON, "clin-1", "manual"))
+    _save_state(state, USER)
+    for query in ("", "?force=true&allow_partial=true"):
+        response = client.post("/v1/solve/runs/review-run/apply" + query)
+        assert response.status_code == 409, response.text
+        detail = response.json()["detail"]
+        assert detail["code"] == "plan_invalid"
+        assert [v["code"] for v in detail["violations"]] == ["REST_DAY"]
+        assert "has a rest day on 2026-01-05" in detail["message"]
+    assert [a.id for a in _load_state(USER).assignments] == ["rest"]
+    assert solver_runs.get_run("review-run", USER)["status"] == "finished"
+
+
+def test_existing_shift_on_a_rest_day_does_not_block_an_unrelated_draft(client):
+    state = make_app_state(clinicians=[
+        make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob"),
+    ], slots=[make_template_slot("slot-a__mon", required_slots=2)], assignments=[
+        make_assignment("rest", "pool-rest-day", MON, "clin-1", "manual"),
+        make_assignment("manual", "slot-a__mon", MON, "clin-1", "manual"),
+    ])
+    seed_run(state, [make_assignment("new", "slot-a__mon", MON, "clin-2", "solver")])
+    response = client.post("/v1/solve/runs/review-run/apply")
+    assert response.status_code == 200, response.text
+    assert sorted(a.id for a in _load_state(USER).assignments) == ["manual", "new", "rest"]
+
+
+def test_rest_day_is_a_planning_input_and_old_fingerprints_stay_valid():
+    """Fingerprints of stored runs do not change with v1.75: the value below
+    was computed with the v1.74 code for the same calendar."""
+    state = make_app_state(assignments=[
+        make_assignment("rest", "pool-rest-day", MON, "clin-1", "manual"),
+        make_assignment("a1", "slot-a__mon", TUE, "clin-1", "solver"),
+    ])
+    assert planning_fingerprint(state) == (
+        "v2:a5dd117d8ecd3af91703b2cb3a9454b677dc430e886ed7b0ea64bae446e64a1a"
+    )
+    without = state.model_copy(update={"assignments": state.assignments[1:]})
+    assert planning_fingerprint(without) != planning_fingerprint(state)
+
+
 def test_partial_result_requires_explicit_confirmation_and_creates_backup(client):
     state = make_app_state(slots=[
         make_template_slot("slot-a__mon", col_band_id="col-mon-1"),

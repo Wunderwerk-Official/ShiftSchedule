@@ -2204,3 +2204,76 @@ def test_the_literal_duty_prompt_allows_a_24_hour_shift_only_as_a_last_resort():
     assert "NEVER give one person two duties" in DUTY_SYSTEM_PROMPT
     assert "NEVER give one person two duties" not in DUTY_SYSTEM_PROMPT_LITERAL
     assert "only when no other qualified clinician can take the" in DUTY_SYSTEM_PROMPT_LITERAL
+
+
+# ---------------------------------------------------------------------------
+# Rest Day row entries block automatic planning (v1.75)
+# ---------------------------------------------------------------------------
+
+
+def _rest_day_state(**kwargs):
+    return make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+        **kwargs,
+    )
+
+
+def test_candidate_on_a_rest_day_is_ineligible_with_the_rest_day_reason():
+    state = _rest_day_state(assignments=[make_assignment("rest", "pool-rest-day", MON, "clin-1", "manual")])
+    executor = _make_executor(state)
+    assert executor.manual_rest_days == {("clin-1", MON)}
+    single, _ = _run(executor, "list_candidates_for_slot", {"slot_key": f"slot-a__mon__{MON}"})
+    by_name = {c["clinicianId"]: c for c in single["candidates"]}
+    assert by_name["Alice"]["eligible"] is False and by_name["Alice"]["reasons"] == ["REST_DAY"]
+    assert by_name["Bob"]["eligible"] is True
+    batched, _ = _run(executor, "list_candidates_for_slot", {"slot_keys": [f"slot-a__mon__{MON}"]})
+    slot = next(iter(batched["slots"].values()))
+    assert slot["ineligible"] == {"Alice": ["REST_DAY"]}
+    assert [c["clinicianId"] for c in slot["eligible"]] == ["Bob"]
+    # Day priorities and block suggestions use the same gate.
+    entries = executor._day_open_entries(MON)
+    assert entries[0]["eligible_count"] == 1 and entries[0]["eligible_preview"] == ["Bob"]
+    blocks, _ = _run(executor, "suggest_day_blocks", {"dateISO": MON})
+    assert [c["clinicianId"] for c in blocks["candidates"]] == ["Bob"]
+    summary, _ = _run(executor, "get_clinician_summary", {"clinicianId": "Alice"})
+    assert summary["rest_days"] == [MON]
+
+
+def test_apply_moves_refuses_a_shift_on_a_rest_day():
+    state = _rest_day_state(assignments=[make_assignment("rest", "pool-rest-day", MON, "clin-1", "solver")])
+    executor = _make_executor(state)
+    move = {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "Alice"}
+    preview, _ = _run(executor, "apply_moves", {"moves": [move], "dry_run": True})
+    assert preview["valid"] is False
+    assert [v["code"] for v in preview["new_hard_violations"]] == ["REST_DAY"]
+    assert "Alice has a rest day on 2026-01-05" in preview["new_hard_violations"][0]["message"]
+    result, _ = _run(executor, "apply_moves", {"moves": [move]})
+    assert result["applied"] is False and executor.current == {}
+    ok, _ = _run(executor, "apply_moves", {"moves": [{**move, "clinicianId": "Bob"}]})
+    assert ok["applied"] is True
+
+
+def test_existing_shift_on_a_rest_day_does_not_block_unrelated_moves():
+    state = _rest_day_state(
+        slots=[
+            make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot("late", col_band_id="col-mon-1", start_time="16:00", end_time="20:00"),
+        ],
+        assignments=[
+            make_assignment("rest", "pool-rest-day", MON, "clin-1", "manual"),
+            make_assignment("manual", "slot-a__mon", MON, "clin-1", "manual"),
+        ],
+    )
+    executor = _make_executor(state)
+    # The conflict is fixed input: baseline, not the agent's to repair.
+    assert any(key[0] == "REST_DAY" for key in executor.unrepairable_hard_keys)
+    assert executor.seed_quality[0] == 0
+    ok, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"late__{MON}", "clinicianId": "Bob"}]})
+    assert ok["applied"] is True
+    # A second shift for the person on the rest day is still a new violation.
+    executor = _make_executor(state)
+    refused, _ = _run(executor, "apply_moves", {"moves": [
+        {"action": "assign", "slot_key": f"late__{MON}", "clinicianId": "Alice"}]})
+    assert refused["applied"] is False
+    assert [v["code"] for v in refused["new_hard_violations"]] == ["REST_DAY"]

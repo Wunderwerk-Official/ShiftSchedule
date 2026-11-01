@@ -35,6 +35,7 @@ from ..validation import (
     validate_solver_rules,
 )
 from ..constraint_policy import violation_key as _violation_key, is_new_or_worsened
+from ..assignment_policy import manual_rest_days
 from .workflow import PlanningWorkflow, SEARCH_TOOLS, InspectionBudgetExhausted
 from .neighborhood import analyze_bottlenecks, explain_unfilled, repair_neighborhood
 from .quality import QUALITY_VERSION, BALANCED_FIELDS, CLASSIC_FIELDS, extra_metrics
@@ -182,6 +183,7 @@ TOOL_SPECS_RAW = [
             "One clinician's schedule in the solve range: assignments per "
             "day (fixed vs yours), weekly hours vs contract+tolerance, "
             "ytd_worked_pct, preferred sections, time windows, vacations, "
+            "rest_days (days off set by hand, no work), "
             "planning_wishes (free-text soft preferences)."
         ),
         "input_schema": {
@@ -559,6 +561,9 @@ class PlanToolExecutor:
         self.fixed_identity: Set[Tuple[str, str, str]] = {
             (a.rowId, a.dateISO, a.clinicianId) for a in self.fixed_assignments
         }
+        # (clinicianId, dateISO) placed in the Rest Day row: off that day
+        # (REST_DAY in the shared gate). Agent moves never touch pool rows.
+        self.manual_rest_days: Set[Tuple[str, str]] = manual_rest_days(self.fixed_assignments)
 
         # Working copy: only agent-controlled (seed + agent) assignments.
         self.current: Dict[Tuple[str, str, str], Assignment] = {}
@@ -1105,6 +1110,10 @@ class PlanToolExecutor:
                 {"startISO": v.startISO, "endISO": v.endISO}
                 for v in clinician.vacations or []
             ],
+            "rest_days": sorted(
+                day for c, day in self.manual_rest_days
+                if c == cid and day in self.ctx.target_date_set
+            ),
             "work_pattern": clinician.workPattern.model_dump(exclude_none=True) if clinician.workPattern else None,
             "planning_wishes": (
                 self.scrub_text(clinician.planningWishes)

@@ -18,7 +18,7 @@ import random
 from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from ..assignment_policy import is_protected_assignment
+from ..assignment_policy import is_protected_assignment, manual_rest_days
 from ..planning_preferences import vacation_dates_in_range
 from ..models import (
     AppState,
@@ -104,6 +104,9 @@ class ClinicianState:
         self.eligible_sections = clinician.qualifiedClassIds
         self.preferred_working_times = getattr(clinician, "preferredWorkingTimes", {})
         self.vacations = clinician.vacations
+        # Dates this person was placed in the Rest Day row by hand (filled by
+        # heuristic_solve_range_v2): off that day, like vacation.
+        self.rest_days: Set[str] = set()
 
         # Calculate year-to-date hours and deficit
         self.ytd_hours = 0.0  # Will be calculated from assignments
@@ -139,6 +142,10 @@ class ClinicianState:
         # Same string comparison as validation._is_on_vacation and the CP-SAT
         # model, so a malformed range never crashes the heuristic.
         return any(vac.startISO <= date_iso <= vac.endISO for vac in self.vacations or [])
+
+    def has_rest_day(self, date_iso: str) -> bool:
+        """Placed in the Rest Day row by hand on this date (no hours credit)."""
+        return date_iso in self.rest_days
 
     def _has_on_call_on(self, date_iso: str, on_call_section_id: str) -> bool:
         """True if this clinician has an on-call assignment on the given date."""
@@ -444,6 +451,9 @@ def heuristic_solve_range_v2(
     clinician_states = {}
     for clinician in state.clinicians:
         clinician_states[clinician.id] = ClinicianState(clinician, range_start)
+    for clinician_id, date_iso in manual_rest_days(state.assignments):
+        if clinician_id in clinician_states:
+            clinician_states[clinician_id].rest_days.add(date_iso)
 
     # Mark manual assignments (target + context days) and calculate YTD hours
     manual_assignments_map = _mark_manual_assignments(
@@ -1169,8 +1179,8 @@ def _is_doctor_eligible_for_slot(
     if slot.section_id not in state.eligible_sections:
         return False
 
-    # 2. Vacation
-    if state.is_on_vacation(slot.date_iso):
+    # 2. Vacation, or a rest day set by hand in the Rest Day row
+    if state.is_on_vacation(slot.date_iso) or state.has_rest_day(slot.date_iso):
         return False
 
     # 3. Time overlap
