@@ -147,8 +147,12 @@ export default function HelpView() {
               <span className="font-medium">On vacation</span>,{" "}
               <span className="font-medium">Rest day</span>,{" "}
               <span className="font-medium">Time conflict</span>,{" "}
-              <span className="font-medium">Different location</span> and{" "}
-              <span className="font-medium">Already in slot</span>.
+              <span className="font-medium">Different location</span>,{" "}
+              <span className="font-medium">Over weekly limit</span> and{" "}
+              <span className="font-medium">Already in slot</span>. Over weekly limit
+              means the shift would take the person&apos;s week (Monday to Sunday) above
+              their contract hours plus tolerance, e.g. &quot;41.5/40 h in 2026-W45&quot;;
+              the automated planner never plans above it.
             </li>
             <li>
               Drag a name to another shift or pool on the same day to move it. Dragging a

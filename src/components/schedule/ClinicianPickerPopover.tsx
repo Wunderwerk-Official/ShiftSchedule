@@ -51,7 +51,20 @@ export type ClinicianOption = {
   hasTimeConflict: boolean;
   hasLocationConflict: boolean;
   alreadyAssigned: boolean;
+  /** Over contract + tolerance in the slot's ISO week (the planner's hard cap). */
+  isOverWeeklyHours?: boolean;
+  /** e.g. "41.5/40 h in 2026-W45" when isOverWeeklyHours. */
+  weeklyHoursLabel?: string;
 };
+
+const isEligibleOption = (c: ClinicianOption) =>
+  c.isQualified &&
+  !c.isOnVacation &&
+  !c.isOnRestDay &&
+  !c.hasTimeConflict &&
+  !c.hasLocationConflict &&
+  !c.alreadyAssigned &&
+  !c.isOverWeeklyHours;
 
 type ClinicianPickerPopoverProps = {
   open: boolean;
@@ -124,8 +137,8 @@ export default function ClinicianPickerPopover({
 
   // Sort: eligible first, then by name
   const sortedClinicians = [...filteredClinicians].sort((a, b) => {
-    const aEligible = a.isQualified && !a.isOnVacation && !a.isOnRestDay && !a.hasTimeConflict && !a.hasLocationConflict && !a.alreadyAssigned;
-    const bEligible = b.isQualified && !b.isOnVacation && !b.isOnRestDay && !b.hasTimeConflict && !b.hasLocationConflict && !b.alreadyAssigned;
+    const aEligible = isEligibleOption(a);
+    const bEligible = isEligibleOption(b);
     if (aEligible && !bEligible) return -1;
     if (!aEligible && bEligible) return 1;
     return a.name.localeCompare(b.name);
@@ -186,13 +199,7 @@ export default function ClinicianPickerPopover({
           </div>
         ) : (
           sortedClinicians.map((clinician) => {
-            const isEligible =
-              clinician.isQualified &&
-              !clinician.isOnVacation &&
-              !clinician.isOnRestDay &&
-              !clinician.hasTimeConflict &&
-              !clinician.hasLocationConflict &&
-              !clinician.alreadyAssigned;
+            const isEligible = isEligibleOption(clinician);
 
             // Build all applicable warnings - order determines display priority
             const warnings: string[] = [];
@@ -202,6 +209,13 @@ export default function ClinicianPickerPopover({
             if (clinician.isOnRestDay) warnings.push("Rest day");
             if (clinician.hasTimeConflict) warnings.push("Time conflict");
             if (clinician.hasLocationConflict) warnings.push("Different location");
+            if (clinician.isOverWeeklyHours) {
+              warnings.push(
+                clinician.weeklyHoursLabel
+                  ? `Over weekly limit (${clinician.weeklyHoursLabel})`
+                  : "Over weekly limit",
+              );
+            }
 
             return (
               <button

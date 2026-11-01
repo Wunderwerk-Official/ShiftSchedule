@@ -194,7 +194,7 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | model | empty = the model saved for that provider; self-hosted: `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` (`Qwen/Qwen3.8-27B` is no longer served); Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, … |
 | variant | `baseline` (production prompts) / `focused` (prompt experiment) |
 | scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` / `fixed-patterns` |
-| strategy | `day_by_day` (production; LLM builds each day from scratch) / `repair` (benchmark reference: heuristic seed + LLM repair) |
+| strategy | `day_by_day` (production; LLM builds each day from scratch, then the v1.74 cross-day repair) / `repair` (benchmark reference: heuristic seed + LLM repair) / `direct` (v1.74 experiment: the whole range in one answer, no tools; needs `implementation: checkout` until v1.74 is deployed) |
 | reasoning | empty (endpoint / model default; Opus 5.5: `medium`) / `low` / `medium` / `high`; Claude also `xhigh` / `max` |
 | implementation | `deployed` (container's code and fixture; runs this checkout's `prompt_eval.py` against them, so from v1.68 on it needs v1.68 deployed — use `checkout` until then) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 

@@ -965,10 +965,19 @@ class PlanToolExecutor:
                         for c in result["candidates"]
                         if not c["eligible"]
                     }
+                    # Keep the magnitude a weekly-hours block has in the
+                    # single-slot form: 0.5 (a near miss, worth a cross-day
+                    # trade or a tolerance change) reads differently than 20.
+                    over_cap = {
+                        c["clinicianId"]: c["week_over_cap_hours"]
+                        for c in result["candidates"]
+                        if not c["eligible"] and "week_over_cap_hours" in c
+                    }
                     result = {
                         "capacity_left": result["capacity_left"],
                         "eligible": eligible,
                         "ineligible": ineligible,
+                        **({"week_over_cap_hours": over_cap} if over_cap else {}),
                     }
                 out[self._alias_slot_key(self._resolve_slot_key(key))] = result
             return {"slots": out}

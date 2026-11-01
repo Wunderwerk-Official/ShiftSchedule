@@ -315,6 +315,14 @@ point (move yesterday's slot to free someone for today); the apply gate
 re-checks every hard rule (rest days, weekly hours, overlaps, windows) on
 every batch, so nothing you try can break the plan.
 
+Weekly hours count per ISO week. Moving work between days of one week does
+not change a person's weekly total, but it does change WHICH slots get those
+hours: one long low-priority shift can use the hours that two higher-priority
+slots on another day need. Before this review, a cross-day coverage repair
+already searched the whole range for such trades (see "cross-day repair"
+under Days as built, when it changed something); focus on the issues that
+remain and keep its coverage.
+
 THE PROCEDURE:
 1. The digest lists the remaining issues, worst first: open slots, then
    short days, then over-long days, then preferred-time misses. Work in

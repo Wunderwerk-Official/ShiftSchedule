@@ -60,6 +60,8 @@ from .tools import (
     literal_tool_description,
 )
 from .workflow import audit_time_budget
+# range_open_positions: the day loop has a local int named open_positions.
+from .cross_day import coverage_repair, open_positions as range_open_positions, repair_note, repair_seconds
 
 # History compaction: once the tool results in the conversation exceed this
 # budget, everything but the most recent exchanges is replaced by a stub in
@@ -309,12 +311,13 @@ def agent_solve_range(
     # Strategy: "day_by_day" (the STANDARD since v1.38) builds the range
     # from scratch, one day per conversation, the way a human planner works.
     # "repair" (heuristic seed + LLM improvement) is deactivated in the UI
-    # and kept only for the arena benchmarks and explicit API calls.
-    strategy = (
-        "repair"
-        if getattr(payload, "agent_strategy", None) == "repair"
-        else "day_by_day"
-    )
+    # and kept only for the arena benchmarks and explicit API calls, like
+    # "direct" (whole range in one answer, no tools; an experiment).
+    requested_strategy = getattr(payload, "agent_strategy", None)
+    strategy = requested_strategy if requested_strategy in ("repair", "direct") else "day_by_day"
+    # Both build the range from scratch: no heuristic seed, and a failed
+    # start falls back to the heuristic draft.
+    from_scratch = strategy in ("day_by_day", "direct")
 
     def muted_progress(event_type: str, data: dict) -> None:
         # Forward the heuristic's phase updates so the overlay stays alive,
@@ -748,7 +751,7 @@ def agent_solve_range(
         return True
 
     def run_final_checks():
-        if strategy == "day_by_day" and executor.moves_accepted == 0:
+        if from_scratch and executor.moves_accepted == 0:
             return  # preserve the explicit heuristic fallback for failed starts
         restore_best()
         agent_phase("Verify the final plan and remaining gaps")
@@ -785,7 +788,7 @@ def agent_solve_range(
         ):
             run_meta["stop_reason"] = "partial"
         if (
-            strategy == "day_by_day"
+            from_scratch
             and executor.moves_accepted == 0
             and not cancel_event.is_set()
             and not run_meta.get("fallback")
@@ -810,6 +813,8 @@ def agent_solve_range(
                 if run_meta.get("fallback")
                 else f"Agent solver (day-by-day): built from scratch, "
                 if strategy == "day_by_day"
+                else "Agent solver (direct, no tools): whole range in one answer, "
+                if strategy == "direct"
                 else "Agent solver: seed by heuristic v2, "
             )
             + f"{iterations_done} LLM iteration(s), "
@@ -828,7 +833,7 @@ def agent_solve_range(
                 "Quality metrics unchanged; kept the agent's adjustments "
                 "(preference/fairness swaps at equal quality)."
             )
-        elif strategy == "day_by_day" and not run_meta.get("fallback"):
+        elif from_scratch and not run_meta.get("fallback"):
             notes.append(
                 "No assignments could be placed; returning an empty plan "
                 "for the range."
@@ -952,6 +957,8 @@ def agent_solve_range(
                     "completion": completion,
                     "tasks": tasks,
                     "final_audit": run_meta.get("final_audit"),
+                    "cross_day_repair": run_meta.get("cross_day_repair"),
+                    "direct": run_meta.get("direct"),
                     "quality_version": QUALITY_VERSION,
                     "final_day_checks": run_meta.get("final_day_checks", {}),
                     "quality_profile": ctx.settings.agentQualityProfile,
@@ -988,7 +995,7 @@ def agent_solve_range(
     )
     if payload.agent_budget_exhausted:
         run_meta["stop_reason"] = "budget_exhausted"
-        if strategy == "day_by_day":
+        if from_scratch:
             return heuristic_fallback([budget_note])
         return finalize("AGENT_FALLBACK_SEED", [budget_note])
     if provider is None:
@@ -1003,7 +1010,7 @@ def agent_solve_range(
                 f"Agent LLM unavailable — the AI agent could not start: {exc} "
                 "The heuristic draft plan was returned instead."
             )
-            if strategy == "day_by_day":
+            if from_scratch:
                 return heuristic_fallback([unavailable_note])
             return finalize("AGENT_FALLBACK_SEED", [unavailable_note])
 
@@ -1660,6 +1667,29 @@ def agent_solve_range(
                 f"{still_open} left open"
             )
         # --------------------------------------------------------------
+        # CROSS-DAY COVERAGE REPAIR (deterministic, no model turn): the day
+        # loop spends weekly hours day by day and its rescue/balance searches
+        # only rearrange one day, so a slot only a person whose hours went
+        # to an earlier day can cover stays open (2026-W45 in production).
+        # Repair across the whole range before the review, so the model
+        # reviews (and may polish) the repaired plan.
+        # --------------------------------------------------------------
+        # Only on top of the model's own plan: a run where the model placed
+        # nothing keeps falling back to the heuristic draft (and never
+        # counts as model planning in the arena).
+        if (not aborted and not cancel_event.is_set() and executor.moves_accepted > 0
+                and range_open_positions(executor) > 0):
+            # Keep at least half of what is left for the review and audit.
+            repair_budget = min(repair_seconds(len(ctx.target_day_isos)),
+                                (deadline - time.time() - DEADLINE_HEADROOM_SECONDS) / 2)
+            agent_phase("Repair coverage across days")
+            repair_report = coverage_repair(executor, cancel_event=cancel_event, time_limit=repair_budget)
+            run_meta["cross_day_repair"] = repair_report
+            note = repair_note(repair_report)
+            if note:
+                extra_notes.append(note)
+                previous_day_lines.append(f"- cross-day repair: {note}")
+        # --------------------------------------------------------------
         # FINAL RANGE REVIEW (admin request): one conversation that sees
         # the WHOLE built week and may rearrange across days. The day loop
         # only ever saw one day at a time, so imbalances needing another
@@ -1845,6 +1875,80 @@ def agent_solve_range(
         )
         return finalize("AGENT_COMPLETE", extra_notes)
 
+    def direct_loop() -> dict:
+        """Experiment (arena): the whole range in one answer without tools,
+        then one correction round (backend/agent/direct.py)."""
+        nonlocal iterations_done
+        from .direct import (DIRECT_MAX_ROUNDS, DIRECT_MAX_TOKENS, DIRECT_SYSTEM_PROMPT,
+                             apply_direct_plan, build_direct_digest, build_direct_feedback,
+                             parse_direct_reply)
+        extra_notes: List[str] = []
+        emit_agent("stage", {"stage": "improve"})
+        agent_phase("Plan the whole range in one answer")
+        # A whole range of placements plus thinking needs more than a tool turn.
+        config.max_tokens = max(config.max_tokens or 0, DIRECT_MAX_TOKENS)
+        messages = [ChatMessage(role="user", content=build_direct_digest(executor) + admin_block + wishes_block)]
+        stats: Dict[str, Any] = {"rounds": 0, "proposed": 0, "accepted": 0, "dropped": 0, "unparsed_lines": 0,
+                                 "open_after_round": [], "dropped_sample": []}
+        for round_index in range(DIRECT_MAX_ROUNDS):
+            if cancel_event.is_set():
+                return finalize("ABORTED", extra_notes + [ABORT_NOTE])
+            if deadline - time.time() <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
+                extra_notes.append("Direct planning ran out of time.")
+                break
+            executor.current_iteration = iterations_done + 1
+            emit_agent("iteration", {"iteration": iterations_done + 1})
+            response = _complete_with_retry(
+                provider,
+                system=DIRECT_SYSTEM_PROMPT,
+                messages=messages,
+                tools=[],
+                compute_timeout=lambda: max(10.0, min((deadline - time.time()) - DEADLINE_HEADROOM_SECONDS,
+                                                      MAX_PER_CALL_TIMEOUT_SECONDS)),
+                deadline=deadline,
+                cancel_event=cancel_event,
+                on_retry=note_retry,
+            )
+            iterations_done += 1
+            absorb_response(response)
+            if response.stop_reason in ("error", "refusal"):
+                run_meta["stop_reason"] = response.stop_reason
+                extra_notes.append(f"Direct planning stopped: the model call ended with {response.stop_reason}.")
+                break
+            adds, removes, unparsed = parse_direct_reply(response.text)
+            applied = apply_direct_plan(executor, adds, removes)
+            stats["rounds"] += 1
+            stats["proposed"] += len(adds) + len(removes)
+            stats["accepted"] += applied["accepted"]
+            stats["dropped"] += len(applied["rejected"])
+            stats["unparsed_lines"] += unparsed
+            stats["dropped_sample"] += applied["rejected"][:5]
+            stats["open_after_round"].append(range_open_positions(executor))
+            if not stats["open_after_round"][-1] and not applied["rejected"]:
+                break
+            if round_index + 1 < DIRECT_MAX_ROUNDS:
+                messages.append(ChatMessage(role="assistant", content=response.replay_text or "(plan)",
+                                            raw_content=response.raw_content))
+                messages.append(ChatMessage(role="user", content=build_direct_feedback(executor, applied)))
+        run_meta["direct"] = stats
+        # The same cross-day repair as day-by-day, so both strategies compare
+        # with and without it (open_after_round = the model's own plan).
+        if not cancel_event.is_set() and executor.moves_accepted > 0 and range_open_positions(executor) > 0:
+            agent_phase("Repair coverage across days")
+            repair_report = coverage_repair(
+                executor, cancel_event=cancel_event,
+                time_limit=min(repair_seconds(len(ctx.target_day_isos)),
+                               (deadline - time.time() - DEADLINE_HEADROOM_SECONDS) / 2))
+            run_meta["cross_day_repair"] = repair_report
+            note = repair_note(repair_report)
+            if note:
+                extra_notes.append(note)
+        run_meta["days_planned"] = list(ctx.target_day_isos)
+        on_progress("phase", {"phase": "agent_finalize", "label": "Agent (3/3): Finalizing best plan..."})
+        return finalize("AGENT_COMPLETE", extra_notes)
+
+    if strategy == "direct":
+        return direct_loop()
     if strategy == "day_by_day":
         return day_by_day_loop()
 

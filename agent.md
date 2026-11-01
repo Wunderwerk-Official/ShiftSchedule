@@ -89,7 +89,7 @@ Cells
 - Drag/drop does not block rule-violating placements (same-day location mix, multiple shifts); solver enforces rules but manual overrides are allowed and shown in red. Overlap within the same day is blocked by drag/drop (uses time intervals).
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
-- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
+- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.74: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`).
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -634,10 +634,10 @@ Endpoint:
 Payload:
 ```json
 { "startISO": "YYYY-MM-DD", "endISO": "YYYY-MM-DD", "only_fill_required": true,
-  "solver_mode": "cpsat" | "heuristic" | "agent", "agent_strategy": "day_by_day" | "repair",
+  "solver_mode": "cpsat" | "heuristic" | "agent", "agent_strategy": "day_by_day" | "repair" | "direct",
   "timeout_seconds": 60 }
 ```
-`endISO` is optional: cpsat/heuristic default to 7 days (resolved and stored on the run); agent solves only `startISO`; `solver_mode` defaults to `cpsat` when omitted (`use_heuristic` is legacy); `agent_strategy` only applies to `agent` (default `day_by_day`).
+`endISO` is optional: cpsat/heuristic default to 7 days (resolved and stored on the run); agent solves only `startISO`; `solver_mode` defaults to `cpsat` when omitted (`use_heuristic` is legacy); `agent_strategy` only applies to `agent` (default `day_by_day`; `repair` and `direct` are arena experiments).
 
 Behavior
 - Considers all clinicians not on vacation; protected (manual or locked/fixed) assignments are kept, unlocked in-range solver assignments are replaced.
@@ -940,9 +940,10 @@ overlay, which can be sent to the background (floating badge, calendar
 stays usable); a reload re-attaches to the running job.
 
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
-Two strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
+Strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
 (**day_by_day is the default since v1.38**; the UI no longer offers repair —
-it remains for the arena benchmarks and explicit API calls):
+it remains for the arena benchmarks and explicit API calls, like the v1.74
+experiment `direct`):
 
 **repair**: the classic improve-the-draft loop.
 1. **Seed**: `heuristic_solve_range_v2` produces the initial plan (its
@@ -985,9 +986,25 @@ planner works, with four extra tools (`get_day_priorities`,
    single-handover batches that keep both days contiguous and never
    create a new over-long or mini-stint day; fixed/manual assignments
    are never touched.
-5. **Zero-progress guard**: an empty day-by-day result never reaches the
+5. **Cross-day coverage repair** (v1.74, `backend/agent/cross_day.py`):
+   after the last day and before the final range review, when required
+   places are still open and the model placed something, CP-SAT re-solves
+   the whole range from the current plan (fewest open required places,
+   then fewest changed assignments, at most 60) and applies the result
+   only through the gate (valid batch preview that improves the best
+   plan). It trades weekly hours between days of one ISO week, which no
+   per-day step can (see v1.74).
+6. **Zero-progress guard**: an empty day-by-day result never reaches the
    client — it falls back to a fresh heuristic draft
    (`AGENT_FALLBACK_SEED`).
+
+**direct** (v1.74, arena only, `backend/agent/direct.py`): no tools; the
+model gets one digest of the whole range (rules, every person's weekly
+hours booked/cap per ISO week, vacations, fixed shifts, windows, every open
+place with the people the gate accepts) and answers with a plan block; the
+placements go through the gate one by one, one correction round sends the
+rejections and the remaining open places back. It measures whether a strong
+model plans better or cheaper without the tool procedure (v1.74 results).
 
 The iteration budget follows the admin rule **total slot instances × 10**
 (floor 10), computed per solve; `AGENT_MAX_ITERATIONS` is no longer read at
@@ -1218,6 +1235,9 @@ with a foreign objective scale, which shows up as a full-height "jump".
 - `backend/tests/test_agent_anthropic_provider.py`, `test_agent_retry.py` —
   Anthropic adapter (empty replies, thinking display per model, SDK errors)
   and provider exceptions inside a run (v1.64)
+- `backend/tests/test_cross_day_repair.py` — v1.74: CP-SAT repair mode,
+  `coverage_repair` through the gate, the day-by-day integration, the
+  weekly-hours magnitudes and the direct strategy (parser, gate, digest)
 - `backend/tests/test_solver_monitor.py` — monitor end states (watchdog kill,
   salvage as `aborted`, torn queue message, spend recorded once);
   `backend/tests/test_solver_run_endpoints.py` — 422 ranges, discard 409s,
@@ -1503,6 +1523,7 @@ Frontend
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
+- `src/lib/weeklyHours.ts` (v1.74: weekly hours per ISO week as the backend gate counts them; the picker's "Over weekly limit")
 - `src/lib/templateLimits.ts` (v1.64: `MAX_TOTAL_COLBANDS` = 300, `countTemplateColBands`)
 - `src/lib/time.ts` (v1.64: the one strict `parseTimeToMinutes`)
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
@@ -1521,7 +1542,8 @@ Backend
 - `backend/pdf.py` (PDF export endpoints)
 - `backend/ical_routes.py` (iCal endpoints)
 - `backend/publication.py` (tokens + caching helpers)
-- `backend/solver.py` (CP-SAT solver endpoint + logic)
+- `backend/solver.py` (CP-SAT solver endpoint + logic; v1.74 repair mode for the agent's cross-day repair)
+- `backend/agent/cross_day.py` (v1.74: cross-day coverage repair), `backend/agent/direct.py` (v1.74: arena-only direct strategy)
 - `backend/heuristic/solver_v2.py` (heuristic solver v2 implementation)
 - `backend/state_routes.py` (health + state endpoints + database inspection)
 - `backend/preferences.py` (v1.64: `GET/PUT /v1/me/preferences`, 32 KB cap)
@@ -2604,3 +2626,118 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Tests: `ScheduleGrid.test.tsx` (other section named, lane section not,
   section and time tags in that order on an open slot).
 - Version 1.73 (73). Deployed together with v1.72 (holidays by state).
+
+## v1.74 — Planning across days, weekly hours in the picker
+
+- **The report.** A run for Thu/Fri 2026-11-05/06 (Opus 5.5, day-by-day)
+  left 9 required places open, among them Friday's IRM seno ZK 07:30–11:30
+  and Echo tout ZK 11:30–15:30, while the picker listed Marie Laurain,
+  Arnaud Sztantics, Hermann Kruppert and Tran Phuc for the first one
+  without any warning. The model's own summary: "Nearly everyone without a vacation
+  would go over their weekly hours (week 45)" and "swapping days … won't
+  change weekly hours since Thursday and Friday fall in the same week".
+- **Cause 1: weekly hours are spent one day at a time.** The weekly cap
+  (contract + tolerance, 5 h when unset, per ISO week, overnight work on its
+  start date) is hard in every planner (`validate_weekly_hours`). The
+  day-by-day agent staffs each day in its own conversation: Thursday's
+  10 h COR tout 08:00–18:00 (priority 7; single-candidate slots go first
+  regardless of priority) went to Marie Laurain (27.5 → 37.5 of 40 h), so
+  2.5 h were left for Friday's 4 h places. The same 10 h would
+  have covered both open Friday places IRM seno ZK 07:30–11:30 and Echo
+  tout ZK 11:30–15:30 (8 h, one site, one block; she is qualified for both)
+  instead of one Thursday place. Friday's other people qualified for IRM
+  seno ZK were at their cap too (Sztantics 33/33 h, Kruppert 41/41 h, Tran
+  Phuc no hours left).
+  The accounting itself is correct (gate and run log agree).
+- **Cause 2: no step searched across days.** `suggest_rescue_moves`
+  rearranges only the same day's own placements; `final_audit` checks each
+  day on its own; the optional neighborhood search
+  (`agentNeighborhoodSearch`, off) explores ±1 day with at most 12 changes
+  and filled nothing on the arena's 5-day week (32 → 32); the LLM range
+  review had no tool for trades between days and wrongly concluded that
+  they cannot help (same week ≠ same slots).
+- **Cause 3: the picker hid it.** It checked qualification, vacation, rest
+  days, overlaps and site, not weekly hours, so blocked people looked free.
+- **Concept.** Three layers, of which 2 and 3 ship now:
+  1. *Prevention* (later): a look-ahead in `suggest_day_blocks` that keeps
+     hours a scarce person needs on a later day of the same week
+     (`reserved_for`). Needs the scarcity of later days, which the repair
+     below already computes exactly; not worth a heuristic yet.
+  2. *Repair across days* (v1.74): once all days are built, an exact
+     search over the whole range trades assignments between days. CP-SAT
+     already models every hard rule (weekly hours, rest days, overlaps,
+     sites, windows), solves a week's repair in seconds and finds chains a
+     model would need dozens of tool calls for; the agent's plan stays the
+     starting point and the gate keeps the final say.
+  3. *Transparency* (v1.74): the picker and the tools say how far a person
+     is over the week, so neither the planner nor a human retries a blocked
+     person.
+- **Cross-day coverage repair** (`backend/agent/cross_day.py`,
+  `coverage_repair`): runs in day-by-day after the last day and before the
+  final range review (and after a direct plan) when required places are
+  open and the model placed something (a run where the model placed nothing
+  still falls back to the heuristic draft and never counts as model work).
+  - Solver repair mode (`_solve_range_impl(…, state_override, repair_reference,
+    repair_max_changes)`): fixed and manual entries stay fixed as always,
+    every agent placement is a solution hint, objective = missing required
+    positions × 1,000,000 + changed assignments × 1,000 + the usual
+    priority-weighted slack, at most 60 changes (`MAX_CHANGES`); no search
+    strategy, gap 0 and no week-by-week split in repair mode.
+  - Time: `min(120, 20 + 10 × days)` s and at most half the remaining run
+    time; under 5 s it is skipped (`no_time`).
+  - Gate: the difference (removals first) is previewed as one batch
+    (`apply_moves` dry run) and applied as one workflow proposal only when
+    the preview is valid (no new hard violation) and improves the best-plan
+    quality tuple; otherwise nothing changes (`rejected` /
+    `no_improvement`). Run log, activity feed and best plan see it like any
+    agent move.
+  - Coverage first, as in the quality tuple: the repair may add a short day
+    or hours deviation for a filled required place; the range review then
+    balances what it can.
+  - Report `debugInfo.agent.cross_day_repair` (status, open before/after,
+    changes, days, seconds, solver status, quality before/after); note
+    "Cross-day repair filled N more required position(s) by changing M
+    assignment(s) across days (A -> B open).", also shown to the range
+    review under "Days as built".
+- **Range review prompt**: weekly hours count per ISO week; moving work
+  between days does not change a week's total but does change which places
+  get those hours; the cross-day repair already searched such trades.
+- **Magnitudes for the model**: batched `candidates` carry
+  `week_over_cap_hours` per blocked person; `explain_unfilled` lists it.
+- **Picker** (`src/lib/weeklyHours.ts`, mirrors the gate): minutes per
+  person and ISO week from all assignments of the calendar (pool rows and
+  slots without a valid time do not count, overnight work on its start
+  day), cap = contract + max(0, tolerance ?? 5) h, no cap without a
+  contract. A person whose week would end above the cap shows "Over weekly
+  limit (41.5/40 h in 2026-W45)" and sorts after the people without
+  warnings; manual placement stays possible like for the other warnings.
+  `WeeklySchedulePage` builds the index once per change for `ScheduleGrid`
+  and `ClinicSheetGrid`.
+- **Direct strategy** (arena only, `agent_strategy="direct"`,
+  `backend/agent/direct.py`): answers the question whether Opus 5.5 plans
+  better or cheaper with the instructions alone. One digest of the whole
+  range (rules; per person sections, weekly hours booked/cap per ISO week,
+  daily minimum–comfort, year-to-date %, vacation, fixed shifts, windows;
+  every open place with the people the gate accepts given the fixed
+  context), no tools, one ```plan block answer, placements through the
+  gate one by one, one correction round with the rejections and the
+  remaining places, then the same cross-day repair. 5-day arena digest
+  ≈ 28 k characters (~7 k tokens), built in 2 s.
+- **Measurements without a model** (synthetic-v3; the arena's model-free
+  controller `workflow_eval`: first offer of every tool, then the repair;
+  0 new hard violations everywhere):
+
+  | case | open before → after | changes | seconds | short days | hours deviation (min) |
+  |---|---|---|---|---|---|
+  | 02-02, 3 days, base | 0 → 0 (`complete`) | 0 | 0 | – | – |
+  | 02-19, 2 days, base | 10 → 8 | 18 | 0.2 | 1 → 2 | 3776 → 4976 |
+  | 02-16, 5 days, base (9 of 24 away) | 32 → 24 | 32 | 70 | 6 → 8 | 6376 → 6406 |
+  | 02-16, 5 days, crunch | 45 → 29 | 50 | 70 | 9 → 12 | 5009 → 6068 |
+
+  For comparison on 02-16 × 5: Opus 5.5 day-by-day 31–33 open (round 8),
+  CP-SAT from scratch 27 open after 600 s.
+- Tests: `test_cross_day_repair.py` (solver repair mode, gate,
+  integration, magnitudes, direct strategy), `test_agent_workflow_safety.py`
+  and `test_prompt_eval.py` adjusted; frontend `weeklyHours.test.ts`,
+  `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`.
+- Deploy notes: no schema or data change. Version 1.74 (74).

@@ -108,7 +108,7 @@ def main():
     parser.add_argument("--effort", choices=ANTHROPIC_EFFORTS, default=None,
                         help="Claude effort (low/medium/high also via --reasoning-effort)")
     parser.add_argument("--scenario", choices=["base", "vacation-wave", "understaffed", "crunch", "oncall", "pinned", "daynight", "fixed-patterns"], default="base")
-    parser.add_argument("--strategy", choices=["day_by_day", "repair"], default="day_by_day")
+    parser.add_argument("--strategy", choices=["day_by_day", "repair", "direct"], default="day_by_day")
     parser.add_argument("--variant", choices=["baseline", "focused"], default="baseline")
     parser.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default=None)
     parser.add_argument("--mock", action="store_true", help="Exercise tracing without an endpoint or settings access")
@@ -214,7 +214,8 @@ def main():
                 kwargs["timeout_seconds"], limits["hard_deadline"], before, CALL_GRACE_SECONDS)
             self.delegate.cancel_event = self.cancel_event
             response = self.delegate.complete(**kwargs)
-            row = {"call": len(calls) + 1, "phase": "day" if kwargs["system"] == day else "review" if kwargs["system"] == review else "duty_or_repair",
+            row = {"call": len(calls) + 1, "phase": "day" if kwargs["system"] == day else "review" if kwargs["system"] == review
+                   else "direct" if not kwargs.get("tools") else "duty_or_repair",
                    "seconds": round(time.monotonic() - before, 3),
                    "tools": [c.name for c in response.tool_calls], "stop_reason": response.stop_reason,
                    "usage": response.usage, "reply": response.replay_text, "error": response.error,
@@ -248,6 +249,8 @@ def main():
               "fixture_version": fixture_version,
               "quality_version": agent.get("quality_version"), "completion": agent.get("completion"),
               "final_audit": agent.get("final_audit"),
+              "cross_day_repair": agent.get("cross_day_repair"), "direct": agent.get("direct"),
+              "strategy": args.strategy,
               "quality_profile": args.quality_profile, "neighborhood": args.neighborhood,
               "scenario": args.scenario, "model": agent.get("model"), "requested_model": config.model,
               "model_selection": agent.get("model_selection"), "model_usage": agent.get("model_usage"),

@@ -245,6 +245,20 @@ npx playwright show-report
 - [x] A chosen state filters the loaded holidays (NRW: Fronleichnam and Allerheiligen, no Buß- und Bettag) and is saved with the calendar; choosing it alone keeps the stored list
 - [x] A stored state is shown; another country starts without one
 
+
+### 3.13 Planning across days and weekly hours (v1.74)
+
+**Backend Tests** (`backend/tests/test_cross_day_repair.py`; the case: a person with a 32 + 8 h cap and 27.5 h booked Mon–Wed, Thursday's 10 h slot and Friday's two 4 h slots of higher priority, nobody else qualified):
+- [x] CP-SAT repair mode moves her hours from Thursday to Friday (one more required place) and keeps the best plan when nothing improves
+- [x] The same-day rescue cannot fix it (no own placement of Friday blocks)
+- [x] `coverage_repair` applies through the gate (2 → 1 open, 3 changes, fixed context unchanged, note text); a complete plan reports `complete`; an illegal solver answer is `rejected`; too little time is `no_time`
+- [x] A day-by-day run (scripted model: Thursday gets the long slot) ends with the repaired plan, `cross_day_repair` applied and the note in the run notes
+- [x] Batched `candidates` report `week_over_cap_hours` (1.5 h)
+- [x] Direct strategy (arena): reply parsing (placements, removals, unparsed lines), one plan answer through the gate (3 proposed, 2 accepted, 1 dropped), digest with weekly hours (`W45 27.5/40`) and the legal people per open place
+- [x] A run where the model placed nothing still falls back to the heuristic (`test_prompt_eval.py`); a day the model ended unplanned is filled by the repair before the final audit (`test_agent_workflow_safety.py`)
+
+**Frontend Tests**: `src/lib/weeklyHours.test.ts` (ISO weeks as Python's `isocalendar`, counting on the start date, pool rows and slots without time ignored, cap contract + tolerance with 5 h default and explicit 0, over only above the cap, label), `src/lib/clinicianSlotOptions.test.ts` (over-limit flag and label, none for people without a contract or already in the slot), `ClinicianPickerPopover.test.tsx` ("Over weekly limit (…)" shown, sorted after people without warnings).
+
 ---
 
 ## 4. Intentionally Not Covered
@@ -345,3 +359,4 @@ Areas identified for future test expansion:
 | 2026-01-03 | Claude | Added iCal and web API tests |
 | 2026-10-15 | Claude | v1.64: My plan / preferences, team page and background-run coverage; CI spec list |
 | 2026-11-01 | Claude | v1.72 holidays by state (incl. `holiday-region` in the CI spec list); v1.73 named sections in stacked cells |
+| 2026-11-01 | Claude | v1.74 cross-day coverage repair, weekly hours in the picker, direct strategy (arena) |

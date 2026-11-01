@@ -107,6 +107,8 @@ import {
   type NagerPublicHoliday,
 } from "../lib/holidays";
 import { computeOpenSlots } from "../lib/openSlots";
+import { buildWeeklyMinutesIndex, checkWeeklyHours } from "../lib/weeklyHours";
+import { buildShiftIntervalsByRowId } from "../lib/clinicianSlotOptions";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
@@ -1312,6 +1314,25 @@ export default function WeeklySchedulePage({
     );
     if (!restAssignments || restAssignments.length === 0) return false;
     return restAssignments.some((assignment) => assignment.clinicianId === clinicianId);
+  };
+
+  // Weekly hours per person and ISO week, from ALL stored assignments (also
+  // those the grid hides on vacation days): the planner's gate counts them
+  // the same way, so the picker shows who the planner cannot place.
+  const weeklyMinutesIndex = useMemo(() => {
+    const intervals = buildShiftIntervalsByRowId(scheduleRows);
+    const minutesOf = (rowId: string) => {
+      const interval = intervals.get(rowId);
+      return interval ? interval.end - interval.start : null;
+    };
+    return buildWeeklyMinutesIndex(
+      Array.from(assignmentMap.values()).flat(),
+      minutesOf,
+    );
+  }, [assignmentMap, scheduleRows]);
+  const getWeeklyHours = (clinicianId: string, dateISO: string, addMinutes: number) => {
+    const clinician = clinicians.find((item) => item.id === clinicianId);
+    return clinician ? checkWeeklyHours(weeklyMinutesIndex, clinician, dateISO, addMinutes) : null;
   };
 
   // Clinic sheet layout (Excel-style monthly view). Month-scoped derived
@@ -3482,6 +3503,7 @@ export default function WeeklySchedulePage({
               }}
               clinicians={clinicians}
               getIsOnRestDay={isOnRestDayInSheet}
+              getWeeklyHours={getWeeklyHours}
               enforceSameLocationPerDay={solverSettings.enforceSameLocationPerDay}
               onClinicianClick={(clinicianId) => openClinicianEditor(clinicianId)}
               onAddAssignment={handleAddAssignment}
@@ -3561,6 +3583,7 @@ export default function WeeklySchedulePage({
             }}
             clinicians={clinicians}
             getIsOnRestDay={isOnRestDay}
+            getWeeklyHours={getWeeklyHours}
             enforceSameLocationPerDay={solverSettings.enforceSameLocationPerDay}
             slotOverridesByKey={slotOverridesByKey}
             enableSlotOverrides={false}

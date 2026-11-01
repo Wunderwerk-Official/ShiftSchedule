@@ -207,7 +207,12 @@ def test_premature_day_end_is_repaired_and_verified_before_reporting_completion(
     assert meta["daysPlanned"] == 2
     assert meta["daysSkipped"] == meta["daysIncomplete"] == []
     assert meta["stopReason"] == "completed"
-    assert meta["final_audit"]["repairs"] == 1
+    # Monday, which the model ended without planning, is filled by the
+    # cross-day coverage repair before the review (v1.74); before that the
+    # final audit repaired it. Either way it is verified before completion.
+    assert meta["cross_day_repair"]["status"] == "applied"
+    assert meta["cross_day_repair"]["open_after"] == 0
+    assert meta["final_audit"]["repairs"] == 0
     assert meta["completion"]["required_checks_complete"] and meta["completion"]["coverage_complete"]
     assert not meta["unsolved"]["open_slots"]
 

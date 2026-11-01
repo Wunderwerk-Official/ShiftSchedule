@@ -550,6 +550,10 @@ EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL = 1
 # allow SOLVER_GAP_GRACE_SECONDS for further improvement, then stop.
 SOLVER_GAP_THRESHOLD = 0.05  # 5% relative gap
 SOLVER_GAP_GRACE_SECONDS = 20.0  # seconds to wait for more improvements
+# Repair mode (_solve_range_impl repair_reference): weights of the
+# lexicographic objective, missing required positions >> changes.
+REPAIR_WEIGHT_MISSING = 1_000_000
+REPAIR_WEIGHT_CHANGE = 1_000
 
 
 def _get_day_type(date_iso: str, holidays: List[Holiday]) -> str:
@@ -1038,13 +1042,18 @@ def _add_coverage_constraints(
     day_type_by_iso: Dict[str, str],
     var_map: Dict[Tuple[str, str, str], cp_model.IntVar],
     manual_assignments: Dict[Tuple[str, str], List[str]],
+    raw_slack_out: Optional[List[Any]] = None,
 ) -> Tuple[
     List[Any],
     List[Any],
     int,
     Dict[str, int],
 ]:
-    """Apply required-slot coverage + per-slot capacity caps."""
+    """Apply required-slot coverage + per-slot capacity caps.
+
+    ``raw_slack_out`` (optional) collects the unweighted missing-position
+    variables, for objectives that count open positions like the agent's
+    quality tuple instead of weighting them by slot priority."""
     total_slots = len(slot_contexts)
     order_weight_by_slot_id: Dict[str, int] = {}
     total_required = 0
@@ -1133,6 +1142,8 @@ def _add_coverage_constraints(
         else:
             model.Add(slack >= missing)
         slack_terms.append(slack * order_weight)
+        if raw_slack_out is not None:
+            raw_slack_out.append(slack)
 
     return coverage_terms, slack_terms, total_required, order_weight_by_slot_id
 
@@ -2208,6 +2219,8 @@ def _solve_range_impl(
     on_progress=None,
     start_time: float = None,
     state_override=None,
+    repair_reference=None,
+    repair_max_changes: Optional[int] = None,
 ):
     """
     Core solver implementation that builds and solves the constraint satisfaction problem.
@@ -2232,6 +2245,13 @@ def _solve_range_impl(
         on_progress: Optional callback(event_type, data) for UI progress updates
         start_time: Timestamp when request started (for accurate timeout calculation)
         state_override: Optional AppState to solve instead of loading it
+        repair_reference: Optional collection of (slotId, dateISO, clinicianId)
+            identities, the plan to repair (cross-day coverage repair of the
+            agent, backend/agent/cross_day.py). The plan is a solution hint and
+            the objective becomes: fewest missing required positions first,
+            then fewest changes to that plan (slot priority only breaks ties).
+            The state must hold only the fixed context, not the plan itself.
+        repair_max_changes: Optional cap on changed assignments in repair mode.
 
     Returns:
         SolveRangeResponse with assignments, notes, and debug timing info
@@ -2400,6 +2420,8 @@ def _solve_range_impl(
     if orphaned_assignments:
         notes.append(f"WARNING: {len(orphaned_assignments)} assignment(s) reference slots not in the template and were ignored by the solver.")
 
+    repair_mode = repair_reference is not None
+    raw_slack_vars: List[Any] = []
     coverage_terms, slack_terms, total_required, order_weight_by_slot_id = _add_coverage_constraints(
         model,
         payload,
@@ -2409,8 +2431,21 @@ def _solve_range_impl(
         day_type_by_iso,
         var_map,
         manual_assignments,
+        raw_slack_out=raw_slack_vars if repair_mode else None,
     )
     timer.checkpoint("coverage_constraints")
+
+    repair_change_terms: List[Any] = []
+    if repair_mode:
+        # Stay close to the plan being repaired: it is the starting solution,
+        # and every assignment that differs from it counts as one change.
+        reference = set(repair_reference)
+        for (cid, date_iso, sid), var in var_map.items():
+            kept = (sid, date_iso, cid) in reference
+            model.AddHint(var, 1 if kept else 0)
+            repair_change_terms.append(1 - var if kept else var)
+        if repair_max_changes is not None:
+            model.Add(sum(repair_change_terms) <= max(0, int(repair_max_changes)))
 
     on_progress("phase", {"phase": "on_call_rest_days", "label": "Preparation (6/10): Setting up on-call rest rules..."})
     rest_day_conflicts, rest_boundary_conflict = _add_on_call_rest_constraints(
@@ -2497,7 +2532,17 @@ def _solve_range_impl(
     w_min_daily = solver_settings.weightMinimumDailyHours
     w_ytd_balance = solver_settings.weightYtdBalance
 
-    if payload.only_fill_required:
+    if repair_mode:
+        # Lexicographic by weights: one missing required position outweighs
+        # any number of changes allowed by repair_max_changes; slot priority
+        # (<= 100 per position) only decides between equally long change
+        # lists. Soft goals stay with the plan being repaired.
+        model.Minimize(
+            sum(raw_slack_vars) * REPAIR_WEIGHT_MISSING
+            + sum(repair_change_terms) * REPAIR_WEIGHT_CHANGE
+            + total_slack
+        )
+    elif payload.only_fill_required:
         model.Minimize(
             -total_coverage * w_coverage
             + total_slack * w_slack
@@ -2526,7 +2571,8 @@ def _solve_range_impl(
         key=lambda k: order_weight_by_slot_id.get(k[2], 0),
         reverse=True,
     )
-    if priority_sorted_vars:
+    # A repair starts from its hint instead (the plan being repaired).
+    if priority_sorted_vars and not repair_mode:
         model.AddDecisionStrategy(
             [var_map[k] for k in priority_sorted_vars],
             cp_model.CHOOSE_FIRST,
@@ -2610,7 +2656,9 @@ def _solve_range_impl(
             best_bound = self.BestObjectiveBound()
             denom = max(1, abs(objective))
             gap = abs(objective - best_bound) / denom
-            if gap <= SOLVER_GAP_THRESHOLD:
+            # A repair runs to its time limit: 5% of a missing-position
+            # objective is more than one whole position.
+            if gap <= SOLVER_GAP_THRESHOLD and not repair_mode:
                 # Within gap — (re)start the grace countdown.
                 # Each new improving solution resets the 20 s window.
                 self._restart_grace_timer()
@@ -2637,7 +2685,7 @@ def _solve_range_impl(
         )
     solver.parameters.max_time_in_seconds = remaining_timeout
     solver.parameters.num_search_workers = SOLVER_NUM_WORKERS
-    solver.parameters.relative_gap_limit = SOLVER_GAP_THRESHOLD
+    solver.parameters.relative_gap_limit = 0.0 if repair_mode else SOLVER_GAP_THRESHOLD
     result = solver.SolveWithSolutionCallback(model, solution_callback)
     solution_callback._cancel_grace_timer()  # clean up any pending timer
     timer.checkpoint("solve")
@@ -2689,7 +2737,8 @@ def _solve_range_impl(
 
         # If solving the entire range failed and range is > 14 days, try week-by-week
         total_days = (range_end - range_start).days + 1
-        if total_days > 14:
+        # A repair that finds nothing keeps the plan it was given.
+        if total_days > 14 and not repair_mode:
             # Attempt week-by-week solving as fallback
             week_assignments: List[Assignment] = []
             # Each solved chunk becomes fixed context for subsequent chunks,
