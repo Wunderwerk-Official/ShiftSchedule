@@ -68,6 +68,14 @@ export const SECTION_PRIORITY_HELP =
 // Tooltip of the Holiday day chip and column header.
 const HOLIDAY_DAY_TITLE = "Used instead of the weekday on every date in the Holidays list.";
 
+// Options of the slot editor's "Ends" select (value = endDayOffset).
+const END_DAY_OPTIONS = [
+  { value: "0", label: "Same day" },
+  { value: "1", label: "Next day" },
+  { value: "2", label: "+2 days" },
+  { value: "3", label: "+3 days" },
+];
+
 // Position of a fixed popover: below its anchor, or above it when there is no
 // room below, kept 8px inside the viewport.
 const placePopover = (anchor: DOMRect, panel: HTMLElement) => {
@@ -979,13 +987,11 @@ export default function WeeklyTemplateBuilder({
                   const offset = clampOffset(Number(value));
                   handleUpdateSlotTime(locationId, slot.id, { endDayOffset: offset });
                 }}
-                options={[
-                  { value: "0", label: "Same day" },
-                  { value: "1", label: "Next day" },
-                  { value: "2", label: "+2 days" },
-                  { value: "3", label: "+3 days" },
-                ]}
-                ariaLabel="Ends"
+                options={END_DAY_OPTIONS}
+                ariaLabel={`Ends: ${
+                  END_DAY_OPTIONS.find((option) => option.value === String(slot.endDayOffset ?? 0))
+                    ?.label ?? "Same day"
+                }`}
                 title="Pick 'Next day' for night shifts that end after midnight."
                 className="w-24"
               />
@@ -1408,7 +1414,7 @@ export default function WeeklyTemplateBuilder({
                           value: String(index + 1),
                           label: String(index + 1),
                         }))}
-                        ariaLabel="Location position"
+                        ariaLabel={`Location position: ${locationIndex + 1}`}
                         title="Position in the calendar and template (1 = top)"
                         className="w-14"
                       />

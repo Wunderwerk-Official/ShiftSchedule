@@ -157,7 +157,9 @@ async function createLocation(page: Page, locationName: string) {
   await page.waitForTimeout(300);
 
   console.log(`    -> Finding the new location input field`);
-  const locationInputs = page.locator('input[type="text"]');
+  // The location name inputs carry no type attribute; find them by their
+  // accessible name. "+ Location" adds "New Location" at the top.
+  const locationInputs = page.getByRole("textbox", { name: "Location name" });
   const count = await locationInputs.count();
 
   for (let i = count - 1; i >= 0; i--) {

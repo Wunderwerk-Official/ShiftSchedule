@@ -2594,4 +2594,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `HelpView.test.tsx` (Planning rules & AI, gear button, no "Solver
   Settings"), `ClinicianEditor.test.tsx` follows the renamed box;
   `e2e/full-workflow.spec.ts` ("+ Add section", the eligibility dialog
-  scope) and `e2e/team-page.spec.ts` ("Replace shifts") follow the labels.
+  scope, location inputs found by their "Location name" accessible name) and
+  `e2e/team-page.spec.ts` ("Replace shifts") follow the labels. The gear
+  button's title starts with "Run", so `app.spec.ts` and
+  `colband-explosion.spec.ts` look up the Run button with `exact: true`.

@@ -407,7 +407,7 @@ test.describe.serial("app flows", () => {
     await page.goto("/");
     await page.getByRole("button", { name: "Current week" }).click();
     await attachStepScreenshot(page, testInfo, "solver-before");
-    await page.getByRole("button", { name: "Run" }).click();
+    await page.getByRole("button", { name: "Run", exact: true }).click();
     const shiftCell = page.locator(
       `[data-schedule-cell=\"true\"][data-row-id=\"${slotRowId}\"][data-date-iso=\"${testDateISO}\"]`,
     );
@@ -700,7 +700,7 @@ test.describe.serial("ui login flows", () => {
     await loginViaUI(page, testInfo);
     await page.getByRole("button", { name: "Current week" }).click();
     await attachStepScreenshot(page, testInfo, "ui-login-solver-before");
-    await page.getByRole("button", { name: "Run" }).click();
+    await page.getByRole("button", { name: "Run", exact: true }).click();
     const shiftCell = page.locator(
       `[data-schedule-cell=\"true\"][data-row-id=\"${slotRowId}\"][data-date-iso=\"${testDateISO}\"]`,
     );
