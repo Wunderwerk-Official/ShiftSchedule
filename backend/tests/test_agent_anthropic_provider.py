@@ -13,7 +13,7 @@ def test_non_object_tool_input_is_reported_without_crashing(arguments):
     block = SimpleNamespace(**raw, model_dump=lambda **_: raw)
     response = SimpleNamespace(content=[block], usage=SimpleNamespace(input_tokens=7, output_tokens=3),
                                stop_reason="tool_use")
-    provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test"))
+    provider = AnthropicProvider(AgentConfig(anthropic_api_key="local-test", model="claude-sonnet-5"))
     provider._client.close()
     client = SimpleNamespace(messages=SimpleNamespace(create=lambda **_: response))
     client.with_options = lambda **_: client
