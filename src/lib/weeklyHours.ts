@@ -6,6 +6,9 @@
 // contract have no cap. The clinician picker uses it so a person the planner
 // cannot place no longer looks free (v1.74).
 
+import { parseTimeToMinutes } from "./time";
+import type { ScheduleRow } from "./shiftRows";
+
 export type WeeklyHoursClinician = {
   id: string;
   workingHoursPerWeek?: number;
@@ -24,6 +27,44 @@ export type WeeklyHoursStatus = {
 export type WeeklyMinutesIndex = Map<string, number>;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const MINUTES_PER_DAY = 24 * 60;
+// backend/constants.py DEFAULT_SUB_SHIFT_START_MINUTES / DEFAULT_SUB_SHIFT_MINUTES
+const DEFAULT_START_MINUTES = 8 * 60;
+const DEFAULT_SHIFT_MINUTES = 8 * 60;
+
+/**
+ * A slot's minutes as the backend gate and every planner count them
+ * (validation._slot_interval / solver._build_slot_interval): a missing start
+ * is 08:00, a missing end is start + 8 h, "+N day" (0-3) extends the end, and
+ * an end at or before the start counts 0. Not the grid's conflict interval,
+ * which is deliberately unknown for a slot without times.
+ */
+export function gateSlotMinutes(slot: {
+  startTime?: string;
+  endTime?: string;
+  endDayOffset?: number;
+}): number {
+  const start = parseTimeToMinutes(slot.startTime) ?? DEFAULT_START_MINUTES;
+  const end = parseTimeToMinutes(slot.endTime) ?? start + DEFAULT_SHIFT_MINUTES;
+  const offset =
+    typeof slot.endDayOffset === "number" && Number.isFinite(slot.endDayOffset)
+      ? Math.max(0, Math.min(3, Math.floor(slot.endDayOffset)))
+      : 0;
+  const total = end + offset * MINUTES_PER_DAY;
+  return total > start ? total - start : 0;
+}
+
+/** Gate minutes per class row and slot row id (the ids assignments use). */
+export function buildGateMinutesByRowId(rows: ScheduleRow[]): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const row of rows) {
+    if (row.kind === "class") map.set(row.id, gateSlotMinutes(row));
+    for (const slotRow of row.slotRows ?? []) {
+      if (slotRow.kind === "class") map.set(slotRow.id, gateSlotMinutes(slotRow));
+    }
+  }
+  return map;
+}
 
 /** ISO 8601 week of a "YYYY-MM-DD" date, e.g. "2026-W45"; null if invalid. */
 export function isoWeekKey(dateISO: string): string | null {
@@ -44,19 +85,26 @@ export function isoWeekKey(dateISO: string): string | null {
 
 /**
  * Sum assignment minutes per clinician and ISO week. `minutesOf` returns a
- * row's slot duration, or null for rows that do not count (pool rows, slots
- * without a valid time): the backend counts those as 0 too.
+ * row's duration as the gate counts it (buildGateMinutesByRowId), or null for
+ * rows that do not count (pool rows, rows outside the template, an end at or
+ * before the start): the backend counts those as 0 too.
  */
 export function buildWeeklyMinutesIndex(
   assignments: Iterable<{ rowId: string; dateISO: string; clinicianId: string }>,
   minutesOf: (rowId: string) => number | null,
 ): WeeklyMinutesIndex {
   const index: WeeklyMinutesIndex = new Map();
+  // A calendar holds years of assignments but only ~365 dates a year.
+  const weekByDate = new Map<string, string | null>();
   for (const assignment of assignments) {
     if (assignment.rowId.startsWith("pool-")) continue;
     const minutes = minutesOf(assignment.rowId);
     if (!minutes || minutes <= 0) continue;
-    const week = isoWeekKey(assignment.dateISO);
+    let week = weekByDate.get(assignment.dateISO);
+    if (week === undefined) {
+      week = isoWeekKey(assignment.dateISO);
+      weekByDate.set(assignment.dateISO, week);
+    }
     if (!week) continue;
     const key = `${assignment.clinicianId}|${week}`;
     index.set(key, (index.get(key) ?? 0) + minutes);

@@ -93,7 +93,7 @@ type ScheduleGridProps = {
   }>;
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
   /** Weekly-hours check for the picker (src/lib/weeklyHours.ts via the page). */
-  getWeeklyHours?: (clinicianId: string, dateISO: string, addMinutes: number) => WeeklyHoursStatus | null;
+  getWeeklyHours?: (clinicianId: string, dateISO: string, rowId: string) => WeeklyHoursStatus | null;
   enforceSameLocationPerDay?: boolean;
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;

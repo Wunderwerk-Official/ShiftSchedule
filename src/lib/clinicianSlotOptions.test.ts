@@ -208,18 +208,19 @@ describe("buildClinicianOptionsForSlot weekly hours", () => {
   };
 
   it("marks people the 4h slot would push over contract + tolerance", () => {
-    const asked: Array<[string, number]> = [];
-    const result = options((clinicianId, _date, addMinutes) => {
-      asked.push([clinicianId, addMinutes]);
-      const afterMinutes = (clinicianId === "over" ? 37.5 * 60 : 20 * 60) + addMinutes;
-      return { weekKey: "2026-W10", assignedMinutes: afterMinutes - addMinutes, afterMinutes,
+    const asked: Array<[string, string, string]> = [];
+    const result = options((clinicianId, dateISO, rowId) => {
+      asked.push([clinicianId, dateISO, rowId]);
+      const afterMinutes = (clinicianId === "over" ? 37.5 * 60 : 20 * 60) + 240;
+      return { weekKey: "2026-W10", assignedMinutes: afterMinutes - 240, afterMinutes,
                capMinutes: 40 * 60, over: afterMinutes > 40 * 60 };
     });
     expect(result.find((o) => o.id === "over")).toMatchObject({
       isOverWeeklyHours: true, weeklyHoursLabel: "41.5/40 h in 2026-W10" });
     expect(result.find((o) => o.id === "fits")?.isOverWeeklyHours).toBeUndefined();
-    // Someone already in the slot is counted in their week already.
-    expect(asked).toEqual([["over", 240], ["fits", 240]]);
+    // The page knows the slot's gate minutes; someone already in the slot is
+    // counted in their week already.
+    expect(asked).toEqual([["over", DATE, "seno"], ["fits", DATE, "seno"]]);
   });
 
   it("adds nothing without a weekly-hours source", () => {

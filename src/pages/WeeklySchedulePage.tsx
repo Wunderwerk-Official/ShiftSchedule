@@ -107,8 +107,7 @@ import {
   type NagerPublicHoliday,
 } from "../lib/holidays";
 import { computeOpenSlots } from "../lib/openSlots";
-import { buildWeeklyMinutesIndex, checkWeeklyHours } from "../lib/weeklyHours";
-import { buildShiftIntervalsByRowId } from "../lib/clinicianSlotOptions";
+import { buildGateMinutesByRowId, buildWeeklyMinutesIndex, checkWeeklyHours } from "../lib/weeklyHours";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
@@ -1319,20 +1318,21 @@ export default function WeeklySchedulePage({
   // Weekly hours per person and ISO week, from ALL stored assignments (also
   // those the grid hides on vacation days): the planner's gate counts them
   // the same way, so the picker shows who the planner cannot place.
-  const weeklyMinutesIndex = useMemo(() => {
-    const intervals = buildShiftIntervalsByRowId(scheduleRows);
-    const minutesOf = (rowId: string) => {
-      const interval = intervals.get(rowId);
-      return interval ? interval.end - interval.start : null;
-    };
-    return buildWeeklyMinutesIndex(
-      Array.from(assignmentMap.values()).flat(),
-      minutesOf,
-    );
-  }, [assignmentMap, scheduleRows]);
-  const getWeeklyHours = (clinicianId: string, dateISO: string, addMinutes: number) => {
+  // Slot minutes as the gate counts them: a slot saved without times is
+  // 08:00-16:00 there, not "unknown" as in the grid's conflict checks.
+  const gateMinutesByRowId = useMemo(() => buildGateMinutesByRowId(scheduleRows), [scheduleRows]);
+  const weeklyMinutesIndex = useMemo(
+    () =>
+      buildWeeklyMinutesIndex(
+        Array.from(assignmentMap.values()).flat(),
+        (rowId) => gateMinutesByRowId.get(rowId) ?? null,
+      ),
+    [assignmentMap, gateMinutesByRowId],
+  );
+  const getWeeklyHours = (clinicianId: string, dateISO: string, rowId: string) => {
+    const minutes = gateMinutesByRowId.get(rowId);
     const clinician = clinicians.find((item) => item.id === clinicianId);
-    return clinician ? checkWeeklyHours(weeklyMinutesIndex, clinician, dateISO, addMinutes) : null;
+    return clinician && minutes ? checkWeeklyHours(weeklyMinutesIndex, clinician, dateISO, minutes) : null;
   };
 
   // Clinic sheet layout (Excel-style monthly view). Month-scoped derived

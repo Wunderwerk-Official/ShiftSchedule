@@ -199,10 +199,10 @@ export function buildClinicianOptionsForSlot(args: {
   unknownIntervalsByDate: DateIntervalIndex["unknownIntervalsByDate"];
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
   /**
-   * The person's ISO week after adding `addMinutes` on `dateISO`, counted
+   * The person's ISO week after adding the slot `rowId` on `dateISO`, counted
    * like the planner's gate (src/lib/weeklyHours.ts); null without a cap.
    */
-  getWeeklyHours?: (clinicianId: string, dateISO: string, addMinutes: number) => WeeklyHoursStatus | null;
+  getWeeklyHours?: (clinicianId: string, dateISO: string, rowId: string) => WeeklyHoursStatus | null;
 }): ClinicianOption[] {
   const {
     rowId,
@@ -223,8 +223,6 @@ export function buildClinicianOptionsForSlot(args: {
   if (!row || row.kind !== "class") return [];
   const classId = row.sectionId ?? row.id;
   const slotLocationId = row.locationId ?? "loc-default";
-  const slotInterval = shiftIntervalsByRowId.get(rowId);
-  const slotMinutes = slotInterval ? slotInterval.end - slotInterval.start : 0;
 
   // Get already assigned clinicians for this specific slot
   const slotKey = `${rowId}__${dateISO}`;
@@ -297,10 +295,7 @@ export function buildClinicianOptionsForSlot(args: {
     // Over the weekly cap (contract + tolerance): the planner never places
     // such a person, so the picker says so instead of offering them as free.
     // People already in the slot are counted in their week already.
-    const weekly =
-      !alreadyAssigned && getWeeklyHours && slotMinutes > 0
-        ? getWeeklyHours(clinician.id, dateISO, slotMinutes)
-        : null;
+    const weekly = !alreadyAssigned && getWeeklyHours ? getWeeklyHours(clinician.id, dateISO, rowId) : null;
 
     return {
       id: clinician.id,

@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildGateMinutesByRowId,
   buildWeeklyMinutesIndex,
   checkWeeklyHours,
   formatWeeklyHours,
+  gateSlotMinutes,
   isoWeekKey,
   weeklyCapMinutes,
 } from "./weeklyHours";
+import type { ScheduleRow } from "./shiftRows";
 
 describe("isoWeekKey", () => {
   it.each([
@@ -69,5 +72,45 @@ describe("weekly hours like the planner's gate", () => {
     expect(over).toMatchObject({ weekKey: "2026-W45", assignedMinutes: 1650, afterMinutes: 2490, over: true });
     expect(formatWeeklyHours(over)).toBe("41.5/40 h");
     expect(checkWeeklyHours(index, { id: "a" }, "2026-11-06", 840)).toBeNull();
+  });
+});
+
+describe("slot minutes as the gate counts them (validation._slot_interval)", () => {
+  it.each([
+    [{ startTime: "07:30", endTime: "11:30" }, 240],
+    [{ startTime: "20:00", endTime: "08:00", endDayOffset: 1 }, 720],
+    // A slot saved without times is 08:00-16:00 for every planner.
+    [{}, 480],
+    [{ startTime: "06:00" }, 480], // end = start + 8 h
+    [{ endTime: "12:00" }, 240], // start = 08:00
+    [{ endTime: "07:00" }, 0], // 08:00-07:00 ends before it starts
+    [{ startTime: "20:00", endTime: "08:00" }, 0], // overnight without "+1 day"
+    [{ startTime: "08:00", endTime: "09:00", endDayOffset: 9 }, 60 + 3 * 1440], // offset clamped to 3
+  ])("%o counts %i minutes", (slot, minutes) => {
+    expect(gateSlotMinutes(slot)).toBe(minutes);
+  });
+
+  it("maps class rows and their slot rows, never pool rows", () => {
+    const rows: ScheduleRow[] = [
+      { id: "pool-rest-day", kind: "pool", name: "Rest", dotColorClass: "" },
+      { id: "sec", kind: "class", name: "Sec", dotColorClass: "", startTime: "07:30", endTime: "11:30",
+        slotRows: [{ id: "slot-a", kind: "class", name: "A", dotColorClass: "" }] },
+    ];
+    expect([...buildGateMinutesByRowId(rows)]).toEqual([["sec", 240], ["slot-a", 480]]);
+  });
+
+  it("a person over the cap through a slot without times is over in the picker too", () => {
+    const minutes = buildGateMinutesByRowId([
+      { id: "day", kind: "class", name: "Day", dotColorClass: "", startTime: "08:00", endTime: "16:00" },
+      { id: "untimed", kind: "class", name: "Untimed", dotColorClass: "" },
+    ]);
+    const index = buildWeeklyMinutesIndex(
+      ["2026-11-02", "2026-11-03", "2026-11-04"].map((dateISO) => ({ rowId: "day", dateISO, clinicianId: "anna" }))
+        .concat([{ rowId: "untimed", dateISO: "2026-11-05", clinicianId: "anna" }]),
+      (rowId) => minutes.get(rowId) ?? null,
+    );
+    const anna = { id: "anna", workingHoursPerWeek: 32, workingHoursToleranceHours: 0 };
+    // 4 x 8 h booked; a 4 h Friday slot ends at 36/32 h like the backend says.
+    expect(checkWeeklyHours(index, anna, "2026-11-06", 240)).toMatchObject({ assignedMinutes: 1920, over: true });
   });
 });

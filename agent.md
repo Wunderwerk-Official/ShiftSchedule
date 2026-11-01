@@ -2705,10 +2705,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - **Magnitudes for the model**: batched `candidates` carry
   `week_over_cap_hours` per blocked person; `explain_unfilled` lists it.
 - **Picker** (`src/lib/weeklyHours.ts`, mirrors the gate): minutes per
-  person and ISO week from all assignments of the calendar (pool rows and
-  slots without a valid time do not count, overnight work on its start
-  day), cap = contract + max(0, tolerance ?? 5) h, no cap without a
-  contract. A person whose week would end above the cap shows "Over weekly
+  person and ISO week from all assignments of the calendar, with slot
+  durations as the gate counts them (`gateSlotMinutes`: a slot saved
+  without times is 08:00–16:00, a missing end is start + 8 h, "+N day"
+  0–3, an end at or before the start counts 0; pool rows never count;
+  overnight work on its start day), cap = contract + max(0, tolerance ?? 5)
+  h, no cap without a contract. The grid's conflict interval is not used
+  for this (it is deliberately unknown for a slot without times). A person whose week would end above the cap shows "Over weekly
   limit (41.5/40 h in 2026-W45)" and sorts after the people without
   warnings; manual placement stays possible like for the other warnings.
   `WeeklySchedulePage` builds the index once per change for `ScheduleGrid`
@@ -2738,6 +2741,28 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 
   For comparison on 02-16 × 5: Opus 5.5 day-by-day 31–33 open (round 8),
   CP-SAT from scratch 27 open after 600 s.
+- **Review of the change** (four reviewers, each finding reproduced, then
+  fixed with a test):
+  - The repair model must accept every plan the gate accepts: in repair
+    mode CP-SAT joins adjacent slots at two sites into one block when the
+    same-site rule is off (the gate merges by time) and allows new work at
+    a site of a fixed two-site day (`merge_sites`, `gate_parity`; default
+    solving unchanged). Before, such legal plans were infeasible hints and
+    the repair was rejected or dropped legal placements.
+  - The repair runs on the best plan (`restore_best` first), not on a
+    working copy that can be worse.
+  - Arena: `modelDaysIncomplete` records what the model left incomplete
+    itself (direct: days with a place someone could still take); a run is
+    invalid when the cross-day repair completed one of those days, so a
+    run the model barely planned never counts as the model's plan.
+  - Direct: only the answer text is parsed (never reasoning that an
+    adapter promoted into `text`), an abort during the call applies
+    nothing, an answer cut off at `max_tokens` before its plan gets one
+    more call with a note (the thinking counts towards the limit) and does
+    not use up the correction round.
+  - Picker: slot durations as the gate counts them (above); the ISO week
+    is computed once per date (a calendar holds years of assignments).
+  - Arena hashes cover `direct.py`, `cross_day.py` and `solver.py`.
 - A day the model skipped after a provider failure is now filled by the
   repair instead of the final audit; it still counts as skipped by the
   model (`modelDaysSkipped`), so the arena marks such a run invalid
