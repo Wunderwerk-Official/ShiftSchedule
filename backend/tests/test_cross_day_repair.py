@@ -303,3 +303,6 @@ def test_direct_strategy_plans_without_tools_and_drops_illegal_lines():
     # The digest gave the model everything: weekly hours and the legal people.
     digest = provider.calls[0]["messages"][0].content
     assert "W45 27.5/40" in digest and "legal: Marie Laurain" in digest
+    # v2: her hours target for Thu+Fri (32 h x 2/7 = 9.1 h, tolerance 8 x 2/7)
+    # and her preferred day, as the quality gate's hours deviation measures it.
+    assert "target 9.1±2.3" in digest

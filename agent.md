@@ -2716,8 +2716,10 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - **Direct strategy** (arena only, `agent_strategy="direct"`,
   `backend/agent/direct.py`): answers the question whether Opus 5.5 plans
   better or cheaper with the instructions alone. One digest of the whole
-  range (rules; per person sections, weekly hours booked/cap per ISO week,
-  daily minimum–comfort, year-to-date %, vacation, fixed shifts, windows;
+  range (rules; per person sections, weekly hours booked/cap per ISO week
+  and the hours target for the range ± tolerance exactly as the quality
+  gate's hours deviation measures it (`range_targets`), preferred day
+  length with minimum–comfort, year-to-date %, vacation, fixed shifts, windows;
   every open place with the people the gate accepts given the fixed
   context), no tools, one ```plan block answer, placements through the
   gate one by one, one correction round with the rejections and the

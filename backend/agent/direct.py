@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
+
+from ..planning_preferences import vacation_dates_in_range
 
 DIRECT_MAX_ROUNDS = 2  # the plan, then one correction round
 DIRECT_MAX_TOKENS = 32000
@@ -31,7 +33,7 @@ A checker validates every placement you return, one by one in your order, agains
 - Same site per day, one contiguous work block per person per day and rest days around on-call duties, when the rules section says they are enforced.
 - A place takes at most its open count.
 
-Goals, in this order: (1) fill every open place; when not all can be filled, fill the higher-priority places; weekly hours are shared across the days of a week, so do not spend a scarce person's last hours on a low-priority place another day needs them for; (2) no short days (below the person's daily minimum) and no over-long days (above the comfortable length); (3) people behind their year-to-date target first, section preferences, preferred working times, admin instructions and clinician wishes.
+Goals, in this order: (1) fill every open place; when not all can be filled, fill the higher-priority places; weekly hours are shared across the days of a week, so do not spend a scarce person's last hours on a low-priority place another day needs them for; (2) no short days (below the person's daily minimum) and no over-long days (above the comfortable length); (3) each person's hours in the range close to their range target (within the given tolerance; the target is the contract pro rata for the days they are not on vacation, fixed work included); (4) people behind their year-to-date target first, section preferences, preferred working times, admin instructions and clinician wishes.
 
 Plan like an experienced planner: scarcest places first (fewest legal people), give each person one contiguous block per day.
 
@@ -101,6 +103,42 @@ def open_place_lines(executor) -> List[str]:
     return lines
 
 
+def range_targets(executor) -> Dict[Tuple[str, Tuple[int, int]], Tuple[float, float, float]]:
+    """(target h, tolerance h, fixed h in the range) per person and ISO week,
+    computed exactly like the hours deviation of the quality gate
+    (backend/scoring.py plan_stats): contract and tolerance pro rata for the
+    range days of that week the person is not on vacation."""
+    ctx = executor.ctx
+    week_days: Dict[Tuple[int, int], int] = {}
+    for day in ctx.target_day_isos:
+        week = _iso_week(day)
+        week_days[week] = week_days.get(week, 0) + 1
+    start = date.fromisoformat(ctx.start_iso)
+    end = date.fromisoformat(ctx.end_iso) + timedelta(days=1)
+    fixed_minutes: Dict[Tuple[str, Tuple[int, int]], int] = {}
+    for a in ctx.fixed_assignments:
+        inst = ctx.instances[f"{a.rowId}__{a.dateISO}"]
+        key = (a.clinicianId, _iso_week(a.dateISO))
+        fixed_minutes[key] = fixed_minutes.get(key, 0) + max(0, inst.end - inst.start)
+    targets = {}
+    for clinician in ctx.state.clinicians:
+        cid = clinician.id
+        contract = ctx.contract_hours.get(cid)
+        if contract is None:
+            continue
+        vacation = {}
+        for day in vacation_dates_in_range(clinician, start, end):
+            vacation[day.isocalendar()[:2]] = vacation.get(day.isocalendar()[:2], 0) + 1
+        for week, days in week_days.items():
+            available = days - vacation.get(week, 0)
+            if available <= 0:
+                continue
+            scale = available / 7.0
+            targets[(cid, week)] = (contract * scale, ctx.tolerance_hours[cid] * scale,
+                                    fixed_minutes.get((cid, week), 0) / 60)
+    return targets
+
+
 def build_direct_digest(executor) -> str:
     ex = executor
     ctx = ex.ctx
@@ -118,10 +156,13 @@ def build_direct_digest(executor) -> str:
            if settings.onCallRestEnabled else "not enforced")
         + ".",
         "",
-        "People (name | qualified sections | weekly hours booked/cap per ISO week | daily minimum-comfortable h "
-        "| year-to-date worked % (lower = behind) | vacation in range | fixed shifts in range | time windows):",
+        "People (name | qualified sections | per ISO week: hours booked (fixed work, also outside the range) / hard cap, "
+        "and the hours target for the range days of that week ± tolerance, fixed work in the range included "
+        "| preferred day h (minimum-comfortable) | year-to-date worked % (lower = behind) | vacation in range "
+        "| fixed shifts in range | time windows):",
     ]
     sections = ex.section_names
+    targets = range_targets(ex)
     for clinician in ex.state.clinicians:
         cid = clinician.id
         cap = None
@@ -131,7 +172,14 @@ def build_direct_digest(executor) -> str:
         for year, week in weeks:
             monday = date.fromisocalendar(year, week, 1).isoformat()
             booked = ex._week_hours(cid, monday)
-            week_parts.append(f"W{week:02d} {booked:g}/{cap:g}" if cap is not None else f"W{week:02d} {booked:g}/-")
+            part = f"W{week:02d} {booked:g}/{cap:g}" if cap is not None else f"W{week:02d} {booked:g}/-"
+            target = targets.get((cid, (year, week)))
+            if target is not None:
+                goal, tolerance, fixed_in_range = target
+                part += f" target {goal:.1f}±{tolerance:.1f}"
+                if fixed_in_range:
+                    part += f" (fixed {fixed_in_range:g})"
+            week_parts.append(part)
         vacation = [day for day in ctx.target_day_isos
                     if any(v.startISO <= day <= v.endISO for v in clinician.vacations or [])]
         fixed = sorted(
@@ -153,10 +201,11 @@ def build_direct_digest(executor) -> str:
         first_day = ctx.target_day_isos[0]
         minimum = ex._daily_min_minutes(cid, first_day)
         comfort = ex._daily_comfort_minutes(cid, first_day)
+        preferred = ex._daily_target_minutes(cid, first_day)
         ytd = ex.ytd_completion_pct(cid, ctx.start_iso)
         lines.append(
             f"- {ex._alias(cid)} | {', '.join(sections.get(s, s) for s in clinician.qualifiedClassIds) or '-'} | "
-            f"{'; '.join(week_parts)} | {(minimum or 0) / 60:.1f}-{comfort / 60:.1f} | "
+            f"{'; '.join(week_parts)} | {preferred / 60:.1f} ({(minimum or 0) / 60:.1f}-{comfort / 60:.1f}) | "
             f"{ytd if ytd is not None else '-'} | {', '.join(vacation) or '-'} | {'; '.join(fixed) or '-'} | "
             f"{'; '.join(windows) or '-'}"
         )
