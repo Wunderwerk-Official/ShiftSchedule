@@ -244,6 +244,9 @@ export default function SettingsView({
     handleSnapshotImport(file);
   };
 
+  // Maintenance tools (database health check, inspector) stay folded away.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+
   return (
     <div className="mx-auto max-w-7xl px-6 py-10">
       <div className="flex items-start justify-between gap-6">
@@ -1062,9 +1065,40 @@ export default function SettingsView({
         ) : null}
       </div>
 
-      {/* Database Health Check - at the very bottom */}
+      {/* Advanced (at the very bottom, collapsed): database health check and
+          inspector link. The check only mounts (and loads) when opened. */}
       <div className="mt-6">
-        <DatabaseHealthCheck />
+        <button
+          type="button"
+          aria-expanded={advancedOpen}
+          aria-controls="settings-advanced"
+          onClick={() => setAdvancedOpen((open) => !open)}
+          className="flex w-full items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:hover:bg-slate-800"
+        >
+          <span>
+            <span className="block text-sm font-semibold text-slate-800 dark:text-slate-100">Advanced</span>
+            <span className="block text-xs text-slate-500 dark:text-slate-400">
+              Database health check and database inspector
+            </span>
+          </span>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            className={cx("h-4 w-4 shrink-0 text-slate-400 transition-transform", advancedOpen && "rotate-90")}
+          >
+            <path d="M9 6l6 6-6 6" />
+          </svg>
+        </button>
+        {advancedOpen ? (
+          <div id="settings-advanced" className="mt-3">
+            <DatabaseHealthCheck />
+          </div>
+        ) : null}
       </div>
     </div>
   );

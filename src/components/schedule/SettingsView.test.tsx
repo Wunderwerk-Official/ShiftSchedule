@@ -286,3 +286,14 @@ it("adds a holiday picked in the date picker", async () => {
   const month = String(now.getMonth() + 1).padStart(2, "0");
   expect(props.onAddHoliday).toHaveBeenCalledWith({ dateISO: `${now.getFullYear()}-${month}-15`, name: "Clinic day" });
 });
+
+
+it("keeps the database health check under a collapsed Advanced section", () => {
+  setup();
+  expect(screen.queryByText("Database Health Check")).toBeNull();
+  const toggle = screen.getByRole("button", { name: /Advanced/ });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("Database Health Check")).toBeVisible();
+});
