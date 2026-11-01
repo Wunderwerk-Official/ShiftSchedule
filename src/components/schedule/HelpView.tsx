@@ -322,6 +322,13 @@ export default function HelpView() {
               opens another person's plan.
             </li>
             <li>
+              The circle on <span className="font-medium">My plan</span> shows the initials
+              of the person linked to your account. To change it, open the arrow next to the
+              switch in My plan: the last entry,{" "}
+              <span className="font-medium">&ldquo;Not &lt;your name&gt;? Change who you are&rdquo;</span>,
+              lets you choose again; on a computer, pointing at the circle shows the name.
+            </li>
+            <li>
               Choose <span className="font-medium">Day</span>,{" "}
               <span className="font-medium">Week</span> or{" "}
               <span className="font-medium">Month</span>, and{" "}
@@ -333,12 +340,6 @@ export default function HelpView() {
               Click a shift for its details (hours, who works with you, rest before).{" "}
               <span className="font-medium">Show in team plan</span> opens the team view at
               that date and briefly highlights your entry.
-            </li>
-            <li>
-              The <span className="font-medium">star</span> makes the current view your start
-              page on this device type (computer or phone);{" "}
-              <span className="font-medium">Views</span> saves views by name. Views never
-              store a date.
             </li>
             <li>
               Keyboard in My plan (not while typing): T / W / M day, week, month · H today ·
@@ -366,8 +367,9 @@ export default function HelpView() {
             </li>
           </ul>
           <p className="mt-2">
-            Team | My plan, range, date on top / left, Times, saved views and start pages
-            are saved per account and never change the shared calendar.
+            The person you are linked to, range, date on top / left and Times are saved per
+            account and never change the shared calendar. The calendar always opens in the
+            team plan.
           </p>
           <p className="mt-2">
             <span className="font-medium">Location colors</span> are different: they are part

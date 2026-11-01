@@ -1,9 +1,10 @@
 import type { ReactNode } from "react";
 
 // Layout of the My-plan card header (SPEC C2 / C4). Desktop: row 1 "who"
-// (scope switch + person chevron, Next up | extras, star, views), row 2
-// "when & how" (navigator | range, orientation). Phone: scope row, navigator,
-// range + compact orientation, then Next up full width.
+// (scope switch + person chevron, Next up | extras), row 2 "when & how"
+// (navigator | range, orientation). Phone: scope row (+ extras), navigator,
+// range + compact orientation, then Next up full width. The start-page star
+// and the saved "Views" menu were removed in v1.71.
 
 type PlanHeaderProps = {
   isMobile: boolean;
@@ -12,8 +13,6 @@ type PlanHeaderProps = {
   nextUp?: ReactNode;
   /** Page-provided controls (e.g. snapshot/publish), right of row 1. */
   extras?: ReactNode;
-  star: ReactNode;
-  views: ReactNode;
   navigator: ReactNode;
   rangeSwitch: ReactNode;
   orientationSwitch: ReactNode;
@@ -25,8 +24,6 @@ export default function PlanHeader({
   personPicker,
   nextUp,
   extras,
-  star,
-  views,
   navigator,
   rangeSwitch,
   orientationSwitch,
@@ -39,11 +36,7 @@ export default function PlanHeader({
             {scopeSwitch}
             {personPicker}
           </div>
-          <div className="flex shrink-0 items-center gap-1">
-            {extras}
-            {star}
-            {views}
-          </div>
+          {extras ? <div className="flex shrink-0 items-center gap-1">{extras}</div> : null}
         </div>
         {navigator}
         <div className="flex items-center gap-2">
@@ -64,11 +57,7 @@ export default function PlanHeader({
           </div>
           {nextUp ? <div className="flex min-w-0 max-w-full">{nextUp}</div> : null}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
-          {extras}
-          {star}
-          {views}
-        </div>
+        {extras ? <div className="flex shrink-0 items-center gap-2">{extras}</div> : null}
       </div>
       <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
         {navigator}

@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { expect, it } from "vitest";
+import { changeLinkLabel } from "../myPlan/PersonPicker";
 import HelpView from "./HelpView";
 
 it("describes the current planning panel and drop rules", () => {
@@ -18,4 +19,14 @@ it("describes the current planning panel and drop rules", () => {
   expect(text).not.toContain("snaps back");
   expect(text).not.toContain("not responding");
   expect(screen.getByRole("heading", { name: "12. My plan" })).toBeVisible();
+  // v1.71: the linked person can be changed; the quoted label is PersonPicker's
+  // footer with a placeholder name. No star or saved views.
+  const footerLabel = changeLinkLabel("<your name>");
+  expect(footerLabel).toBe("Not <your name>? Change who you are");
+  expect(text).toContain(
+    `open the arrow next to the switch in My plan: the last entry, “${footerLabel}”, lets you choose again;`,
+  );
+  expect(text).toContain("on a computer, pointing at the circle shows the name.");
+  expect(text).toContain("shows the initials of the person linked to your account");
+  expect(text).not.toMatch(/start page|saved views/i);
 });

@@ -1,12 +1,10 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getUserPreferences, saveUserPreferences, type UserPreferences } from "../api/client";
-import { usePlanScope } from "../pages/usePlanScope";
 import {
   DEFAULT_PREFERENCES,
   MAX_SAVED_VIEWS,
   normalizePreferences,
-  sameViewConfig,
   useUserPreferences,
 } from "./userPreferences";
 
@@ -107,16 +105,6 @@ describe("normalizePreferences", () => {
     expect(normalizePreferences({ myPlanRangeMobile: "year" }).myPlanRangeMobile).toBe("week");
   });
 
-  it("compares views by their settings only", () => {
-    expect(sameViewConfig(view, { ...view, id: "a", name: "Mine" } as never)).toBe(true);
-    expect(sameViewConfig(view, { ...view, range: "day" })).toBe(false);
-    expect(sameViewConfig(view, { ...view, scope: "team" })).toBe(false);
-    // Views stored before v1.69 may still carry a colorBy: it has no meaning.
-    const team = { ...view, scope: "team" } as const;
-    expect(sameViewConfig(team, { ...team, colorBy: "person" } as never)).toBe(true);
-    expect(sameViewConfig(null, null)).toBe(true);
-    expect(sameViewConfig(view, null)).toBe(false);
-  });
 });
 
 describe("useUserPreferences", () => {
@@ -425,22 +413,12 @@ describe("useUserPreferences", () => {
     expect(stored).toEqual({ ...DEFAULT_PREFERENCES, savedViews: [phoneView, deskView], startViewMobile: view });
   });
 
-  it("a re-read keeps loaded true and does not re-apply the start view", async () => {
+  it("a re-read keeps loaded true and saves nothing", async () => {
+    // A start view stored before v1.71 is still read and kept, just unused.
     const startView = { scope: "me", range: "week", orientation: "top" } as const;
     serve({ startViewDesktop: startView });
-    const { result } = renderHook(() => {
-      const preferences = useUserPreferences("lena");
-      const scope = usePlanScope({
-        username: "lena",
-        prefs: preferences.prefs,
-        loaded: preferences.loaded,
-        onUpdatePrefs: preferences.update,
-        isMobile: false,
-      });
-      return { ...preferences, ...scope };
-    });
-    await waitFor(() => expect(result.current.planScope).toBe("me"));
-    act(() => result.current.setPlanScope("team"));
+    const { result } = renderHook(() => useUserPreferences("lena"));
+    await waitFor(() => expect(result.current.loaded).toBe(true));
     let resolve!: (value: UserPreferences) => void;
     getMock.mockReturnValueOnce(new Promise((yes) => (resolve = yes)));
     act(() => {
@@ -449,7 +427,6 @@ describe("useUserPreferences", () => {
     expect(result.current.loaded).toBe(true);
     await act(async () => resolve({ ...stored, startViewDesktop: { ...startView, range: "day" } }));
     expect(result.current.prefs.startViewDesktop?.range).toBe("day");
-    expect(result.current.planScope).toBe("team");
     expect(result.current.prefs.myPlanRange).toBe("week");
     expect(saveMock).not.toHaveBeenCalled();
   });

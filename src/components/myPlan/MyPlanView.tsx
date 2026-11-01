@@ -9,11 +9,9 @@ import type {
   PlanScope,
   SolverSettings,
   UserPreferences,
-  ViewConfig,
 } from "../../api/client";
 import { toISODate } from "../../lib/date";
 import {
-  findNextShiftFor,
   formatPeriodLabel,
   isoWeekNumber,
   parseISODate,
@@ -36,9 +34,7 @@ import PlanFooter from "./PlanFooter";
 import PlanHeader, { ViewingBanner } from "./PlanHeader";
 import PlanScopeSwitch from "./PlanScopeSwitch";
 import RangeSwitch from "./RangeSwitch";
-import SavedViewsMenu from "./SavedViewsMenu";
 import ShiftDetail from "./ShiftDetail";
-import StartPageStar from "./StartPageStar";
 import Toast, { useToast } from "./Toast";
 import type { PlanViewProps, SelectShift, TeamPlanTarget } from "./types";
 import { useMinuteClock } from "./useMinuteClock";
@@ -46,15 +42,7 @@ import { useMyPlanData, visibleRange } from "./useMyPlanData";
 import { adjacentShift, defaultDayShiftId, findShift, footerSummary } from "./planSummary";
 import { SHORTCUT_HELP, usePlanShortcuts } from "./usePlanShortcuts";
 import { displayName, initialsOf } from "./planChrome";
-import {
-  applyViewConfig,
-  currentViewConfig,
-  orientationOf,
-  orientationUpdate,
-  rangeOf,
-  rangeUpdate,
-  viewStartDate,
-} from "./viewConfig";
+import { orientationOf, orientationUpdate, rangeOf, rangeUpdate } from "./viewConfig";
 import WeekLeftView from "./WeekLeftView";
 import WeekTopView from "./WeekTopView";
 
@@ -93,7 +81,7 @@ export type MyPlanViewProps = {
   onScopeChange: (scope: PlanScope) => void;
   /** "Show in team plan": switch to the team scope at that date, jump to the row and pulse the pill. */
   onShowInTeam: (target: TeamPlanTarget) => void;
-  /** Page controls shown right of header row 1 (before the star). */
+  /** Page controls shown right of header row 1. */
   headerExtras?: ReactNode;
 };
 
@@ -162,15 +150,11 @@ export default function MyPlanView(props: MyPlanViewProps) {
     onShowInTeam({ rowId: shift.rowId, dateISO: shift.dateISO, clinicianId: shift.clinicianId });
   };
   const pickPerson = (clinicianId: string) => setViewedOverride(clinicianId === linkedId ? null : clinicianId);
-  // Saved views open at their relative start (today / next shift / week start).
-  const applyView = (view: ViewConfig) => {
-    applyViewConfig(view, onScopeChange, onUpdatePrefs, isMobile);
-    const start = viewStartDate(view, new Date(), () =>
-      viewedId ? findNextShiftFor(source, viewedId, new Date())?.shift.dateISO ?? null : null,
-    );
-    if (start) onAnchorDateChange(start);
+  // "Not <name>? Change who you are": drop the link, so "Who are you in the plan?" asks again.
+  const unlink = () => {
+    onUpdatePrefs({ clinicianId: null });
+    setViewedOverride(null);
   };
-  const currentView = currentViewConfig(prefs, currentScope, isMobile);
 
   // Day views show the detail as a card: desktop in both orientations (a
   // column / below the lanes), phones in day · date on left (SPEC E12; the
@@ -229,6 +213,7 @@ export default function MyPlanView(props: MyPlanViewProps) {
           onChange={onScopeChange}
           meInitials={viewed ? initialsOf(viewed.name) : undefined}
           meColor={viewed ? personColor(viewedIndex).strong : undefined}
+          meName={!viewingOther && viewed ? viewed.name : undefined}
           meLabel={viewingOther && viewed ? viewed.name : "My plan"}
           compact={isMobile}
         />
@@ -240,6 +225,7 @@ export default function MyPlanView(props: MyPlanViewProps) {
             viewedId={viewedId}
             myId={linkedId}
             onChange={pickPerson}
+            onChangeLink={unlink}
             isMobile={isMobile}
           />
         ) : null
@@ -258,25 +244,6 @@ export default function MyPlanView(props: MyPlanViewProps) {
         ) : null
       }
       extras={headerExtras}
-      star={
-        <StartPageStar
-          currentView={currentView}
-          prefs={prefs}
-          onUpdatePrefs={onUpdatePrefs}
-          isMobile={isMobile}
-          onNotify={notify}
-        />
-      }
-      views={
-        <SavedViewsMenu
-          currentView={currentView}
-          prefs={prefs}
-          onUpdatePrefs={onUpdatePrefs}
-          onApplyView={applyView}
-          isMobile={isMobile}
-          onNotify={notify}
-        />
-      }
       navigator={
         <PeriodNavigator
           range={range}

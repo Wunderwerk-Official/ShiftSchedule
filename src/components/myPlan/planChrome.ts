@@ -47,13 +47,6 @@ export const roundIconButtonClass = cx(
   "dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800",
 );
 
-/** 36 px tool button (star, "Views"). */
-export const toolButtonClass = cx(
-  "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-300 bg-white text-sm text-slate-800 shadow-sm",
-  "hover:bg-slate-50 active:bg-slate-100",
-  "dark:border-slate-600 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800",
-);
-
 /** Floating panel (popovers, menus). */
 export const popoverPanelClass = cx(
   "rounded-2xl border border-slate-200 bg-white p-4 text-slate-900 shadow-lg",
@@ -68,15 +61,6 @@ export const solidButtonBaseClass = cx(
 
 /** Filled primary button, regular size. */
 export const solidButtonClass = cx(solidButtonBaseClass, "h-9 px-4 text-sm");
-
-/** Outline secondary button. */
-export const outlineButtonClass = cx(
-  "inline-flex h-9 items-center justify-center rounded-xl border border-slate-200 px-4 text-sm text-slate-700",
-  "hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800",
-);
-
-/** Micro label in the muted color ("SAVED VIEWS", "WEEK"). */
-export const microLabelClass = cx(MICRO_LABEL, TEXT_3);
 
 /** Amber "Draft" badge. */
 export const draftBadgeClass = cx(

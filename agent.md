@@ -1166,7 +1166,8 @@ Anthropic provider only — self-hosted runs are free and never blocked by it.
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
 `AGENT_MAX_TOKENS`; `AGENT_MAX_ITERATIONS` is ignored, the budget is the
 slot-instances × 10 rule) — the spawn subprocess inherits it.
-The model is an ADMIN-ONLY global setting (default `claude-sonnet-5`) stored
+The model is an ADMIN-ONLY global setting (default `claude-opus-5-5` since
+v1.71, `claude-sonnet-5` before) stored
 in the `agent_settings` table and managed via `GET/PUT /v1/agent/settings`
 (`backend/agent_budget.py`); the solve endpoint injects it into the payload
 (`SolveRangeRequest.agent_model`, server-overwritten so clients can't spoof
@@ -2477,3 +2478,40 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   (measured), Opus 4.8 and Haiku 4.5 estimated from their prices. The old
   "per run" ranges understated week runs (Opus 5.5: about $5–6 per week).
 - No code path changed; version 1.70 (70).
+
+## v1.71 — Opus 5.5 is the default planning model
+
+- `AgentConfig.DEFAULT_MODEL` (and with it `agent_budget.DEFAULT_AGENT_MODEL`)
+  is `claude-opus-5-5` instead of `claude-sonnet-5`, after arena round 8
+  (`backend/arena/README.md`). It applies wherever no model is saved in
+  Settings → Solver; a saved global choice still wins (the setting is
+  global, so it applies to every user). The compose files and `.env.example`
+  default `AGENT_MODEL` to it too; an explicit `AGENT_MODEL` in the server
+  `.env` keeps working for paths without the injected model.
+- The Settings picker lists Opus 5.5 first, marked "(default)"; Sonnet 5 is
+  "Balanced quality & cost". `test_frontend_default_model_matches_the_backend_default`
+  keeps the picker's first option and the backend default in step.
+- Cost: Opus 5.5 is about $0.80 per planned day (Sonnet 5 about $0.50). The
+  per-user AI budget default stays $5 (admin-settable in Settings → Solver);
+  one planned week costs about $5–6, so raise it for regular planners.
+- Version 1.71 (71).
+- Team and My-plan headers: the start-page star and the saved "Views" menu
+  are gone (`StartPageStar.tsx`, `SavedViewsMenu.tsx`, `SaveViewForm.tsx`
+  deleted with the helpers, chrome classes and icons only they used;
+  `onApplyView` / `applySavedView` removed). `TeamPlanHeader` row 1: scope
+  switch left, "Times" right (wraps below it on narrow phones);
+  `PlanHeader` keeps only the optional extras on the right.
+- `usePlanScope()` is plain page state: the calendar always opens in "Team".
+  Stored `startViewDesktop` / `startViewMobile` are ignored (nothing could
+  unset them any more), so the team plan no longer waits for the
+  preferences (`scopeReady`, `START_VIEW_WAIT_MS` removed; `CalendarPlaceholder`
+  only covers My plan waiting for the calendar). `savedViews` and both start
+  views stay in `UserPreferences`, `normalizePreferences` and the backend,
+  unused, so stored data stays compatible.
+- Linked person: the "My plan" circle shows the initials of the person linked
+  via "That's me". `PlanScopeSwitch` takes `meName`, so the own plan's segment
+  has the tooltip "My plan · <name>" and the accessible name "My plan (<name>)"
+  (team header and My plan). While linked, `PersonPicker` ends with
+  "Not you? Change who you are" (`onChangeLink`); `MyPlanView` then saves
+  `clinicianId: null` and drops the viewed person, so "Who are you in the
+  plan?" asks again. HelpView §12 explains both.

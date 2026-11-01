@@ -27,8 +27,7 @@ import TeamPlanHeader from "../components/schedule/TeamPlanHeader";
 import CalendarPlaceholder from "../components/schedule/CalendarPlaceholder";
 import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
 import MyPlanView, { type TeamPlanTarget } from "../components/myPlan/MyPlanView";
-import { viewStartDate } from "../components/myPlan/viewConfig";
-import { findNextShiftFor, parseISODate } from "../lib/myPlan";
+import { parseISODate } from "../lib/myPlan";
 import { useUserPreferences } from "../lib/userPreferences";
 import { scrollToTeamAssignment } from "./scrollToTeamAssignment";
 import { usePlanScope } from "./usePlanScope";
@@ -77,7 +76,6 @@ import {
   type WebPublishStatus,
   type SolverRule,
   type PdfLayout,
-  type ViewConfig,
 } from "../api/client";
 import SnapshotPopover from "../components/schedule/SnapshotPopover";
 import SolverDebugPanel from "../components/schedule/SolverDebugPanel";
@@ -526,13 +524,7 @@ export default function WeeklySchedulePage({
     update: updatePrefs,
     flush: flushPrefs,
   } = useUserPreferences(currentUser.username);
-  const { planScope, setPlanScope, applyView, scopeReady } = usePlanScope({
-    username: currentUser.username,
-    prefs,
-    loaded: prefsLoaded,
-    onUpdatePrefs: updatePrefs,
-    isMobile,
-  });
+  const { planScope, setPlanScope } = usePlanScope();
   // My plan reads people and assignments from the calendar. Until this
   // user's state has loaded they are the built-in demo data, and My plan
   // would call the linked person "no longer in the plan" and offer the demo
@@ -3277,23 +3269,11 @@ export default function WeeklySchedulePage({
     setPlanScope("team");
     scrollToTeamAssignment(target);
   };
-  // Saved views from the team header open at their relative start (SPEC R17).
-  const applySavedView = (view: ViewConfig) => {
-    applyView(view);
-    const start = viewStartDate(view, new Date(), () => {
-      if (!linkedClinician) return null;
-      const assignments = Array.from(assignmentMap.values()).flat();
-      const source = { scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings };
-      return findNextShiftFor(source, linkedClinician.id, new Date())?.shift.dateISO ?? null;
-    });
-    if (start) setAnchorDate(start);
-  };
   const teamHeaderProps = {
     isMobile,
     prefs,
     onUpdatePrefs: updatePrefs,
     onScopeChange: setPlanScope,
-    onApplyView: applySavedView,
     me: linkedClinician ? { name: linkedClinician.name, index: linkedClinicianIndex } : null,
   };
 
@@ -3390,7 +3370,7 @@ export default function WeeklySchedulePage({
 
       {viewMode === "calendar" ? (
         <>
-          {!scopeReady || (planScope === "me" && !myPlanDataReady) ? (
+          {planScope === "me" && !myPlanDataReady ? (
             <CalendarPlaceholder />
           ) : planScope === "me" ? (
             <MyPlanView
@@ -3554,12 +3534,11 @@ export default function WeeklySchedulePage({
           />
           )}
           {/* Planning panels belong to the team plan: hidden (but kept
-              mounted, so their inputs survive) while My plan is shown or
-              the start view is not known yet. */}
+              mounted, so their inputs survive) while My plan is shown. */}
           <div
             className={cx(
               "mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10",
-              (planScope === "me" || !scopeReady) && "hidden",
+              planScope === "me" && "hidden",
             )}
           >
             <div className="flex flex-col gap-6">

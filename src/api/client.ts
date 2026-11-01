@@ -1436,7 +1436,8 @@ export async function exportWeeksPdf(
   return res.blob();
 }
 
-// Per-user UI preferences ("My plan" view, saved views, start pages). Stored
+// Per-user UI preferences ("I am" link, "My plan" view, Times; the saved
+// views and start pages are kept but unused since v1.71). Stored
 // server-side per account in their own table, NOT in AppState, so they never
 // touch the calendar revision. Mirrors backend/models.py::UserPreferences.
 export type PlanScope = "team" | "me";
@@ -1472,9 +1473,15 @@ export type UserPreferences = {
   /** Phones remember their own range (SPEC R17). */
   myPlanRangeMobile: PlanRange;
   teamTimeLayout: TeamTimeLayout;
-  /** At most 12 (backend limit). */
+  /**
+   * No longer used by the UI since v1.71 (start-page star and "Views" menu
+   * removed; the calendar always opens in the team plan). Kept so stored
+   * preferences and the backend stay compatible. At most 12 (backend limit).
+   */
   savedViews: SavedView[];
+  /** Unused by the UI since v1.71 (see savedViews). */
   startViewDesktop: ViewConfig | null;
+  /** Unused by the UI since v1.71 (see savedViews). */
   startViewMobile: ViewConfig | null;
 };
 
