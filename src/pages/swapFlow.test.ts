@@ -18,7 +18,7 @@ const request: SwapCandidatesRequest = {
   dates: [],
   sameTypeOnly: false,
 };
-const candidates = { revision: "r1" } as SwapCandidatesResponse;
+const candidates = { revision: "r1", targetFindings: [] } as unknown as SwapCandidatesResponse;
 const stateChanged = () => new SwapApiError("Changed elsewhere.", 409, "state_changed", { revision: "r9" });
 
 describe("runSwapSearch", () => {
@@ -65,16 +65,28 @@ const applyRequest = { mode: "handover", partnerId: "clin-ben", expectedRevision
 const savedState = { revision: "r5", rows: [], clinicians: [], assignments: [], minSlotsByRowId: {} } as AppState;
 const applied = { swap: { id: "swp-1" }, state: { ...savedState, revision: "r6" } } as SwapApplyResponse;
 
+/**
+ * Flow dependencies that record the calendar steps in order. By default the
+ * screen has unsaved edits; a clean screen's last saved revision is "r3"
+ * until the queued saves land, then "r4".
+ */
 function flowDeps(overrides: Partial<SwapFlowDeps> = {}) {
   const calls: string[] = [];
   const track = <T,>(name: string, result: () => T) => vi.fn(() => {
     calls.push(name);
     return result();
   });
+  let revision: string | null = "r3";
   const deps: SwapFlowDeps = {
     isBusy: vi.fn(() => false),
     pause: track("pause", () => undefined),
     resume: track("resume", () => undefined),
+    hasUnsavedEdits: vi.fn(() => true),
+    flushSaves: track("flushSaves", () => {
+      revision = "r4";
+      return Promise.resolve();
+    }),
+    savedRevision: vi.fn(() => revision),
     ensureSaved: track("ensureSaved", () => Promise.resolve(savedState)),
     hydrate: track("hydrate", () => undefined),
     reload: track("reload", () => Promise.resolve()),
@@ -86,12 +98,27 @@ function flowDeps(overrides: Partial<SwapFlowDeps> = {}) {
 }
 
 describe("runSwapApply", () => {
-  it("pauses, saves, applies against the saved revision, hydrates and resumes", async () => {
+  it("with unsaved edits: pauses, saves, applies against the saved revision, hydrates and resumes", async () => {
     const { deps, calls } = flowDeps();
     await expect(runSwapApply(deps, applyRequest)).resolves.toBe(applied);
     expect(calls).toEqual(["pause", "ensureSaved", "apply", "hydrate", "resume"]);
     expect(deps.apply).toHaveBeenCalledWith({ ...applyRequest, expectedRevision: "r5" });
     expect(deps.hydrate).toHaveBeenCalledWith(applied.state);
+  });
+
+  it("on a clean screen: no save, the queued saves land and the apply carries their revision", async () => {
+    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false });
+    await expect(runSwapApply(deps, applyRequest)).resolves.toBe(applied);
+    expect(calls).toEqual(["pause", "flushSaves", "apply", "hydrate", "resume"]);
+    expect(deps.ensureSaved).not.toHaveBeenCalled();
+    expect(deps.apply).toHaveBeenCalledWith({ ...applyRequest, expectedRevision: "r4" });
+  });
+
+  it.each([null, undefined])("on a clean screen with no known revision (%s): saves first", async (unknown) => {
+    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false, savedRevision: () => unknown });
+    await expect(runSwapApply(deps, applyRequest)).resolves.toBe(applied);
+    expect(calls).toEqual(["pause", "flushSaves", "ensureSaved", "apply", "hydrate", "resume"]);
+    expect(deps.apply).toHaveBeenCalledWith({ ...applyRequest, expectedRevision: "r5" });
   });
 
   it("refuses while another calendar operation runs, without pausing", async () => {
@@ -105,6 +132,15 @@ describe("runSwapApply", () => {
     const { deps, calls } = flowDeps({ apply: vi.fn().mockRejectedValue(conflict) });
     await expect(runSwapApply(deps, applyRequest)).rejects.toBe(conflict);
     expect(calls).toEqual(["pause", "ensureSaved", "reload", "resume"]);
+  });
+
+  it("on a clean screen, another tab's save is refused by the apply itself: reload, rethrow, resume", async () => {
+    const conflict = stateChanged();
+    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false, apply: vi.fn().mockRejectedValue(conflict) });
+    await expect(runSwapApply(deps, applyRequest)).rejects.toBe(conflict);
+    expect(deps.apply).toHaveBeenCalledWith({ ...applyRequest, expectedRevision: "r4" });
+    expect(deps.ensureSaved).not.toHaveBeenCalled();
+    expect(calls).toEqual(["pause", "flushSaves", "reload", "resume"]);
   });
 
   it("keeps the refusal when the reload fails", async () => {
@@ -129,6 +165,16 @@ describe("runSwapApply", () => {
     expect(deps.reload).not.toHaveBeenCalled();
     expect(calls).toEqual(["pause", "resume"]);
   });
+
+  it("does not apply when a queued save failed, and neither saves again nor reloads", async () => {
+    const saveError = new Error("The calendar changed in another tab.");
+    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false, flushSaves: vi.fn().mockRejectedValue(saveError) });
+    await expect(runSwapApply(deps, applyRequest)).rejects.toBe(saveError);
+    expect(deps.apply).not.toHaveBeenCalled();
+    expect(deps.ensureSaved).not.toHaveBeenCalled();
+    expect(deps.reload).not.toHaveBeenCalled();
+    expect(calls).toEqual(["pause", "resume"]);
+  });
 });
 
 describe("runSwapUndo", () => {
@@ -139,8 +185,15 @@ describe("runSwapUndo", () => {
     expect(calls).toEqual(["pause", "ensureSaved", "undo", "hydrate", "resume"]);
   });
 
+  it("on a clean screen undoes against the revision of the queued saves, without saving", async () => {
+    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false });
+    await expect(runSwapUndo(deps, "swp-1")).resolves.toBe(applied);
+    expect(deps.undo).toHaveBeenCalledWith("swp-1", "r4");
+    expect(calls).toEqual(["pause", "flushSaves", "undo", "hydrate", "resume"]);
+  });
+
   it("after a conflict reloads and asks to undo again from History", async () => {
-    const { deps, calls } = flowDeps({ undo: vi.fn().mockRejectedValue(stateChanged()) });
+    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false, undo: vi.fn().mockRejectedValue(stateChanged()) });
     const error = await runSwapUndo(deps, "swp-1").catch((err: unknown) => err);
     expect(error).toBeInstanceOf(SwapApiError);
     expect(error).toMatchObject({
@@ -149,7 +202,7 @@ describe("runSwapUndo", () => {
       message: "The calendar changed in another tab. It was reloaded; undo again from History.",
       detail: { revision: "r9" },
     });
-    expect(calls).toEqual(["pause", "ensureSaved", "reload", "resume"]);
+    expect(calls).toEqual(["pause", "flushSaves", "reload", "resume"]);
   });
 
   it("passes other refusals through unchanged", async () => {

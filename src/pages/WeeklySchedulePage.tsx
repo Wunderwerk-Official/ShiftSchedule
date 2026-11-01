@@ -2862,18 +2862,21 @@ export default function WeeklySchedulePage({
       throw err;
     }
   }, []);
-  const syncForSearch = useCallback(async (): Promise<{ revision: string | null; gen: number }> => {
-    const gen = editGenRef.current;
-    if (savedGenRef.current !== gen) return { revision: (await ensureSavedForSwap()).revision ?? null, gen };
+  // Lets a queued autosave land. A failed save shows the banner, as above.
+  const flushSavesForSwap = useCallback(async () => {
     try {
-      // A queued autosave lands first.
       await flushStateSaves();
     } catch (err) {
       setSaveError(errorText(err, "Changes could not be saved."));
       throw err;
     }
+  }, []);
+  const syncForSearch = useCallback(async (): Promise<{ revision: string | null; gen: number }> => {
+    const gen = editGenRef.current;
+    if (savedGenRef.current !== gen) return { revision: (await ensureSavedForSwap()).revision ?? null, gen };
+    await flushSavesForSwap();
     return { revision: savedStateRevision() ?? null, gen };
-  }, [ensureSavedForSwap]);
+  }, [ensureSavedForSwap, flushSavesForSwap]);
   const reloadCalendarFromServer = useCallback(async () => {
     hydrateStateSlicesRef.current(normalizeAppState(await getState()).state);
     setSaveError(null);
@@ -2905,11 +2908,16 @@ export default function WeeklySchedulePage({
     [syncForSearch, reloadForSearchIfUnchanged],
   );
 
-  // Apply and undo always save the screen first, whatever the generation says.
+  // Apply and undo save the screen first only when it has unsaved edits. A
+  // clean screen sends the revision it was saved as; if another tab saved
+  // since, the server refuses with state_changed and the calendar reloads.
   const swapFlowDeps = (): SwapFlowDeps => ({
     isBusy: () => calendarTransitionRef.current,
     pause: pauseCalendarSaving,
     resume: resumeCalendarSaving,
+    hasUnsavedEdits: () => savedGenRef.current !== editGenRef.current,
+    flushSaves: flushSavesForSwap,
+    savedRevision: savedStateRevision,
     ensureSaved: ensureSavedForSwap,
     reload: reloadCalendarFromServer,
     hydrate: (state) => {

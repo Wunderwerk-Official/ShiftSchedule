@@ -57,8 +57,8 @@ const caught = (promise: Promise<unknown>) => promise.then(() => null, (err: unk
 
 describe("swap API client", () => {
   it("posts the candidates request with the auth header and returns the JSON body", async () => {
-    const fetchMock = stubFetch(json({ revision: "rev-1", best: [] }));
-    await expect(findSwapCandidates(candidatesRequest)).resolves.toEqual({ revision: "rev-1", best: [] });
+    const fetchMock = stubFetch(json({ revision: "rev-1", targetFindings: [], best: [] }));
+    await expect(findSwapCandidates(candidatesRequest)).resolves.toEqual({ revision: "rev-1", targetFindings: [], best: [] });
     const { url, init } = call(fetchMock);
     expect(url.pathname).toBe("/v1/swaps/candidates");
     expect(init.method).toBe("POST");

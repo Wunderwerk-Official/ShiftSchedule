@@ -391,7 +391,9 @@ export default function HelpView() {
               list shows <span className="font-medium">Best matches</span>,{" "}
               <span className="font-medium">Also possible</span> (with amber notes) and{" "}
               <span className="font-medium">Not possible</span> (one reason each). Every option is
-              checked against all planning rules on the server.
+              checked against all planning rules on the server. A hand-over that leaves the giver
+              under their contract hours says so once, in an amber note under the shift, not on
+              every option.
             </li>
             <li>
               A shift moves together with everything that touches it in time (for example 08–12

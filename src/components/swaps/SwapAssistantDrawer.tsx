@@ -369,6 +369,7 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
                 mode={response.target.mode}
                 target={response.target}
                 checks={response.checks}
+                targetFindings={response.targetFindings}
                 option={previewOption}
                 clinicians={clinicians}
                 isMobile={isMobile}

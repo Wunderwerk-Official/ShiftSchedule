@@ -209,12 +209,13 @@ describe("swap text helpers", () => {
     expect(firstName("Ben Ott")).toBe("Ben");
   });
 
-  it("writes the toasts of all three kinds and of their undo", () => {
-    expect(swapToastMessage(record())).toBe("Swapped: Anna ⇄ Ben (Thu 19 / Sat 21 Nov)");
+  it("writes the toasts of all three kinds and of their undo with full names", () => {
+    expect(swapToastMessage(record())).toBe("Swapped: Dr. Anna Weber ⇄ Ben Ott (Thu 19 / Sat 21 Nov)");
     expect(
       swapToastMessage(record({ take: [{ ...record().take[0], dateISO: "2026-12-01" }], give: [{ ...record().give[0], dateISO: "2026-11-30" }] })),
-    ).toBe("Swapped: Anna ⇄ Ben (Mon 30 Nov / Tue 1 Dec)");
-    expect(swapToastMessage(record({ kind: "handover", take: [] }))).toBe("Handed over: Anna → Ben (Thu 19 Nov)");
+    ).toBe("Swapped: Dr. Anna Weber ⇄ Ben Ott (Mon 30 Nov / Tue 1 Dec)");
+    const handover = record({ kind: "handover", take: [] });
+    expect(swapToastMessage(handover)).toBe("Handed over: Dr. Anna Weber → Ben Ott (Thu 19 Nov)");
     const cover = record({
       kind: "cover",
       requesterId: null,
@@ -222,10 +223,14 @@ describe("swap text helpers", () => {
       give: [{ rowId: "ct-thu", dateISO: "2026-11-19", sectionName: "CT", start: "2026-11-19T08:00", end: "2026-11-19T16:00" }],
       take: [],
     });
-    expect(swapToastMessage(cover)).toBe("Assigned: Ben covers CT (Thu 19 Nov)");
-    expect(undoToastMessage(record())).toBe("Swap undone.");
-    expect(undoToastMessage(record({ kind: "handover" }))).toBe("Hand-over undone.");
-    expect(undoToastMessage(cover)).toBe("Cover undone.");
+    expect(swapToastMessage(cover)).toBe("Assigned: Ben Ott covers CT (Thu 19 Nov)");
+    expect(undoToastMessage(record({ status: "reverted" }))).toBe("Swap undone: Dr. Anna Weber ⇄ Ben Ott (Thu 19 / Sat 21 Nov)");
+    expect(undoToastMessage(handover)).toBe("Hand-over undone: Dr. Anna Weber → Ben Ott (Thu 19 Nov)");
+    expect(undoToastMessage(cover)).toBe("Cover undone: Ben Ott no longer covers CT (Thu 19 Nov)");
+    // First names repeat in a team; the full names keep two Evas apart.
+    expect(swapToastMessage(record({ requesterName: "Eva One", partnerName: "Eva Two" }))).toBe(
+      "Swapped: Eva One ⇄ Eva Two (Thu 19 / Sat 21 Nov)",
+    );
   });
 
   it("labels consent, the primary button and the preview per mode", () => {

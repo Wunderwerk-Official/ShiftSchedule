@@ -2,7 +2,11 @@
 reasons, findings, rest days, pre-existing problems, ranking, groups, caps
 and blocked targets."""
 
+import json
+import subprocess
+import sys
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 import pytest
@@ -17,7 +21,7 @@ from backend.models import (
     VacationRange,
     WorkPattern,
 )
-from backend.swaps import matching, policy
+from backend.swaps import labels, matching, policy
 from backend.swaps.blocks import SwapUnit, instance_unit
 from backend.swaps.matching import (
     MovePlan,
@@ -45,6 +49,7 @@ from .swap_fixtures import (
     asg,
     default_clinicians,
     make_swap_state,
+    rich_swap_state,
 )
 
 RULES = SwapRules()
@@ -131,6 +136,15 @@ GATE_CASES = [
                  ("weekly_hours", "Ben Ott: week 2 would reach 48.0 h (limit 45.0 h)."), id="weekly-hours"),
     pytest.param([asg("x", "night-thu", THU, "clin-anna"), asg("b", "early-thu", THU, "clin-ben")],
                  ("split_shift", "Ben Ott would have a split day on Thu 8 Jan."), id="split-shift"),
+    # Anna's unit already overlaps itself (the demo lies inside the night), so
+    # Ben would receive both shifts of the overlap.
+    pytest.param([asg("x", "night-wed", WED, "clin-anna"), asg("a", "demo-thu", THU, "clin-anna")],
+                 ("overlap", "Ben Ott would get two overlapping shifts: "
+                             "Night duty (Wed 7 Jan, 20:00 → 08:00) and Demo (Thu 8 Jan, 07:15–07:45)."),
+                 id="overlap-both-received"),
+    pytest.param([asg("x", "oncall-wed", WED, "clin-anna"), asg("a", "early-thu", THU, "clin-anna")],
+                 ("overlap", "Ben Ott would get two overlapping shifts: On call (Wed 7 Jan, 08:00 → 08:00) "
+                             "and Day (Thu 8 Jan, 07:00–12:00)."), id="overlap-both-received-on-call"),
 ]
 
 
@@ -140,6 +154,15 @@ def test_gate_reasons(assignments: List[Assignment], reason: tuple):
     (option,) = result["blocked"]
     assert (option["reason"]["code"], option["reason"]["message"]) == reason
     assert option["blockerCount"] >= 1
+
+
+def test_an_overlap_the_giver_receives_in_a_swap_names_both_shifts():
+    state = make_swap_state([asg("x", "ct-mon", MON, "clin-anna"), asg("night", "night-wed", WED, "clin-ben"),
+                             asg("demo", "demo-thu", THU, "clin-ben")])
+    option = _option(_search(state, "x", "swap"), "clin-ben|night-wed@2026-01-07+demo-thu@2026-01-08")
+    assert option["reason"] == {"code": "overlap", "message": (
+        "Anna Weber would get two overlapping shifts: Night duty (Wed 7 Jan, 20:00 → 08:00) "
+        "and Demo (Thu 8 Jan, 07:15–07:45).")}
 
 
 def _hidden_ct_thu(*, override: int = 0) -> AppState:
@@ -243,7 +266,6 @@ def test_smaller_hours_move_ranks_first():
 def test_section_preference_ranks_a_partner_first():
     eva = _person("clin-eva", "Eva Lang")
     eva.preferredClassIds = ["sec-day", "sec-ct", "sec-night"]
-    # Dora has no contract, so handing over leaves no note about her hours.
     state = make_swap_state([asg("x", "ct-thu", THU, "clin-dora")], clinicians=_people(eva))
     result = _search(state, "x")
     assert _keys(result["best"]) == ["clin-eva|-", "clin-anna|-", "clin-ben|-", "clin-clara|-"]
@@ -266,9 +288,10 @@ def test_handover_ranks_by_year_to_date_deficit():
     assert _keys(result["best"]) == ["clin-eva|-", "clin-ben|-"]
     behind = [[chip for chip in option["chips"] if chip["code"] == "behind_on_hours"]
               for option in result["best"]]
-    # 40 shifts of 8 h against 40 h for 67/7 weeks: 16 % behind.
+    # 40 shifts of 8 h against 40 h for the 9 weeks since the first planned
+    # date, Mon 5 Jan: 11 % behind.
     assert behind == [[{"code": "behind_on_hours", "label": "100 % behind on hours", "tone": "positive"}],
-                      [{"code": "behind_on_hours", "label": "16 % behind on hours", "tone": "positive"}]]
+                      [{"code": "behind_on_hours", "label": "11 % behind on hours", "tone": "positive"}]]
 
 
 def test_unknown_year_to_date_ranks_after_known():
@@ -277,6 +300,69 @@ def test_unknown_year_to_date_ranks_after_known():
     state = _march_state(ben)
     assert "clin-ben" not in SwapContext(state, RULES, NOW).ytd_pct("2026-03-09")
     assert _keys(_search(state, "x")["best"]) == ["clin-eva|-", "clin-ben|-"]
+
+
+def _behind(result: Dict[str, Any]) -> List[List[str]]:
+    return [[chip["label"] for chip in option["chips"] if chip["code"] == "behind_on_hours"]
+            for option in result["best"]]
+
+
+def test_year_to_date_counts_from_the_first_planned_date():
+    """A calendar planned from Mon 2 Nov: Ben works Monday to Thursday of two
+    weeks, Eva nothing; Anna (no contract) hands over Fri 6 and Mon 16 Nov."""
+    ben = [asg(f"b{week}-{day}", f"ct-{day}", (date(2026, 11, 2) + timedelta(days=7 * week + n)).isoformat(),
+               "clin-ben")
+           for week in range(2) for n, day in enumerate(("mon", "tue", "wed", "thu"))]
+    anna = [asg("fri", "ct-fri", "2026-11-06", "clin-anna"), asg("mon", "ct-mon", "2026-11-16", "clin-anna")]
+    people = [_person("clin-anna", "Anna Weber", hours=None), _person("clin-ben", "Ben Ott"),
+              _person("clin-eva", "Eva Lang")]
+    state = make_swap_state(ben + anna, clinicians=people)
+    # Four days of history are no year-to-date figure: no chip, and both rank
+    # as unknown, by name. Counted from 1 January, both would look 98–100 % behind.
+    early = _search(state, "fri")
+    assert (_keys(early["best"]), _behind(early)) == (["clin-ben|-", "clin-eva|-"], [[], []])
+    # Two weeks: Ben worked 64 of 80 h, Eva none.
+    later = _search(state, "mon")
+    assert _keys(later["best"]) == ["clin-eva|-", "clin-ben|-"]
+    assert _behind(later) == [["100 % behind on hours"], ["20 % behind on hours"]]
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+FRESH_HANDOVER_SEARCH = """
+import json
+import sys
+from datetime import datetime
+
+from backend.models import AppState
+from backend.swaps.matching import SwapContext, find_candidates
+from backend.swaps.policy import SwapRules
+from backend.swaps.schemas import CandidatesRequest
+
+data = json.load(sys.stdin)
+ctx = SwapContext(AppState.model_validate(data["state"]), SwapRules(), datetime.fromisoformat(data["now"]))
+result = find_candidates(ctx, CandidatesRequest.model_validate(data["request"]))
+print(json.dumps({
+    "behind": [chip["label"] for option in result["best"] for chip in option["chips"]
+               if chip["code"] == "behind_on_hours"],
+    "loaded": sorted(name for name in sys.modules
+                     if name == "backend.solver" or name.partition(".")[0] == "ortools"),
+}))
+"""
+
+
+def test_a_handover_search_never_loads_the_solver():
+    # The solver module loads ortools; the search ranks by its own year-to-date numbers.
+    state = _march_state(_person("clin-ben", "Ben Ott"))
+    x = next(a for a in state.assignments if a.id == "x")
+    ref = {"assignmentId": x.id, "rowId": x.rowId, "dateISO": x.dateISO, "clinicianId": x.clinicianId}
+    data = {"state": state.model_dump(mode="json"), "now": NOW.isoformat(),
+            "request": {"mode": "handover", "assignment": ref}}
+    run = subprocess.run([sys.executable, "-c", FRESH_HANDOVER_SEARCH], input=json.dumps(data), text=True,
+                         capture_output=True, cwd=REPO_ROOT)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == {"behind": ["100 % behind on hours", "11 % behind on hours"],
+                                      "loaded": []}
 
 
 def test_a_partner_without_contract_ranks_after_an_equal_one_with_contract():
@@ -392,7 +478,7 @@ def test_a_started_target_offers_nothing(assignment_id: str, whole_day: bool, me
     assert target["unit"] is not None
     assert (target["insideNotice"], target["hoursUntilStart"]) == (False, -0.5)
     assert target["wholeDay"] is whole_day
-    assert result["checks"] == _options(result) == []
+    assert result["checks"] == result["targetFindings"] == _options(result) == []
     assert (result["checked"], result["truncated"]) == (0, False)
 
 
@@ -464,13 +550,72 @@ def test_hours_above_contract_finding():
                        "message": "Ben Ott: week 2 at 45.0 h (contract 40 h).", "short": "+5 h over contract"}
 
 
-def test_giver_below_contract_finding():
-    state = make_swap_state(_weekdays("a", "clin-anna"))
-    result = _search(state, "a-thu", partnerId="clin-ben")
-    finding = _single_finding(result, "clin-ben|-", "giver_below_contract")
-    assert finding == {"code": "giver_below_contract", "clinicianId": "clin-anna",
-                       "message": "Anna Weber: week 2 drops to 32.0 h (contract 40 h).",
-                       "short": "−8 h under contract"}
+def _below_contract(week: int, after_hours: int, under_hours: int) -> Dict[str, Any]:
+    return {"code": "giver_below_contract", "clinicianId": "clin-anna",
+            "message": f"Anna Weber: week {week} drops to {after_hours}.0 h (contract 40 h).",
+            "short": f"−{under_hours} h under contract"}
+
+
+def test_a_contracted_givers_lost_hours_are_one_note_on_the_target():
+    result = _search(make_swap_state(_weekdays("a", "clin-anna")), "a-thu")
+    assert result["targetFindings"] == [_below_contract(2, 32, 8)]
+    # A note on the target makes no option amber: all three take the shift cleanly.
+    assert _keys(result["best"]) == ["clin-ben|-", "clin-clara|-", "clin-dora|-"]
+    assert result["possible"] == []
+    for option in result["best"]:
+        assert option["findings"] == []
+        # The note's numbers are Anna's hours card in every option's preview.
+        (anna,) = [person for person in option["hours"] if person["clinicianId"] == "clin-anna"]
+        weeks = [(week["isoWeek"], week["beforeMinutes"], week["afterMinutes"]) for week in anna["weeks"]]
+        assert weeks == [(2, 2400, 1920)]
+
+
+def test_a_note_per_touched_week_the_giver_ends_below_contract():
+    # The night on Sun 11 Jan (week 2) runs into Monday's CT (week 3): one unit.
+    state = make_swap_state([asg("night", "night-sun", SUN, "clin-anna"),
+                             asg("mon", "ct-mon", NEXT_MON, "clin-anna"),
+                             asg("tue", "ct-tue", "2026-01-13", "clin-anna")])
+    result = _search(state, "night")
+    assert len(result["target"]["unit"]["items"]) == 2
+    assert result["targetFindings"] == [_below_contract(2, 0, 40), _below_contract(3, 8, 32)]
+    assert all(f["code"] != "giver_below_contract" for o in _options(result) for f in o["findings"])
+    # 45 h before, 40 h after: still at the contract, so no note.
+    at_contract = make_swap_state(_weekdays("a", "clin-anna") + [asg("sat", "early-sat", SAT, "clin-anna")])
+    assert _search(at_contract, "sat")["targetFindings"] == []
+
+
+def test_the_target_notes_repeat_the_givers_hours_card_of_every_option():
+    state = rich_swap_state()
+    options = with_notes = 0
+    for giver in ("clin-anna", "clin-ben", "clin-e1", "clin-e2"):
+        ctx = SwapContext(state, RULES, NOW)
+        for block in ctx.blocks(giver):
+            a = block.items[0].assignment
+            req = CandidatesRequest(mode="handover", assignment={
+                "assignmentId": a.id, "rowId": a.rowId, "dateISO": a.dateISO, "clinicianId": giver})
+            result = find_candidates(SwapContext(state, RULES, NOW), req)
+            for option in result["best"] + result["possible"]:
+                options += 1
+                with_notes += bool(result["targetFindings"])
+                (card,) = [person for person in option["hours"] if person["clinicianId"] == giver]
+                below = [labels.giver_below_contract(card["name"], week["isoWeek"], week["afterMinutes"], 40)
+                         for week in card["weeks"]
+                         if week["afterMinutes"] < min(week["contractMinutes"], week["beforeMinutes"])]
+                assert result["targetFindings"] == [
+                    {"code": "giver_below_contract", "clinicianId": giver, "message": note.message,
+                     "short": note.short} for note in below]
+    assert options >= 30 and with_notes >= 10, (options, with_notes)
+
+
+def test_only_a_handover_by_a_contracted_giver_has_target_notes():
+    state = make_swap_state(_weekdays("a", "clin-anna") + [asg("b", "early-sat", SAT, "clin-ben"),
+                                                          asg("d", "ct-sun", SUN, "clin-dora")])
+    assert _search(state, "a-thu", "swap")["targetFindings"] == []
+    assert _search(state, "d")["targetFindings"] == []  # Dora has no contract hours
+    started = _search(state, "a-thu", now=_utc("2026-01-08T07:30Z"))
+    assert started["target"]["blocked"]["code"] == "started"
+    assert started["targetFindings"] == []
+    assert _cover(_hidden_ct_thu(), "ct-thu", THU)["targetFindings"] == []
 
 
 def test_partner_notice_finding():
@@ -609,7 +754,7 @@ def test_blocked_targets_without_a_unit():
         assert (target["dateISO"], target["sectionName"], target["holderId"]) == (day, section, "clin-anna")
         assert target["unit"] is target["startsAt"] is target["hoursUntilStart"] is None
         assert (target["blocksOnDate"], target["wholeDay"], target["insideNotice"]) == (0, False, False)
-        assert result["checks"] == [] and result["closest"] == []
+        assert result["checks"] == result["targetFindings"] == result["closest"] == []
 
 
 def test_cover_targets_inactive_full_and_with_holders():
@@ -623,7 +768,7 @@ def test_cover_targets_inactive_full_and_with_holders():
     assert full["target"]["blocked"] == {"code": "not_open", "message": "This slot has no open position."}
     assert full["target"]["unit"]["items"][0]["clinicianId"] is None
     assert full["target"]["openCount"] == 0
-    assert full["checks"] == []
+    assert full["checks"] == full["targetFindings"] == []
 
     anna = _person("clin-anna", "Anna Weber")
     anna.vacations.append(VacationRange(id="v", startISO=THU, endISO=THU))

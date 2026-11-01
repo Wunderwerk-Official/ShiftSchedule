@@ -1,8 +1,10 @@
-"""Working-time warnings and weekly hours of a swap."""
+"""Working-time warnings, weekly hours and the year-to-date balance of a swap."""
 
+from datetime import date, timedelta
 from typing import Dict
 
 from backend.models import AppState, VacationRange
+from backend.solver import _compute_ytd_deficit_hours
 from backend.swaps import labels
 from backend.swaps.policy import SwapRules
 from backend.swaps.worktime import (
@@ -13,11 +15,12 @@ from backend.swaps.worktime import (
     person_hours,
     person_warnings,
     week_minutes,
+    ytd_deficit_pct,
 )
 from backend.validation import VIOLATION_WEEKLY_HOURS, build_validation_context, validate_weekly_hours
 
 from .conftest import DAY_TYPES, make_clinician, make_template_slot
-from .swap_fixtures import ALL_SECTIONS, FRI, MON, SAT, SUN, THU, TUE, WEEK, asg, make_swap_state
+from .swap_fixtures import ALL_SECTIONS, FRI, MON, SAT, SUN, THU, TUE, WEEK, arena_state, asg, make_swap_state
 
 NAMES = {"clin-anna": "Anna Weber", "clin-ben": "Ben Ott"}
 RULES = SwapRules()
@@ -165,6 +168,46 @@ def test_iso_week_at_the_year_boundary():
     assert iso_week("2027-01-01") == (2026, 53)
 
 
+def test_year_to_date_counts_from_the_first_planned_date_of_the_year():
+    anna = make_clinician("clin-anna", "Anna Weber", list(ALL_SECTIONS), working_hours_per_week=40,
+                          vacations=[VacationRange(id="v", startISO="2026-11-02", endISO="2026-11-03")])
+    ben = make_clinician("clin-ben", "Ben Ott", list(ALL_SECTIONS), working_hours_per_week=40,
+                         vacations=[VacationRange(id="v", startISO="2026-03-02", endISO="2026-03-13")])
+    eve = make_clinician("clin-eve", "Eve Roth", list(ALL_SECTIONS), working_hours_per_week=1)
+    dora = make_clinician("clin-dora", "Dora Klein", list(ALL_SECTIONS))
+    first_week = [asg(f"{cid}-{day}", f"ct-{day}", (date(2026, 11, 2) + timedelta(days=n)).isoformat(), cid)
+                  for cid in ("clin-ben", "clin-eve") for n, day in enumerate(("mon", "tue", "wed", "thu"))]
+    state = make_swap_state(
+        [asg("rest", "pool-rest-day", "2026-10-01", "clin-anna", locked=False),  # a pool row plans nothing
+         asg("last-year", "ct-mon", "2025-12-29", "clin-ben"),
+         asg("anna", "ct-fri", "2026-11-06", "clin-anna"), asg("dora", "ct-fri", "2026-11-06", "clin-dora")]
+        + first_week,
+        clinicians=[anna, ben, eve, dora],
+    )
+    vctx = build_validation_context(state)
+    assert ytd_deficit_pct(vctx, "2026-11-08") == {}  # six days since Mon 2 Nov
+    assert ytd_deficit_pct(vctx, "2026-11-09") == {
+        # 8 h against 40 h a week over the five days without vacation.
+        "clin-anna": 72,
+        # 32 of 40 h; his March vacation lies before the history.
+        "clin-ben": 20,
+        # 32 h against a 1 h contract, clamped. Dora has no contract hours.
+        "clin-eve": -100,
+    }
+    assert ytd_deficit_pct(build_validation_context(make_swap_state()), "2026-11-09") == {}
+
+
+def test_year_to_date_from_1_january_is_the_solvers_formula():
+    # The arena calendar is planned from Thu 1 Jan, with vacations and five contract sizes.
+    state = arena_state()
+    vctx = build_validation_context(state)
+    for offset in range(70):
+        reference = date(2026, 1, 1) + timedelta(days=offset)
+        assert ytd_deficit_pct(vctx, reference.isoformat()) == _compute_ytd_deficit_hours(
+            state, reference, vctx.slot_lookup)
+    assert len(ytd_deficit_pct(vctx, "2026-03-01")) == len(state.clinicians)
+
+
 def test_label_number_and_time_formats():
     assert labels.hours_text(2640) == "44.0"
     assert labels.compact_number(40) == "40"
@@ -182,6 +225,11 @@ def test_label_templates():
         "Ben Ott: week 47 would reach 48.0 h (limit 45.0 h).")
     assert labels.overlap("Julia Meier", "MRI", "2026-11-19", "2026-11-19T08:00", "2026-11-19T16:00") == (
         "Julia Meier already works MRI on Thu 19 Nov (08:00–16:00).")
+    assert labels.overlap_received(
+        "Anna Weber", labels.Shift("Night duty", "2026-11-11", "2026-11-11T20:00", "2026-11-12T08:00"),
+        labels.Shift("Demo", "2026-11-12", "2026-11-12T07:15", "2026-11-12T07:45"),
+    ) == ("Anna Weber would get two overlapping shifts: Night duty (Wed 11 Nov, 20:00 → 08:00) "
+          "and Demo (Thu 12 Nov, 07:15–07:45).")
     assert labels.swap_invalid(["One.", "Two.", "Three.", "Four."]) == (
         "This swap breaks a planning rule: One. Two. Three.")
     assert labels.notice(10, 48) == (

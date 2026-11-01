@@ -2,8 +2,10 @@ import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwapApiError, type Clinician } from "../../api/client";
 import type {
+  SwapCandidatesRequest,
   SwapCandidatesResponse,
   SwapCheck,
+  SwapFinding,
   SwapItem,
   SwapOption,
   SwapRecord,
@@ -179,6 +181,7 @@ const response: SwapCandidatesResponse = {
   revision: "9f2c4e",
   target,
   checks,
+  targetFindings: [],
   best: [carl],
   possible: [ben],
   blocked: [julia],
@@ -503,6 +506,48 @@ describe("SwapAssistantDrawer: search", () => {
     await settle();
     expect(screen.getByText("Ben Ott can't take this shift here.")).toBeInTheDocument();
   });
+
+  it("shows a hand-over's target notes once under the summary and beside the preview's checks, never in swap mode", async () => {
+    const belowContract: SwapFinding = {
+      code: "giver_below_contract",
+      clinicianId: "clin-anna",
+      message: "Anna Weber: week 47 drops to 28.0 h (contract 40 h).",
+      short: "−12 h under contract",
+    };
+    const handover: SwapCandidatesResponse = {
+      ...response,
+      target: { ...target, mode: "handover" },
+      targetFindings: [belowContract],
+      best: [{ ...carl, key: "clin-carl|-", take: null, chips: [] }],
+      possible: [],
+      totals: { ...response.totals, possible: 0 },
+    };
+    const onSearch = vi.fn(async (request: SwapCandidatesRequest) => (request.mode === "handover" ? handover : { ...response }));
+    renderDrawer({ onSearch });
+    await settle();
+    expect(screen.getByText("Best matches (1)")).toBeInTheDocument();
+    expect(screen.queryByText(belowContract.message)).toBeNull();
+
+    fireEvent.click(within(screen.getByRole("group", { name: "Mode" })).getByRole("button", { name: "Hand over" }));
+    await settle();
+    // Once, for the target: no option carries it.
+    expect(screen.getAllByText(belowContract.message)).toHaveLength(1);
+    expect(screen.getByText(belowContract.message)).toHaveClass("text-amber-800");
+    expect(screen.queryByText(belowContract.short)).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Preview hand over to Carl Brandt" }));
+    const checks = screen.getByRole("heading", { name: "Checks" }).closest("section") as HTMLElement;
+    expect(within(checks).getByText("Qualified for both shifts")).toBeInTheDocument();
+    expect(within(checks).getByText(belowContract.message)).toHaveClass("text-amber-800");
+
+    // Back in swap mode the note goes at once, before the swap answer arrives.
+    fireEvent.click(screen.getByRole("button", { name: "Back" }));
+    fireEvent.click(within(screen.getByRole("group", { name: "Mode" })).getByRole("button", { name: "Swap" }));
+    expect(screen.queryByText(belowContract.message)).toBeNull();
+    await settle();
+    expect(screen.queryByText(belowContract.message)).toBeNull();
+    expect(onSearch.mock.calls.map(([request]) => request.mode)).toEqual(["swap", "handover", "swap"]);
+  });
 });
 
 describe("SwapAssistantDrawer: preview", () => {
@@ -522,7 +567,7 @@ describe("SwapAssistantDrawer: preview", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Qualified for both shifts")).toBeInTheDocument();
     expect(screen.getByText("Ben Ott: week 47 at 44.0 h (contract 40 h).")).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", { name: "Move Anna's Rest Day on Fri 20 Nov to Ben" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Move Anna Weber's Rest Day on Fri 20 Nov to Ben Ott" })).toBeChecked();
     expect(screen.getByText("Anna Weber's Rest Day on Sat 21 Nov will be removed (works that day).")).toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /notice period/ })).toBeNull();
 
@@ -562,7 +607,7 @@ describe("SwapAssistantDrawer: preview", () => {
 
   it("sends only the ticked Rest Day moves", async () => {
     const { props } = await openBenPreview();
-    fireEvent.click(screen.getByRole("checkbox", { name: "Move Anna's Rest Day on Fri 20 Nov to Ben" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Move Anna Weber's Rest Day on Fri 20 Nov to Ben Ott" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Ben Ott agreed to this swap" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge" }));
     fireEvent.click(screen.getByRole("button", { name: "Swap shifts" }));

@@ -89,20 +89,28 @@ function targetSection(target: SwapTargetInfo): string {
   return target.sectionName ?? target.unit?.primarySectionName ?? "";
 }
 
-export function swapToastMessage(swap: SwapRecord): string {
-  const giver = firstName(swap.requesterName ?? "");
-  const taker = firstName(swap.partnerName);
-  const given = swap.give[0];
-  if (swap.kind === "swap") {
-    return `Swapped: ${giver} ⇄ ${taker} (${dayMonthPair(given.dateISO, swap.take[0].dateISO)})`;
-  }
-  if (swap.kind === "handover") return `Handed over: ${giver} → ${taker} (${dayLabel(given.dateISO)})`;
-  return `Assigned: ${taker} covers ${given.sectionName} (${dayLabel(given.dateISO)})`;
+/** The days of the moved shifts: "Thu 19 / Sat 21 Nov" for a swap, else "Thu 19 Nov". */
+function swapDays(swap: SwapRecord): string {
+  const given = swap.give[0].dateISO;
+  return swap.kind === "swap" ? dayMonthPair(given, swap.take[0].dateISO) : dayLabel(given);
 }
 
+/** "Swapped: Anna Weber ⇄ Ben Ott (Thu 19 / Sat 21 Nov)"; full names, as first names repeat in a team. */
+export function swapToastMessage(swap: SwapRecord): string {
+  const giver = swap.requesterName ?? "";
+  const days = swapDays(swap);
+  if (swap.kind === "swap") return `Swapped: ${giver} ⇄ ${swap.partnerName} (${days})`;
+  if (swap.kind === "handover") return `Handed over: ${giver} → ${swap.partnerName} (${days})`;
+  return `Assigned: ${swap.partnerName} covers ${swap.give[0].sectionName} (${days})`;
+}
+
+/** "Swap undone: Anna Weber ⇄ Ben Ott (Thu 19 / Sat 21 Nov)", as the toast of the apply. */
 export function undoToastMessage(swap: SwapRecord): string {
-  if (swap.kind === "swap") return "Swap undone.";
-  return swap.kind === "handover" ? "Hand-over undone." : "Cover undone.";
+  const giver = swap.requesterName ?? "";
+  const days = swapDays(swap);
+  if (swap.kind === "swap") return `Swap undone: ${giver} ⇄ ${swap.partnerName} (${days})`;
+  if (swap.kind === "handover") return `Hand-over undone: ${giver} → ${swap.partnerName} (${days})`;
+  return `Cover undone: ${swap.partnerName} no longer covers ${swap.give[0].sectionName} (${days})`;
 }
 
 export function consentLabel(mode: SwapMode, partnerName: string): string {

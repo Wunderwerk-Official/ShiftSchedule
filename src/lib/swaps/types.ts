@@ -65,6 +65,9 @@ export type SwapCandidatesRequest = {
 };
 export type SwapCandidatesResponse = {
   revision: string; target: SwapTargetInfo; checks: SwapCheck[];
+  // Notes on the target itself, the same for every option (a hand-over's giver
+  // below contract hours); [] for swap and cover and for a blocked target.
+  targetFindings: SwapFinding[];
   best: SwapOption[]; possible: SwapOption[]; blocked: SwapOption[]; closest: SwapOption[];
   totals: { best: number; possible: number; blocked: number }; checked: number; truncated: boolean;
 };

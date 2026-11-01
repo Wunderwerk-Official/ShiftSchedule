@@ -1,4 +1,4 @@
-"""Working-time warnings of a swap and weekly hours.
+"""Working-time warnings of a swap, weekly hours and the year-to-date balance.
 
 The warnings (short rest, no free day after a night, long stretches) never
 block a swap; the planner acknowledges them. They are not validator rules and
@@ -12,6 +12,7 @@ from datetime import date
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 from ..models import Assignment, Clinician
+from ..planning_preferences import vacation_dates_in_range
 from ..validation import ValidationContext
 from . import labels
 from .blocks import WorkBlock, build_blocks, local_iso, visible_items
@@ -186,3 +187,42 @@ def person_hours(
             for year, week in ordered
         ],
     }
+
+
+def ytd_deficit_pct(vctx: ValidationContext, date_iso: str) -> Dict[str, int]:
+    """Year-to-date hours deficit before ``date_iso`` in percent per clinician
+    with contract hours (positive = behind, clamped to ±100).
+
+    The solver's fairness formula (whole slot durations, vacation days credited,
+    expected hours of zero or less skipped), but the history starts at the
+    calendar's first planned date of the year instead of 1 January: a calendar
+    started in November would otherwise show everyone nearly 100 % behind.
+    Empty, that is unknown, without a week of history.
+    """
+    reference = date.fromisoformat(date_iso)
+    year_start, end = date(reference.year, 1, 1).isoformat(), reference.isoformat()
+    history = [a for a in vctx.state.assignments
+               if year_start <= a.dateISO < end and not a.rowId.startswith("pool-")]
+    if not history:
+        return {}
+    start = date.fromisoformat(min(a.dateISO for a in history))
+    weeks = (reference - start).days / 7.0
+    if weeks < 1.0:
+        return {}
+    worked: Dict[str, int] = {}
+    for a in history:
+        interval = vctx.slot_lookup.get(a.rowId)
+        if interval is not None and interval[1] > interval[0]:
+            worked[a.clinicianId] = worked.get(a.clinicianId, 0) + interval[1] - interval[0]
+    deficits: Dict[str, int] = {}
+    for clinician in vctx.state.clinicians:
+        contract = clinician.workingHoursPerWeek
+        if not isinstance(contract, (int, float)) or contract <= 0:
+            continue
+        vacation_days = len(vacation_dates_in_range(clinician, start, reference))
+        expected = contract * 60 * max(0.0, weeks - vacation_days / 7.0)
+        if expected <= 0:
+            continue
+        percent = round((expected - worked.get(clinician.id, 0)) / expected * 100)
+        deficits[clinician.id] = max(-100, min(100, percent))
+    return deficits

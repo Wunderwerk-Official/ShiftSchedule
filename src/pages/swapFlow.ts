@@ -51,6 +51,12 @@ export type SwapFlowDeps = {
   /** Shows "Updating calendar…" and stops the autosave. */
   pause: () => void;
   resume: () => void;
+  /** The screen holds edits the server has not saved yet. */
+  hasUnsavedEdits: () => boolean;
+  /** Lets queued saves land; rejects when one of them failed. */
+  flushSaves: () => Promise<void>;
+  /** The revision of the last save or load; null or undefined when unknown. */
+  savedRevision: () => string | null | undefined;
   /** Saves the screen; the server then holds what the planner sees. */
   ensureSaved: () => Promise<AppState>;
   hydrate: (state: AppState) => void;
@@ -62,6 +68,22 @@ export type SwapFlowDeps = {
 const BUSY_MESSAGE = "The calendar is being updated. Try again in a moment.";
 const UNDO_RELOADED_MESSAGE = "The calendar changed in another tab. It was reloaded; undo again from History.";
 
+/**
+ * The revision an apply or undo is checked against. Unsaved edits (or an
+ * unknown revision) are saved first. A screen without them is not saved
+ * again: the queued saves land and their revision is sent, so a calendar
+ * that another tab saved meanwhile is refused with state_changed, which
+ * reloads it, instead of failing a save whose way out reloads the page.
+ */
+async function syncedRevision(deps: SwapFlowDeps): Promise<string> {
+  if (!deps.hasUnsavedEdits()) {
+    await deps.flushSaves();
+    const revision = deps.savedRevision();
+    if (revision) return revision;
+  }
+  return (await deps.ensureSaved()).revision ?? "";
+}
+
 async function runCalendarChange(
   deps: SwapFlowDeps,
   send: (expectedRevision: string) => Promise<SwapApplyResponse>,
@@ -69,8 +91,7 @@ async function runCalendarChange(
   if (deps.isBusy()) throw new Error(BUSY_MESSAGE);
   deps.pause();
   try {
-    const saved = await deps.ensureSaved();
-    const result = await send(saved.revision ?? "");
+    const result = await send(await syncedRevision(deps));
     deps.hydrate(result.state);
     return result;
   } catch (err) {
@@ -88,7 +109,7 @@ async function runCalendarChange(
   }
 }
 
-/** Save the screen, apply the swap against that revision, show the saved calendar. */
+/** Apply the swap against the revision the screen is saved as, then show the saved calendar. */
 export function runSwapApply(deps: SwapFlowDeps, request: SwapApplyRequest): Promise<SwapApplyResponse> {
   return runCalendarChange(deps, (expectedRevision) => deps.apply({ ...request, expectedRevision }));
 }

@@ -30,6 +30,15 @@ class Note(NamedTuple):
     short: str
 
 
+class Shift(NamedTuple):
+    """A shift named in a text: its section, date and wall-clock start and end."""
+
+    section: str
+    date_iso: str
+    start_local: str
+    end_local: str
+
+
 # --- Numbers, dates and times ------------------------------------------------
 
 
@@ -152,6 +161,16 @@ def already_assigned(name: str, section: str, date_iso: str) -> str:
 def overlap(name: str, section: str, date_iso: str, start_local: str, end_local: str) -> str:
     return (f"{name} already works {section} on {day_label(date_iso)} "
             f"({time_range(start_local, end_local)}).")
+
+
+def _shift_text(shift: Shift) -> str:
+    return (f"{shift.section} ({day_label(shift.date_iso)}, "
+            f"{time_range(shift.start_local, shift.end_local)})")
+
+
+def overlap_received(name: str, first: Shift, second: Shift) -> str:
+    """Both shifts of an overlap are new for the person, the earlier one first."""
+    return f"{name} would get two overlapping shifts: {_shift_text(first)} and {_shift_text(second)}."
 
 
 def on_call_rest_works(name: str, date_iso: str) -> str:

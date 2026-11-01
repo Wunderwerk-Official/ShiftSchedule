@@ -5,6 +5,7 @@ import { addDaysISO, parseISODate, personTone, weekStartISO } from "../../lib/my
 import { dayLabel, hoursText, targetSummary } from "../../lib/swaps/format";
 import type {
   SwapCandidatesResponse,
+  SwapFinding,
   SwapMode,
   SwapOption,
   SwapRange,
@@ -68,10 +69,13 @@ type SwapFinderPanelProps = {
 export default function SwapFinderPanel(props: SwapFinderPanelProps) {
   const { response, mode, filters, isMobile } = props;
   const target = response?.target ?? null;
+  // Notes on the change itself (a hand-over's giver below contract): while the
+  // answer for another mode loads, the shown ones would describe the wrong change.
+  const targetNotes = response && response.target.mode === mode ? response.targetFindings : [];
   const rowClass = cx("flex items-center gap-2 text-[13px]", TEXT_2, isMobile ? "min-h-11" : "min-h-8");
   return (
     <div className="flex flex-col gap-3 pb-4 pt-3">
-      {target ? <TargetSummary target={target} /> : null}
+      {target ? <TargetSummary target={target} notes={targetNotes} /> : null}
       {target?.blocked ? (
         <p className="text-[13px] text-rose-700 dark:text-rose-300">{target.blocked.message}</p>
       ) : (
@@ -138,14 +142,29 @@ export function StaleHint({ onRefresh }: { onRefresh: () => void }) {
   );
 }
 
-function TargetSummary({ target }: { target: SwapTargetInfo }) {
+/** The shift (or open slot), and the notes that hold for every option, once. */
+function TargetSummary({ target, notes }: { target: SwapTargetInfo; notes: SwapFinding[] }) {
   return (
     <div className="flex flex-col gap-0.5">
       <p className={cx("text-[13px] font-medium tabular-nums", TEXT_1)}>{targetSummary(target)}</p>
       {target.mode === "cover" && target.hiddenHolder ? (
         <p className={cx("text-xs", TEXT_3)}>{target.hiddenHolder.name} is on vacation, so this shift is hidden.</p>
       ) : null}
+      <TargetNotes notes={notes} />
     </div>
+  );
+}
+
+/** Amber notes on the target (also listed beside the preview's checks). */
+export function TargetNotes({ notes }: { notes: SwapFinding[] }) {
+  return (
+    <>
+      {notes.map((note, index) => (
+        <p key={`${note.code}-${index}`} className="text-[13px] text-amber-800 dark:text-amber-200">
+          {note.message}
+        </p>
+      ))}
+    </>
   );
 }
 

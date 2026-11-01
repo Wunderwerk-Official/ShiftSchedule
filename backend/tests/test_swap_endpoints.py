@@ -160,6 +160,7 @@ def test_happy_path_swap(client):
     result, option = _swap_option(client)
     assert result["revision"] == revision
     assert option["group"] == "best"
+    assert result["targetFindings"] == []
     body = _apply(client, _apply_body(result, option, note="  Ben agreed by phone ",
                                       approverName="K. Berger"))
     swap, state = body["swap"], body["state"]
@@ -225,6 +226,11 @@ def test_handover_moves_and_removes_rest_days_and_undo_restores_them(client):
     assert option["restDayMoves"] == [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben",
                                        "dateISO": FRI}]
     assert option["restDayRemovals"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
+    # Anna's lost hours are one note on the target, so the option stays a best match.
+    assert result["targetFindings"] == [{"code": "giver_below_contract", "clinicianId": "clin-anna",
+                                         "message": "Anna Weber: week 2 drops to 0.0 h (contract 40 h).",
+                                         "short": "−40 h under contract"}]
+    assert (option["group"], option["findings"]) == ("best", [])
 
     swap = _apply(client, _apply_body(result, option))["swap"]
     state = _load_state(USER)
@@ -254,6 +260,7 @@ def test_cover_removes_the_hidden_holder(client):
     option = _option(result, "clin-ben|-")
     assert option["hiddenRemoval"] == {"clinicianId": "clin-anna", "name": "Anna Weber",
                                        "assignmentId": "anna-ct", "required": True}
+    assert result["targetFindings"] == []
     body = _apply_body(result, option)
 
     capacity = _error(_apply(client, {**body, "removeHidden": None}, 409), "swap_invalid")
@@ -377,6 +384,19 @@ def test_a_rule_breaking_handover_is_refused_with_reasons(client):
     assert detail["message"] == ("This swap breaks a planning rule: "
                                  "Ben Ott: week 2 would reach 48.0 h (limit 45.0 h).")
     assert detail["violations"][0]["code"] == "WEEKLY_HOURS"
+
+
+def test_a_refused_handover_names_both_shifts_of_an_overlap_the_partner_would_receive(client):
+    # The demo lies inside the night, so Ben would receive both shifts of the overlap.
+    night = asg("anna-night", "night-wed", WED, "clin-anna")
+    _seed([night, asg("anna-demo", "demo-thu", THU, "clin-anna")])
+    result = _find(client, night, "handover", partnerId="clin-ben")
+    option = _option(result, "clin-ben|-")
+    text = ("Ben Ott would get two overlapping shifts: Night duty (Wed 7 Jan, 20:00 → 08:00) "
+            "and Demo (Thu 8 Jan, 07:15–07:45).")
+    assert option["reason"] == {"code": "overlap", "message": text}
+    detail = _error(_apply(client, _apply_body(result, option), 409), "swap_invalid")
+    assert detail["reasons"][0] == text
 
 
 def test_a_change_normalization_would_alter_is_refused(client, monkeypatch):

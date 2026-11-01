@@ -65,7 +65,7 @@ from .blocks import (
     visible_items,
 )
 from .policy import OpenSlotInfo, StartStatus, SwapRules, open_slot, start_status
-from .worktime import WorkWarning, iso_week, kept_warnings, new_warnings, person_hours
+from .worktime import WorkWarning, iso_week, kept_warnings, new_warnings, person_hours, ytd_deficit_pct
 
 if TYPE_CHECKING:  # schemas is the HTTP layer; the search only reads the request
     from .schemas import AssignmentRefIn, CandidatesRequest, SlotRefIn
@@ -151,13 +151,9 @@ class SwapContext:
 
     def ytd_pct(self, date_iso: str) -> Dict[str, int]:
         """Year-to-date hours deficit in percent per clinician with a contract
-        (positive = behind), as the solver's fairness term sees it."""
+        (positive = behind), counted from the calendar's first planned date."""
         if date_iso not in self._ytd:
-            # The solver module loads ortools; only handover and cover ranking needs it.
-            from ..solver import _compute_ytd_deficit_hours
-
-            self._ytd[date_iso] = _compute_ytd_deficit_hours(
-                self.state, date.fromisoformat(date_iso), self.vctx.slot_lookup)
+            self._ytd[date_iso] = ytd_deficit_pct(self.vctx, date_iso)
         return self._ytd[date_iso]
 
 
@@ -563,13 +559,17 @@ def _section_rank(prefs: Sequence[str], section_id: str) -> int:
     return prefs.index(section_id) if section_id in prefs else len(prefs)
 
 
+def _finding(code: str, clinician_id: str, note: labels.Note) -> Dict[str, Any]:
+    return {"code": code, "clinicianId": clinician_id, "message": note.message, "short": note.short}
+
+
 def soft_findings(ctx: SwapContext, plan: MovePlan, hours: Sequence[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Amber notes that need no acknowledgement. Receivers: B for X or the
     cover item, A for Y."""
     findings: List[Dict[str, Any]] = []
 
     def add(code: str, clinician_id: str, note: labels.Note) -> None:
-        finding = {"code": code, "clinicianId": clinician_id, "message": note.message, "short": note.short}
+        finding = _finding(code, clinician_id, note)
         if finding not in findings:
             findings.append(finding)
 
@@ -608,12 +608,6 @@ def soft_findings(ctx: SwapContext, plan: MovePlan, hours: Sequence[Dict[str, An
             if week["afterMinutes"] > max(week["contractMinutes"], week["beforeMinutes"]):
                 add("hours_above_contract", taker_id, labels.hours_above_contract(
                     ctx.name(taker_id), week["isoWeek"], week["afterMinutes"], contract))
-    giver_contract = _contract(ctx.clinician(plan.giver_id)) if plan.giver_id is not None else None
-    if plan.mode == "handover" and plan.giver_id is not None and giver_contract is not None:
-        for week in weeks_of[plan.giver_id]:
-            if week["afterMinutes"] < min(week["contractMinutes"], week["beforeMinutes"]):
-                add("giver_below_contract", plan.giver_id, labels.giver_below_contract(
-                    ctx.name(plan.giver_id), week["isoWeek"], week["afterMinutes"], giver_contract))
     if plan.mode == "swap" and plan.take is not None:
         status = start_status(plan.take.abs_start, ctx.rules, ctx.now)
         if status.inside_notice:
@@ -631,6 +625,32 @@ def plan_hours(ctx: SwapContext, plan: MovePlan) -> List[Dict[str, Any]]:
         person_hours(ctx.vctx, ctx.clinician(cid), ctx.by_person.get(cid, []),
                      apply_plan(ctx.by_person.get(cid, []), plan), weeks)
         for cid in shown
+    ]
+
+
+def target_findings(ctx: SwapContext, mode: str, give: SwapUnit) -> List[Dict[str, Any]]:
+    """Amber notes that hold for every option of a search, so they are shown
+    once. In a handover the giver always loses X's hours: one note per touched
+    ISO week in which a giver with contract hours drops below
+    min(contract, before). Swap and cover have none."""
+    giver_id = give.clinician_id
+    if mode != "handover" or giver_id is None:
+        return []
+    giver = ctx.clinician(giver_id)
+    contract = _contract(giver)
+    if contract is None:
+        return []
+    # Every option of a handover takes exactly X's items from A, so these are
+    # the numbers of A's hours card in each option's preview.
+    before = ctx.by_person.get(giver_id, [])
+    given = {id(item.assignment) for item in give.items}
+    hours = person_hours(ctx.vctx, giver, before, [a for a in before if id(a) not in given],
+                         {iso_week(item.date_iso) for item in give.items})
+    return [
+        _finding("giver_below_contract", giver_id,
+                 labels.giver_below_contract(giver.name, week["isoWeek"], week["afterMinutes"], contract))
+        for week in hours["weeks"]
+        if week["afterMinutes"] < min(week["contractMinutes"], week["beforeMinutes"])
     ]
 
 
@@ -660,6 +680,13 @@ def _slot_section_name(ctx: SwapContext, slot_id: str) -> str:
     return ctx.section_name(ctx.vctx.slot_sections.get(slot_id, ""))
 
 
+def _shift(ctx: SwapContext, slot_id: str, date_iso: str) -> labels.Shift:
+    start, end, _location = ctx.vctx.slot_lookup[slot_id]
+    begin = abs_minute(date_iso, start)
+    return labels.Shift(_slot_section_name(ctx, slot_id), date_iso, local_iso(begin),
+                        local_iso(begin + end - start))
+
+
 def _reason(ctx: SwapContext, v: Violation, new_items: Set[ItemKey]) -> Tuple[str, str]:
     name = ctx.name(v.clinician_id) if v.clinician_id is not None else ""
     details = v.context or {}
@@ -669,15 +696,17 @@ def _reason(ctx: SwapContext, v: Violation, new_items: Set[ItemKey]) -> Tuple[st
     if v.code == VIOLATION_VACATION:
         return "on_vacation", labels.on_vacation(name, day)
     if v.code == VIOLATION_OVERLAP:
-        # Name the shift the person already works: the pair's other item when
-        # this one is moved (also when both are).
-        slot_id = v.slot_id or ""
-        if (slot_id, day, v.clinician_id) in new_items:
-            slot_id, day = details.get("other_slot_id", ""), details.get("other_date_iso", "")
-        start, end, _location = ctx.vctx.slot_lookup[slot_id]
-        begin = abs_minute(day, start)
-        return "overlap", labels.overlap(name, _slot_section_name(ctx, slot_id), day, local_iso(begin),
-                                         local_iso(begin + end - start))
+        this = (v.slot_id or "", day)
+        other = (details.get("other_slot_id", ""), details.get("other_date_iso", ""))
+        this_new = (*this, v.clinician_id) in new_items
+        if this_new and (*other, v.clinician_id) in new_items:
+            # Both shifts are new for the person: a unit that already overlapped itself.
+            first, second = sorted((_shift(ctx, *other), _shift(ctx, *this)), key=lambda s: s.start_local)
+            return "overlap", labels.overlap_received(name, first, second)
+        # Name the shift the person already works: the pair's other item when this one is new.
+        shift = _shift(ctx, *(other if this_new else this))
+        return "overlap", labels.overlap(name, shift.section, shift.date_iso, shift.start_local,
+                                         shift.end_local)
     if v.code == VIOLATION_ON_CALL_REST:
         call_date = details.get("on_call_date", "")
         if (details.get("on_call_slot_id"), call_date, v.clinician_id) in new_items:
@@ -1106,6 +1135,7 @@ def find_candidates(ctx: SwapContext, req: "CandidatesRequest") -> Dict[str, Any
     response: Dict[str, Any] = {
         "revision": ctx.state.revision,
         "target": target.info,
+        "targetFindings": [],
         "checks": [],
         "best": [],
         "possible": [],
@@ -1155,6 +1185,7 @@ def find_candidates(ctx: SwapContext, req: "CandidatesRequest") -> Dict[str, Any
                 if option["group"] == "possible"]
     blocked_options = [option for _key, option in sorted(blocked, key=lambda entry: entry[0])]
     response.update(
+        targetFindings=target_findings(ctx, req.mode, give),
         checks=labels.check_list(ctx.settings, ctx.rules, req.mode),
         best=best[:policy.BEST_CAP],
         possible=possible[:policy.POSSIBLE_CAP],

@@ -1515,7 +1515,7 @@ Frontend
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
 - `src/components/swaps/*` (v1.71 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
 - `src/lib/swaps/*` (v1.71: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
-- `src/pages/swapFlow.ts` (v1.71: search, apply and undo order — save, send, hydrate)
+- `src/pages/swapFlow.ts` (v1.71: search, apply and undo order — save only unsaved edits, send, hydrate)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
@@ -2527,9 +2527,9 @@ server checking every option against all planning rules.
   Account deletion clears all three; finished swaps and their events are
   pruned 730 days after their last update (§ 16 ArbZG).
 - **Endpoints** (`backend/swaps/routes.py`, owner's JWT only, never via web or
-  iCal tokens): `POST /v1/swaps/candidates` (target, checks, best/possible/
-  blocked/closest options with chips, warnings, findings, weekly hours and
-  rest-day changes; at most 600 gate runs, then `truncated`),
+  iCal tokens): `POST /v1/swaps/candidates` (target, `targetFindings`, checks,
+  best/possible/blocked/closest options with chips, warnings, findings, weekly
+  hours and rest-day changes; at most 600 gate runs, then `truncated`),
   `POST /v1/swaps/apply`, `POST /v1/swaps/{id}/undo`,
   `GET /v1/swaps/history` (keyset paging by `before` + `beforeId`). Apply
   errors in check order: 400 `consent_required`, 409 `state_changed`, 400
@@ -2549,6 +2549,18 @@ server checking every option against all planning rules.
   the two people already break in a touched week without the change making
   it worse is listed in `SwapOption.preexisting` and shown amber, never as a
   green tick. Vacation-hidden shifts never count as a vacation problem.
+- **Findings and ranking.** Amber findings belong to an option and make it
+  "possible" instead of "best". A note that holds for every option is a
+  target note in `targetFindings`, shown once (`matching.target_findings`):
+  in a handover, each touched week in which a giver with contract hours
+  drops below min(contract, before), with the numbers of the giver's hours
+  card. Handover and cover rank partners further behind on year-to-date
+  hours first (chip from 5 %). `worktime.ytd_deficit_pct` is the solver's
+  fairness formula counted from the calendar's first planned date of the
+  year instead of 1 January; with less than a week of history it is unknown
+  (no chip, ranked after known partners). No module of `backend/swaps`
+  imports the solver, so a search never loads ortools
+  (`test_swap_matching.py` checks this in a fresh process).
 - **Rest Days.** A giver's Rest Day after a moved night or on-call follows the
   shift when the taker neither rests nor works that day (ticked by default,
   apply accepts any detected subset). The taker's own Rest Day on the date of
@@ -2573,8 +2585,14 @@ server checking every option against all planning rules.
 - **Frontend.** Teal is the swap color. The preview outline is an injected
   stylesheet keyed by `data-assignment-key` / `data-sheet-assignment-key`.
   A search saves the calendar first only when the screen has unsaved edits,
-  then searches against that revision; apply pauses autosave, saves, applies
-  with the saved revision and hydrates the returned state.
+  then searches against that revision. Apply and undo pause autosave and do
+  the same: a clean screen lets queued saves land and sends their revision
+  (a full save only for unsaved edits or an unknown revision), so a calendar
+  another tab saved meanwhile is refused with `state_changed`, reloaded and
+  searched again instead of failing a save; then they hydrate the returned
+  state. `targetFindings` show once, as amber notes under the target summary
+  and beside the hand-over preview's checks. Toasts and the Rest Day move
+  label use full names, since first names repeat in a team.
 - Tests: backend `test_validation_context.py`, `test_constraint_policy.py`,
   `test_swap_blocks.py`, `test_swap_worktime.py`, `test_swap_policy.py`,
   `test_swap_matching.py`, `test_swap_property.py` (about 7 s) and

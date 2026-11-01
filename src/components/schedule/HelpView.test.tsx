@@ -27,4 +27,7 @@ it("explains Find a swap: the S key and Undo (v1.71)", () => {
   expect(text).toMatch(/press S while its\s+lock or ⇄ button has focus/);
   expect(text).toMatch(/Undo is in the toast for 10 seconds and later\s+under Swap history/);
   expect(text).toMatch(/inside 48 h before the start also tick the notice override/);
+  expect(text).toMatch(
+    /A hand-over that leaves the giver\s+under their contract hours says so once, in an amber note under the shift/,
+  );
 });

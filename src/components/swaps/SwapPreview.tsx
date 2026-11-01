@@ -17,6 +17,7 @@ import {
 import type {
   SwapApplyRequest,
   SwapCheck,
+  SwapFinding,
   SwapMode,
   SwapOption,
   SwapTargetInfo,
@@ -33,7 +34,7 @@ import {
   solidButtonBaseClass,
   solidButtonClass,
 } from "../myPlan/planChrome";
-import { StaleHint, swapAlertClass } from "./SwapFinderPanel";
+import { StaleHint, TargetNotes, swapAlertClass } from "./SwapFinderPanel";
 
 // Preview of one option (SPEC §5.5): both people's weeks, the checks, the
 // warnings to acknowledge, notes, Rest Day changes, consent, and the apply.
@@ -106,6 +107,8 @@ export type SwapPreviewProps = {
   mode: SwapMode;
   target: SwapTargetInfo;
   checks: SwapCheck[];
+  /** Notes that hold for every option of this target (a hand-over's giver below contract). */
+  targetFindings: SwapFinding[];
   option: SwapOption;
   clinicians: Clinician[];
   isMobile: boolean;
@@ -267,6 +270,7 @@ export default function SwapPreview(props: SwapPreviewProps) {
             return [<CheckLine key={check.code}>{check.label}</CheckLine>];
           })}
         </ul>
+        <TargetNotes notes={props.targetFindings} />
       </PreviewSection>
 
       {warnings.length > 0 ? (
@@ -319,8 +323,8 @@ export default function SwapPreview(props: SwapPreviewProps) {
                   onChange={(event) => setSkippedMoves((list) => toggle(list, key, !event.target.checked))}
                   className={checkboxClass}
                 />
-                Move {firstName(nameOf(move.fromClinicianId))}'s Rest Day on {dayLabel(move.dateISO)} to{" "}
-                {firstName(nameOf(move.toClinicianId))}
+                Move {nameOf(move.fromClinicianId)}'s Rest Day on {dayLabel(move.dateISO)} to{" "}
+                {nameOf(move.toClinicianId)}
               </label>
             );
           })}
