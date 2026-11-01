@@ -2768,7 +2768,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
     adapter promoted into `text`), an abort during the call applies
     nothing, an answer cut off at `max_tokens` before its plan gets one
     more call with a note (the thinking counts towards the limit) and does
-    not use up the correction round.
+    not use up the correction round. Placements and removals are applied
+    in the model's order as the prompt says (it decides who keeps scarce
+    hours; sorting by date gave Thursday's long slot the hours again) with
+    retry passes while a pass makes progress (order-only refusals such as a
+    block growing backwards from a fixed shift); every ```plan block is
+    read (any case, one per week), other fenced notes never, and unparsed
+    lines are reported back.
   - Picker: slot durations as the gate counts them (above); the ISO week
     is computed once per date (a calendar holds years of assignments).
   - Arena hashes cover `direct.py`, `cross_day.py` and `solver.py`.

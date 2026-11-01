@@ -1938,6 +1938,7 @@ def agent_solve_range(
             else:
                 plan_rounds += 1
             applied = apply_direct_plan(executor, adds, removes)
+            applied["unparsed"] = unparsed
             stats["rounds"] += 1
             stats["proposed"] += len(adds) + len(removes)
             stats["accepted"] += applied["accepted"]

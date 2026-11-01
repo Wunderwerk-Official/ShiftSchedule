@@ -221,10 +221,11 @@ def test_parse_direct_reply_reads_the_plan_block():
     assert unparsed == 1
 
 
-def test_direct_plan_is_applied_by_start_time_and_retried_when_only_the_order_failed():
+def test_direct_plan_retries_placements_refused_only_because_of_the_order():
     """A gate that, like one-block-per-day, refuses a placement until the
-    slot joining it to the person's block is in: the plan is applied by
-    day, person and start time, and a refused placement gets another pass."""
+    slot joining it to the person's block is in: a refused placement gets
+    another pass once its neighbour is in; one that is never legal stays
+    refused."""
     from types import SimpleNamespace
 
     from backend.agent.direct import apply_direct_plan
@@ -504,3 +505,74 @@ def test_direct_answer_cut_off_before_the_plan_gets_another_call():
     conversation = provider.calls[-1]["messages"]
     assert "output limit" in conversation[2].content and "output limit" not in conversation[4].content
     assert {(a["rowId"], a["dateISO"], a["clinicianId"]) for a in result["assignments"]} == FRIDAY_PLAN
+
+
+def test_direct_plan_keeps_the_models_order_for_scarce_hours():
+    """Marie Laurain has 12.5 h left in W45. The model lists Friday's two 4 h
+    places before Thursday's 10 h COR: in its order she gets both Friday
+    places and COR is refused (by date, COR would take her hours first)."""
+    from backend.agent.direct import apply_direct_plan
+
+    state = trap_state()
+    ctx = build_scoring_context(state, THU, FRI, only_fill_required=True)
+    ex = PlanToolExecutor(state, ctx, [])
+    applied = apply_direct_plan(ex, [(f"slot-seno-fri__{FRI}", "laurain"), (f"slot-echo-fri__{FRI}", "laurain"),
+                                     (f"slot-cor-thu__{THU}", "laurain")], [])
+    assert applied["accepted"] == 2
+    assert [(r["slot"], r["reasons"]) for r in applied["rejected"]] == [(f"slot-cor-thu__{THU}", ["WEEKLY_HOURS"])]
+    assert {(a.rowId, a.dateISO, a.clinicianId) for a in ex._working_list()} == FRIDAY_PLAN
+
+
+class _ChainGate:
+    """Slots s1..s4 of one day before a fixed shift: s4 joins the fixed
+    shift, each earlier slot only joins once the next one is in. Removing
+    s2 from s1-s3 splits the block until s3 is gone."""
+
+    def __init__(self, placed=()):
+        from types import SimpleNamespace
+        self.placed = list(placed)
+        self.ctx = SimpleNamespace(instances={})
+
+    def _tool_apply_moves(self, args):
+        move = args["moves"][0]
+        key = move["slot_key"]
+        index = int(key[1])
+        if move["action"] == "assign":
+            if index < 4 and f"s{index + 1}" not in self.placed:
+                return {"applied": False, "new_hard_violations": [{"code": "SPLIT_SHIFT"}]}
+            self.placed.append(key)
+            return {"applied": True}
+        if index == 2 and "s3" in self.placed and "s1" in self.placed:
+            return {"applied": False, "new_hard_violations": [{"code": "SPLIT_SHIFT"}]}
+        self.placed.remove(key)
+        return {"applied": True}
+
+
+def test_direct_plan_retries_while_a_pass_makes_progress():
+    """A block that grows backwards from a fixed shift needs one pass per
+    slot; a fixed number of passes would drop legal placements."""
+    from backend.agent.direct import apply_direct_plan
+
+    gate = _ChainGate()
+    applied = apply_direct_plan(gate, [(f"s{i}", "ann") for i in (1, 2, 3, 4)], [])
+    assert (applied["accepted"], applied["rejected"]) == (4, [])
+    assert gate.placed == ["s4", "s3", "s2", "s1"]
+
+
+def test_direct_plan_retries_removals_refused_only_because_of_the_order():
+    from backend.agent.direct import apply_direct_plan
+
+    gate = _ChainGate(placed=["s1", "s2", "s3"])
+    applied = apply_direct_plan(gate, [], [("s2", "ann"), ("s3", "ann")])
+    assert (applied["accepted"], applied["rejected"]) == (2, [])
+    assert gate.placed == ["s1"]
+
+
+def test_parse_direct_reply_reads_every_plan_block_and_only_those():
+    from backend.agent.direct import parse_direct_reply
+
+    adds, removes, unparsed = parse_direct_reply(
+        "A note:\n```\nS9__2026-11-05 = Not A Plan\n```\n"
+        "```Plan\nS1__2026-11-05 = Ann\n```\nWeek two:\n``` plan\nS2__2026-11-12 = Bob\n* S3__2026-11-12 = Cy\n```")
+    assert adds == [("S1__2026-11-05", "Ann"), ("S2__2026-11-12", "Bob")]
+    assert removes == [] and unparsed == 1

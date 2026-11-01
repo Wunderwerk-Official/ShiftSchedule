@@ -44,6 +44,7 @@ S12__2026-02-16 = Full Name
 One placement per line, the slot key copied exactly and the name exactly as listed. In a correction round, add lines "- S12__2026-02-16 = Full Name" to remove one of your earlier placements."""
 
 _LINE = re.compile(r"^\s*(?P<remove>-\s*)?(?P<slot>S\d+__\d{4}-\d{2}-\d{2})\s*[=:|]\s*(?P<name>.+?)\s*$")
+_PLAN_BLOCK = re.compile(r"^[ \t]*```[ \t]*plan[ \t]*\r?\n(.*?)(?:^[ \t]*```|\Z)", re.S | re.M | re.I)
 
 
 def _hhmm(minutes: int) -> str:
@@ -246,8 +247,11 @@ def parse_direct_reply(text: Optional[str]) -> Tuple[List[Tuple[str, str]], List
     without a block, every matching line of the reply counts."""
     if not text:
         return [], [], 0
-    match = re.search(r"```(?:plan)?\s*\n(.*?)(?:```|$)", text, re.S)
-    body = match.group(1) if match else text
+    # Every block opened with ```plan (any case; one per week is fine), up to
+    # its closing fence or the end of a cut-off reply. Other fenced blocks
+    # (notes) never count; without a plan block, every line of the reply does.
+    blocks = _PLAN_BLOCK.findall(text)
+    body = "\n".join(blocks) if blocks else text
     adds, removes, unparsed = [], [], 0
     for raw in body.splitlines():
         if not raw.strip():
@@ -261,25 +265,6 @@ def parse_direct_reply(text: Optional[str]) -> Tuple[List[Tuple[str, str]], List
     return adds, removes, unparsed
 
 
-# Passes over the placements: a placement the gate refuses only because of
-# the ORDER (one contiguous block per day: a later slot before the one that
-# joins it to a fixed shift) is accepted once its neighbour is in.
-APPLY_PASSES = 3
-
-
-def _placement_order(executor, pair: Tuple[str, str]) -> Tuple[str, str, int]:
-    """Day, person, start time: each person's day is built from its first
-    slot on, so every intermediate state of a contiguous block is one."""
-    slot_key, name = pair
-    try:
-        resolved = executor._resolve_slot_key(slot_key)
-        _slot_id, date_iso = resolved.rsplit("__", 1)
-    except (ValueError, AttributeError):
-        return ("~", name, 0)
-    inst = executor.ctx.instances.get(resolved)
-    return (date_iso, executor._resolve_clinician(name), inst.start if inst else 0)
-
-
 def _apply_one(executor, action: str, slot_key: str, name: str) -> Optional[List[str]]:
     """None when the gate applied the move, else the reasons it gave."""
     result = executor._tool_apply_moves({"moves": [
@@ -291,35 +276,39 @@ def _apply_one(executor, action: str, slot_key: str, name: str) -> Optional[List
     return reasons[:3] or [str(result.get("hint") or result.get("error") or "rejected")[:120]]
 
 
-def apply_direct_plan(executor, adds, removes) -> Dict[str, object]:
-    """Apply removals, then placements through the gate, one move at a time.
-
-    Placements go by day, person and start time, and refused ones are tried
-    again while a pass still placed something, so only placements that break
-    a rule in the final plan stay dropped."""
-    accepted, rejected = 0, []
-    for slot_key, name in removes:
-        reasons = _apply_one(executor, "unassign", slot_key, name)
-        if reasons is None:
-            accepted += 1
-        else:
-            rejected.append({"action": "unassign", "slot": slot_key, "name": name, "reasons": reasons})
-    pending = [(pair, []) for pair in sorted(adds, key=lambda pair: _placement_order(executor, pair))]
-    for _pass in range(APPLY_PASSES):
+def _apply_in_passes(executor, action: str, pairs) -> Tuple[int, List[Tuple[Tuple[str, str], List[str]]]]:
+    """Apply the moves in the model's order; refused ones are tried again,
+    in that order, while a pass still applied something. A move the gate
+    refuses only because of the order (one block per day: a slot before the
+    one that joins it to the person's block; removing the middle of a block
+    before its end) goes through once its neighbour has; a move that breaks
+    a rule in the final plan stays refused."""
+    accepted, pending = 0, [(pair, []) for pair in pairs]
+    while pending:
         refused = []
         for (slot_key, name), _reasons in pending:
-            reasons = _apply_one(executor, "assign", slot_key, name)
+            reasons = _apply_one(executor, action, slot_key, name)
             if reasons is None:
                 accepted += 1
             else:
                 refused.append(((slot_key, name), reasons))
-        progressed = len(refused) < len(pending)
+        if len(refused) == len(pending):
+            return accepted, refused
         pending = refused
-        if not pending or not progressed:
-            break
-    rejected += [{"action": "assign", "slot": slot_key, "name": name, "reasons": reasons}
-                 for (slot_key, name), reasons in pending]
-    return {"accepted": accepted, "rejected": rejected}
+    return accepted, []
+
+
+def apply_direct_plan(executor, adds, removes) -> Dict[str, object]:
+    """Removals, then placements, through the gate one move at a time in the
+    model's order (the order it was told decides who keeps scarce hours),
+    each with retry passes for refusals caused only by the order."""
+    rejected = []
+    removed, refused_removals = _apply_in_passes(executor, "unassign", removes)
+    placed, refused_placements = _apply_in_passes(executor, "assign", adds)
+    for action, refused in (("unassign", refused_removals), ("assign", refused_placements)):
+        rejected += [{"action": action, "slot": slot_key, "name": name, "reasons": reasons}
+                     for (slot_key, name), reasons in refused]
+    return {"accepted": removed + placed, "rejected": rejected}
 
 
 def build_direct_feedback(executor, applied: Dict[str, object], places=None, cut_off: bool = False) -> str:
@@ -329,6 +318,9 @@ def build_direct_feedback(executor, applied: Dict[str, object], places=None, cut
         lines.append("Your answer reached the output limit before the plan block (the thinking counts towards "
                      "it). Write the plan now and keep the remaining reasoning short.")
     lines.append(f"The checker accepted {applied['accepted']} change(s) and dropped {len(rejected)}.")
+    if applied.get("unparsed"):
+        lines.append(f"{applied['unparsed']} line(s) of your plan block were not in the form 'slot = name' "
+                     "and were ignored.")
     if rejected:
         lines.append("Dropped (slot = name: reasons):")
         lines += [f"- {r['slot']} = {r['name']}: {'; '.join(r['reasons'])}" for r in rejected[:60]]
