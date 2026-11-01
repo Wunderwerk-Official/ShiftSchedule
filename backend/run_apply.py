@@ -54,16 +54,29 @@ def _new_violations(state, baseline, combined, only_required):
             if is_new_or_worsened(v, baseline_context)]
 
 
-def result_safety(run):
+def _agent_debug(run):
     result = run.get("result") or {}
-    agent = (result.get("debugInfo") or {}).get("agent") or {}
+    return (result.get("debugInfo") or {}).get("agent") or {}
+
+
+def unfinished_dates(run):
+    """Days the run did not finish: skipped, incomplete or with a required
+    check still pending. Open positions alone do not count: a run that
+    completed every check can still leave positions nobody may legally fill."""
+    agent = _agent_debug(run)
     # "unverified" checks ran out of time at the final revision: no finding
     # exists for them, so they do not make a day incomplete. Coverage gaps
     # are still caught by the apply gate's own gap computation.
     pending_checks = [t["dateISO"] for t in (agent.get("tasks") or {}).get("tasks", [])
                       if t.get("kind") == "required_check" and t.get("status") not in ("complete", "unverified")
                       and t.get("dateISO")]
-    dates = sorted(set(pending_checks + agent.get("daysSkipped", []) + agent.get("daysIncomplete", [])
+    return sorted(set(pending_checks + agent.get("daysSkipped", []) + agent.get("daysIncomplete", [])))
+
+
+def result_safety(run):
+    result = run.get("result") or {}
+    agent = _agent_debug(run)
+    dates = sorted(set(unfinished_dates(run)
                        + [g["dateISO"] for g in agent.get("unsolved", {}).get("open_slots", [])]))
     empty_abort = run["status"] == "aborted" and not any(
         run["start_iso"] <= a.get("dateISO", "") <= run["end_iso"]
@@ -130,12 +143,20 @@ def apply_stored_run(username, run_id, *, force=False, allow_partial=False, expe
             dates = ", ".join(incomplete_dates[:12]) or "coverage not verified after interruption"
             if len(incomplete_dates) > 12:
                 dates += f", and {len(incomplete_dates) - 12} more days"
+            missing = sum(g.missing for g in gaps)
+            # A finished run whose only problem is open positions was not cut
+            # short: say so, instead of suggesting the planner stopped early.
+            stopped = run["status"] == "aborted" or bool(unfinished_dates(run))
+            lead = (f"This draft is incomplete or was stopped. {missing} required position(s) remain open."
+                    if stopped else
+                    f"The planner finished, but {missing} required position(s) remain open; the run log "
+                    "lists each one.")
             raise HTTPException(409, detail={"code": "partial_result", "message":
-                f"This draft is incomplete or was stopped. {sum(g.missing for g in gaps)} required "
-                f"position(s) remain open. Affected dates: {dates}. Applying replaces the entire "
+                f"{lead} Affected dates: {dates}. Applying replaces the entire "
                 f"requested range and removes {removed} existing assignment(s). "
-                "Apply this partial draft anyway?", "revision": state.revision,
-                "dates": incomplete_dates, "removed_assignments": removed})
+                + ("Apply this partial draft anyway?" if stopped else "Apply this draft with open positions?"),
+                "revision": state.revision,
+                "dates": incomplete_dates, "removed_assignments": removed, "stopped": stopped})
 
         _write_auto_backup(conn, username, state, name="Auto-backup before applying plan")
         state.assignments = combined

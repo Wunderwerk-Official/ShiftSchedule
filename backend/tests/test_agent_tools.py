@@ -468,6 +468,38 @@ def test_digest_roster_rows_render_identically_in_all_three_digests():
     assert problem_lines[start + 1 : start + 3] == [alice_row, bob_row]
 
 
+def test_day_digest_roster_shows_week_hours_booked_against_the_cap():
+    """Admin report 2026-11 (Thu/Fri run): the day planner spent scarce
+    people's weekly hours on Thursday without seeing how much of their ISO
+    week was left for Friday. The day roster carries booked/hard max for the
+    day's ISO week: the gate's numbers, fixed work before the range included."""
+    from backend.agent.prompts import build_day_digest
+
+    slots = [
+        make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+        make_template_slot("slot-a__tue", col_band_id="col-tue-1",
+                           start_time="08:00", end_time="12:00"),
+    ]
+    alice = make_clinician("clin-a", "Dr. Alice", working_hours_per_week=33)
+    alice.workingHoursToleranceHours = 7
+    bob = make_clinician("clin-b", "Dr. Bob")  # no contract: no weekly cap
+    state = make_app_state(clinicians=[alice, bob], slots=slots,
+                           assignments=[make_assignment("m1", "slot-a__mon", MON, "clin-a")])
+    executor = _make_executor(state, [_seed("slot-a__tue", TUE, "clin-b")], start=TUE, end=TUE)
+    week = executor.week_hours_lines(TUE)
+    assert week == {"clin-a": "8/40", "clin-b": "4/-"}
+    assert executor.week_hours_by_clinician(TUE) == {
+        "clin-a": executor._week_hours("clin-a", TUE), "clin-b": executor._week_hours("clin-b", TUE)}
+    day = build_day_digest(state, executor.ctx, TUE, 0, 1, 1, [], [], [], 5, executor.alias_by_id,
+                           ytd_worked_pct_by_id={}, week_hours_by_id=week)
+    head, alice_row, bob_row = day.splitlines()[:3]
+    assert head.endswith("lower=behind|2026-W02 hours booked/hard max (whole ISO week, work outside "
+                         "the range included; later days of this week share what is left)):")
+    assert alice_row == "- Dr. Alice|Section A|-|33.0|-|8/40"
+    assert bob_row == "- Dr. Bob|Section A|-|-|-|4/-"
+    assert "suggest_day_blocks without slot_key takes a slot with only one eligible person first" in day
+
+
 def test_activity_feed_uses_real_names_for_the_ui():
     events = []
     state = make_app_state(clinicians=[make_clinician("clin-1", "Dr. Alice")])

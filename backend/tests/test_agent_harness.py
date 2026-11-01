@@ -1232,9 +1232,94 @@ def test_finalize_reports_unsolved_overview():
     assert len(unsolved["open_slots"]) == 1
     assert unsolved["open_slots"][0]["section"] == "Section B"
     assert any("open: " in n and "Section B" in n for n in result["notes"])
+    # The closing report says why: nobody is qualified for Section B.
+    assert unsolved["open_slots"][0]["blockers"] == {
+        "qualified": 0, "addable": 0, "blocked_by": {}, "main": "NO_QUALIFIED"}
+    assert any("Section B" in n and "nobody qualified is available" in n for n in result["notes"])
     # Alice works one full 8h day: no short or over-long days reported.
     assert unsolved["short_days"] == []
     assert unsolved["overlong_days"] == []
+
+
+def test_finalize_names_the_rules_that_block_an_open_slot():
+    """Admin report 2026-11 (Thu/Fri run): the picker listed people as free
+    while the gate blocked them on weekly hours. The closing report must
+    name, per open slot, how many qualified people each hard rule blocks."""
+    from backend.models import TemplateBlock, VacationRange
+    from .conftest import make_pool_row, make_template_slot, make_workplace_row
+
+    capped = make_clinician("clin-3", "Carol", qualified_class_ids=["section-b"],
+                            working_hours_per_week=2)
+    capped.workingHoursToleranceHours = 0  # cap 2h: the 4h slot is over it
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", qualified_class_ids=["section-b"],
+                           vacations=[VacationRange(id="v", startISO=MON, endISO=MON)]),
+            capped,
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "Section B"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-b__mon", col_band_id="col-mon-1",
+                               block_id="block-b",
+                               start_time="09:00", end_time="13:00"),
+        ],
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+    result = agent_solve_range(
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=MockProvider([{"text": "Seed accepted."}]), config=_config(),
+    )
+    open_slots = result["debugInfo"]["agent"]["unsolved"]["open_slots"]
+    assert [entry["section"] for entry in open_slots] == ["Section B"]
+    assert open_slots[0]["blockers"] == {
+        "qualified": 2, "addable": 0,
+        "blocked_by": {"VACATION": 1, "WEEKLY_HOURS": 1},
+        # A tie is broken by the fixed rule order: weekly hours first.
+        "main": "WEEKLY_HOURS",
+    }
+    line = next(n for n in result["notes"] if n.startswith("- open: ") and "Section B" in n)
+    assert line.endswith("(1 missing): 2 qualified; blocked by vacation 1, weekly-hours limit 1")
+
+
+def test_open_slot_reasons_are_bounded():
+    from backend.agent.open_reasons import _main_reason, blocker_text, open_slot_blockers
+    from collections import Counter
+
+    assert _main_reason(3, 1, Counter({"WEEKLY_HOURS": 2})) is None  # someone can be added
+    assert _main_reason(0, 0, Counter()) == "NO_QUALIFIED"
+    assert _main_reason(4, 0, Counter({"VACATION": 3, "WEEKLY_HOURS": 2})) == "VACATION"
+    assert _main_reason(2, 0, Counter({"OVERLAP": 1, "SAME_LOCATION_PER_DAY": 1})) == "OVERLAP"
+    assert blocker_text({"qualified": 3, "addable": 1, "blocked_by": {"OVERLAP": 2}, "main": None}) == (
+        "3 qualified; 1 could be added directly; blocked by overlapping shift 2")
+
+    class _Gap:
+        def __init__(self, n):
+            self.slot_key, self.slot_id, self.dateISO, self.section_id = f"s{n}__{MON}", f"s{n}", MON, "section-a"
+
+    class _Executor:
+        state = make_app_state(clinicians=[make_clinician("clin-1"), make_clinician("clin-2", "Bob")])
+        current, fixed_identity, calls = {}, set(), 0
+
+        def _direct_addition_codes(self, slot_id, date_iso, cid):
+            self.calls += 1
+            return ["WEEKLY_HOURS"]
+
+    executor = _Executor()
+    gaps = [_Gap(n) for n in range(5)]
+    assert len(open_slot_blockers(executor, gaps, max_slots=2)) == 2
+    assert executor.calls == 4
+    # Past the time limit nothing is guessed: those slots are left out.
+    assert open_slot_blockers(executor, gaps, deadline=time.time() - 1) == {}
 
 
 def test_finalize_reports_all_clear_when_nothing_unsolved():

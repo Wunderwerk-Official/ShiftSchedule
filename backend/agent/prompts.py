@@ -7,6 +7,7 @@ problem digest goes into the first user message.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Dict, List, Optional
 
 from ..models import AppState
@@ -410,10 +411,12 @@ def _roster_lines(
     worked_pct_by_id: Dict[str, Optional[int]],
     *,
     with_pattern: bool = True,
+    week_hours_by_id: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """One roster row per clinician (name|qualified|preferred|contract|ytd
-    worked %[|soft work pattern]); missing values render as '-'. The rows
-    sit in the cached prompt prefix, so the format must stay stable."""
+    worked %[|week hours booked/max][|soft work pattern]); missing values
+    render as '-'. The rows sit in the cached prompt prefix, so the format
+    must stay stable."""
     sections = _section_names(state)
 
     def _section_list(ids) -> str:
@@ -427,12 +430,13 @@ def _roster_lines(
             if with_pattern and c.workPattern
             else ""
         )
+        week = f"|{week_hours_by_id.get(c.id, '-')}" if week_hours_by_id is not None else ""
         lines.append(
             f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
             f"|{_section_list(c.preferredClassIds)}"
             f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
             f"|{worked_pct if worked_pct is not None else '-'}"
-            f"{pattern}"
+            f"{week}{pattern}"
         )
     return lines
 
@@ -485,17 +489,24 @@ def build_day_digest(
     clinician_aliases: Dict[str, str],
     ytd_worked_pct_by_id: Dict[str, Optional[int]],
     distribute_all: bool = False,
+    week_hours_by_id: Optional[Dict[str, str]] = None,
 ) -> str:
     """First user message of one day's conversation. The roster's YTD
-    percentages are AS OF this day, including everything placed on earlier
-    days of this run — frozen range-start numbers would misdirect the
-    fairness choices of later days."""
+    percentages and week hours are AS OF this day, including everything
+    placed on earlier days of this run — frozen range-start numbers would
+    misdirect the fairness choices of later days."""
     lines: List[str] = []
+    week_column = ""
+    if week_hours_by_id is not None:
+        year, week, _ = date.fromisoformat(date_iso).isocalendar()
+        week_column = (f"|{year}-W{week:02d} hours booked/hard max (whole ISO week, "
+                       "work outside the range included; later days of this week share what is left)")
     lines.append(
         "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
-        f"of target as of {date_iso}, 100=on target, lower=behind):"
+        f"of target as of {date_iso}, 100=on target, lower=behind{week_column}):"
     )
-    lines.extend(_roster_lines(state, clinician_aliases, ytd_worked_pct_by_id))
+    lines.extend(_roster_lines(state, clinician_aliases, ytd_worked_pct_by_id,
+                               week_hours_by_id=week_hours_by_id))
     lines.append("")
     lines.append(
         f"Build day {day_index + 1} of {total_days}: {date_iso} "
@@ -505,8 +516,9 @@ def build_day_digest(
     lines.append("")
     lines.append(
         "Slots of this day (slot_key|section|time|still missing|priority; "
-        "listed in processing order — on-call first, then priority, NOT "
-        "chronological):"
+        "listed on-call first, then by priority, NOT chronological; "
+        "suggest_day_blocks without slot_key takes a slot with only one "
+        "eligible person first):"
     )
     lines.extend(day_slot_lines)
     if fixed_anchor_lines:

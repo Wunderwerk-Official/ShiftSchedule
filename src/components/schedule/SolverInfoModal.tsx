@@ -5,7 +5,7 @@ import { cx } from "../../lib/classNames";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import { formatFeedDate } from "../../lib/agentActivity";
-import { heuristicFallbackNotice } from "../../lib/solverOutcome";
+import { heuristicFallbackNotice, runReviewLine } from "../../lib/solverOutcome";
 import {
   buildRunLog,
   downloadTextFile,
@@ -578,9 +578,9 @@ export default function SolverInfoModal({
                           {run.apply_blocked_reason && (
                             <div className="text-xs font-medium text-amber-600 dark:text-amber-400">{run.apply_blocked_reason}</div>
                           )}
-                          {!!run.incomplete_dates?.length && (
+                          {runReviewLine(run) && (
                             <div className="text-xs font-medium text-amber-600 dark:text-amber-400">
-                              Incomplete draft: {run.incomplete_dates.length} day(s) need review before applying.
+                              {runReviewLine(run)}
                             </div>
                           )}
                         </button>

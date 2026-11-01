@@ -2782,9 +2782,40 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   repair instead of the final audit; it still counts as skipped by the
   model (`modelDaysSkipped`), so the arena marks such a run invalid
   ("filled by the cross-day repair or the final audit").
+- **Why a slot stayed open, in the product** (completeness critic of the
+  investigation, each point checked against the code):
+  - Closing report: `backend/agent/open_reasons.py` names, per open slot,
+    the qualified people not on it, how many could still be added directly
+    and how many each hard rule blocks, plus the rule blocking the most
+    (`debugInfo.agent.unsolved.open_slots[].blockers`, run log line
+    "- open: … (1 missing): 6 qualified; blocked by weekly-hours limit 4,
+    vacation 1"). Same check as the final audit (its cached results);
+    bounded to 40 slots and 10 s, skipped after an abort or when the
+    working copy is not the returned plan. The final review's digest gets
+    the same lines.
+  - Banner after a run: "Main reason per slot: weekly-hours limit (7),
+    vacation (2)" instead of the hard-coded "(vacations)".
+  - A run that finished every check but left positions open is no longer
+    called "incomplete or was stopped": the apply prompt says "The planner
+    finished, but N required position(s) remain open" (`stopped: false` in
+    the 409 detail), the run card says "Finished with open positions on N
+    day(s)". `unfinished_dates` (skipped, incomplete, checks pending) is the
+    new run-list field that tells the two apart; aborted runs and older
+    servers keep the cautious wording.
+  - Day digest: the roster shows booked/hard max of the day's ISO week per
+    person (`|8/40`, the gate's numbers, work outside the range included),
+    and the slot list no longer claims to be the tools' processing order
+    (suggest_day_blocks without slot_key takes single-candidate slots
+    first). Not measured in the arena yet.
+  - Verified unchanged: the picker's week totals already count weekend
+    days and assignments the grid hides on vacation days (all stored
+    assignments), like the gate.
 - Tests: `test_cross_day_repair.py` (solver repair mode, gate,
   integration, magnitudes, direct strategy), `test_agent_workflow_safety.py`,
   `test_agent_retry.py`, `test_agent_integration.py`, `test_arena_claude.py`
-  and `test_prompt_eval.py` adjusted; frontend `weeklyHours.test.ts`,
-  `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`.
+  and `test_prompt_eval.py` adjusted; `test_agent_harness.py` (blocking
+  rules per open slot, bounds), `test_agent_workflow_safety.py` (finished
+  run with open positions), `test_agent_tools.py` (week hours in the day
+  roster); frontend `weeklyHours.test.ts`, `clinicianSlotOptions.test.ts`,
+  `ClinicianPickerPopover.test.tsx`, `solverOutcome.test.ts`.
 - Deploy notes: no schema or data change. Version 1.74 (74).

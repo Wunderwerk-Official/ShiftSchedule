@@ -62,6 +62,7 @@ from .tools import (
 from .workflow import audit_time_budget
 # range_open_positions: the day loop has a local int named open_positions.
 from .cross_day import coverage_repair, open_positions as range_open_positions, repair_note, repair_seconds
+from .open_reasons import blocker_text, open_slot_blockers
 
 # History compaction: once the tool results in the conversation exceed this
 # budget, everything but the most recent exchanges is replaced by a stub in
@@ -606,12 +607,23 @@ def agent_solve_range(
         note lines (they end up in the run log and the run inbox) plus a
         structured block for debugInfo. Real names: browser-only data."""
         remaining_open = open_slots(ctx, best)
+        # Why each slot stayed open (which hard rules block the qualified
+        # people). Only when the working copy IS the returned plan and the
+        # run was not stopped: the check reads the final audit's results.
+        blockers: Dict[str, dict] = {}
+        returned = {(a.rowId, a.dateISO, a.clinicianId) for a in best}
+        if remaining_open and not cancel_event.is_set() and returned == set(executor.current):
+            try:
+                blockers = open_slot_blockers(executor, remaining_open, deadline=run_deadline)
+            except Exception:  # the closing report must never fail the run
+                blockers = {}
         open_entries = [
             {
                 "dateISO": g.dateISO,
                 "section": executor.section_names.get(g.section_id, g.section_id),
                 "time": f"{g.start}-{g.end}",
                 "missing": g.missing,
+                **({"blockers": blockers[g.slot_key]} if g.slot_key in blockers else {}),
             }
             for g in remaining_open
         ]
@@ -705,9 +717,10 @@ def agent_solve_range(
             "working times."
         ]
         for entry in open_entries[:12]:
+            why = f": {blocker_text(entry['blockers'])}" if "blockers" in entry else ""
             lines.append(
                 f"- open: {entry['dateISO']} {entry['section']} "
-                f"{entry['time']} ({entry['missing']} missing)"
+                f"{entry['time']} ({entry['missing']} missing){why}"
             )
         if len(open_entries) > 12:
             lines.append(f"- ... and {len(open_entries) - 12} more open slots")
@@ -1478,6 +1491,9 @@ def agent_solve_range(
                     for c in state.clinicians
                 },
                 distribute_all=not ctx.only_fill_required,
+                # Booked/max per ISO week: the gate's numbers, so the model
+                # sees who is about to run out before the week ends.
+                week_hours_by_id=executor.week_hours_lines(date_iso),
             ) + admin_block + wishes_block
             messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
             guard = ProgressGuard((tuple(sorted(executor.current)), executor.workflow.search_counter))

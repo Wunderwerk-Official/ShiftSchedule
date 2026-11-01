@@ -132,6 +132,11 @@ def test_partial_result_requires_explicit_confirmation_and_creates_backup(client
     assert detail["code"] == "partial_result"
     assert detail["removed_assignments"] == 1
     assert TUE in detail["dates"]
+    # A skipped day really is unfinished work: keep the cautious wording.
+    assert detail["stopped"] is True
+    assert detail["message"].startswith("This draft is incomplete or was stopped.")
+    listed = client.get("/v1/solve/runs").json()["runs"][0]
+    assert listed["unfinished_dates"] == [TUE]
     assert len(_load_state(USER).assignments) == 2
     accepted = client.post("/v1/solve/runs/review-run/apply", params={
         "allow_partial": True, "expected_revision": detail["revision"],
@@ -144,6 +149,34 @@ def test_partial_result_requires_explicit_confirmation_and_creates_backup(client
     restored = client.post(f"/v1/state/snapshots/{snapshots[0]['id']}/restore", json={})
     assert restored.status_code == 200
     assert len(restored.json()["assignments"]) == 2
+
+
+def test_finished_run_with_open_positions_is_not_called_stopped(client):
+    """Admin report 2026-11: a run that finished every check but left
+    positions nobody may legally fill was announced as "incomplete or was
+    stopped", suggesting the planner gave up early."""
+    state = make_app_state(slots=[make_template_slot("slot-a__mon", required_slots=2)])
+    seed_run(state, [draft()], debug={"agent": {
+        "daysSkipped": [], "daysIncomplete": [],
+        "unsolved": {"open_slots": [{"dateISO": MON, "section": "Section A",
+                                     "time": "08:00-16:00", "missing": 1}]},
+    }})
+    listed = client.get("/v1/solve/runs").json()["runs"][0]
+    assert listed["incomplete_dates"] == [MON]
+    assert listed["unfinished_dates"] == []
+    response = client.post("/v1/solve/runs/review-run/apply")
+    assert response.status_code == 409, response.text
+    detail = response.json()["detail"]
+    assert detail["code"] == "partial_result"
+    assert detail["stopped"] is False
+    assert detail["message"].startswith(
+        "The planner finished, but 1 required position(s) remain open; the run log lists each one.")
+    assert "incomplete or was stopped" not in detail["message"]
+    assert detail["message"].endswith("Apply this draft with open positions?")
+    accepted = client.post("/v1/solve/runs/review-run/apply", params={
+        "allow_partial": True, "expected_revision": detail["revision"],
+    })
+    assert accepted.status_code == 200, accepted.text
 
 
 def test_empty_aborted_result_cannot_erase_previous_plan(client):
