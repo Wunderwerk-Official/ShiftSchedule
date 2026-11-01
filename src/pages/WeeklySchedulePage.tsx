@@ -783,9 +783,10 @@ export default function WeeklySchedulePage({
     [clinicians],
   );
   // Team grid colors (plan §2.9): every person has their own color and the
-  // linked person ("That's me") gets an outline. With "Times: Stacked" the
-  // section colors stay in the lane labels; side by side shows neutral
-  // section blocks. Print/public pages keep the section look.
+  // linked person ("That's me") gets an outline. Since v1.71 the label column
+  // is colored by location (its own color or an automatic one, alternating
+  // shades per row band); side by side shows neutral section blocks.
+  // Print/public pages keep the section look.
   const linkedClinicianIndex = prefs.clinicianId
     ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
     : -1;
@@ -795,9 +796,10 @@ export default function WeeklySchedulePage({
     [clinicians, isDark],
   );
   const outlinedClinicianId = linkedClinician?.id ?? null;
+  // Without locations every row belongs to the default location: its color.
   const locationRowTints = useMemo(
-    () => (locationsEnabled ? buildLocationRowTints(locations, isDark) : undefined),
-    [locations, locationsEnabled, isDark],
+    () => buildLocationRowTints(locations, isDark),
+    [locations, isDark],
   );
   // My plan reads the raw assignments; a stable array keeps its plans memoized.
   const planAssignments = useMemo(

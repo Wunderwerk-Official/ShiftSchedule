@@ -199,14 +199,15 @@ export function tintTone(tint: LocationTint, isDark: boolean): LocationTone {
 /**
  * Tint for a Location.color: one of LOCATION_COLOR_OPTIONS, or for a custom
  * hex a slightly darker chip and an ink with ≥ 5.5:1 against the chip where
- * reachable (light ink on dark chips; always ≥ 4.5:1). Both carry a dark-mode
- * set (`dark`). Null = no tint.
+ * reachable (light ink on dark chips; always ≥ 4.5:1), and a band of the hue
+ * dark enough for white text (≥ 5:1). Both carry a dark-mode set (`dark`).
+ * Null = no tint.
  */
 export function locationTint(color?: string | null): LocationTint | null {
   const ground = normalizeHex(color);
   if (!ground) return null;
   const preset = LOCATION_COLOR_OPTIONS.find((option) => option.color === ground);
-  if (preset) return { ground, chip: preset.chip, ink: preset.ink, dark: preset.dark };
+  if (preset) return { ground, chip: preset.chip, ink: preset.ink, band: preset.band, dark: preset.dark };
   const hsl = hexToHsl(ground);
   const chip = hslToHex({ ...hsl, l: Math.max(0, hsl.l - 0.08) });
   const ink =
@@ -217,10 +218,15 @@ export function locationTint(color?: string | null): LocationTint | null {
           0.3,
           (hex) => contrastRatio(hex, chip) >= 5.5,
         );
-  return { ground, chip, ink, dark: darkLocationTone(hsl) };
+  const band = darkenUntil(
+    { h: hsl.h, s: Math.min(Math.max(hsl.s, 0.3), 0.6), l: hsl.l },
+    0.6,
+    (hex) => contrastRatio(WHITE, hex) >= 5,
+  );
+  return { ground, chip, ink, band, dark: darkLocationTone(hsl) };
 }
 
-/** Person color by clinician list index; repeats after 16. */
+/** Person color by clinician list index; repeats after PERSON_COLORS.length (20). */
 export function personColor(index: number): PersonColor {
   const count = PERSON_COLORS.length;
   const i = Number.isFinite(index) ? Math.trunc(index) : 0;

@@ -241,9 +241,9 @@ test("My plan as start page opens directly; the team pills carry person colors",
   await scope.getByRole("button", { name: "Team" }).click();
   await expect(page.getByRole("group", { name: "Color by" })).toHaveCount(0);
   const myPill = page.locator(`[data-assignment-key$="__2026-01-07__${ME}"]`).first();
-  // Person palette p01 (first clinician): strong #1D4ED8, light #DBEAFE.
-  await expect(myPill).toHaveCSS("border-top-color", "rgb(29, 78, 216)");
-  await expect(myPill).toHaveCSS("background-color", "rgb(219, 234, 254)");
+  // Person palette p01 (first clinician): strong #4338CA, light #A5B4FC.
+  await expect(myPill).toHaveCSS("border-top-color", "rgb(67, 56, 202)");
+  await expect(myPill).toHaveCSS("background-color", "rgb(165, 180, 252)");
   await expect(myPill).toHaveCSS("outline-style", "solid");
   expectNoPreferencesInState(api.statePosts);
   expect(api.errors).toEqual([]);
@@ -301,35 +301,45 @@ test("signing out first sends a preference change still waiting to be saved, wit
   expect(api.errors).toEqual([]);
 });
 
-test("a location color is saved with the calendar and tints the team rows", async ({ page }) => {
+test("a location color is saved with the calendar and colors the team rows", async ({ page }) => {
   const api = await openCalendar(page);
-  const sand = 'background-color: rgb(238, 223, 196)'; // #EEDFC4
   const grid = page.locator('[data-schedule-grid="true"]');
-  await expect(grid.locator(`[style*="${sand}"]`)).toHaveCount(0);
+  const firstLabel = grid.locator("[data-label-shade]").first();
+  const band = grid.locator('[data-location-band="true"]').first();
+  // Without a color of its own the first location is blue (Auto): label
+  // ground #DBEAFE, band #1D4ED8 with the name in white.
+  await expect(firstLabel).toHaveCSS("background-color", "rgb(219, 234, 254)");
+  await expect(band).toHaveText("Berlin");
+  await expect(band).toHaveCSS("color", "rgb(255, 255, 255)");
+  await expect(grid.locator('div.row:has([data-location-band="true"])').first()).toHaveCSS(
+    "background-color",
+    "rgb(29, 78, 216)",
+  );
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Location color for Berlin" }).click();
+  await page.getByRole("button", { name: "Location color for Berlin: Auto (Blue)" }).click();
   await page.getByRole("dialog", { name: "Location color for Berlin" }).getByRole("button", { name: "Sand" }).click();
   await expect.poll(() => api.state().locations?.[0]?.color).toBe("#EEDFC4");
 
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(grid).toBeVisible();
-  await expect(grid.locator(`[style*="${sand}"]`).first()).toBeVisible();
-  // A row label cell gets the ground, its location line the ink (#5A3E0E).
-  const locationLine = grid.locator('span[title="Berlin"]').first();
-  await expect(locationLine).toHaveCSS("color", "rgb(90, 62, 14)");
-  await expect(grid.locator('div.row:has(span[title="Berlin"])').first()).toHaveCSS(
+  // Sand: the first row band's labels get the ground #EEDFC4 and the ink
+  // #5A3E0E, the band #7A5E2E; the next row band the stronger #E2C99E.
+  await expect(firstLabel).toHaveCSS("background-color", "rgb(238, 223, 196)");
+  await expect(firstLabel.locator("span").first()).toHaveCSS("color", "rgb(90, 62, 14)");
+  await expect(grid.locator('[data-label-shade="#E2C99E"]').first()).toBeVisible();
+  await expect(grid.locator('div.row:has([data-location-band="true"])').first()).toHaveCSS(
     "background-color",
-    "rgb(238, 223, 196)",
+    "rgb(122, 94, 46)",
   );
 
   const colored = api.statePosts.at(-1)!;
   expect(colored.locations).toEqual([{ id: "loc-default", name: "Berlin", color: "#EEDFC4" }]);
 
-  // "None" removes the color again; both saves differ in nothing but the color.
+  // "Auto" removes the color again; both saves differ in nothing but the color.
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Location color for Berlin" }).click();
-  await page.getByRole("dialog", { name: "Location color for Berlin" }).getByRole("button", { name: "None" }).click();
+  await page.getByRole("button", { name: "Location color for Berlin: Sand" }).click();
+  await page.getByRole("dialog", { name: "Location color for Berlin" }).getByRole("button", { name: "Auto" }).click();
   await expect.poll(() => api.state().locations?.[0]?.color ?? null).toBeNull();
   const cleared = api.statePosts.at(-1)!;
   expect(cleared.locations?.map(({ id, name }) => ({ id, name }))).toEqual([{ id: "loc-default", name: "Berlin" }]);

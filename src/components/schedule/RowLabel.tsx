@@ -1,11 +1,14 @@
+import type { CSSProperties } from "react";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { cx } from "../../lib/classNames";
 import { compactTimeLabel, type StackedRowMeta } from "../../lib/stackedTeamLayout";
-import type { LocationRowTint } from "./teamColors";
 type RowLabelProps = {
   row: ScheduleRow;
-  /** Colored location: the location name uses the tint's text color. */
-  tint?: LocationRowTint;
+  /**
+   * Text color on a location-colored label (team grid): all of the label's
+   * text takes it instead of the slate defaults.
+   */
+  ink?: string;
   /** Stacked layout: one time band of a class row (name on its first band). */
   stacked?: StackedRowMeta;
 };
@@ -17,9 +20,12 @@ const LABEL_FONT = { fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif'
 // The location is named by the band above the rows, not repeated here. When
 // some days of the lane belong to another section, a "+N" badge lists them
 // (the cells name no section).
-function StackedRowLabel({ meta }: { meta: StackedRowMeta }) {
+function StackedRowLabel({ meta, ink }: { meta: StackedRowMeta; ink?: string }) {
   const others = meta.otherSections ?? [];
   const othersTitle = others.length > 0 ? `Other days: ${others.join(" · ")}` : undefined;
+  // On a location-colored label every text takes the location's ink (an
+  // inline color beats the slate classes in both themes).
+  const inkStyle: CSSProperties | undefined = ink ? { color: ink } : undefined;
   return (
     <div className="flex h-full flex-col justify-center gap-0.5 px-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-3">
       <div className="min-w-0 max-w-[128px] sm:max-w-[160px]" style={LABEL_FONT}>
@@ -28,12 +34,16 @@ function StackedRowLabel({ meta }: { meta: StackedRowMeta }) {
             // Two lines before an ellipsis: long row names stay readable.
             className="line-clamp-2 break-words text-[11px] font-semibold uppercase leading-4 tracking-wide text-slate-800 dark:text-slate-50"
             title={meta.groupLabel}
+            style={inkStyle}
           >
             {meta.groupLabel}
           </span>
         ) : null}
         {meta.title || others.length > 0 ? (
-          <span className="flex min-w-0 items-center gap-1 text-[11px] leading-4 text-slate-600 dark:text-slate-50">
+          <span
+            className="flex min-w-0 items-center gap-1 text-[11px] leading-4 text-slate-600 dark:text-slate-50"
+            style={inkStyle}
+          >
             {meta.title ? (
               <span className="line-clamp-2 break-words" title={meta.title}>
                 {meta.title}
@@ -43,6 +53,7 @@ function StackedRowLabel({ meta }: { meta: StackedRowMeta }) {
               <span
                 className="shrink-0 rounded-full bg-white/70 px-1 text-[10px] font-semibold leading-4 text-slate-600 dark:bg-slate-950/50 dark:text-slate-50"
                 title={othersTitle}
+                style={inkStyle}
               >
                 +{others.length}
                 <span className="sr-only"> ({othersTitle})</span>
@@ -52,7 +63,10 @@ function StackedRowLabel({ meta }: { meta: StackedRowMeta }) {
         ) : null}
       </div>
       {meta.timeLabel ? (
-        <span className="shrink-0 whitespace-nowrap text-[11px] font-medium leading-4 tabular-nums text-slate-600 dark:text-slate-50">
+        <span
+          className="shrink-0 whitespace-nowrap text-[11px] font-medium leading-4 tabular-nums text-slate-600 dark:text-slate-50"
+          style={inkStyle}
+        >
           {compactTimeLabel(meta.timeLabel)}
         </span>
       ) : null}
@@ -60,8 +74,8 @@ function StackedRowLabel({ meta }: { meta: StackedRowMeta }) {
   );
 }
 
-export default function RowLabel({ row, tint, stacked }: RowLabelProps) {
-  if (stacked) return <StackedRowLabel meta={stacked} />;
+export default function RowLabel({ row, ink, stacked }: RowLabelProps) {
+  if (stacked) return <StackedRowLabel meta={stacked} ink={ink} />;
   const showVacationNote = row.id === "pool-vacation";
   const locationLabel = row.locationName ?? "";
   const rowLabel = row.rowBandLabel?.trim() ?? "";
@@ -77,7 +91,10 @@ export default function RowLabel({ row, tint, stacked }: RowLabelProps) {
           <span
             className="block min-w-0 truncate text-[11px] font-normal uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs"
             title={rowLabel}
-            style={{ fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' }}
+            style={{
+              fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif',
+              ...(ink ? { color: ink, fontWeight: 600 } : null),
+            }}
           >
             {rowLabel}
           </span>
@@ -86,7 +103,7 @@ export default function RowLabel({ row, tint, stacked }: RowLabelProps) {
             title={locationLabel}
             style={{
               fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif',
-              ...(tint?.text ? { color: tint.text } : null),
+              ...(ink ? { color: ink, opacity: 0.8 } : null),
             }}
           >
             {locationLabel}

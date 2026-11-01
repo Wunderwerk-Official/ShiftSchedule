@@ -196,12 +196,15 @@ npx playwright show-report
 - [x] `src/lib/userPreferences.test.ts` — normalization, debounce, no PUT before a successful GET, flush on hide
 - [x] `src/pages/usePlanScope.test.ts`, `scrollToTeamAssignment.test.ts`
 - [x] `src/components/myPlan/*.test.tsx` — views, header chrome, shift detail, flows, keyboard shortcuts
-- [x] `TeamPlanHeader.test.tsx`, `LocationColorPicker.test.tsx`
+- [x] `TeamPlanHeader.test.tsx`, `LocationColorPicker.test.tsx` (Auto + presets, v1.71)
+- [x] `src/lib/locationColors.test.ts` — automatic location colors in location order, chosen colors never handed out twice (v1.71)
+- [x] `src/lib/myPlan/colors.test.ts` — person palette: fills ≥ 15 ΔE00 apart among the first 12, ≥ 9 among all 20, readable text in both themes; location presets: readable label shades, white-text band (v1.71)
+- [x] `ScheduleGrid.test.tsx` — label shades alternate per row band and restart per location; stacked lanes share their row band's shade; band in the location's strong color (v1.71)
 
 **E2E Tests** (`e2e/my-plan.spec.ts`, mocked API, in CI):
 - [x] Link yourself, change views, jump back into the team plan
 - [x] My plan as start page; the team pills carry person colors (no "Color by" switch since v1.69)
-- [x] A location color is saved with the calendar and tints the team rows
+- [x] Without a color the first location is blue (Auto); a picked color is saved with the calendar and colors the label shades and the band; Auto clears it (v1.71)
 - [x] Phone: the scope switch leads to My plan and hides the planning panels
 
 ### 3.10 Team page regressions (v1.64)

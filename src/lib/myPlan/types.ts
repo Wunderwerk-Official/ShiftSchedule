@@ -25,9 +25,10 @@ export type LocationTone = { ground: string; chip: string; ink: string };
 /**
  * Location tint: light ground for the day, darker chip, chip text; `dark`
  * holds the dark-mode set (SPEC B7: deep ground, mid chip, light ink). Pick
- * the theme's set with tintTone(tint, isDark).
+ * the theme's set with tintTone(tint, isDark). `band` is the strong color of
+ * the location band in the team grid (white text in both themes).
  */
-export type LocationTint = LocationTone & { dark: LocationTone };
+export type LocationTint = LocationTone & { band: string; dark: LocationTone };
 
 /** Theme-resolved person color: circle/border, pill fill, pill text, initials text. */
 export type PersonTone = { strong: string; light: string; ink: string; onStrong: string };

@@ -55,7 +55,7 @@ Top bar
 
 Schedule card
 - Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" (classic grid only, since v1.65), start-page star and Views menu. The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
-- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. See the v1.65 and v1.66 sections at the end.
+- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). See the v1.65, v1.66 and v1.71 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
 - On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
@@ -104,7 +104,7 @@ Clinic sheet layout (Klinik-Monatslayout)
 - Month-scoped `buildRenderedAssignmentMap` (do NOT reuse the week-scoped map — pool synthesis is day-bound). Desktop only (mobile keeps the daily view); week-scoped badges and the Publish toggle are hidden in sheet mode; print/PDF/public pages always use the classic grid. The sheet stays paper-light in dark mode by design.
 
 Pills
-- Team grid (since v1.69 always): person colors — light fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Print/public pages keep the section look (blue pill).
+- Team grid (since v1.69 always): person colors — fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Since v1.71 the palette has 20 colors in two tones (light fill + dark text, or saturated fill + white text), ordered so the first 12 fills differ by ≥ 15 ΔE00 (all 20 by ≥ 9). Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
@@ -142,7 +142,7 @@ Locations
 - Manage locations inside the calendar template (top-left "+ Location" button).
 - Location order uses a dropdown; names are edited inline.
 - Delete location (confirm) is allowed even for the default location; the next location becomes the new default (`loc-default`) and slot locationIds are updated.
-- Location color (v1.64, optional): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: slate, sand, sage, lilac, or none). Stored as `Location.color` (`#RRGGBB`); presentation only — tints the location's rows in the team grid and the days in My plan, and is excluded from the planning fingerprint.
+- Location color (v1.64; Auto since v1.71): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: blue, green, amber, violet, rose, teal, orange and the muted slate, sand, sage, lilac; or Auto). Stored as `Location.color` (`#RRGGBB`; Auto stores nothing); presentation only and excluded from the planning fingerprint. The team grid colors every location: its own color, or with Auto the next free automatic color in location order (`src/lib/locationColors.ts`); its row bands' labels alternate between two shades and its separator row is a band in its strong color. My plan tints days by picked colors only.
 
 Pools
 - Rename pool rows (Rest Day, Vacation). No deletion.
@@ -1480,11 +1480,12 @@ Frontend
 - `src/components/schedule/AutomatedPlanningPanel.tsx` (planning panel: date range, Run, Reset → Unlocked shifts / Unlocked shifts and rest days)
 - `src/components/schedule/AgentSettingsPanel.tsx` (v1.64, extracted from SettingsView: AI provider/model, endpoint, API keys, model check, chat test, budget)
 - `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan, Times, start-page star, Views)
-- `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints)
+- `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints; v1.71: every location, two label shades + band, `labelShade`)
 - `src/components/schedule/AssignmentLockButton.tsx` (v1.69: the one lock of a shift, `LockGlyph`)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment` = locked; v1.69 `toggleAssignmentLock`)
 - `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — time lanes per class row, one grid column per day, label meta)
-- `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder)
+- `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder; v1.71: Auto + 11 presets)
+- `src/lib/locationColors.ts` (v1.71: `resolveLocationColors` — picked color or the next free automatic one in location order; `autoLocationColor` for the picker)
 - `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while the start view is resolved)
 - `src/components/ui/ConfirmDialog.tsx` (confirm dialog; Enter acts on the focused button)
 - `src/api/client.ts`
@@ -1494,7 +1495,7 @@ Frontend
 - `src/lib/myPlan/` (v1.64, pure and tested: one person's plan — shifts split at midnight, previous-day nights, start-day hours, overlap lanes, rest/vacation bands, location tint, coworkers, next shift, rest before, month sheet, colors, labels; public API in `index.ts`)
 - `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker`, `LinkClinicianCard`, `SavedViewsMenu`, `StartPageStar`, `NextUpChip`)
 - `src/lib/userPreferences.ts` (`useUserPreferences`: loads `/v1/me/preferences`, optimistic updates, debounced save, never PUTs before a successful GET, flushes on pagehide)
-- `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS`, person palette `PERSON_COLORS`)
+- `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS` with `band`, `AUTO_LOCATION_COLOR_IDS`, person palette `PERSON_COLORS` with `tone`)
 - `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan, start view applied once, `scopeReady`)
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
@@ -2477,3 +2478,50 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   (measured), Opus 4.8 and Haiku 4.5 estimated from their prices. The old
   "per run" ranges understated week runs (Opus 5.5: about $5–6 per week).
 - No code path changed; version 1.70 (70).
+
+## v1.71 — Location-colored labels and distinct person colors
+
+- **The label column says where.** In the team grid (both time layouts) the
+  label cells are colored by location, like a "plan for all": every
+  location has a color, its row bands (modalities: MR, CT, Echo, …)
+  alternate between a light and a stronger shade of it (`ground` / `chip`,
+  counted per location in row order; the time lanes of one row band share
+  their shade, `labelShade` in `teamColors.ts`, `bandIndexByRowId` in
+  `ScheduleGrid`), and the location separator becomes a band in its strong
+  color (`band`) with the name in white capitals. Label text takes the
+  location's `ink` (≥ 5.5:1 on both shades, ≥ 7:1 in dark mode). This
+  replaces the v1.66 section tint of the stacked labels in the team grid;
+  print, PDF and public pages (no `locationRowTints`) keep the section
+  colors, cells and pills are unchanged.
+- **Every location has a color.** `Location.color` stays optional; without
+  one ("Auto", the default and what "None" was) the team grid takes the next
+  automatic color in location order — blue, green, amber, violet, rose,
+  teal, orange, slate — skipping colors other locations picked
+  (`resolveLocationColors`, `src/lib/locationColors.ts`). Nothing is stored
+  for Auto, so calendars keep their revision. With locations switched off
+  every row belongs to the default location and takes its color. The
+  template picker offers Auto (showing the color it currently means, dashed
+  ring) plus seven vivid presets and the four muted ones of v1.64. Each
+  preset carries a `band`; `locationTint` derives one for other colors
+  (white text ≥ 5:1). My plan still tints only picked colors.
+- **Person colors that stay apart.** The 16-color palette had near-twins
+  (violet/purple ΔE00 ≈ 3, emerald/green fills ≈ 2.4, three oranges). The new
+  `PERSON_COLORS` has 20 entries in two tones: "light" (200/300 fill, dark
+  text, 700 circle) and "dark" (600–800 fill, white text, darker circle),
+  chosen by a search over the Tailwind palette and ordered so any two of the
+  first 12 fills differ by ≥ 15 ΔE00 and all 20 by ≥ 9 (also checked under
+  simulated red-green color blindness while choosing). In dark mode the
+  tones swap (light people: deep fill, light text; dark people: bright fill,
+  dark text). Red/rose stay out (rule violations). Colors repeat after 20
+  people, still by clinician list order; My plan avatars use the same
+  palette.
+- Tests: `src/lib/locationColors.test.ts` (new), `src/lib/myPlan/colors.test.ts`
+  (CIEDE2000 helper checked against the Sharma et al. reference pairs;
+  palette distance, tones and contrast; preset shades and bands),
+  `ScheduleGrid.test.tsx` (automatic color, own color, alternation per row
+  band restarting per location, stacked lanes share a shade, band),
+  `LocationColorPicker.test.tsx` (Auto), `e2e/my-plan.spec.ts` (Auto blue →
+  Sand → Auto).
+- Deploy notes: no schema or data change. After the deploy every team grid
+  shows location colors (uncolored locations get automatic ones) and every
+  person a new color.
