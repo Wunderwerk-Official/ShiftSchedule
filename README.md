@@ -5,7 +5,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 ## Features
 - Weekly schedule view with drag-and-drop within the same day
 - "My plan" individual view next to the team plan (Team | My plan switch): one person's shifts as day, week or month, with the date on top or on the left, overnight shifts split at midnight, absences, coworkers per shift, and location tints
-- Per-user preferences ("I am" link, saved views, start page per device class) stored per login via `GET/PUT /v1/me/preferences`, outside the shared calendar state; a PUT stores only the top-level keys it sends and keeps the rest, so a device cannot undo another device's changes to other keys (a key such as `savedViews` is replaced whole)
+- Per-user preferences ("I am" link, My-plan range and date on top / left per device class, Times) stored per login via `GET/PUT /v1/me/preferences`, outside the shared calendar state; a PUT stores only the top-level keys it sends and keeps the rest, so a device cannot undo another device's changes to other keys. The calendar always opens in the team plan
 - Compact team week: a day's times stacked as rows ("Times: Stacked", default; colored row labels, cells with people only) or side by side as columns
 - Person colors in the team week (every clinician their own color, your own entries outlined) and optional location colors (presentation only; planning is unaffected)
 - One lock for every shift: names you place or move by hand are locked, the planner's start unlocked; locked shifts survive replanning, applying a plan and Reset

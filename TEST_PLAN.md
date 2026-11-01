@@ -200,7 +200,9 @@ npx playwright show-report
 
 **E2E Tests** (`e2e/my-plan.spec.ts`, mocked API, in CI):
 - [x] Link yourself, change views, jump back into the team plan
-- [x] My plan as start page; the team pills carry person colors (no "Color by" switch since v1.69)
+- [x] The calendar always opens in Team, even with a stored My-plan start view (v1.71: start-page star and saved views removed; opening sends no preferences PUT); the team pills carry person colors (no "Color by" switch since v1.69)
+- [x] "Not <name>? Change who you are" (last entry of the person picker) unlinks the account (PUT `clinicianId: null`) and My plan asks "Who are you in the plan?" again (v1.71)
+- [x] My plan chosen by hand before the calendar has loaded shows "Loading calendar…" instead of calling the link stale, then the plan
 - [x] A location color is saved with the calendar and tints the team rows
 - [x] Phone: the scope switch leads to My plan and hides the planning panels
 

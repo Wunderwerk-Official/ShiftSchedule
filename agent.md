@@ -54,7 +54,7 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" (classic grid only, since v1.65), start-page star and Views menu. The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.71 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits). The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.71). See the v1.64 and v1.71 sections at the end.
 - Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. See the v1.65 and v1.66 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
@@ -589,15 +589,15 @@ type ViewStartAt = "today" | "nextShift" | "weekStart";  // relative anchor, nev
 type SavedView = ViewConfig & { id: string /* 1-64 */; name: string /* 1-60 */; startAt: ViewStartAt /* default "today" */ };
 type UserPreferences = {
   version: number;                          // 1
-  clinicianId: string | null;               // "I am …" link (max 200 chars, blank = null)
+  clinicianId: string | null;               // "I am …" link (max 200 chars, blank = null); "Not <name>? Change who you are" sets null (v1.71)
   orientationByRange: Record<PlanRange, Orientation>;        // computers; default all "top"
   orientationByRangeMobile: Record<PlanRange, Orientation>;  // phones; default week "left" (agenda)
   myPlanRange: PlanRange;                   // computers; default "week"
   myPlanRangeMobile: PlanRange;             // phones; default "week"
   teamTimeLayout: "columns" | "stacked";    // v1.65; default "stacked" (teamColorBy retired in v1.69, ignored when stored)
-  savedViews: SavedView[];                  // max 12, unique ids
-  startViewDesktop: ViewConfig | null;      // start page on computers (no startAt)
-  startViewMobile: ViewConfig | null;       // start page on phones (no startAt)
+  savedViews: SavedView[];                  // max 12, unique ids; stored but unused by the UI since v1.71
+  startViewDesktop: ViewConfig | null;      // was the start page on computers; stored but unused by the UI since v1.71
+  startViewMobile: ViewConfig | null;       // was the start page on phones; stored but unused by the UI since v1.71
 };
 ```
 - Saving preferences never changes the calendar revision or a planning fingerprint; the row is deleted together with the account. An unreadable stored row is ignored (defaults returned) instead of locking the user out.
@@ -1480,23 +1480,23 @@ Frontend
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
 - `src/components/schedule/AutomatedPlanningPanel.tsx` (planning panel: date range, Run, Reset → Unlocked shifts / Unlocked shifts and rest days)
 - `src/components/schedule/AgentSettingsPanel.tsx` (v1.64, extracted from SettingsView: AI provider/model, endpoint, API keys, model check, chat test, budget)
-- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan, Times, start-page star, Views)
+- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan switch, Times; star and Views removed in v1.71)
 - `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints)
 - `src/components/schedule/AssignmentLockButton.tsx` (v1.69: the one lock of a shift, `LockGlyph`)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment` = locked; v1.69 `toggleAssignmentLock`)
 - `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — time lanes per class row, one grid column per day, label meta)
 - `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder)
-- `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while the start view is resolved)
+- `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while My plan waits for this user's calendar)
 - `src/components/ui/ConfirmDialog.tsx` (confirm dialog; Enter acts on the focused button)
 - `src/api/client.ts`
 - `src/lib/shiftRows.ts` (weeklyTemplate normalization, colBand safeguards, legacy shiftRowId helpers)
 - `src/lib/schedule.ts` (rendered assignment map, time intervals, Rest Day pool logic)
 - `src/lib/solverStats.ts` (live solver stats calculation: coverage, preferences, time windows, on-call rest, working hours)
 - `src/lib/myPlan/` (v1.64, pure and tested: one person's plan — shifts split at midnight, previous-day nights, start-day hours, overlap lanes, rest/vacation bands, location tint, coworkers, next shift, rest before, month sheet, colors, labels; public API in `index.ts`)
-- `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker`, `LinkClinicianCard`, `SavedViewsMenu`, `StartPageStar`, `NextUpChip`)
+- `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker` (incl. "Not <name>? Change who you are", v1.71), `LinkClinicianCard`, `NextUpChip`; `SavedViewsMenu` / `StartPageStar` removed in v1.71)
 - `src/lib/userPreferences.ts` (`useUserPreferences`: loads `/v1/me/preferences`, optimistic updates, debounced save, never PUTs before a successful GET, flushes on pagehide)
 - `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS`, person palette `PERSON_COLORS`)
-- `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan, start view applied once, `scopeReady`)
+- `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan; since v1.71 plain page state that always starts in "team", stored start views ignored)
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
@@ -2512,6 +2512,14 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   via "That's me". `PlanScopeSwitch` takes `meName`, so the own plan's segment
   has the tooltip "My plan · <name>" and the accessible name "My plan (<name>)"
   (team header and My plan). While linked, `PersonPicker` ends with
-  "Not you? Change who you are" (`onChangeLink`); `MyPlanView` then saves
+  "Not <name>? Change who you are" (`onChangeLink`, `changeLinkLabel`: the
+  linked person's name without titles, visible because phones have no
+  hover tooltip; "Not you? …" without a name); `MyPlanView` then saves
   `clinicianId: null` and drops the viewed person, so "Who are you in the
-  plan?" asks again. HelpView §12 explains both.
+  plan?" asks again. HelpView §12 explains both and quotes the label with
+  "<your name>" (`HelpView.test.tsx` checks it against `changeLinkLabel`).
+- `e2e/my-plan.spec.ts`: the star test became "the calendar always opens in
+  Team, even with a stored My-plan start view" (no PUT on open, no My-plan
+  flash, person colors on the team pills); the start-page wait test became
+  "My plan waits for the calendar" (switching by hand while GET /v1/state is
+  held); new: the person-picker footer unlinks (PUT `clinicianId: null`).

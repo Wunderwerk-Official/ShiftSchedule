@@ -212,33 +212,55 @@ test("My plan: link yourself, change views and jump back into the team plan", as
   expect(api.errors).toEqual([]);
 });
 
-test("My plan as start page opens directly; the team pills carry person colors", async ({ page }) => {
-  const api = await openCalendar(page);
-  // Link + make My plan the start page on computers via the star.
-  await page.getByRole("group", { name: "Choose plan" }).getByRole("button", { name: "My plan" }).click();
+test("the calendar always opens in Team, even with a stored My-plan start view; the team pills carry person colors", async ({ page }) => {
+  // A start view saved before v1.71 (the star is gone) is stored but ignored.
+  const api = await openCalendar(page, {
+    initialPrefs: { startViewDesktop: { scope: "me", range: "week", orientation: "top" } },
+  });
+  const scope = page.getByRole("group", { name: "Choose plan" });
+  await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Start page on computers" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Views", exact: true })).toHaveCount(0);
+
+  // Link via "That's me".
+  await scope.getByRole("button", { name: "My plan" }).click();
   await page.getByLabel("I am", { exact: true }).selectOption({ label: "Galileo Galilei" });
   await page.getByRole("button", { name: "That's me" }).click();
-  await page.getByRole("button", { name: "Start page on computers" }).click();
-  await expect.poll(() => api.prefs().startViewDesktop?.scope).toBe("me");
+  await expect.poll(() => api.prefs().clinicianId).toBe(ME);
+  await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
+  // The circle's initials are named in the tooltip and the accessible name.
+  const myPlan = scope.getByRole("button", { name: "My plan (Galileo Galilei)" });
+  await expect(myPlan).toHaveAttribute("title", "My plan · Galileo Galilei");
+  await expect(myPlan).toContainText("GG");
+  const putsBeforeReload = api.prefsPuts.length;
 
-  // Reload: the start view is applied once the preferences have loaded, and
-  // the team grid is never painted first (the calendar waits for them).
+  // Reload: still Team (no My-plan flash once the preferences arrive), and
+  // opening the app writes nothing.
   await page.addInitScript(() => {
     new MutationObserver(() => {
-      if (document.querySelector('[data-schedule-grid="true"]')) {
-        (window as unknown as { teamGridSeen?: boolean }).teamGridSeen = true;
+      if (document.querySelector('[aria-label="Week, days side by side"]')) {
+        (window as unknown as { myPlanSeen?: boolean }).myPlanSeen = true;
       }
     }).observe(document, { childList: true, subtree: true });
   });
+  const prefsLoaded = page.waitForResponse(
+    (response) => response.url().endsWith("/v1/me/preferences") && response.request().method() === "GET",
+  );
   await page.reload();
-  await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
-  const teamGridSeen = await page.evaluate(() => (window as unknown as { teamGridSeen?: boolean }).teamGridSeen);
-  expect(teamGridSeen ?? false).toBe(false);
+  await prefsLoaded;
+  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  // Longer than the 600 ms save delay: a start view applied late would show
+  // up here (scope switch or a PUT).
+  await page.waitForTimeout(900);
+  await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  const myPlanSeen = await page.evaluate(() => (window as unknown as { myPlanSeen?: boolean }).myPlanSeen);
+  expect(myPlanSeen ?? false).toBe(false);
+  expect(api.prefsPuts.slice(putsBeforeReload)).toEqual([]);
+  expect(api.prefs().startViewDesktop?.scope).toBe("me");
 
   // Team plan: people always have their own color (no "Color by" switch
   // since v1.69); my pills get my person color and the outline.
-  const scope = page.getByRole("group", { name: "Choose plan" });
-  await scope.getByRole("button", { name: "Team" }).click();
   await expect(page.getByRole("group", { name: "Color by" })).toHaveCount(0);
   const myPill = page.locator(`[data-assignment-key$="__2026-01-07__${ME}"]`).first();
   // Person palette p01 (first clinician): strong #1D4ED8, light #DBEAFE.
@@ -249,7 +271,27 @@ test("My plan as start page opens directly; the team pills carry person colors",
   expect(api.errors).toEqual([]);
 });
 
-test("My plan as start page waits for the calendar instead of calling the link stale", async ({ page }) => {
+test("'Not <name>? Change who you are' unlinks the account, so My plan asks again", async ({ page }) => {
+  const api = await openCalendar(page, { initialPrefs: { clinicianId: ME } });
+  const scope = page.getByRole("group", { name: "Choose plan" });
+  await scope.getByRole("button", { name: "My plan (Galileo Galilei)" }).click();
+  await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
+
+  // The arrow next to the switch: its last entry names the linked person.
+  await page.getByRole("button", { name: "Open the plan of another person" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose person" });
+  await picker.getByRole("button", { name: "Not Galileo Galilei? Change who you are" }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toBeVisible();
+  await expect.poll(() => api.prefsPuts).toEqual([{ clinicianId: null }]);
+  expect(api.prefs().clinicianId).toBeNull();
+  // The circle is gone with the link.
+  await expect(scope.getByRole("button", { name: "My plan", exact: true })).toBeVisible();
+  expectNoPreferencesInState(api.statePosts);
+  expect(api.errors).toEqual([]);
+});
+
+test("My plan waits for the calendar instead of calling the link stale", async ({ page }) => {
   // Real ids are not among the built-in demo people the page holds until
   // GET /v1/state answers (the e2e default state reuses the demo ids).
   const REAL = "clinician-real-1";
@@ -266,16 +308,17 @@ test("My plan as start page waits for the calendar instead of calling the link s
   const api = await openCalendar(page, {
     waitForGrid: false,
     initialState: state,
-    initialPrefs: {
-      clinicianId: REAL,
-      startViewDesktop: { scope: "me", range: "week", orientation: "top" },
-    },
+    initialPrefs: { clinicianId: REAL },
     stateGate,
   });
 
-  // Preferences are in (start page: My plan), the calendar is not: only the
-  // placeholder, no "Who are you" card listing the demo people.
+  // Preferences are in (linked to REAL), the calendar is not. The team plan
+  // never waits; switching to My plan by hand shows only the placeholder, no
+  // "Who are you" card listing the demo people.
   await prefsAnswered;
+  const scope = page.getByRole("group", { name: "Choose plan" });
+  await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await scope.getByRole("button", { name: "My plan" }).click();
   await page.waitForTimeout(300);
   await expect(page.getByText("Loading calendar…")).toBeAttached();
   await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toHaveCount(0);
@@ -284,6 +327,7 @@ test("My plan as start page waits for the calendar instead of calling the link s
   releaseState();
   await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^CT, / })).toHaveCount(1);
+  await expect(page.getByText("Loading calendar…")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toHaveCount(0);
   expect(api.prefsPuts).toEqual([]);
   expect(api.errors).toEqual([]);
