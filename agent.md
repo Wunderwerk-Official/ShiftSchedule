@@ -3518,8 +3518,11 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   100 template slots the top sections tied, and it ranked the shifts of one
   section among each other. Classic candidates of `suggest_day_blocks` sort
   by the section vector after their block first (the balanced profile sorts
-  by `quality_after` already). `analyze_bottlenecks`, `list_open_slots` and
-  the direct strategy (arena) use the rank too. The prompts' quality ladder,
+  by `quality_after` already). `suggest_rescue_moves` also offers a 2-move
+  batch without a substitute when the vacated slot ranks lower than the
+  stuck one (`substitute: null`, `leaves_open`): under the strict order that
+  is an improvement, and no tool proposed it before. `analyze_bottlenecks`,
+  `list_open_slots` and the direct strategy (arena) use the rank too. The prompts' quality ladder,
   the arena's quality guidance and the WORSE warning name the rule.
 - **Cross-day repair**: `solver._solve_repair_lexicographic` replaces v1.80's
   prefix bounds and weighted objective. A completion solve (hinted variables
@@ -3551,14 +3554,22 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   s); four weeks (120 s) 95 -> 55, 39 -> 29 and 64 -> 61 open, the top 12
   section tiers fully staffed in all three (v1.80: 37, 24 and 48 open, with
   gaps in the top tiers). Within 120 s not every 4-week stage is proven
-  optimal, and the change cap (60) binds there.
+  optimal, and the change cap (60) binds there. The order is now decisive:
+  in the arena fixture On-call duty is the 5th section, so its duties
+  outrank every section below it.
 - **Not changed**: the classic CP-SAT optimizer (non-agent mode) still
-  weights slots by `order_weight`, and the heuristic seed is unchanged.
+  weights slots by `order_weight`; the basic plan without AI (heuristic seed
+  and fallback) does not follow the order; the processing order keeps "a
+  slot only one person can take first" (it protects coverage; the strict
+  gate and the repair settle what it gets wrong).
 - Tests: `test_cross_day_repair.py` (two lower slots unstaffed for one
   higher, freed hours to the higher slot, a pure upward trade, one vector
   entry per section summing to the count, first-difference helper; the v1.80
   section-order tests hold), `test_agent_planning_workflow.py` (block
-  candidates of both profiles in strict order), `test_agent_tools.py`
+  candidates of both profiles in strict order; the rescue moves a person up
+  without a substitute, `leaves_open`; the shallow-rescue and paginated
+  fixtures rank the stuck section lowest so they still have no rescue),
+  `test_agent_tools.py`
   (processing order: one rank per section, earlier start first),
   `test_agent_quality_profile.py` (tuple length and fields, version 4); the
   positional tuple assertions in `test_agent_planning_workflow.py`,
