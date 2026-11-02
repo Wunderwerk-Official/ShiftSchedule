@@ -3878,6 +3878,8 @@ export default function WeeklySchedulePage({
         clinicians={clinicians}
         assignments={renderedAssignmentList}
         weeklyTemplate={weeklyTemplate}
+        scheduleRows={scheduleRows}
+        isDark={isDark}
       />
 
       <ClinicianEditModal

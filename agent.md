@@ -193,17 +193,12 @@ Clinician Editor (modal)
 - Week solver nudges total assigned minutes toward `workingHoursPerWeek` within the tolerance (manual assignments count toward totals).
 - Per-clinician working hours tolerance: stored as `clinician.workingHoursToleranceHours` (default 5 hours). Each clinician can have a different tolerance for how much their assigned hours can deviate from their contract hours.
 
-Working Hours Overview
-- Dashboard panel opens a full-screen modal showing yearly working hours for all clinicians.
-- Year selector with navigation buttons; "Today" button jumps to current year/week.
-- Each clinician shows: name, contract hours (e.g., "40h/w"), weekly hours worked, yearly total.
-- If contract hours are set, also shows: Expected (fractional for partial weeks), Difference, Cumulative.
-- Weeks span Jan 1 to Dec 31 with partial weeks at year boundaries (e.g., if Jan 1 is Thursday, first week has 4 days).
-- Expected hours for partial weeks are calculated as `expectedWeeklyHours * (daysInWeek / 7)`.
-- Color coding: emerald (within ±2h of expected), amber (under by >2h), rose (over by >2h).
-- Pool assignments (rest day, vacation) do not count toward working hours.
-- Slot duration comes from the weekly template; defaults to 8 hours if not set.
-- Current week is highlighted with sky-blue background; sticky header + Total column.
+Working Hours Overview (reworked in v1.78)
+- Dashboard panel opens a full-screen modal with a "Week | Year" switch; every opening starts at this week's week view. Calculations: `src/lib/workingHours.ts` (pure), views `WorkingHoursWeekView.tsx` / `WorkingHoursYearView.tsx`, shared bits `WorkingHoursParts.tsx`.
+- Week view: one row per person (initials in the team color, contract "41 h/wk"), hours per day (Vac / Rest chips, the shifts in the tooltip), Planned, Target, Difference (signed + bar around the target with the tolerance band) and the year's running Balance through this week. Team sums on top (planned, target, difference, under / on / over counts) and per day in the footer. Sort: team order or most under first. Week navigation crosses year boundaries; Today returns to this week.
+- Year view: one row per person, one cell per week (W = ISO week number), tinted under (amber) / on (emerald) / over (rose); "Show: Hours | Difference | Balance". Sticky Planned / Target / Balance columns; a week header opens that week in the week view; today's week is outlined and centered.
+- Rules: shifts (non-pool) count their slot's duration on the start day (8 h without times). A week counts once the team has at least half of its target hours planned (`COUNTED_WEEK_SHARE`; people with contract hours; without any, once anybody has a shift) — weeks before the planner was used, a few test entries and weeks with only the on-call duties planned stay out of targets, totals and balance (hatched in the year view, hours still shown). Target = contract hours × (days in the year's week not on vacation) / 7 (the planner's working-hours rule). On target = within `workingHoursToleranceHours` (default 5 h) scaled the same way; the balance is colored against one week's tolerance.
+- Weeks span Jan 1 to Dec 31 with partial weeks at year boundaries.
 
 Holidays
 - Year selector with stepper buttons.
@@ -1498,7 +1493,7 @@ Frontend
 - `src/components/schedule/RowLabel.tsx`
 - `src/components/schedule/AssignmentPill.tsx`
 - `src/components/schedule/VacationOverviewModal.tsx` (vacation planner, scrolls to today on open)
-- `src/components/schedule/WorkingHoursOverviewModal.tsx` (yearly working hours overview for all clinicians)
+- `src/components/schedule/WorkingHoursOverviewModal.tsx` (v1.78: working hours, week view and year view; `WorkingHoursWeekView.tsx`, `WorkingHoursYearView.tsx`, `WorkingHoursParts.tsx`; calculations in `src/lib/workingHours.ts`)
 - `src/components/schedule/SolverOverlay.tsx` (live solver progress overlay; v1.69 layout: header, day track + current step (`AgentActivityPanel`), best plan so far (`ConstraintPulse`), collapsed activity log, action footer)
 - `src/components/schedule/SolverDebugPanel.tsx` (debug info visualization after solve completes)
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
@@ -3053,3 +3048,36 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Tests: `CalendarPlaceholder.test.tsx` (switch usable and reports "team",
   busy status text, plain "My plan" label, compact on phones).
 - Deploy notes: frontend only, no schema or data change. Version 1.77 (77).
+
+## v1.78 — Working hours: week view, compact year view, fair targets
+
+- **Why.** The overview showed four rows per person (hours, expected,
+  difference, cumulative) for all 53 weeks, and expected the contract hours
+  for every week since January — also before the planner was used — so the
+  cumulative column read −1694 h for people who were exactly on plan. It
+  also counted vacation weeks as missing hours.
+- **Week view (new, the default).** One row per person: hours per day
+  (vacation and rest days marked, the shifts in the tooltip), planned,
+  target, the difference as a number and a bar around the target with the
+  tolerance band, and the year's running balance through the week. Team sums
+  above the table and per day in the footer; sort by team order or most
+  under first; previous / next week across year boundaries, Today.
+- **Year view (compact).** One row per person instead of four; each week a
+  cell tinted under / on / over target, switchable between hours,
+  difference and running balance; Planned / Target / Balance columns stay
+  in view; a week header opens that week; weeks labelled with ISO numbers
+  (before, years starting on Friday to Sunday were numbered one week off).
+- **Fair targets** (`src/lib/workingHours.ts`): a week counts once the team
+  has half of its target hours planned (`COUNTED_WEEK_SHARE = 0.5`), so test
+  entries, weeks still being planned and future weeks with only the on-call
+  duties do not create deficits; vacation days lower the target (days / 7,
+  as in the planner); "on target" uses each person's tolerance (Clinician
+  editor, default ± 5 h) instead of a fixed ± 2 h. Totals and balance cover
+  the counted weeks only; hours of other weeks still show (hatched).
+- Tests: `src/lib/workingHours.test.ts` (new: weeks and ISO labels,
+  counting rule, vacation-scaled target and tolerance, statuses, day
+  details, running balance, vacation week, fallback without contracts),
+  `WorkingHoursOverviewModal.test.tsx` (rewritten: week view rows, vacation,
+  sort, uncounted week, navigation across years, year view cells and
+  totals, metric switch, week header, time zones, close).
+- Deploy notes: frontend only, no schema or data change. Version 1.78 (78).

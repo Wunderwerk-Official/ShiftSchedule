@@ -268,6 +268,12 @@ npx playwright show-report
 
 **Frontend Tests**: `SettingsView.test.tsx` (Rest Day row helper, Planning goals on-call note), `HelpView.test.tsx` (Rest Day row day off).
 
+### 3.14 Working hours overview (v1.78)
+
+**Frontend Tests**:
+- [x] `src/lib/workingHours.test.ts` — year weeks (partial ends, ISO labels incl. a year starting on Friday), a week counts from half of the team's target hours (fallback: any shift without contracts), target and tolerance scaled by vacation days, statuses, day details (minutes, shifts, rest days), running balance and totals over counted weeks, a vacation week without status
+- [x] `WorkingHoursOverviewModal.test.tsx` — opens on this week; days with Rest / Vac, tooltips, planned, target with vacation note, difference with status, balance, team counts; sort most under first; a week that does not count yet explains why; week navigation across years; year view cells, hatched uncounted weeks, totals, Hours / Difference / Balance; a week header opens the week; Monday and Sunday stay in one week in three time zones; close button and Escape
+
 ---
 
 ## 4. Intentionally Not Covered
