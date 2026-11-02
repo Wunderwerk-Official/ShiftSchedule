@@ -471,3 +471,20 @@ def test_day_block_candidates_follow_the_strict_section_order(profile):
     ex = executor(state)
     out = run(ex, "suggest_day_blocks", slot_key=f"X__{MON}")
     assert [c["clinicianId"] for c in out["candidates"]][:2] == ["P (A+B)", "Q (A+C)"], out["candidates"]
+
+
+def test_rescue_in_distribute_all_mode_moves_a_person_off_a_slot_above_its_target():
+    """Review of v1.81: when the vacated slot keeps its target without the
+    person (distribute-all headroom), the 2-move rescue opens nothing: it is
+    offered whatever the ranks are, and without leaves_open."""
+    state = section_state([make_clinician("a", "Alice", ["A", "B"], working_hours_per_week=40),
+                           make_clinician("b", "Bob", ["B"], working_hours_per_week=40)],
+                          [make_template_slot(s, block_id=s) for s in ("A", "B")], ["B", "A"])
+    ex = PlanToolExecutor(state, build_scoring_context(state, MON, MON, only_fill_required=False),
+                          [make_assignment("d1", "B", MON, "a", source="solver"),
+                           make_assignment("d2", "B", MON, "b", source="solver")])
+    result = run(ex, "suggest_rescue_moves", dateISO=MON)
+    assert len(result["rescues"]) == 1
+    rescue = result["rescues"][0]
+    assert rescue["substitute"] is None and rescue["leaves_open"] is None
+    assert rescue["improves_best"]

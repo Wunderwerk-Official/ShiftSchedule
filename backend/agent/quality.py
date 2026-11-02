@@ -19,8 +19,11 @@ QUALITY_VERSION = 4
 # vectors have equal sums, so it never decides on its own.
 CLASSIC_FIELDS = ("hard_violations_in_range", "open_by_section_order", "open_required_slots", "short_days",
                   "soft_rule_violations", "hours_deviation_minutes", "preference_and_load_bonus")
+# open_priority_points (per-slot template weight) stays a reported metric
+# only: inside one section it ranked days and shifts, which the strict
+# section order treats alike.
 BALANCED_FIELDS = ("hard_violations_in_range", "open_by_section_order", "open_required_slots",
-                   "open_priority_points", "uncomfortable_days", "discomfort_minutes", "soft_rule_violations",
+                   "uncomfortable_days", "discomfort_minutes", "soft_rule_violations",
                    "workday_deviation_days", "structured_wish_violations", "hours_deviation_minutes",
                    "duty_burden_penalty", "changed_existing_assignments", "negative_preference_bonus")
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")

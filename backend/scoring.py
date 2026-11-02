@@ -313,7 +313,7 @@ def _active_new_assignments(
 
 
 def open_slots(ctx: ScoringContext, new_assignments: List[Assignment]) -> List[OpenSlot]:
-    """Slot instances still below target, sorted by date then template order."""
+    """Slot instances still below target, sorted by date then section order."""
     counts: Dict[str, int] = dict(ctx.fixed_counts)
     for _a, inst in _active_new_assignments(ctx, new_assignments):
         counts[inst.slot_key] = counts.get(inst.slot_key, 0) + 1

@@ -128,3 +128,22 @@ def test_quality_version_marks_the_strict_section_order():
     ex = executor(_on_call_state(False), end=TUE)
     assert QUALITY_VERSION == 4
     assert run(ex, "get_plan_overview")["quality_version"] == 4
+
+
+def test_quality_tuple_keeps_the_section_vector_out_of_the_display_score():
+    """v1.81: encode_quality (chart only) leaves the vector out; its sum is
+    the open count after it. The legend is in the overview."""
+    from backend.agent.quality import BALANCED_FIELDS
+    from backend.agent.tools import PlanToolExecutor
+
+    assert PlanToolExecutor.encode_quality((1, (2, 0), 2, 3, 0, 60, -5)) == PlanToolExecutor.encode_quality(
+        (1, 2, 3, 0, 60, -5))
+    # Balanced: the vector first, the per-slot weight only reported (it ranked
+    # days and shifts inside one section).
+    assert BALANCED_FIELDS[:4] == ("hard_violations_in_range", "open_by_section_order", "open_required_slots",
+                                   "uncomfortable_days")
+    assert "open_priority_points" not in BALANCED_FIELDS and len(BALANCED_FIELDS) == 12
+    ex = executor()
+    overview = run(ex, "get_plan_overview")
+    assert overview["section_order"] == ex.section_order
+    assert len(overview["quality"]["open_by_section_order"]) == len(ex.section_order)

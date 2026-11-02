@@ -306,6 +306,9 @@ npx playwright show-report
 - [x] `test_agent_tools.py`: processing order ranks one section once (`section_rank` 3, 2, 1, 1; the earlier start of section A first)
 - [x] `test_agent_quality_profile.py`: classic tuple of 7 fields starting `hard_violations_in_range, open_by_section_order, open_required_slots`; `QUALITY_VERSION` 4 in the overview
 
+- [x] Review of the staged search (`test_cross_day_repair.py`): 20 sections needing 40 people each need three windows; at 10 s the top window still gets its time and Pat moves to the top section (fails on the per-tier time split); exact weights by brute force over 200 random groups and the 2**53 window bound; a stage hanging until StopSearch ends on cancel within 3 s (ABORTED); a model with no plan in any stage reports INFEASIBLE; the note for an unchanged vector says so
+- [x] Review of the tools (`test_agent_harness.py`, `test_agent_quality_profile.py`, `test_agent_planning_workflow.py`): the day digest shows `|rank 1` and "SECTION ORDER: …", debugInfo carries `section_order`; the improvement note names the changed sections (at most five, "and N more"); `encode_quality` leaves the vector out; the balanced tuple starts hard, vector, count, uncomfortable days (12 fields); the overview carries the legend; in distribute-all mode the rescue moves Alice off a slot above its target without `leaves_open`
+
 **Frontend Tests**: `HelpView.test.tsx` (the strict rule in section 3); the Settings help (`SECTION_PRIORITY_HELP`), the Planning goals text, "How the agent plans" and the basic-plan notice name the strict order; `test_cross_day_repair.py` pins the repair notes with the changed sections ("2 -> 1 open; SENO 1 -> 0, ECHO 1 -> 0, COR 0 -> 1"; "to staff higher sections first (1 -> 2 open; TOP 1 -> 0, LOW 0 -> 2)").
 
 ---

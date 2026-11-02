@@ -206,7 +206,9 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
 3. Choosing the candidate: they are PRE-SORTED. The balanced profile sorts
    by its active quality_order; use the first candidate unless a concrete
    admin wish or future scarcity justifies another. In classic: overloaded=true last,
-   everyone whose block meets the daily minimum first, within that the
+   a block that also reaches an open slot of a higher-ranked section first
+   (strict section order), then everyone whose block meets the daily
+   minimum, within that the
    preferred-working-time fit (window_fit=true before false), then
    lowest ytd_worked_pct (100 = on target, lower = behind). window_fit
    refers to the clinician's PREFERRED working time (a wish, not a rule

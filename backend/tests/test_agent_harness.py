@@ -842,6 +842,11 @@ def test_day_by_day_runs_one_conversation_per_day():
     assert "|2026-W02 hours booked/hard max" in first_day1
     assert alice_row(first_day1).endswith("|0/-")
     assert alice_row(first_day2).endswith("|8/-")
+    # v1.81: the slot lines show the section rank, the digest the strict rule
+    # and its legend, debugInfo the legend as well.
+    assert any(line.startswith("- ") and "|rank 1" in line for line in first_day1.splitlines())
+    assert "SECTION ORDER: " in first_day1 and "one open position in a higher section outweighs any" in first_day1
+    assert result["debugInfo"]["agent"]["section_order"]
 
 
 def test_day_track_events_report_a_skipped_day():
@@ -2075,3 +2080,21 @@ def test_a_larger_history_budget_keeps_tool_results_the_default_would_stub():
     _compact_tool_history(claude, budget_chars=600_000)
     assert stubbed(default) == 4
     assert stubbed(claude) == 0
+
+
+def test_quality_improvement_note_names_the_sections():
+    """v1.81: the run note reads the tuple by field name and names the
+    sections whose open positions changed (at most five)."""
+    from backend.agent.harness import _quality_improvement_note
+    from backend.agent.quality import CLASSIC_FIELDS
+
+    seed = (0, (1, 0, 2), 3, 1, 0, 600, -4)
+    best = (0, (0, 1, 2), 3, 0, 0, 540, -6)
+    assert _quality_improvement_note(seed, best, CLASSIC_FIELDS, ["COR", "IRM", "MRT"]) == (
+        "open by section (COR 1 -> 0, IRM 0 -> 1), short work days 1 -> 0, "
+        "weekly-hours deviation 600 -> 540 min, preference/load bonus 4 -> 6")
+    many_seed = (0, (1,) * 7, 7, 0, 0, 0, 0)
+    many_best = (0, (0,) * 7, 0, 0, 0, 0, 0)
+    assert _quality_improvement_note(many_seed, many_best, CLASSIC_FIELDS, ["A", "B", "C", "D", "E", "F"]) == (
+        "open by section (A 1 -> 0, B 1 -> 0, C 1 -> 0, D 1 -> 0, E 1 -> 0 and 2 more), "
+        "open required slots 7 -> 0")

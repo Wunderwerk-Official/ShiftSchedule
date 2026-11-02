@@ -9,11 +9,12 @@ that only they are qualified for, and no tool ever undoes the Thursday choice
 week, moving work between them doesn't free any weekly hours").
 
 This module asks the CP-SAT model (backend/solver.py, the same hard rules the
-gate checks) for the plan with the fewest missing required positions that
-changes the agent's plan as little as possible (repair mode), then applies
-the difference through the executor like any other proposal: the full gate
-must accept it AND the active quality tuple must improve, so a repair never
-trades away coverage, fixed entries or rule compliance.
+gate checks) for the plan with the fewest missing required positions section
+by section from the top of the section order that changes the agent's plan
+as little as possible (repair mode), then applies the difference through the
+executor like any other proposal: the full gate must accept it AND the
+active quality tuple must improve, so a repair never trades away a
+higher-ranked position, fixed entries or rule compliance.
 
 The section order is strict (Settings: "If not every slot can be filled,
 sections higher in this list are staffed first"; v1.81): one open position

@@ -3502,7 +3502,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - **Quality tuple** (`QUALITY_VERSION` 4): `open_by_section_order`, the open
   required positions per section of the range in that order, is the first
   coverage tier, right after `hard_violations_in_range`, in both profiles
-  (classic 7 fields, balanced 13). Tuples compare it entry by entry from the
+  (classic 7 fields, balanced 12: `open_priority_points`, the per-slot
+  template weight, is only reported now, since inside one section it ranked
+  days and shifts). Tuples compare it entry by entry from the
   top section; `open_required_slots` follows it for display (equal vectors
   have equal sums). `quality_dict` renders the vector as a JSON list (one
   small int per section, safe in JavaScript); its legend `section_order` is
@@ -3519,8 +3521,10 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   The per-slot `order_weight` they used is capped at 100, so with more than
   100 template slots the top sections tied, and it ranked the shifts of one
   section among each other. Classic candidates of `suggest_day_blocks` sort
-  by the section vector after their block first (the balanced profile sorts
-  by `quality_after` already). `suggest_rescue_moves` also offers a 2-move
+  by the sections their block reaches first (a block that also reaches an
+  open slot of a higher-ranked section comes first), then in the v1.80 order
+  (daily minimum, window fit, YTD); the balanced profile sorts by
+  `quality_after`. `suggest_rescue_moves` also offers a 2-move
   batch without a substitute when the vacated slot ranks lower than the
   stuck one (`substitute: null`, `leaves_open`): under the strict order that
   is an improvement, and no tool proposed it before. `analyze_bottlenecks`,
@@ -3559,6 +3563,34 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   plans" and the basic-plan notice ("It does not follow the section
   priority.") say the same; the review prompt and the arena README's
   decision rule follow the strict order.
+- **Review** (four lenses, a skeptic per serious finding):
+  - Stage time: the share divided by every later TIER with a gap instead of
+    every later window, so a short budget skipped the top window (2-week
+    plan at 20 s: the top 14 tiers stayed as they were while the lower ones
+    were staffed). Now it divides by the windows still to come, and a higher
+    window takes at least the minimum stage time before lower windows and
+    the change stage.
+  - Open counts per tier come from the assignment values: slack outside a
+    stage's objective could sit above the real count (205 against 53 in one
+    probe) and loosen the never-worse check and the bounds; hints carry
+    tight slack.
+  - No plan from any stage and a stage proved INFEASIBLE: INFEASIBLE (as in
+    v1.80), not ABORTED; a stop during the change stage counts as aborted;
+    the note names stages skipped for lack of time.
+  - Classic candidates: the first key was the whole vector after the block,
+    which put the block filling more positions first even inside one
+    section, overriding daily minimum, window fit and YTD fairness (more
+    short days and YTD inversions in the first-offer baseline). Now only the
+    sections a block reaches decide first.
+  - Rescue in distribute-all mode: a 2-move batch whose vacated slot keeps
+    its target opens nothing; it is offered whatever the ranks, without
+    `leaves_open`.
+  - The repair note does not claim a section change when the vector did
+    not change.
+  - Not changed: the optional neighbourhood search (off by default) still
+    maximizes the count; `encode_quality` (display only, the chart is
+    hidden for agent runs) leaves the vector out, so it can rise on a strict
+    improvement that leaves more positions open.
 - **Resolved from v1.80's "Not done"**: a pure 1:1 trade upwards is an
   improvement; a higher section is staffed even when more positions stay
   open in total; the order is lexicographic, not a weighted sum.
