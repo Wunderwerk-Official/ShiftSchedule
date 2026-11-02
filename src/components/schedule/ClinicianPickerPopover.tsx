@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { cx } from "../../lib/classNames";
+import { SwapGlyph } from "../swaps/PillSwapButton";
 
 function InstantTooltip({ children, content }: { children: ReactNode; content: string }) {
   const [show, setShow] = useState(false);
@@ -74,6 +75,8 @@ type ClinicianPickerPopoverProps = {
   anchorRect: DOMRect | null;
   rowName: string;
   dateLabel: string;
+  /** "Find cover…" footer for a slot with an open position; the parent closes the picker. */
+  onFindCover?: () => void;
 };
 
 export default function ClinicianPickerPopover({
@@ -84,6 +87,7 @@ export default function ClinicianPickerPopover({
   anchorRect,
   rowName,
   dateLabel,
+  onFindCover,
 }: ClinicianPickerPopoverProps) {
   const popoverRef = useRef<HTMLDivElement | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
@@ -226,13 +230,16 @@ export default function ClinicianPickerPopover({
                   onClose();
                 }}
                 className={cx(
-                  "flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors",
+                  "flex w-full flex-wrap items-center gap-x-2 gap-y-0.5 px-3 py-2 text-left text-sm transition-colors",
                   isEligible
                     ? "text-slate-700 hover:bg-slate-50 dark:text-slate-200 dark:hover:bg-slate-800"
                     : "text-slate-400 hover:bg-slate-50 dark:text-slate-500 dark:hover:bg-slate-800"
                 )}
               >
-                <span className="flex-1 truncate">{clinician.name}</span>
+                {/* The name keeps at least 7rem: a long warning such as "Over weekly
+                    limit (41.5/40 h in 2026-W45)" moves below it instead of
+                    squeezing the name to nothing. */}
+                <span className="min-w-[7rem] flex-1 truncate">{clinician.name}</span>
                 {!isEligible && (
                   <InstantTooltip content={warnings.join(" · ")}>
                     <span className="flex items-center gap-1">
@@ -250,6 +257,19 @@ export default function ClinicianPickerPopover({
           })
         )}
       </div>
+      {onFindCover ? (
+        <div className="flex-shrink-0 border-t border-slate-100 px-3 py-2 dark:border-slate-800">
+          <button
+            type="button"
+            aria-label="Find cover for this slot"
+            onClick={onFindCover}
+            className="inline-flex w-full items-center justify-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-sm font-medium text-teal-800 hover:bg-teal-100 dark:border-teal-700/60 dark:bg-teal-900/40 dark:text-teal-200"
+          >
+            <SwapGlyph className="h-4 w-4" />
+            Find cover…
+          </button>
+        </div>
+      ) : null}
     </div>,
     document.body
   );

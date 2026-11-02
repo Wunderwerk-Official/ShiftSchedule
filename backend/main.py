@@ -19,6 +19,7 @@ from .schedule_changes import router as schedule_changes_router
 from .snapshots import router as snapshots_router
 from .solver import router as solver_router
 from .state_routes import router as state_router
+from .swaps.routes import router as swaps_router
 from .web import router as web_router
 from .request_logging import install_access_filter, safe_request_target
 
@@ -178,3 +179,4 @@ app.include_router(ical_router)
 app.include_router(solver_router)
 app.include_router(agent_budget_router)
 app.include_router(schedule_changes_router)
+app.include_router(swaps_router)

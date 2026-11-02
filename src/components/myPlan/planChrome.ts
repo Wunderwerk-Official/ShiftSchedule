@@ -62,6 +62,12 @@ export const solidButtonBaseClass = cx(
 /** Filled primary button, regular size. */
 export const solidButtonClass = cx(solidButtonBaseClass, "h-9 px-4 text-sm");
 
+/** Outline secondary button (the swap assistant's Preview, Refresh, Search again, Retry, Undo, Back). */
+export const outlineButtonClass = cx(
+  "inline-flex h-9 items-center justify-center rounded-xl border border-slate-200 px-4 text-sm text-slate-700",
+  "hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800",
+);
+
 /** Amber "Draft" badge. */
 export const draftBadgeClass = cx(
   "inline-flex h-[18px] items-center rounded-full border border-amber-200 bg-amber-50 px-2 text-[11px] font-semibold text-amber-800",

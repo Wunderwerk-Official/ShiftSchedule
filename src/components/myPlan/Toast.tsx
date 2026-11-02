@@ -41,9 +41,11 @@ type ToastProps = {
   onDismiss: () => void;
   isMobile: boolean;
   durationMs?: number;
+  /** Stacking layer (z-index class); the team page lifts its toast above the swap drawer. */
+  layerClassName?: string;
 };
 
-export default function Toast({ toast, onDismiss, isMobile, durationMs }: ToastProps) {
+export default function Toast({ toast, onDismiss, isMobile, durationMs, layerClassName = "z-50" }: ToastProps) {
   const [hovered, setHovered] = useState(false);
   const [focused, setFocused] = useState(false);
   const paused = hovered || focused;
@@ -67,7 +69,8 @@ export default function Toast({ toast, onDismiss, isMobile, durationMs }: ToastP
       role="status"
       aria-live="polite"
       className={cx(
-        "pointer-events-none fixed z-50",
+        "pointer-events-none fixed",
+        layerClassName,
         isMobile ? "inset-x-4 bottom-4" : "bottom-8 left-1/2 -translate-x-1/2",
       )}
     >

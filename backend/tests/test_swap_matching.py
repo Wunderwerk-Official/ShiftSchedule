@@ -1,0 +1,1146 @@
+"""The swap search on the swap template, without a database: pre-filters, gate
+reasons, findings, rest days, pre-existing problems, ranking, groups, caps
+and blocked targets."""
+
+import json
+import subprocess
+import sys
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional
+
+import pytest
+from fastapi import HTTPException
+
+from backend import validation
+from backend.models import (
+    AppState,
+    Assignment,
+    Clinician,
+    PreferredWorkingTime,
+    SolverRule,
+    VacationRange,
+    WorkPattern,
+)
+from backend.swaps import labels, matching, policy
+from backend.swaps.blocks import SwapUnit, instance_unit
+from backend.swaps.matching import (
+    MovePlan,
+    SwapContext,
+    apply_plan,
+    find_candidates,
+    full_gate,
+    plan_kept_warnings,
+    plan_option,
+    plan_warnings,
+    reason_for,
+    scoped_gate,
+    slice_window,
+)
+from backend.swaps.policy import SwapRules, open_slot
+from backend.swaps.schemas import CandidatesRequest
+from backend.validation import (
+    VIOLATION_REST_DAY,
+    VIOLATION_UNKNOWN_CLINICIAN,
+    VIOLATION_UNKNOWN_SLOT,
+    ValidationReport,
+    Violation,
+)
+
+from .conftest import make_clinician, make_template_slot
+from .swap_fixtures import (
+    ALL_SECTIONS,
+    FRI,
+    MON,
+    NOW,
+    SAT,
+    SUN,
+    THU,
+    TUE,
+    WED,
+    asg,
+    default_clinicians,
+    make_swap_state,
+    rich_swap_state,
+)
+
+RULES = SwapRules()
+NEXT_MON = "2026-01-12"
+
+
+def _utc(text: str) -> datetime:
+    return datetime.fromisoformat(text.replace("Z", "+00:00"))
+
+
+def _person(clinician_id: str, name: str, *, sections: Iterable[str] = ALL_SECTIONS,
+            hours: Optional[float] = 40) -> Clinician:
+    return make_clinician(clinician_id, name, list(sections), working_hours_per_week=hours)
+
+
+def _people(*extra: Clinician) -> List[Clinician]:
+    return default_clinicians() + list(extra)
+
+
+def _search(state: AppState, assignment_id: str, mode: str = "handover", *, now: datetime = NOW,
+            rules: SwapRules = RULES, **fields: Any) -> Dict[str, Any]:
+    a = next(x for x in state.assignments if x.id == assignment_id)
+    ref = {"assignmentId": a.id, "rowId": a.rowId, "dateISO": a.dateISO, "clinicianId": a.clinicianId}
+    req = CandidatesRequest(mode=mode, assignment=ref, **fields)
+    return find_candidates(SwapContext(state, rules, now), req)
+
+
+def _cover(state: AppState, row_id: str, date_iso: str, *, now: datetime = NOW,
+           **fields: Any) -> Dict[str, Any]:
+    req = CandidatesRequest(mode="cover", slot={"rowId": row_id, "dateISO": date_iso}, **fields)
+    return find_candidates(SwapContext(state, RULES, now), req)
+
+
+def _options(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    return result["best"] + result["possible"] + result["blocked"]
+
+
+def _option(result: Dict[str, Any], key: str) -> Dict[str, Any]:
+    return next(option for option in _options(result) if option["key"] == key)
+
+
+def _keys(options: Iterable[Dict[str, Any]]) -> List[str]:
+    return [option["key"] for option in options]
+
+
+def _weekdays(prefix: str, clinician_id: str) -> List[Assignment]:
+    """CT from Monday to Friday: 40 h in week 2."""
+    days = zip(("mon", "tue", "wed", "thu", "fri"), (MON, TUE, WED, THU, FRI))
+    return [asg(f"{prefix}-{d}", f"ct-{d}", day, clinician_id) for d, day in days]
+
+
+# --- Pre-filters and gate reasons -------------------------------------------
+
+
+def test_prefilter_reasons_name_the_taker():
+    clinicians = _people()
+    clinicians[1].vacations.append(VacationRange(id="v", startISO=FRI, endISO=FRI))  # Ben
+    state = make_swap_state(
+        [asg("a-night", "night-thu", THU, "clin-anna"), asg("a-fri", "ct-fri", FRI, "clin-anna"),
+         asg("a-sat", "ct-sat", SAT, "clin-anna"), asg("b-sat", "ct-sat", SAT, "clin-ben")],
+        clinicians=clinicians, slot_overrides={f"ct-sat__{SAT}": 1},
+    )
+    cases = [
+        ("a-night", "clin-clara", "not_qualified", "Clara Schmidt is not qualified for Night duty."),
+        ("a-fri", "clin-ben", "on_vacation", "Ben Ott is on vacation on Fri 9 Jan."),
+        ("a-sat", "clin-ben", "already_assigned", "Ben Ott already works CT on Sat 10 Jan."),
+    ]
+    for assignment_id, partner_id, code, message in cases:
+        result = _search(state, assignment_id, partnerId=partner_id)
+        (option,) = result["blocked"]
+        assert option["reason"] == {"code": code, "message": message}
+        assert (option["blockerCount"], option["group"], result["checked"]) == (1, "blocked", 1)
+        assert option["chips"] == option["warnings"] == option["hours"] == option["preexisting"] == []
+
+
+GATE_CASES = [
+    pytest.param([asg("x", "ct-thu", THU, "clin-anna"), asg("b", "early-thu", THU, "clin-ben")],
+                 ("overlap", "Ben Ott already works Day on Thu 8 Jan (07:00–12:00)."), id="overlap"),
+    pytest.param([asg("x", "oncall-wed", WED, "clin-anna"), asg("b", "ct-thu", THU, "clin-ben")],
+                 ("on_call_rest", "On-call rest: Ben Ott works Thu 8 Jan."), id="on-call-moved"),
+    pytest.param([asg("x", "ct-thu", THU, "clin-anna"), asg("b", "oncall-wed", WED, "clin-ben")],
+                 ("on_call_rest", "On-call rest: Ben Ott is on call on Wed 7 Jan."), id="on-call-kept"),
+    pytest.param([asg("x", "ct-sat", SAT, "clin-anna")] + _weekdays("b", "clin-ben"),
+                 ("weekly_hours", "Ben Ott: week 2 would reach 48.0 h (limit 45.0 h)."), id="weekly-hours"),
+    pytest.param([asg("x", "night-thu", THU, "clin-anna"), asg("b", "early-thu", THU, "clin-ben")],
+                 ("split_shift", "Ben Ott would have a split day on Thu 8 Jan."), id="split-shift"),
+    # Anna's unit already overlaps itself (the demo lies inside the night), so
+    # Ben would receive both shifts of the overlap.
+    pytest.param([asg("x", "night-wed", WED, "clin-anna"), asg("a", "demo-thu", THU, "clin-anna")],
+                 ("overlap", "Ben Ott would get two overlapping shifts: "
+                             "Night duty (Wed 7 Jan, 20:00 → 08:00) and Demo (Thu 8 Jan, 07:15–07:45)."),
+                 id="overlap-both-received"),
+    pytest.param([asg("x", "oncall-wed", WED, "clin-anna"), asg("a", "early-thu", THU, "clin-anna")],
+                 ("overlap", "Ben Ott would get two overlapping shifts: On call (Wed 7 Jan, 08:00 → 08:00) "
+                             "and Day (Thu 8 Jan, 07:00–12:00)."), id="overlap-both-received-on-call"),
+]
+
+
+@pytest.mark.parametrize("assignments, reason", GATE_CASES)
+def test_gate_reasons(assignments: List[Assignment], reason: tuple):
+    result = _search(make_swap_state(assignments), "x", partnerId="clin-ben")
+    (option,) = result["blocked"]
+    assert (option["reason"]["code"], option["reason"]["message"]) == reason
+    assert option["blockerCount"] >= 1
+
+
+def _ben_away(start: str, end: str) -> List[Clinician]:
+    clinicians = _people()
+    clinicians[1].vacations.append(VacationRange(id="v", startISO=start, endISO=end))
+    return clinicians
+
+
+HIDDEN_CASES = [
+    # Ben's vacation hides his stored shift (the grid shows its slot as open),
+    # but the rules still count it until cover replaces it.
+    pytest.param((MON, FRI), asg("hidden", "oncall-fri", FRI, "clin-ben"), asg("x", "ct-sat", SAT, "clin-anna"),
+                 ("on_call_rest", "On-call rest: Ben Ott's on-call on Fri 9 Jan is hidden by a vacation "
+                                  "but still counts. Find cover for it first."), id="hidden-on-call"),
+    pytest.param((MON, FRI), asg("hidden", "oncall-mon", MON, "clin-ben"),
+                 asg("x", "ct-sun", "2026-01-04", "clin-anna"),
+                 ("on_call_rest", "On-call rest: Ben Ott's on-call on Mon 5 Jan is hidden by a vacation "
+                                  "but still counts. Find cover for it first."), id="hidden-on-call-ahead"),
+    pytest.param((FRI, SUN), asg("hidden", "ct-fri", FRI, "clin-ben"), asg("x", "oncall-thu", THU, "clin-anna"),
+                 ("on_call_rest", "On-call rest: Ben Ott's CT on Fri 9 Jan is hidden by a vacation "
+                                  "but still counts. Find cover for it first."), id="hidden-rest-day-shift"),
+    pytest.param((MON, FRI), asg("hidden", "night-fri", FRI, "clin-ben"), asg("x", "early-sat", SAT, "clin-anna"),
+                 ("overlap", "Overlap: Ben Ott's Night duty on Fri 9 Jan (20:00 → 08:00) is hidden by a "
+                             "vacation but still counts. Find cover for it first."), id="hidden-overlap"),
+]
+
+
+@pytest.mark.parametrize("vacation, hidden, given, reason", HIDDEN_CASES)
+def test_a_conflict_with_a_vacation_hidden_shift_names_it_and_the_way_out(vacation: tuple, hidden: Assignment,
+                                                                          given: Assignment, reason: tuple):
+    result = _search(make_swap_state([hidden, given], clinicians=_ben_away(*vacation)), "x",
+                     partnerId="clin-ben")
+    (option,) = result["blocked"]
+    assert (option["reason"]["code"], option["reason"]["message"]) == reason
+    assert option["blockerCount"] == 1
+    # The same shift, not hidden, is worded as work.
+    visible = _search(make_swap_state([hidden, given]), "x", partnerId="clin-ben")
+    assert "hidden" not in _options(visible)[0]["reason"]["message"]
+
+
+def test_on_call_rest_reaching_into_the_next_iso_week_blocks():
+    # Three rest days after Ben's Friday on-call reach Monday's handover in the
+    # next ISO week, beyond a slice of only the moved week and the duty's spill.
+    state = make_swap_state([asg("call", "oncall-fri", FRI, "clin-ben"), asg("x", "ct-mon", NEXT_MON, "clin-anna")],
+                            solver_settings={"onCallRestDaysAfter": 3})
+    ben = _option(_search(state, "x"), "clin-ben|-")
+    assert ben["group"] == "blocked"
+    assert ben["reason"] == {"code": "on_call_rest", "message": "On-call rest: Ben Ott is on call on Fri 9 Jan."}
+
+
+def test_unresolved_references_get_readable_reasons():
+    ctx = SwapContext(make_swap_state(), RULES, NOW)
+    unknown_person = Violation(code=VIOLATION_UNKNOWN_CLINICIAN, message="Unknown clinician id: clin-gone",
+                               clinician_id="clin-gone", date_iso=THU, slot_id="ct-thu")
+    unknown_slot = Violation(code=VIOLATION_UNKNOWN_SLOT, message="Invalid slot reference: ct-thu on 2026-01-08",
+                             clinician_id="clin-ben", date_iso=THU, slot_id="ct-thu")
+    # The validators' own messages name raw ids; the partner's reason comes first.
+    assert matching.ranked_reasons(ctx, [unknown_person, unknown_slot], partner_id="clin-ben", new_items=set()) == [
+        ("unknown_slot", "A shift on Thu 8 Jan no longer matches the weekly template."),
+        ("unknown_person", "A person of this swap is no longer in the plan."),
+    ]
+
+
+def test_an_overlap_the_giver_receives_in_a_swap_names_both_shifts():
+    state = make_swap_state([asg("x", "ct-mon", MON, "clin-anna"), asg("night", "night-wed", WED, "clin-ben"),
+                             asg("demo", "demo-thu", THU, "clin-ben")])
+    option = _option(_search(state, "x", "swap"), "clin-ben|night-wed@2026-01-07+demo-thu@2026-01-08")
+    assert option["reason"] == {"code": "overlap", "message": (
+        "Anna Weber would get two overlapping shifts: Night duty (Wed 7 Jan, 20:00 → 08:00) "
+        "and Demo (Thu 8 Jan, 07:15–07:45).")}
+
+
+def _hidden_ct_thu(*, override: int = 0) -> AppState:
+    """Anna is on vacation Thu, so her ct-thu is hidden and the slot is open."""
+    anna = _person("clin-anna", "Anna Weber")
+    anna.vacations.append(VacationRange(id="v", startISO=THU, endISO=THU))
+    overrides = {f"ct-thu__{THU}": override} if override else {}
+    return make_swap_state([asg("hidden", "ct-thu", THU, "clin-anna")],
+                           clinicians=[anna] + default_clinicians()[1:], slot_overrides=overrides)
+
+
+def test_cover_without_a_required_hidden_removal_overfills_the_slot():
+    state = _hidden_ct_thu()
+    ctx = SwapContext(state, RULES, NOW)
+    info = open_slot(ctx.vctx, ctx.by_instance, "ct-thu", THU)
+    unit = instance_unit(ctx.vctx, "ct-thu", THU)
+    kept = plan_option(ctx, "cover", unit, "clin-ben", cover=info)
+    new, _carried = scoped_gate(ctx, kept)
+    assert reason_for(ctx, kept, new) == ("capacity", "CT on Thu 8 Jan would be overfilled.")
+    removed = plan_option(ctx, "cover", unit, "clin-ben", cover=info, hidden_removal=info.hidden[0])
+    assert scoped_gate(ctx, removed)[0] == []
+
+
+def test_cover_with_a_hidden_holder_requires_the_removal_and_is_valid():
+    result = _cover(_hidden_ct_thu(), "ct-thu", THU)
+    target = result["target"]
+    assert target["hiddenHolder"] == {"clinicianId": "clin-anna", "name": "Anna Weber",
+                                      "assignmentId": "hidden"}
+    assert (target["openCount"], target["excludedPartnerIds"]) == (1, ["clin-anna"])
+    ben = _option(result, "clin-ben|-")
+    assert ben["group"] == "best"
+    assert ben["hiddenRemoval"] == {"clinicianId": "clin-anna", "name": "Anna Weber",
+                                    "assignmentId": "hidden", "required": True}
+    assert [h["clinicianId"] for h in ben["hours"]] == ["clin-ben"]
+
+
+def test_an_optional_hidden_removal_is_not_required():
+    result = _cover(_hidden_ct_thu(override=1), "ct-thu", THU)
+    assert result["target"]["openCount"] == 2
+    assert _option(result, "clin-ben|-")["hiddenRemoval"]["required"] is False
+
+
+def test_requests_naming_no_shift_or_a_wrong_partner_are_refused():
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna")])
+    ctx = SwapContext(state, RULES, NOW)
+
+    def request(**fields: Any) -> CandidatesRequest:
+        assignment = {"assignmentId": "x", "rowId": "ct-thu", "dateISO": THU, "clinicianId": "clin-anna"}
+        return CandidatesRequest(mode="swap", assignment={**assignment, **fields.pop("ref", {})}, **fields)
+
+    for req, status, code, message in [
+        (request(ref={"clinicianId": "clin-ben"}), 409, "swap_stale",
+         "This shift no longer exists. Refresh the plan."),
+        (request(partnerId="clin-anna"), 400, "invalid_request", "Choose another person."),
+        (request(partnerId="clin-nobody"), 400, "invalid_request", "This person is not in the plan."),
+    ]:
+        with pytest.raises(HTTPException) as error:
+            find_candidates(ctx, req)
+        assert error.value.status_code == status
+        assert error.value.detail == {"code": code, "message": message}
+
+
+def test_with_several_matches_the_named_assignment_is_the_target():
+    state = make_swap_state([asg("first", "ct-thu", THU, "clin-anna"),
+                             asg("second", "ct-thu", THU, "clin-anna")])
+    result = _search(state, "second")
+    assert [item["assignmentId"] for item in result["target"]["unit"]["items"]] == ["first", "second"]
+
+
+# --- Groups and ranking -----------------------------------------------------
+
+
+def test_like_for_like_ranks_before_a_closer_swap_in_the_same_week():
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"),
+                             asg("like", "ct-tue", "2026-01-13", "clin-ben"),
+                             asg("other", "early-fri", FRI, "clin-ben")])
+    result = _search(state, "x", "swap")
+    assert _keys(result["best"]) == ["clin-ben|ct-tue@2026-01-13", "clin-ben|early-fri@2026-01-09"]
+    assert result["best"][0]["chips"][0] == {"code": "same_section", "label": "Same section",
+                                             "tone": "positive"}
+
+
+def test_same_week_ranks_before_next_week_even_when_further_away():
+    state = make_swap_state([asg("x", "ct-sun", SUN, "clin-anna"), asg("far", "ct-mon", MON, "clin-ben"),
+                             asg("near", "ct-mon", NEXT_MON, "clin-ben")])
+    result = _search(state, "x", "swap")
+    assert _keys(result["best"]) == ["clin-ben|ct-mon@2026-01-05", "clin-ben|ct-mon@2026-01-12"]
+
+
+def test_smaller_hours_move_ranks_first():
+    # Anna gives 5 h; taking Ben's 5 h early keeps everyone's hours, his 4 h late does not.
+    state = make_swap_state([asg("x", "early-thu", THU, "clin-anna"),
+                             asg("early", "early-wed", WED, "clin-ben"),
+                             asg("late", "late-fri", FRI, "clin-ben")])
+    result = _search(state, "x", "swap")
+    assert _keys(result["best"]) == ["clin-ben|early-wed@2026-01-07", "clin-ben|late-fri@2026-01-09"]
+    assert {"code": "hours_even", "label": "Hours even", "tone": "neutral"} in result["best"][0]["chips"]
+    assert "hours_even" not in [chip["code"] for chip in result["best"][1]["chips"]]
+
+
+def test_section_preference_ranks_a_partner_first():
+    eva = _person("clin-eva", "Eva Lang")
+    eva.preferredClassIds = ["sec-day", "sec-ct", "sec-night"]
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-dora")], clinicians=_people(eva))
+    result = _search(state, "x")
+    assert _keys(result["best"]) == ["clin-eva|-", "clin-anna|-", "clin-ben|-", "clin-clara|-"]
+    assert {"code": "prefers", "label": "Prefers CT", "tone": "positive"} in result["best"][0]["chips"]
+
+
+def _march_state(ben: Clinician) -> AppState:
+    """Anna (no contract) works Mon 9 March; Ben worked every weekday of Jan
+    and Feb, Eva never."""
+    history = [asg(f"h{n}", f"ct-{('mon', 'tue', 'wed', 'thu', 'fri')[n % 5]}",
+                   (date(2026, 1, 5) + timedelta(days=7 * (n // 5) + n % 5)).isoformat(), "clin-ben")
+               for n in range(40)]
+    return make_swap_state(history + [asg("x", "ct-mon", "2026-03-09", "clin-anna")],
+                           clinicians=[_person("clin-anna", "Anna Weber", hours=None), ben,
+                                       _person("clin-eva", "Eva Lang")])
+
+
+def test_handover_ranks_by_year_to_date_deficit():
+    result = _search(_march_state(_person("clin-ben", "Ben Ott")), "x")
+    assert _keys(result["best"]) == ["clin-eva|-", "clin-ben|-"]
+    behind = [[chip for chip in option["chips"] if chip["code"] == "behind_on_hours"]
+              for option in result["best"]]
+    # 40 shifts of 8 h against 40 h for the 9 weeks since the first planned
+    # date, Mon 5 Jan: 11 % behind.
+    assert behind == [[{"code": "behind_on_hours", "label": "100 % behind on hours", "tone": "positive"}],
+                      [{"code": "behind_on_hours", "label": "11 % behind on hours", "tone": "positive"}]]
+
+
+def test_unknown_year_to_date_ranks_after_known():
+    ben = _person("clin-ben", "Ben Ott")
+    ben.vacations.append(VacationRange(id="v", startISO="2026-01-01", endISO="2026-03-08"))
+    state = _march_state(ben)
+    assert "clin-ben" not in SwapContext(state, RULES, NOW).ytd_pct("2026-03-09")
+    assert _keys(_search(state, "x")["best"]) == ["clin-eva|-", "clin-ben|-"]
+
+
+def _behind(result: Dict[str, Any]) -> List[List[str]]:
+    return [[chip["label"] for chip in option["chips"] if chip["code"] == "behind_on_hours"]
+            for option in result["best"]]
+
+
+def test_year_to_date_counts_from_the_first_planned_date():
+    """A calendar planned from Mon 2 Nov: Ben works Monday to Thursday of two
+    weeks, Eva nothing; Anna (no contract) hands over Fri 6 and Mon 16 Nov."""
+    ben = [asg(f"b{week}-{day}", f"ct-{day}", (date(2026, 11, 2) + timedelta(days=7 * week + n)).isoformat(),
+               "clin-ben")
+           for week in range(2) for n, day in enumerate(("mon", "tue", "wed", "thu"))]
+    anna = [asg("fri", "ct-fri", "2026-11-06", "clin-anna"), asg("mon", "ct-mon", "2026-11-16", "clin-anna")]
+    people = [_person("clin-anna", "Anna Weber", hours=None), _person("clin-ben", "Ben Ott"),
+              _person("clin-eva", "Eva Lang")]
+    state = make_swap_state(ben + anna, clinicians=people)
+    # Four days of history are no year-to-date figure: no chip, and both rank
+    # as unknown, by name. Counted from 1 January, both would look 98–100 % behind.
+    early = _search(state, "fri")
+    assert (_keys(early["best"]), _behind(early)) == (["clin-ben|-", "clin-eva|-"], [[], []])
+    # Two weeks: Ben worked 64 of 80 h, Eva none.
+    later = _search(state, "mon")
+    assert _keys(later["best"]) == ["clin-eva|-", "clin-ben|-"]
+    assert _behind(later) == [["100 % behind on hours"], ["20 % behind on hours"]]
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+FRESH_HANDOVER_SEARCH = """
+import json
+import sys
+from datetime import datetime
+
+from backend.models import AppState
+from backend.swaps.matching import SwapContext, find_candidates
+from backend.swaps.policy import SwapRules
+from backend.swaps.schemas import CandidatesRequest
+
+data = json.load(sys.stdin)
+ctx = SwapContext(AppState.model_validate(data["state"]), SwapRules(), datetime.fromisoformat(data["now"]))
+result = find_candidates(ctx, CandidatesRequest.model_validate(data["request"]))
+print(json.dumps({
+    "behind": [chip["label"] for option in result["best"] for chip in option["chips"]
+               if chip["code"] == "behind_on_hours"],
+    "loaded": sorted(name for name in sys.modules
+                     if name == "backend.solver" or name.partition(".")[0] == "ortools"),
+}))
+"""
+
+
+def test_a_handover_search_never_loads_the_solver():
+    # The solver module loads ortools; the search ranks by its own year-to-date numbers.
+    state = _march_state(_person("clin-ben", "Ben Ott"))
+    x = next(a for a in state.assignments if a.id == "x")
+    ref = {"assignmentId": x.id, "rowId": x.rowId, "dateISO": x.dateISO, "clinicianId": x.clinicianId}
+    data = {"state": state.model_dump(mode="json"), "now": NOW.isoformat(),
+            "request": {"mode": "handover", "assignment": ref}}
+    run = subprocess.run([sys.executable, "-c", FRESH_HANDOVER_SEARCH], input=json.dumps(data), text=True,
+                         capture_output=True, cwd=REPO_ROOT)
+    assert run.returncode == 0, run.stderr
+    assert json.loads(run.stdout) == {"behind": ["100 % behind on hours", "11 % behind on hours"],
+                                      "loaded": []}
+
+
+def test_a_partner_without_contract_ranks_after_an_equal_one_with_contract():
+    ada = _person("clin-ada", "Ada Klein", hours=None)
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), asg("b", "ct-fri", FRI, "clin-ben"),
+                             asg("a", "ct-wed", WED, "clin-ada")], clinicians=_people(ada))
+    result = _search(state, "x", "swap")
+    assert _keys(result["best"]) == ["clin-ben|ct-fri@2026-01-09", "clin-ada|ct-wed@2026-01-07"]
+    chips = [[chip["code"] for chip in option["chips"]] for option in result["best"]]
+    assert chips == [["same_section", "same_week", "hours_even"],
+                     ["same_section", "same_week", "no_contract"]]
+
+
+def _generated(count: int, prefix: str, **kwargs: Any) -> List[Clinician]:
+    return [_person(f"clin-{prefix}{n:02d}", f"{prefix.title()} {n:02d}", **kwargs) for n in range(count)]
+
+
+def test_caps_and_totals():
+    best = _generated(12, "best")
+    possible = _generated(25, "possible")
+    for clinician in possible:
+        clinician.workPattern = WorkPattern(preferredDaysOff=["thu"])
+    blocked = _generated(3, "blocked", sections=["sec-day"])
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-dora")],
+                            clinicians=_people(*best, *possible, *blocked))
+    result = _search(state, "x")
+    # Anna, Ben and Clara also take it cleanly.
+    assert result["totals"] == {"best": 15, "possible": 25, "blocked": 3}
+    assert (len(result["best"]), len(result["possible"]), len(result["blocked"])) == (10, 20, 3)
+    assert result["checked"] == 43
+    assert result["closest"] == []
+    assert result["truncated"] is False
+
+
+def test_closest_lists_gate_blocked_options_first_when_nothing_works():
+    state = make_swap_state(
+        [asg("x", "night-thu", THU, "clin-anna"), asg("b", "demo-fri", FRI, "clin-ben"),
+         asg("d", "early-fri", FRI, "clin-dora")],
+        clinicians=_people(*_generated(40, "day", sections=["sec-day"])),
+    )
+    result = _search(state, "x")
+    assert result["totals"] == {"best": 0, "possible": 0, "blocked": 43}
+    assert len(result["blocked"]) == 30
+    assert [(o["partnerId"], o["reason"]["code"]) for o in result["closest"]] == [
+        ("clin-ben", "overlap"), ("clin-dora", "overlap"), ("clin-clara", "not_qualified")]
+    assert result["closest"] == result["blocked"][:3]
+
+
+def test_search_stops_after_the_gate_budget(monkeypatch):
+    monkeypatch.setattr(policy, "MAX_GATE_EVALUATIONS", 5)
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna")],
+                            clinicians=_people(*_generated(10, "eva")))
+    result = _search(state, "x")
+    assert result["truncated"] is True
+    assert result["checked"] == 5
+    assert sum(result["totals"].values()) == 5
+
+
+# --- Partner range and filters ----------------------------------------------
+
+
+def _range_state() -> AppState:
+    return make_swap_state([
+        asg("x", "ct-thu", THU, "clin-anna"),
+        asg("week-start", "ct-mon", MON, "clin-ben"),
+        asg("early", "early-fri", FRI, "clin-ben"),
+        asg("week-end", "ct-sun", SUN, "clin-ben"),
+        asg("next", "ct-mon", NEXT_MON, "clin-ben"),
+        asg("last", "ct-sun", "2026-02-01", "clin-ben"),
+        asg("beyond", "ct-mon", "2026-02-02", "clin-ben"),
+        asg("dora", "ct-tue", TUE, "clin-dora"),
+    ])
+
+
+SAME_WEEK = {"clin-ben|ct-mon@2026-01-05", "clin-ben|early-fri@2026-01-09", "clin-ben|ct-sun@2026-01-11",
+             "clin-dora|ct-tue@2026-01-06"}
+FOUR_WEEKS = SAME_WEEK | {"clin-ben|ct-mon@2026-01-12", "clin-ben|ct-sun@2026-02-01"}
+
+
+@pytest.mark.parametrize("fields, expected", [
+    ({"range": "sameWeek"}, SAME_WEEK),
+    ({"range": "fourWeeks"}, FOUR_WEEKS),
+    ({"range": "dates", "dates": [NEXT_MON, "2026-02-02"]},
+     {"clin-ben|ct-mon@2026-01-12", "clin-ben|ct-mon@2026-02-02"}),
+    ({"sameTypeOnly": True}, FOUR_WEEKS - {"clin-ben|early-fri@2026-01-09"}),
+    ({"partnerId": "clin-dora"}, {"clin-dora|ct-tue@2026-01-06"}),
+])
+def test_partner_range_and_filters(fields: Dict[str, Any], expected: set):
+    result = _search(_range_state(), "x", "swap", **fields)
+    assert set(_keys(_options(result))) == expected
+    assert result["checked"] == len(expected)
+
+
+def test_a_started_partner_block_is_skipped():
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), asg("mon", "ct-mon", MON, "clin-ben"),
+                             asg("fri", "ct-fri", FRI, "clin-ben")])
+    result = _search(state, "x", "swap", now=_utc("2026-01-05T07:30Z"))  # Mon 08:30 in Berlin
+    assert _keys(_options(result)) == ["clin-ben|ct-fri@2026-01-09"]
+    assert result["checked"] == 1
+
+
+@pytest.mark.parametrize("assignment_id, whole_day, message", [
+    ("ct", False, "This shift has already started."),
+    ("night", True, "A shift of this day has already started."),
+])
+def test_a_started_target_offers_nothing(assignment_id: str, whole_day: bool, message: str):
+    state = make_swap_state([asg("ct", "ct-thu", THU, "clin-anna"),
+                             asg("night", "night-thu", THU, "clin-anna"),
+                             asg("b", "ct-fri", FRI, "clin-ben")])
+    result = _search(state, assignment_id, "swap", now=_utc("2026-01-08T07:30Z"), wholeDay=whole_day)
+    target = result["target"]
+    assert target["blocked"] == {"code": "started", "message": message}
+    assert target["unit"] is not None
+    assert (target["insideNotice"], target["hoursUntilStart"]) == (False, -0.5)
+    assert target["wholeDay"] is whole_day
+    assert result["checks"] == result["targetFindings"] == _options(result) == []
+    assert (result["checked"], result["truncated"]) == (0, False)
+
+
+def test_take_hours_until_start_in_swap_mode_only():
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), asg("b", "ct-fri", FRI, "clin-ben")])
+    swap = _search(state, "x", "swap")
+    # Fri 9 Jan 08:00 in Berlin is 07:00 UTC, 191 h after NOW.
+    assert swap["best"][0]["takeHoursUntilStart"] == 191.0
+    handover = _search(state, "x")
+    assert {option["takeHoursUntilStart"] for option in _options(handover)} == {None}
+
+
+# --- Findings ---------------------------------------------------------------
+
+
+def _single_finding(result: Dict[str, Any], key: str, code: str) -> Dict[str, Any]:
+    option = _option(result, key)
+    assert option["group"] == "possible"
+    (finding,) = [f for f in option["findings"] if f["code"] == code]
+    return finding
+
+
+def test_solver_rule_finding():
+    state = make_swap_state([asg("x", "night-thu", THU, "clin-anna"), asg("b", "late-fri", FRI, "clin-ben")])
+    state.solverRules = [SolverRule(id="rule-1", name="Off after Thursday night", ifShiftRowId="night-thu",
+                                    dayDelta=1, thenType="off").model_dump()]
+    finding = _single_finding(_search(state, "x", partnerId="clin-ben"), "clin-ben|-", "solver_rule")
+    assert finding == {"code": "solver_rule", "clinicianId": "clin-ben",
+                       "message": "Ben Ott: breaks the rule “Off after Thursday night” on Fri 9 Jan.",
+                       "short": "Rule: Off after Thursday night"}
+
+
+def _ben_with(**changes: Any) -> List[Clinician]:
+    clinicians = _people()
+    for field, value in changes.items():
+        setattr(clinicians[1], field, value)
+    return clinicians
+
+
+@pytest.mark.parametrize("assignment_id, changes, code, message, short", [
+    ("ct", {"preferredWorkingTimes": {"thu": PreferredWorkingTime(startTime="07:00", endTime="15:00",
+                                                                  requirement="preference")}},
+     "preference_window", "Ben Ott prefers to work 07:00–15:00 on Thursdays.", "Outside preferred times"),
+    ("ct", {"workPattern": WorkPattern(preferredDaysOff=["thu"])},
+     "preferred_day_off", "Ben Ott prefers Thursdays off.", "Preferred day off"),
+    ("night", {"preferredClassIds": ["sec-ct", "sec-day", "sec-night", "sec-oncall"]},
+     "section_preference", "Ben Ott prefers other sections to Night duty.", "Less preferred section"),
+])
+def test_preference_findings(assignment_id: str, changes: Dict[str, Any], code: str, message: str,
+                             short: str):
+    state = make_swap_state([asg("ct", "ct-thu", THU, "clin-anna"),
+                             asg("night", "night-thu", THU, "clin-anna")], clinicians=_ben_with(**changes))
+    finding = _single_finding(_search(state, assignment_id, partnerId="clin-ben"), "clin-ben|-", code)
+    assert finding == {"code": code, "clinicianId": "clin-ben", "message": message, "short": short}
+
+
+def test_section_preference_in_a_swap_needs_a_worse_section_than_the_given_one():
+    prefs = ["sec-ct", "sec-day", "sec-night", "sec-oncall"]
+    shifts = [asg("x", "night-thu", THU, "clin-anna"), asg("b", "oncall-sat", SAT, "clin-ben")]
+    state = make_swap_state(shifts, clinicians=_ben_with(preferredClassIds=prefs))
+    option = _option(_search(state, "x", "swap"), "clin-ben|oncall-sat@2026-01-10")
+    assert "section_preference" not in [f["code"] for f in option["findings"]]
+
+
+def test_hours_above_contract_finding():
+    state = make_swap_state(_weekdays("b", "clin-ben") + [asg("x", "early-sat", SAT, "clin-anna")])
+    finding = _single_finding(_search(state, "x", partnerId="clin-ben"), "clin-ben|-", "hours_above_contract")
+    assert finding == {"code": "hours_above_contract", "clinicianId": "clin-ben",
+                       "message": "Ben Ott: week 2 at 45.0 h (contract 40 h).", "short": "+5 h over contract"}
+
+
+def _below_contract(week: int, after_hours: int, under_hours: int) -> Dict[str, Any]:
+    return {"code": "giver_below_contract", "clinicianId": "clin-anna",
+            "message": f"Anna Weber: week {week} drops to {after_hours}.0 h (contract 40 h).",
+            "short": f"−{under_hours} h under contract"}
+
+
+def test_a_contracted_givers_lost_hours_are_one_note_on_the_target():
+    result = _search(make_swap_state(_weekdays("a", "clin-anna")), "a-thu")
+    assert result["targetFindings"] == [_below_contract(2, 32, 8)]
+    # A note on the target makes no option amber: all three take the shift cleanly.
+    assert _keys(result["best"]) == ["clin-ben|-", "clin-clara|-", "clin-dora|-"]
+    assert result["possible"] == []
+    for option in result["best"]:
+        assert option["findings"] == []
+        # The note's numbers are Anna's hours card in every option's preview.
+        (anna,) = [person for person in option["hours"] if person["clinicianId"] == "clin-anna"]
+        weeks = [(week["isoWeek"], week["beforeMinutes"], week["afterMinutes"]) for week in anna["weeks"]]
+        assert weeks == [(2, 2400, 1920)]
+
+
+def test_a_note_per_touched_week_the_giver_ends_below_contract():
+    # The night on Sun 11 Jan (week 2) runs into Monday's CT (week 3): one unit.
+    state = make_swap_state([asg("night", "night-sun", SUN, "clin-anna"),
+                             asg("mon", "ct-mon", NEXT_MON, "clin-anna"),
+                             asg("tue", "ct-tue", "2026-01-13", "clin-anna")])
+    result = _search(state, "night")
+    assert len(result["target"]["unit"]["items"]) == 2
+    assert result["targetFindings"] == [_below_contract(2, 0, 40), _below_contract(3, 8, 32)]
+    assert all(f["code"] != "giver_below_contract" for o in _options(result) for f in o["findings"])
+    # 45 h before, 40 h after: still at the contract, so no note.
+    at_contract = make_swap_state(_weekdays("a", "clin-anna") + [asg("sat", "early-sat", SAT, "clin-anna")])
+    assert _search(at_contract, "sat")["targetFindings"] == []
+
+
+def test_the_target_notes_repeat_the_givers_hours_card_of_every_option():
+    state = rich_swap_state()
+    options = with_notes = 0
+    for giver in ("clin-anna", "clin-ben", "clin-e1", "clin-e2"):
+        ctx = SwapContext(state, RULES, NOW)
+        for block in ctx.blocks(giver):
+            a = block.items[0].assignment
+            req = CandidatesRequest(mode="handover", assignment={
+                "assignmentId": a.id, "rowId": a.rowId, "dateISO": a.dateISO, "clinicianId": giver})
+            result = find_candidates(SwapContext(state, RULES, NOW), req)
+            for option in result["best"] + result["possible"]:
+                options += 1
+                with_notes += bool(result["targetFindings"])
+                (card,) = [person for person in option["hours"] if person["clinicianId"] == giver]
+                below = [labels.giver_below_contract(card["name"], week["isoWeek"], week["afterMinutes"], 40)
+                         for week in card["weeks"]
+                         if week["afterMinutes"] < min(week["contractMinutes"], week["beforeMinutes"])]
+                assert result["targetFindings"] == [
+                    {"code": "giver_below_contract", "clinicianId": giver, "message": note.message,
+                     "short": note.short} for note in below]
+    assert options >= 30 and with_notes >= 10, (options, with_notes)
+
+
+def test_only_a_handover_by_a_contracted_giver_has_target_notes():
+    state = make_swap_state(_weekdays("a", "clin-anna") + [asg("b", "early-sat", SAT, "clin-ben"),
+                                                          asg("d", "ct-sun", SUN, "clin-dora")])
+    assert _search(state, "a-thu", "swap")["targetFindings"] == []
+    assert _search(state, "d")["targetFindings"] == []  # Dora has no contract hours
+    started = _search(state, "a-thu", now=_utc("2026-01-08T07:30Z"))
+    assert started["target"]["blocked"]["code"] == "started"
+    assert started["targetFindings"] == []
+    assert _cover(_hidden_ct_thu(), "ct-thu", THU)["targetFindings"] == []
+
+
+def test_partner_notice_finding():
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), asg("b", "ct-wed", WED, "clin-ben")])
+    # Ben's Wed 08:00 in Berlin is 10 h away; Anna's Thu shift 34 h.
+    result = _search(state, "x", "swap", now=_utc("2026-01-06T21:00Z"))
+    assert result["target"]["insideNotice"] is True
+    finding = _single_finding(result, "clin-ben|ct-wed@2026-01-07", "partner_notice")
+    assert finding == {"code": "partner_notice", "clinicianId": "clin-ben",
+                       "message": "Ben Ott's shift starts in 10 h (notice period 48 h).",
+                       "short": "Starts in 10 h"}
+    option = _option(result, "clin-ben|ct-wed@2026-01-07")
+    assert (option["insideNotice"], option["takeHoursUntilStart"]) == (True, 10.0)
+
+
+# --- Rest days ----------------------------------------------------------------
+
+
+def _rest(assignment_id: str, date_iso: str, clinician_id: str) -> Assignment:
+    return asg(assignment_id, "pool-rest-day", date_iso, clinician_id, locked=False)
+
+
+@pytest.mark.parametrize("assignments, moves", [
+    ([asg("x", "night-thu", THU, "clin-anna"), _rest("r", FRI, "clin-anna")],
+     [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben", "dateISO": FRI}]),
+    ([asg("x", "oncall-tue", TUE, "clin-anna"), _rest("r", WED, "clin-anna")],
+     [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben", "dateISO": WED}]),
+    ([asg("x", "night-thu", THU, "clin-anna"), _rest("r", FRI, "clin-anna"), _rest("rb", FRI, "clin-ben")],
+     []),
+    ([asg("x", "night-thu", THU, "clin-anna"), _rest("r", FRI, "clin-anna"),
+      asg("b", "late-fri", FRI, "clin-ben")], []),
+], ids=["night", "on-call", "taker-rests", "taker-works"])
+def test_rest_day_moves(assignments: List[Assignment], moves: List[Dict[str, str]]):
+    option = _option(_search(make_swap_state(assignments), "x", partnerId="clin-ben"), "clin-ben|-")
+    assert option["group"] != "blocked"
+    assert option["restDayMoves"] == moves
+    assert option["restDayRemovals"] == []
+
+
+def _plan(state: AppState, mode: str, give_id: str, partner_id: str,
+          take_id: Optional[str] = None) -> MovePlan:
+    ctx = SwapContext(state, RULES, NOW)
+
+    def unit(assignment_id: str) -> SwapUnit:
+        block = next(b for cid in ctx.by_person for b in ctx.blocks(cid)
+                     if any(i.assignment.id == assignment_id for i in b.items))
+        return SwapUnit(block.clinician_id, (block,))
+
+    return plan_option(ctx, mode, unit(give_id), partner_id, take=unit(take_id) if take_id else None)
+
+
+def test_the_takers_rest_day_on_a_received_date_is_removed():
+    rest = _rest("rb", THU, "clin-ben")
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), rest])
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert option["restDayRemovals"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert plan.rest_day_removals == [rest]
+    assert any(a is rest for a in plan.removed)
+
+
+def test_a_rest_day_on_the_end_date_of_a_received_night_stays():
+    rest = _rest("rb", FRI, "clin-ben")
+    state = make_swap_state([asg("x", "night-thu", THU, "clin-anna"), rest])
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert plan.rest_day_removals == [] and plan.rest_day_moves == []
+    assert not any(a is rest for a in plan.removed)
+
+
+def test_a_moved_rest_day_is_not_removed_twice():
+    # Anna's Rest Day after her Wed night follows the night to Ben, although
+    # Anna now works that Thursday.
+    rest = _rest("ra", THU, "clin-anna")
+    state = make_swap_state([asg("x", "night-wed", WED, "clin-anna"), rest,
+                             asg("y", "ct-thu", THU, "clin-ben")])
+    plan = _plan(state, "swap", "x", "clin-ben", "y")
+    assert [(m.from_id, m.to_id, m.date_iso) for m in plan.rest_day_moves] == [("clin-anna", "clin-ben", THU)]
+    assert plan.rest_day_removals == []
+    assert sum(a is rest for a in plan.removed) == 1
+    option = _option(_search(state, "x", "swap"), "clin-ben|ct-thu@2026-01-08")
+    assert (len(option["restDayMoves"]), option["restDayRemovals"]) == (1, [])
+
+
+MOVED_OR_REMOVED = [
+    pytest.param([asg("x", "night-thu", THU, "clin-anna"), _rest("r", FRI, "clin-anna")], "handover", None,
+                 id="moved-to-the-taker"),
+    pytest.param([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", THU, "clin-ben")], "handover", None,
+                 id="removed-from-the-taker"),
+    pytest.param([asg("x", "night-wed", WED, "clin-anna"), _rest("ra", THU, "clin-anna"),
+                  asg("y", "ct-thu", THU, "clin-ben")], "swap", "y", id="moved-off-the-givers-new-shift"),
+    pytest.param([asg("x", "ct-thu", THU, "clin-anna"), _rest("ra", FRI, "clin-anna"),
+                  asg("y", "ct-fri", FRI, "clin-ben"), _rest("rb", THU, "clin-ben")], "swap", "y",
+                 id="removed-from-both"),
+]
+
+
+@pytest.mark.parametrize("assignments, mode, take_id", MOVED_OR_REMOVED)
+def test_a_rest_day_the_plan_moves_or_removes_no_longer_counts(assignments: List[Assignment], mode: str,
+                                                                take_id: Optional[str]):
+    state = make_swap_state(assignments)
+    plan = _plan(state, mode, "x", "clin-ben", take_id)
+    assert plan.rest_day_moves or plan.rest_day_removals
+    # Search (the slice) and apply (the whole calendar) both count the plan's own Rest Days.
+    assert scoped_gate(SwapContext(state, RULES, NOW), plan)[0] == []
+    assert full_gate(state, plan) == ([], [])
+    (option,) = _options(_search(state, "x", mode, partnerId="clin-ben"))
+    # A moved Rest Day costs nobody a day off; a removed one is noted once per person-day.
+    removed_days = {(a.clinicianId, a.dateISO) for a in plan.rest_day_removals}
+    assert option["group"] == ("possible" if removed_days else "best")
+    assert [finding["code"] for finding in option["findings"]] == ["rest_day_removed"] * len(removed_days)
+
+
+BEN_REST_DAY_REMOVED = {"code": "rest_day_removed", "clinicianId": "clin-ben",
+                        "message": "Ben Ott has a Rest Day on Thu 8 Jan; it will be removed.",
+                        "short": "Rest Day removed"}
+
+
+def test_every_duplicate_of_the_takers_rest_day_is_removed():
+    first, second = _rest("rb", THU, "clin-ben"), _rest("rb-twice", THU, "clin-ben")
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), first, second])
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert plan.rest_day_removals == [first, second]
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    # The preview and the note name the person-day once.
+    assert (option["group"], option["findings"]) == ("possible", [BEN_REST_DAY_REMOVED])
+    assert option["restDayRemovals"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
+
+
+def test_a_partner_whose_rest_day_the_option_removes_comes_after_free_partners_with_a_note():
+    # Since v1.75 a Rest Day is a day off placed by hand, and the person picker
+    # lists such a person after those without a warning. Ben rests on Thursday,
+    # Clara is free, Dora is on vacation.
+    clinicians = _people()
+    clinicians[3].vacations.append(VacationRange(id="v", startISO=THU, endISO=THU))
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", THU, "clin-ben")],
+                            clinicians=clinicians)
+    result = _search(state, "x")
+    assert (_keys(result["best"]), _keys(result["possible"]), _keys(result["blocked"])) == (
+        ["clin-clara|-"], ["clin-ben|-"], ["clin-dora|-"])
+    ben = _option(result, "clin-ben|-")
+    assert ben["findings"] == [BEN_REST_DAY_REMOVED]
+    assert ben["restDayRemovals"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
+    assert _option(result, "clin-clara|-")["findings"] == []
+
+
+def test_a_swap_notes_the_rest_day_of_each_person_who_loses_one():
+    # Anna takes Ben's Friday on her Rest Day, Ben takes her Thursday on his.
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("ra", FRI, "clin-anna"),
+                             asg("y", "ct-fri", FRI, "clin-ben"), _rest("rb", THU, "clin-ben")])
+    option = _option(_search(state, "x", "swap"), "clin-ben|ct-fri@2026-01-09")
+    assert option["group"] == "possible"
+    assert [(f["code"], f["clinicianId"], f["message"]) for f in option["findings"]] == [
+        ("rest_day_removed", "clin-ben", "Ben Ott has a Rest Day on Thu 8 Jan; it will be removed."),
+        ("rest_day_removed", "clin-anna", "Anna Weber has a Rest Day on Fri 9 Jan; it will be removed."),
+    ]
+
+
+def test_a_moved_rest_day_takes_every_duplicate_of_the_givers():
+    # The giver keeps no Rest Day after the night she gives away, and the
+    # taker gets one: else undo would find the left-behind entry and refuse.
+    first, second = _rest("ra", FRI, "clin-anna"), _rest("ra-twice", FRI, "clin-anna")
+    state = make_swap_state([asg("x", "night-thu", THU, "clin-anna"), first, second])
+    plan = _plan(state, "handover", "x", "clin-ben")
+    (move,) = plan.rest_day_moves
+    assert (move.from_id, move.to_id, move.date_iso, move.entries) == ("clin-anna", "clin-ben", FRI,
+                                                                      (first, second))
+    assert plan.rest_day_removals == []
+    assert sum(a is first for a in plan.removed) == sum(a is second for a in plan.removed) == 1
+    after = apply_plan(state.assignments, plan)
+    assert [(a.clinicianId, a.dateISO) for a in after if a.rowId == "pool-rest-day"] == [("clin-ben", FRI)]
+    assert full_gate(state, plan) == ([], [])
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert (option["group"], option["findings"], option["restDayRemovals"]) == ("best", [], [])
+    assert option["restDayMoves"] == [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben",
+                                       "dateISO": FRI}]
+
+
+def _ben_with_friday_shift(kind: str) -> AppState:
+    """Anna's night before her Friday Rest Day, and a Friday shift of Ben's the
+    grid does not show: hidden by his vacation, or in a slot without valid
+    times. The REST_DAY rule counts both."""
+    clinicians = _people()
+    shifts = [asg("x", "night-thu", THU, "clin-anna"), _rest("r", FRI, "clin-anna")]
+    if kind == "hidden":
+        clinicians[1].vacations.append(VacationRange(id="v", startISO=FRI, endISO=FRI))
+        shifts.append(asg("b", "late-fri", FRI, "clin-ben"))
+    else:
+        shifts.append(asg("b", "bad-fri", FRI, "clin-ben"))
+    state = make_swap_state(shifts, clinicians=clinicians)
+    state.weeklyTemplate.locations[0].slots.append(make_template_slot(
+        "bad-fri", col_band_id="col-fri", block_id="block-night", start_time="20:00", end_time="08:00"))
+    return state
+
+
+@pytest.mark.parametrize("kind", ["hidden", "untimed"])
+def test_a_rest_day_never_follows_a_night_onto_a_shift_the_taker_holds(kind: str):
+    state = _ben_with_friday_shift(kind)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert plan.rest_day_moves == []
+    assert not any(v.code == VIOLATION_REST_DAY for v in full_gate(state, plan)[0])
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert (option["group"], option["restDayMoves"]) == ("best", [])
+
+
+REST_DAY_REASON = ("rest_day", "Rest Day: Ben Ott has a Rest Day on Thu 8 Jan.")
+
+
+def test_a_shift_on_a_rest_day_the_plan_keeps_is_blocked_with_a_readable_reason(monkeypatch):
+    # The search always removes the taker's Rest Day; without that removal
+    # Ben would rest and work on Thursday.
+    monkeypatch.setattr(matching, "rest_day_removals", lambda ctx, plan: [])
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", THU, "clin-ben")])
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    new = scoped_gate(ctx, plan)[0]
+    assert [(v.code, v.clinician_id, v.date_iso, v.slot_id) for v in new] == [
+        (VIOLATION_REST_DAY, "clin-ben", THU, "ct-thu")]
+    assert reason_for(ctx, plan, new) == REST_DAY_REASON
+    assert reason_for(ctx, plan, full_gate(state, plan)[0]) == REST_DAY_REASON
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert (option["group"], option["reason"]) == ("blocked", dict(zip(("code", "message"), REST_DAY_REASON)))
+
+
+def test_a_rest_day_the_partner_already_works_on_is_carried_over():
+    # Ben rests on Tuesday but works its early shift: the calendar breaks
+    # REST_DAY already, and the hand-over of Thursday does not make it worse.
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", TUE, "clin-ben"),
+                             asg("b", "early-tue", TUE, "clin-ben")])
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert full_gate(state, plan)[0] == []
+    result = _search(state, "x", partnerId="clin-ben")
+    option = _option(result, "clin-ben|-")
+    assert (option["group"], option["preexisting"]) == ("best", ["rest_day"])
+    assert result["checks"][1:3] == [{"code": "vacation", "label": "No shift moved onto a vacation day"},
+                                     {"code": "rest_day", "label": "No new shift on a Rest Day"}]
+
+
+def test_a_covers_slice_sees_the_rest_day_of_a_co_holder():
+    # ct-thu needs two people: Clara holds it though she rests that day, and
+    # Anna's place is hidden by her vacation. The slice holds only Clara's
+    # shift of her days, but her Rest Day there still counts.
+    anna = _person("clin-anna", "Anna Weber")
+    anna.vacations.append(VacationRange(id="v", startISO=THU, endISO=THU))
+    state = make_swap_state([asg("hidden", "ct-thu", THU, "clin-anna"), asg("c", "ct-thu", THU, "clin-clara"),
+                             _rest("rc", THU, "clin-clara")],
+                            clinicians=[anna] + default_clinicians()[1:], slot_overrides={f"ct-thu__{THU}": 1})
+    ctx = SwapContext(state, RULES, NOW)
+    info = open_slot(ctx.vctx, ctx.by_instance, "ct-thu", THU)
+    plan = plan_option(ctx, "cover", instance_unit(ctx.vctx, "ct-thu", THU), "clin-ben", cover=info,
+                       hidden_removal=info.hidden[0])
+    new, carried = scoped_gate(ctx, plan)
+    assert new == []
+    assert [(v.code, v.clinician_id, v.slot_id) for v in carried] == [(VIOLATION_REST_DAY, "clin-clara", "ct-thu")]
+
+
+# --- Long stretches and the date range ----------------------------------------
+
+
+WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _on_calls(clinician_id: str, first: str, days: int) -> List[Assignment]:
+    """24 h on-calls every day: one block of ``days`` days."""
+    dates = [date.fromisoformat(first) + timedelta(days=k) for k in range(days)]
+    return [asg(f"call-{k}", f"oncall-{WEEKDAY_KEYS[day.weekday()]}", day.isoformat(), clinician_id)
+            for k, day in enumerate(dates)]
+
+
+def _texts(warnings: Iterable[Any]) -> List[tuple]:
+    return sorted((w.id, w.message, w.short) for w in warnings)
+
+
+@pytest.mark.parametrize("calls, given, new_id, new_message", [
+    # Two weeks of background on-call up to Monday 08:00, then the handed-over
+    # CT: one block that starts long before the slice window.
+    (("2025-12-29", 14), asg("x", "ct-mon", NEXT_MON, "clin-anna"),
+     "long:clin-ben:2025-12-29T08:00:2026-01-12T16:00",
+     "Ben Ott: 344.0 h without a break, Mon 29 Dec 08:00 → Mon 12 Jan 16:00 (maximum 24 h)."),
+    # A night that runs into two weeks of on-call: the block ends long after it.
+    ((SAT, 14), asg("x", "night-fri", FRI, "clin-anna"),
+     "long:clin-ben:2026-01-09T20:00:2026-01-24T08:00",
+     "Ben Ott: 348.0 h without a break, Fri 9 Jan 20:00 → Sat 24 Jan 08:00 (maximum 24 h)."),
+], ids=["starts-before", "ends-after"])
+def test_the_warnings_of_a_stretch_longer_than_the_slice_window_are_the_calendars(
+        calls: tuple, given: Assignment, new_id: str, new_message: str):
+    # Without contract hours Ben's weeks of on-call are no weekly-hours block.
+    state = make_swap_state(_on_calls("clin-ben", *calls) + [given], clinicians=_ben_with(workingHoursPerWeek=None),
+                            solver_settings={"onCallRestEnabled": False})
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    lo, hi = slice_window(ctx, plan.moved_dates)
+    assert calls[0] < lo or hi < (date.fromisoformat(calls[0]) + timedelta(days=calls[1])).isoformat()
+    slice_new = plan_warnings(ctx, plan, scope="slice")
+    assert _texts(slice_new) == _texts(plan_warnings(ctx, plan, scope="full"))
+    assert [(w.id, w.message) for w in slice_new if w.code == "block_too_long"] == [(new_id, new_message)]
+    assert _texts(plan_kept_warnings(ctx, plan, scope="slice")) == _texts(
+        plan_kept_warnings(ctx, plan, scope="full"))
+    # The search shows the ids apply recomputes on the whole calendar.
+    ben = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert [w["id"] for w in ben["warnings"]] == [w.id for w in slice_new]
+
+
+def test_a_stretch_that_ends_after_the_window_still_sees_the_shift_after_it():
+    # Anna's Tuesday night runs into Ben's two weeks of on-call, which end on
+    # Wed 21 Jan 08:00; Ben works late that day, so the night block has no free
+    # day after it. Both lie far beyond the slice window of 6 Jan.
+    shifts = [asg("x", "night-tue", TUE, "clin-anna"), asg("late", "late-wed", "2026-01-21", "clin-ben")]
+    state = make_swap_state(_on_calls("clin-ben", WED, 14) + shifts, clinicians=_ben_with(workingHoursPerWeek=None),
+                            solver_settings={"onCallRestEnabled": False})
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert slice_window(ctx, plan.moved_dates)[1] == "2026-01-18"
+    slice_new = plan_warnings(ctx, plan, scope="slice")
+    assert _texts(slice_new) == _texts(plan_warnings(ctx, plan, scope="full"))
+    assert [w.id for w in slice_new if w.code == "night_no_free_day"] == [
+        "night:clin-ben:2026-01-06T20:00:2026-01-21"]
+
+
+def test_an_untouched_stretch_across_the_window_edge_is_kept_as_the_calendar_has_it():
+    # Ben's on-calls from 1 to 14 Jan cross the window of a handover on Wed 21 Jan.
+    state = make_swap_state(_on_calls("clin-ben", "2026-01-01", 14) + [asg("x", "ct-wed", "2026-01-21", "clin-anna")],
+                            solver_settings={"onCallRestEnabled": False})
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert slice_window(ctx, plan.moved_dates)[0] == "2026-01-12"
+    kept = plan_kept_warnings(ctx, plan, scope="slice")
+    assert [w.id for w in kept] == ["long:clin-ben:2026-01-01T08:00:2026-01-15T08:00"]
+    assert _texts(kept) == _texts(plan_kept_warnings(ctx, plan, scope="full"))
+
+
+def test_the_slice_window_stays_inside_the_date_range():
+    ctx = SwapContext(make_swap_state(), RULES, NOW)
+    assert slice_window(ctx, ["9999-12-31"]) == ("9999-12-20", "9999-12-31")
+    assert slice_window(ctx, ["0001-01-03"]) == ("0001-01-01", "0001-01-14")
+
+
+# --- Pre-existing problems ----------------------------------------------------
+
+
+def test_a_weekly_overload_the_handover_lowers_is_preexisting():
+    days = zip(("mon", "tue", "wed", "thu", "fri", "sat", "sun"), (MON, TUE, WED, THU, FRI, SAT, SUN))
+    state = make_swap_state([asg(f"b-{d}", f"ct-{d}", day, "clin-ben") for d, day in days])  # 56 h
+    option = _option(_search(state, "b-thu", partnerId="clin-anna"), "clin-anna|-")
+    assert option["group"] != "blocked"
+    assert option["preexisting"] == ["weekly_hours"]
+
+
+def test_a_kept_short_rest_is_preexisting():
+    state = make_swap_state([asg("l", "late-mon", MON, "clin-anna"), asg("e", "early-tue", TUE, "clin-anna"),
+                             asg("x", "ct-thu", THU, "clin-anna")])
+    result = _search(state, "x", partnerId="clin-ben", rules=SwapRules(min_rest_hours=16))
+    option = _option(result, "clin-ben|-")
+    assert option["preexisting"] == ["rest"]
+    assert option["warnings"] == []
+
+
+def test_a_vacation_hidden_shift_is_never_a_preexisting_vacation_problem():
+    anna = _person("clin-anna", "Anna Weber")
+    anna.vacations.append(VacationRange(id="v", startISO=TUE, endISO=TUE))
+    state = make_swap_state([asg("h", "ct-tue", TUE, "clin-anna"), asg("x", "ct-thu", THU, "clin-anna")],
+                            clinicians=[anna] + default_clinicians()[1:])
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert option["group"] != "blocked"
+    assert option["preexisting"] == []
+
+
+# --- Blocked targets ----------------------------------------------------------
+
+
+def test_blocked_targets_without_a_unit():
+    anna = _person("clin-anna", "Anna Weber")
+    anna.vacations.append(VacationRange(id="v", startISO=FRI, endISO=FRI))
+    state = make_swap_state([_rest("rest", THU, "clin-anna"), asg("hidden", "ct-fri", FRI, "clin-anna"),
+                             asg("untimed", "bad-sat", SAT, "clin-anna")],
+                            clinicians=[anna] + default_clinicians()[1:])
+    # 20:00-08:00 without an end-day offset has no valid interval.
+    state.weeklyTemplate.locations[0].slots.append(make_template_slot(
+        "bad-sat", col_band_id="col-sat", block_id="block-night", start_time="20:00", end_time="08:00"))
+    expected = {
+        "rest": ("pool_row", "Rest Day and Vacation entries can't be swapped.", THU, "Rest Day"),
+        "hidden": ("vacation_hidden", "Anna Weber is on vacation on Fri 9 Jan; this shift is hidden. "
+                   "Use Find cover on the open slot instead.", FRI, "CT"),
+        "untimed": ("no_times", "This shift has no valid times in the template.", SAT, "Night duty"),
+    }
+    for assignment_id, (code, message, day, section) in expected.items():
+        result = _search(state, assignment_id, "swap")
+        target = result["target"]
+        assert target["blocked"] == {"code": code, "message": message}
+        assert (target["dateISO"], target["sectionName"], target["holderId"]) == (day, section, "clin-anna")
+        assert target["unit"] is target["startsAt"] is target["hoursUntilStart"] is None
+        assert (target["blocksOnDate"], target["wholeDay"], target["insideNotice"]) == (0, False, False)
+        assert result["checks"] == result["targetFindings"] == result["closest"] == []
+
+
+def test_cover_targets_inactive_full_and_with_holders():
+    inactive = _cover(make_swap_state(), "ct-fri", THU)["target"]
+    assert inactive["blocked"] == {"code": "inactive_slot",
+                                   "message": "This slot does not exist on this day."}
+    assert inactive["unit"] is inactive["openCount"] is inactive["startsAt"] is None
+    assert inactive["sectionName"] == "CT"
+
+    full = _cover(make_swap_state([asg("b", "ct-thu", THU, "clin-ben")]), "ct-thu", THU)
+    assert full["target"]["blocked"] == {"code": "not_open", "message": "This slot has no open position."}
+    assert full["target"]["unit"]["items"][0]["clinicianId"] is None
+    assert full["target"]["openCount"] == 0
+    assert full["checks"] == full["targetFindings"] == []
+
+    anna = _person("clin-anna", "Anna Weber")
+    anna.vacations.append(VacationRange(id="v", startISO=THU, endISO=THU))
+    state = make_swap_state([asg("b", "ct-thu", THU, "clin-ben"), asg("a", "ct-thu", THU, "clin-anna")],
+                            clinicians=[anna] + default_clinicians()[1:],
+                            slot_overrides={f"ct-thu__{THU}": 1})
+    result = _cover(state, "ct-thu", THU)
+    assert result["target"]["excludedPartnerIds"] == ["clin-anna", "clin-ben"]
+    assert result["target"]["blocked"] is None
+    assert {option["partnerId"] for option in _options(result)} == {"clin-clara", "clin-dora"}
+    assert [check["code"] for check in result["checks"]][-4:] == ["capacity", "rest", "night_free_day",
+                                                                   "block_length"]
+
+
+# --- Baseline cache -----------------------------------------------------------
+
+
+def test_two_blocks_of_one_partner_in_one_week_share_a_baseline(monkeypatch):
+    baselines: List[ValidationReport] = []
+    original = matching.validate_assignments
+
+    def counting(*args: Any, **kwargs: Any) -> ValidationReport:
+        baselines.append(original(*args, **kwargs))
+        return baselines[-1]
+
+    monkeypatch.setattr(matching, "validate_assignments", counting)
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), asg("tue", "ct-tue", TUE, "clin-ben"),
+                             asg("fri", "ct-fri", FRI, "clin-ben")])
+    result = _search(state, "x", "swap")
+    assert result["totals"]["best"] == 2
+    assert len(baselines) == 1
+
+
+def test_the_search_reads_the_calendars_rest_days_once(monkeypatch):
+    # The gate runs once per option: it must not scan the whole calendar for
+    # Rest Days each time (only building the search's context does).
+    scanned: List[int] = []
+    original = validation.manual_rest_days
+
+    def counting(*assignment_lists: List[Assignment]):
+        scanned.append(sum(len(assignments) for assignments in assignment_lists))
+        return original(*assignment_lists)
+
+    monkeypatch.setattr(validation, "manual_rest_days", counting)
+    state = rich_swap_state()
+    night = next(a for a in state.assignments if a.rowId.startswith("night-") and a.clinicianId == "clin-anna")
+    result = _search(state, night.id, "swap")
+    assert result["checked"] >= 20 and result["totals"]["best"] + result["totals"]["possible"] > 0
+    assert len([n for n in scanned if n >= len(state.assignments)]) <= 1

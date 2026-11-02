@@ -1,8 +1,9 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { RenderedAssignment } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { EXCEL_CYAN, buildClinicSheetModel, buildMonthDays } from "../../lib/clinicSheet";
+import type { ComponentProps } from "react";
 import ClinicSheetGrid from "./ClinicSheetGrid";
 
 const makeSlotRow = (overrides: Partial<ScheduleRow> = {}): ScheduleRow => ({
@@ -38,9 +39,14 @@ const setup = (
     readOnly?: boolean;
     source?: RenderedAssignment["source"];
     onToggleAssignmentLock?: (assignment: { id: string; rowId: string; dateISO: string }) => void;
+    onFindSwap?: ComponentProps<typeof ClinicSheetGrid>["onFindSwap"];
+    onFindCover?: ComponentProps<typeof ClinicSheetGrid>["onFindCover"];
+    requiredSlots?: number;
+    /** Jonas Keller on vacation the same day (a pool name). */
+    withVacation?: boolean;
   } = {},
 ) => {
-  const slotRow = makeSlotRow();
+  const slotRow = makeSlotRow(options.requiredSlots === undefined ? {} : { requiredSlots: options.requiredSlots });
   const groupedRow: ScheduleRow = {
     ...slotRow,
     id: "group-loc-default__band-1",
@@ -56,6 +62,11 @@ const setup = (
     { id: "assign-1", rowId: slotRow.id, dateISO: "2026-07-06", clinicianId: "clin-1", source: options.source },
   ];
   const assignmentMap = new Map([[`${slotRow.id}__2026-07-06`, assignments]]);
+  if (options.withVacation) {
+    assignmentMap.set("pool-vacation__2026-07-06", [
+      { id: "vac-2", rowId: "pool-vacation", dateISO: "2026-07-06", clinicianId: "clin-2" },
+    ]);
+  }
   const onAddAssignment = vi.fn();
   const onRemoveAssignment = vi.fn();
   const onMoveWithinDay = vi.fn();
@@ -65,7 +76,7 @@ const setup = (
       assignmentMap={assignmentMap}
       rows={[groupedRow, poolRow]}
       readOnly={options.readOnly}
-      getClinicianName={(id) => (id === "clin-1" ? "Anna Bergmann" : "Unbekannt")}
+      getClinicianName={(id) => ({ "clin-1": "Anna Bergmann", "clin-2": "Jonas Keller" })[id] ?? "Unbekannt"}
       getIsQualified={() => true}
       clinicians={[
         {
@@ -85,6 +96,8 @@ const setup = (
       onRemoveAssignment={onRemoveAssignment}
       onMoveWithinDay={onMoveWithinDay}
       onToggleAssignmentLock={options.onToggleAssignmentLock}
+      onFindSwap={options.onFindSwap}
+      onFindCover={options.onFindCover}
     />,
   );
   return { onAddAssignment, onRemoveAssignment, onMoveWithinDay, slotRow };
@@ -260,5 +273,67 @@ describe("ClinicSheetGrid", () => {
 
   it("uses the sheet cyan constant for weekend blocks", () => {
     expect(EXCEL_CYAN).toBe("#00CCFF");
+  });
+});
+
+describe("ClinicSheetGrid find swap and cover", () => {
+  const findSwapButton = () => screen.getByRole("button", { name: "Find swap for Anna Bergmann" });
+  const nameOf = (element: HTMLElement) => element.closest("[data-sheet-name]") as HTMLElement;
+
+  it("puts the swap button on slot names only and keys them for the preview outline", () => {
+    const onFindSwap = vi.fn();
+    setup({ source: "manual", onToggleAssignmentLock: vi.fn(), onFindSwap, withVacation: true });
+    const name = nameOf(findSwapButton());
+    expect(name.getAttribute("data-sheet-assignment-key")).toBe("slot-mri__mon__2026-07-06__clin-1");
+    expect(name.hasAttribute("data-assignment-key")).toBe(false);
+    const vacation = nameOf(screen.getByText("Keller"));
+    expect(vacation.hasAttribute("data-sheet-assignment-key")).toBe(false);
+    expect(within(vacation).queryByRole("button", { name: /Find swap/ })).toBeNull();
+    fireEvent.click(findSwapButton());
+    expect(onFindSwap).toHaveBeenCalledWith({
+      assignmentId: "assign-1",
+      rowId: "slot-mri__mon",
+      dateISO: "2026-07-06",
+      clinicianId: "clin-1",
+    });
+  });
+
+  it("locked name: the button sits left of the in-row lock, touch room is a margin of the name", () => {
+    const onFindSwap = vi.fn();
+    setup({ source: "manual", onToggleAssignmentLock: vi.fn(), onFindSwap });
+    expect(findSwapButton().className).toContain("right-[21px]");
+    const name = nameOf(findSwapButton());
+    const text = name.querySelector(".pill-swap-fade-inrow") as HTMLElement;
+    expect(text.className).toContain("[@media(hover:none)]:mr-5");
+    expect(name.className).not.toContain("[@media(hover:none)]:pr-");
+    const lock = within(name).getByRole("button", { name: "Lock assignment for Anna Bergmann" });
+    fireEvent.keyDown(lock, { key: "s" });
+    expect(onFindSwap).toHaveBeenCalledOnce();
+  });
+
+  it("unlocked name: the button sits left of the hover lock, with touch room for both", () => {
+    setup({ source: "solver", onToggleAssignmentLock: vi.fn(), onFindSwap: vi.fn() });
+    expect(findSwapButton().className).toContain("right-[19px]");
+    const name = nameOf(findSwapButton());
+    expect(name.className).toContain("[@media(hover:none)]:pr-10");
+    expect(name.className).not.toContain("[@media(hover:none)]:pr-5");
+    expect(name.querySelector(".pill-swap-fade")).not.toBeNull();
+    expect(name.querySelector(".pill-lock-fade")).toBeNull();
+  });
+
+  it("offers \"Find cover…\" in the picker of an area with an open position only", () => {
+    const onFindCover = vi.fn();
+    const { slotRow } = setup({ onFindCover });
+    fireEvent.click(sheetCell(slotRow.id, "2026-07-06"));
+    fireEvent.click(screen.getByRole("button", { name: "Find cover for this slot" }));
+    expect(onFindCover).toHaveBeenCalledWith({ rowId: slotRow.id, dateISO: "2026-07-06" });
+    expect(screen.queryByPlaceholderText("Search clinicians...")).toBeNull();
+  });
+
+  it("shows no \"Find cover…\" for a full area", () => {
+    const { slotRow } = setup({ onFindCover: vi.fn(), requiredSlots: 1 });
+    fireEvent.click(sheetCell(slotRow.id, "2026-07-06"));
+    expect(screen.getByPlaceholderText("Search clinicians...")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Find cover for this slot" })).toBeNull();
   });
 });

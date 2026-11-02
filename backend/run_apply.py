@@ -13,8 +13,7 @@ from .db import _get_connection, _utcnow_iso
 from .models import AppState, Assignment
 from .snapshots import _write_auto_backup
 from .state import _load_state, _normalize_state, _save_state
-from .validation import validate_assignments
-from .constraint_policy import violation_key, is_new_or_worsened
+from .constraint_policy import new_violations
 
 
 def planning_fingerprint(state: AppState) -> str:
@@ -52,10 +51,8 @@ def _candidate(state, run):
 
 
 def _new_violations(state, baseline, combined, only_required):
-    check = lambda plan: validate_assignments(state, plan, only_fill_required=only_required).violations
-    baseline_context = {violation_key(v): v.context for v in check(baseline)}
-    return [asdict(v) for v in check(combined)
-            if is_new_or_worsened(v, baseline_context)]
+    """Dicts of new or worse violations (kept for callers and tests)."""
+    return [asdict(v) for v in new_violations(state, baseline, combined, only_fill_required=only_required)]
 
 
 def _agent_debug(run):

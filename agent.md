@@ -17,7 +17,7 @@ Where to look first
 - Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
 - **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 6.5.
 - Solver live stats: `src/lib/solverStats.ts`
-- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `holiday-region`, `model-settings`, `my-plan`, `team-page`
+- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `holiday-region`, `model-settings`, `my-plan`, `team-page`, `swap-assistant`
 - My plan (v1.64): `src/components/myPlan/MyPlanView.tsx`, pure model `src/lib/myPlan/`, preferences `src/lib/userPreferences.ts` + `backend/preferences.py`
 - API client: `src/api/client.ts`
 - Settings UI: `src/components/schedule/SettingsView.tsx`
@@ -89,7 +89,8 @@ Cells
 - Drag/drop does not block rule-violating placements (same-day location mix, multiple shifts); solver enforces rules but manual overrides are allowed and shown in red. Overlap within the same day is blocked by drag/drop (uses time intervals).
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
-- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.80: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`).
+- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.80: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`). A long warning wraps below the name, which keeps at least 7rem (v1.81; before, it squeezed the name to a few pixels).
+- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.81) that opens the swap drawer in cover mode for that slot instance (both grids). It stays below the scrolling list, last in Tab order.
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -106,6 +107,7 @@ Clinic sheet layout (Klinik-Monatslayout)
 Pills
 - Team grid (since v1.69 always): person colors — fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Since v1.71 the palette has 20 colors in two tones (light fill + dark text, or saturated fill + white text), ordered so the first 12 fills differ by ≥ 15 ΔE00 (all 20 by ≥ 9). Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
+- Find swap (⇄, v1.81, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
 - Warning icons are small circular badges at top-right of the pill.
@@ -269,7 +271,8 @@ Testing
   - Default non-admin test user for local E2E: `testuser` / `sdjhfl34-wfsdfwsd2` (set `ENABLE_E2E_TEST_USER=0` to disable creation, do not use in production).
   - In sandboxed runs, Playwright may need escalated permissions to access `localhost:8000` and launch Chromium (otherwise EPERM/permission-denied errors).
   - Diagnostics on failure: console, page errors, failed requests, >=400 responses, screenshot, HTML snapshot, and trace (see `e2e/fixtures.ts`).
-  - Mocked-API specs: the team grid shows the built-in demo calendar (`src/data/mockData.ts`, row band "Row 1") at once and the mocked one only after `GET /v1/state` has answered, so a visible `[data-schedule-grid]` does not mean the mocked calendar is in. Wait for it before reading or clicking (`openCalendar` in `e2e/team-page.spec.ts` waits for a cell of the mocked template), and assert on lists with `expect.poll`: a single `evaluateAll` does not retry.
+  - Mocked-API specs: the team grid shows the built-in demo calendar (`src/data/mockData.ts`, row band "Row 1") at once and the mocked one only after `GET /v1/state` has answered, so a visible `[data-schedule-grid]` does not mean the mocked calendar is in. Wait for it before reading or clicking (`openCalendar` in `e2e/team-page.spec.ts` and `e2e/swap-assistant.spec.ts` waits for a cell of the mocked template), and assert on lists with `expect.poll`: a single `evaluateAll` does not retry.
+  - CI runs the specs with Playwright's own browser build (`npx playwright install --with-deps chromium`: the headless shell of Chromium 143 for @playwright/test 1.57). A newer local Chromium can pass what CI fails (v1.81: with "nearest", Chromium 143's scrollIntoView does not scroll at all for an element already inside the scroll box, so scroll-margin has no effect; Chrome 153 honours it), so run the CI spec list with Playwright's build before pushing a scrolling or layout change.
   - PDF export test calls `/v1/pdf/week` and asserts the generated PDF has exactly one page.
   - Print layout test opens `/print/week` in print media and asserts the scaled schedule fits within one A4 page (portrait or landscape) and fills at least 70% of one dimension.
   - ColBand explosion tests (`e2e/colband-explosion.spec.ts`): verify colBand counts stay stable through settings, Copy Day, column operations, and solver runs; checks for console explosion errors.
@@ -799,6 +802,20 @@ A solver-independent module that encodes the **hard** constraints of the CP-SAT
 solver as pure functions. Use it anywhere a proposed set of assignments needs a
 pass/fail check — LLM-generated schedules, external imports, UI conflict
 badges, debug tooling.
+
+Every validator and `validate_assignments` take an optional keyword
+`context=` (v1.81): `build_validation_context(state)` precomputes the template
+and roster lookups of ONE state object for callers that validate many
+assignment lists of it (the swap search), the calendar's Rest Days included.
+The result is identical with or without it; a context of another state object
+raises `ValueError`. Every other caller (solvers, agent, run apply, the swap
+apply gate) passes none. `validate_rest_days`, `validate_assignments` and
+`constraint_policy.classify_violations` / `new_violations` also take
+`own_rest_days=` (v1.81, default False): with it only the checked list's own
+Rest Day entries count, so for a list that is a whole plan after a change, a
+Rest Day the change moved away or removed no longer counts. Only the swap
+gates set it; every other caller keeps the union of `state.assignments` and
+the list described below.
 
 ### What it checks
 All return `list[Violation]`; `validate_assignments()` aggregates them into a
@@ -1366,6 +1383,7 @@ Endpoints
 - `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots), `POST /v1/state/snapshots/import-backup` (auto-backup before a shifts file import)
 - `GET /v1/me/preferences`, `PUT /v1/me/preferences` (per-user UI preferences for My plan; outside AppState, 32 KB body cap → 413)
 - `GET /v1/solve/runs`, `GET /v1/solve/runs/{id}`, `POST /v1/solve/runs/{id}/apply|discard|feedback` (run inbox)
+- `POST /v1/swaps/candidates`, `POST /v1/swaps/apply`, `POST /v1/swaps/{id}/undo`, `GET /v1/swaps/history` (v1.81 swap assistant; the owner's JWT only, never web or iCal tokens)
 - `GET|PUT /v1/agent/settings`, `POST /v1/agent/chat-test`, `POST /v1/agent/model-check` (AI planning settings; `PUT /v1/agent/settings`, `chat-test` and `model-check` are admin only)
 - `GET /v1/admin/solver-runs[/{id}]`, `GET /v1/admin/run-feedback`, `DELETE /v1/admin/run-feedback/{id}`, `GET /v1/admin/schedule-changes` (admin only)
 - `GET /v1/ical/publish`
@@ -1549,11 +1567,15 @@ Frontend
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
 - `src/lib/weeklyHours.ts` (v1.80: weekly hours per ISO week as the backend gate counts them; the picker's "Over weekly limit")
+- `src/lib/weeklyHours.crossCheck.json` (v1.81, test data only: one calendar with the week totals and limits that the picker, the swap's hours card and cover search and `validate_weekly_hours` must all give, and the hours that the picker and the cover search print for each person over the limit; read by `weeklyHours.crossCheck.test.ts` and `backend/tests/test_weekly_hours_crosscheck.py`)
 - `src/lib/templateLimits.ts` (v1.64: `MAX_TOTAL_COLBANDS` = 300, `countTemplateColBands`)
 - `src/lib/time.ts` (v1.64: the one strict `parseTimeToMinutes`)
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
 - `src/lib/clipboard.ts` (v1.64: `copyTextToClipboard`, reports success)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
+- `src/components/swaps/*` (v1.81 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
+- `src/lib/swaps/*` (v1.81: `types.ts` = the API contract, `format.ts` = pure labels and the apply request, `reveal.ts` = `nearestScrollDelta`, the scroll offsets of Reveal on hover)
+- `src/pages/swapFlow.ts` (v1.81: search, apply and undo order — save only unsaved edits, send, hydrate)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
@@ -1578,6 +1600,7 @@ Backend
 - `backend/snapshots.py` (calendar snapshots)
 - `backend/agent_budget.py` (agent settings, chat test, model check, spend)
 - `backend/schedule_changes.py` (schedule change log, admin endpoint)
+- `backend/swaps/*` (v1.81 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
 - `backend/account_lifecycle.py` (account generation/identity checks)
 - `backend/request_logging.py` (redacted access logging)
 - `backend/ical.py` (ICS generation for subscription feeds)
@@ -3491,6 +3514,319 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   "Run:" line), `HelpView.test.tsx` (the repair's promise).
 - Deploy notes: no schema or data change. Version 1.80 (80).
 
+## v1.81 — Swap assistant
+
+"Find swap" for the rota planner: swap a shift for one of a colleague's
+(swap), give it away (handover) or fill an open position (cover), with the
+server checking every option against all planning rules.
+
+- **Units are blocks.** A person's visible items (non-pool, slot with times,
+  holder not on vacation that day) merge into work blocks on the absolute
+  minute axis: touching or overlapping items join, across midnight too (a
+  night and its next-morning handover). A swap always moves whole blocks;
+  "Whole day" moves every block of the person that starts that day.
+  Vacation-hidden assignments are never part of a unit; cover can remove one
+  (`backend/swaps/blocks.py`).
+- **Gate.** `constraint_policy.new_violations` (run apply's rule: no new or
+  worse violation; `run_apply._new_violations` is now a thin wrapper) with
+  `only_fill_required=True`. The search validates a two-person slice (both
+  people's stored assignments in the whole ISO weeks of the moved dates plus
+  at least 7 days; cover adds the instance's co-holders) with references
+  skipped and a `ValidationContext`; one baseline per partner and window is
+  cached. Apply and undo re-check the whole calendar without a context. All
+  three gates pass `own_rest_days=True` (see the Rest Days below).
+  `backend/tests/test_swap_property.py` asserts that both verdicts (and the
+  warnings, pre-existing checks and solver-rule hits) agree on the arena
+  fixture, a dense plan, `rich_swap_state`, `wide_swap_state` (on-call
+  rest of 3 and 7 days, a duty ending two days later, two locations, a
+  336 h stretch) and `rest_swap_state` (Rest Days in every shape the
+  `REST_DAY` rule meets), with counters that the cases a margin under 7 days,
+  a cover slice without co-holders or a cut block would get wrong really
+  occur.
+- **ValidationContext** (`backend/validation.py`): see 6.5; built once per
+  search request, never cached across requests.
+- **Tables** (`backend/db.py`): `swap_requests` (one row per applied swap with
+  its full `applied_patch` for undo and a `summary` of names at apply time),
+  append-only `swap_events` (`applied`, `reverted`) and `swap_settings` (read
+  only: `timeZone`, `noticeHours`, `minRestHours`, `maxBlockHours` over the
+  defaults Europe/Berlin, 48, 11, 24; deliberately not in `solverSettings`,
+  which feed the planning fingerprint). Columns a later request type leaves
+  empty are nullable, so stage 2 only adds columns; `store.insert_swap`
+  enforces the stage-1 invariants (partner, consent, status `applied`).
+  Account deletion clears all three; finished swaps and their events are
+  pruned 730 days after their last update (§ 16 ArbZG).
+- **Endpoints** (`backend/swaps/routes.py`, owner's JWT only, never via web or
+  iCal tokens): `POST /v1/swaps/candidates` (target, `targetFindings`, checks,
+  best/possible/blocked/closest options with chips, warnings, findings, weekly
+  hours and rest-day changes; at most 600 gate runs, then `truncated`),
+  `POST /v1/swaps/apply`, `POST /v1/swaps/{id}/undo`,
+  `GET /v1/swaps/history` (keyset paging by `before` + `beforeId`). Apply
+  errors in check order: 400 `consent_required`, 409 `state_changed`, 400
+  `invalid_request`, 409 `swap_stale` (anything changed since the preview,
+  including slot fingerprints and the unit's composition), `swap_started`,
+  `notice_override_required` (`hoursLeft`), `plan_invalid` (normalization
+  would change the result), `swap_invalid` (`violations`, `reasons`) and
+  `warnings_unacknowledged` (`warnings`). Undo adds 404 `swap_not_found`,
+  409 `already_reverted` and `undo_conflict`. Apply re-checks everything a
+  hand-built request could forge: a swap whose two sides share a slot
+  instance is a 400 `invalid_request` (the search never pairs them); a Rest
+  Day move it did not detect, a hidden removal of anyone but the instance's
+  first hidden holder, a cover of a full slot or by one of its holders, and
+  a shift whose holder went on vacation are `swap_stale`.
+- **Working-time warnings** (swap-only, never a validator rule): rest under
+  `minRestHours` between blocks, no free day after a night, a block longer
+  than `maxBlockHours`. Only new ones count. Their ids are pure functions of
+  the plan; the search computes them on the slice, apply recomputes them on
+  the whole calendar and refuses with `warnings_unacknowledged` unless every
+  id is in `acknowledgedWarnings`; the row stores them. A stretch can be
+  longer than any margin (two weeks of 24 h background duty), so for the
+  warnings each person's window widens until no block crosses its start and
+  none ends after its end (`SwapContext.whole_block_window` moves each edge a
+  day at a time, looking only at the items next to it); slice and calendar
+  then give the same ids and texts.
+- **Reasons.** A blocked option names one reason (`matching.ranked_reasons`).
+  A shift hidden by its holder's vacation still counts for the rules, so a
+  clash with it still blocks, but the reason says so and names the way out:
+  "On-call rest: Ben Ott's on-call on Fri 9 Jan is hidden by a vacation but
+  still counts. Find cover for it first." Unresolved references never show
+  a raw id ("A person of this swap is no longer in the plan.").
+- **Pre-existing problems.** The checks list says "no new …"; a check
+  the two people already break in a touched week without the change making
+  it worse is listed in `SwapOption.preexisting` and shown amber, never as a
+  green tick. Vacation-hidden shifts never count as a vacation problem.
+- **Findings and ranking.** Amber findings belong to an option and make it
+  "possible" instead of "best"; the first is `rest_day_removed` ("Ben Ott
+  has a Rest Day on Thu 8 Jan; it will be removed.", one per person and day).
+  A note that holds for every option is a
+  target note in `targetFindings`, shown once (`matching.target_findings`):
+  in a handover, each touched week in which a giver with contract hours
+  drops below min(contract, before), with the numbers of the giver's hours
+  card. Handover and cover rank partners further behind on year-to-date
+  hours first (chip from 5 %). `worktime.ytd_deficit_pct` is the solver's
+  fairness formula counted from the calendar's first planned date of the
+  year instead of 1 January; with less than a week of history it is unknown
+  (no chip, ranked after known partners). No module of `backend/swaps`
+  imports the solver, so a search never loads ortools
+  (`test_swap_matching.py` checks this in a fresh process).
+- **Rest Days.** A giver's Rest Day after a moved night or on-call follows the
+  shift when the taker neither rests nor works that day (ticked by default,
+  apply accepts any detected subset); any stored shift of the taker counts as
+  work, one hidden by a vacation or without valid times too. The taker's own
+  Rest Day on the date of a shift they receive is always removed, as when a
+  shift is added by hand, and the option gets the `rest_day_removed` note.
+  A move or removal takes every entry of that person and day (duplicates
+  included); the JSON names each person and day once. The patch records the
+  removed entries, so undo restores them.
+- **Apply** writes the swapped shifts as locked manual entries (ids start
+  with the swap id), logs a `swap_applied` row in `schedule_changes` (never
+  merged with manual edits) and writes no auto-backup: the one reserved slot
+  belongs to run apply, restore and the shifts file import (v1.74).
+- **Undo** (toast and History) needs no acknowledgement or notice override,
+  but every added assignment must still be stored (same id, row, date,
+  person; a lock toggle is fine), no removed one may exist again, nothing may
+  have started, and normalization and the full gate must pass. The gate lets
+  undo bring back what the swap resolved (`applied_patch.resolved`, e.g. the
+  vacation-hidden shift a cover removed or a week it brought under the
+  limit), no worse than it was, because that existed before. History
+  computes `canUndo` and the reason live. Undo is also refused
+  (`undo_conflict`, "Undo would give Ben Ott a Rest Day and a shift on Thu
+  8 Jan.") when it would pair a Rest Day with a shift (any non-pool entry,
+  one hidden by a vacation too) that is neither in the calendar now nor
+  among the `REST_DAY` violations the swap resolved: exactly the undo gate's
+  verdict, so History and the endpoint always agree. It is also refused when
+  a person of the swap was deleted ("Anna Weber is no longer in the plan.").
+  A refusal of the gate reads "Undoing this swap would break a planning
+  rule: …".
+- **Dates.** Requests name dates from 1900-01-01 to 2999-12-31 (else 422).
+  Shifts saved by hand near 9999-12-31 never make a search, apply or undo
+  fail: the minute axis reads a minute past that day as that day, the slice
+  window stays inside the date range, and `validate_on_call_rest` stops at
+  the last representable day.
+- **Time zone.** Shift times stay naive wall-clock minutes; only "started"
+  and the notice period compare with now in the calendar time zone
+  (`zoneinfo`, `tzdata==2026.6` in requirements so the Docker image has the
+  zone files). Started shifts can't be swapped, covered or undone.
+- **Frontend.** Teal is the swap color. The preview outline is an injected
+  stylesheet keyed by `data-assignment-key` / `data-sheet-assignment-key`.
+  A search saves the calendar first only when the screen has unsaved edits,
+  then searches against that revision. Apply and undo pause autosave and do
+  the same: a clean screen lets queued saves land and sends their revision
+  (a full save only for unsaved edits or an unknown revision), so a calendar
+  another tab saved meanwhile is refused with `state_changed`, reloaded and
+  searched again instead of failing a save; then they hydrate the returned
+  state. A search's own save (`ensureSavedForSwap`) cancels the pending
+  autosave, which would only save the same screen again and move the
+  revision under the search. `targetFindings` show once, as amber notes under the target summary
+  and beside the hand-over preview's checks. Toasts and the Rest Day move
+  label use full names, since first names repeat in a team.
+- **Drawer focus and refusals.** Focus stays in the drawer when the drawer
+  itself takes it away (a busy or refused apply, a History Undo, Refresh,
+  Search again): busy buttons are `aria-disabled`, not `disabled`, and
+  `useFocusSafetyNet` moves focus that falls out to the History row, the
+  message on screen or a heading, scrolled into view; a press outside lets
+  focus go (the desktop drawer is non-modal). Both panels take focus on a
+  click on their text, so Escape keeps working. The phone sheet's Tab trap
+  also wraps from focus outside its controls (the heading, the sheet, a
+  History row after the last control). A preview that a refused apply
+  closes shows the new list from the top, with the refusal. A refused apply says the list was
+  refreshed, or the calendar reloaded, only once that happened (the page's
+  apply and undo rethrow `state_changed` with `detail.reloaded`); when its
+  new search fails, the preview closes and the list shows the error. A
+  blocked Whole day keeps its toggle. The Vacation Planner, Working Hours
+  and Export close the drawer first. Reveal on hover finds clinic sheet
+  names and keeps them right of the sticky row labels; below lg the grid
+  gets a 440 px run-out (`data-swap-drawer-open`, index.css) so its
+  right-hand days can scroll out from under the drawer. Reveal computes its
+  offsets (`nearestScrollDelta`, `src/lib/swaps/reveal.ts`; the grid scrolls
+  sideways, the window up and down) instead of calling scrollIntoView with
+  scroll margins: with "nearest", CI's headless Chromium 143 does not scroll
+  at all when the shift's own box already lies inside the grid's scroll box,
+  as one under the drawer or the labels does, so the margins had no effect
+  and the shift stayed hidden (Chrome 153 honours them). The drawer's left
+  edge is the page's clientWidth − 440 px, left of a classic scrollbar.
+  Reveal scrolls the grid even by 0 px: like scrollIntoView,
+  that stops the previous reveal's sideways scroll if it still runs (a long
+  one outlasts the 400 ms between two reveals), which would otherwise carry
+  the shift out of view (e2e "Reveal on hover stops the previous option's
+  sideways scroll even when the next needs none"). Once the first
+  answer is in, the drawer also reveals the target's pill (a cover's cell),
+  once, unless an option's shift was revealed first: from lg on, opening
+  it narrows the page and can push a weekend target out of view.
+- **Merged with v1.72–v1.80.** The branch's commits call this release
+  "v1.71", and after its merges "v1.78" (the version file) and "v1.80" (the
+  last merge's message); each means this release, not main's v1.71
+  (location-colored labels), v1.78 (Working hours) or v1.80 (Planning across
+  days).
+  - `REST_DAY` (v1.75): the swap gates count only the Rest Days of the plan
+    they check (`own_rest_days`), so a Rest Day the plan moves away or
+    removes no longer counts and one it adds does; a pair (Rest Day and a
+    shift on one day) that existed before is carried over and shown as the
+    pre-existing check "No new shift on a Rest Day" (`rest_day`, after the
+    vacation line). The search's own plans never break the rule: they
+    remove the takers' Rest Days on received dates and never move one onto
+    a stored shift, so the pre-filter has no Rest Day check; the gate stays
+    the safety net, with the reason "Rest Day: Ben Ott has a Rest Day on
+    Thu 8 Jan." (search, and apply's `swap_invalid`). A cover's slice also
+    holds the Rest Days of the slot's other holders that day. An option
+    that removes a taker's Rest Day, a day off placed by hand, is a
+    possible match with the note "Rest Day removed", as main's person
+    picker lists such a person after those without a warning. Undo follows
+    the same rule (see Undo above); main's callers (run apply, the agent,
+    state routes) keep the union of calendar and list.
+  - Stacked team week (v1.76): ⇄, the S key and "Find cover…" reach main's
+    one-lane-per-section grid through `RowSection` (`onFindSwap`, the
+    slot's open count for the picker); pill keys are unchanged, so outline
+    and Reveal work on lanes, side by side and in the clinic sheet. From lg
+    on, while the drawer is open, the row band and section labels wrap
+    between words only (`@media screen and (min-width: 1024px)` in
+    index.css); below lg they keep RowLabel's last resort, so the overlaid
+    week keeps its layout and the run-out stays the drawer's full width.
+  - My plan: "Find swap" is the shift detail's first action on every detail
+    surface; it switches to Team at that date and opens the drawer (focus
+    later returns to the pill's ⇄). The TopBar history button shows only in
+    the team plan, so the My plan loading card (v1.77) keeps it hidden.
+  - Help: "13. Find a swap" follows main's twelve sections and says that an
+    option removing a Rest Day is listed under Also possible with that note.
+  - `planChrome.outlineButtonClass`, which main removed with the saved
+    Views, is back: the swap drawer's Preview, Refresh, Search again, Retry,
+    Undo and Back buttons use it.
+  - Working hours (v1.78): the overview is a dialog now and still closes
+    the drawer first; the e2e test finds the drawer by its name ("Find a
+    swap") and checks the new subtitle. The swap's hour rules did not
+    change, so its numbers can differ from the overview's. Week hours,
+    "Hours even" and the over- and under-contract notes count like the
+    weekly-hours rule (shifts hidden by a vacation included) against the
+    full contract; "behind on hours" is the solver's year-to-date formula
+    from the first planned date. The hours card's limit is contract +
+    tolerance (5 h when unset): the same limit as the person picker's "Over
+    weekly limit" (v1.80), with the same week totals (see Planning across
+    days below). The overview leaves out shifts hidden by
+    a vacation, lowers the target for vacation days and counts a week only
+    once half of the team's target hours are planned. Example: with one
+    test entry in January and planning from October, everyone is on target
+    in the overview but "89 % behind on hours" in the swap list. Whether
+    the swap should use the overview's targets is an open product decision.
+  - Calendar load (v1.79): until this user's calendar has loaded the page
+    holds the built-in demo calendar: a search would save it (the server
+    refuses) or look for a demo shift. Swaps wait like snapshots, import,
+    PDF export and planning: ⇄, S and "Find cover…" only show the toast
+    "Swaps are available once the calendar has loaded." (the entry points
+    read `calendarLoadedRef`, set on every render, so they keep one
+    identity), and the TopBar history button is disabled with that text as
+    its tooltip, like the snapshot buttons. My plan's "Find swap" has the
+    same check, only as a safety net: My plan shows its loading card until
+    then. `hasLoaded` never goes back to false while the page is mounted
+    (it loads once per user; signing out unmounts it; reloads, restores and
+    imports only hydrate), so the drawer is never open on the demo calendar
+    and search, apply and undo need no check of their own. A person list
+    left open across the load (main's picker) still offers "Find cover…";
+    the search then runs on the loaded calendar and, for a demo slot, says
+    that the slot does not exist on this day. `openCalendar` in
+    `swap-assistant.spec.ts` now waits for the mocked calendar, as in
+    `team-page.spec.ts`: with `GET /v1/state` answered 1 s late, "the labels
+    keep whole words…" checked the demo labels ("Row 1") and passed, and
+    three history tests start with a click on "Swap history", which the
+    demo screen also shows. Tests: `SwapHistoryButton.test.tsx`; e2e "the
+    swap assistant waits until the calendar has loaded" (`openCalendar`
+    takes a `stateGate`).
+  - Planning across days (v1.80). Main's cross-day repair, direct strategy,
+    open-slot reasons and finished-run texts call the validators as before:
+    `own_rest_days` stays off for them and `run_apply._new_violations` stays
+    the thin wrapper over `constraint_policy.new_violations`, which main's
+    `cut_short`, `unfinished_dates` and `_partial_lead` do not use. Both
+    grids pass main's `getWeeklyHours` to the picker, which also has "Find
+    cover…". Swap apply and undo hydrate `assignmentMap`, so the picker
+    counts the new week at once: a cover that takes a person to exactly
+    their limit makes them "Over weekly limit (48/40 h …)" on the next open
+    day of that week, and its undo frees them (checked live with the real
+    backend, team grid and clinic sheet). One weekly-hours rule:
+    the picker (`src/lib/weeklyHours.ts`), the swap's hours card and cover
+    search (`worktime.week_minutes`, `person_hours`, the gate) and
+    `validate_weekly_hours` count the same minutes per ISO week of the
+    start date (shifts hidden by a vacation counted, pool and Rest Day
+    entries not, a slot without times 08:00–16:00, a night in full) and
+    use the same limit, contract + tolerance with 5 h when unset (none
+    without contract hours). So a person the picker marks for an open slot
+    is never offered as its cover, and one it does not mark is never
+    blocked by the weekly hours; another rule (an overlap, on-call rest)
+    can still block either, and the search then names that rule.
+    `src/lib/weeklyHours.crossCheck.json` holds one calendar with these
+    cases, 2026-W53 (Mon 28 Dec 2026 to Sun 3 Jan 2027) and quarter hours
+    (an Early shift 07:45–16:00, a 19.25 h contract);
+    `test_weekly_hours_crosscheck.py` pins the hours card, the gate and the
+    cover search to it, `weeklyHours.crossCheck.test.ts` the picker. On
+    that calendar the cover search blocks exactly the people the picker
+    marks, all with the weekly-hours reason, and offers everyone else. Both
+    texts print the same hours ("32.3/30 h in 2026-W50" and "week 50 would
+    reach 32.3 h (limit 30.0 h)"): the drawer's texts (`labels.hours_text`,
+    `compact_number`) round an exact half up now, as the picker does;
+    Python's rounding printed 32.25 h as 32.2 h, and "+0.2 h over contract"
+    beside an hours card with 40.3 h. The hours card (`format.ts`) rounds
+    the tenths with `Math.round` like the picker, so 1929 minutes (32.15 h)
+    are 32.2 h in both (`toFixed` alone wrote 32.1 h). The cross-check found
+    no wrong number. One difference in form only: the hours card's
+    `limitMinutes` is whole minutes, like the gate's `max_minutes`, while
+    the picker keeps (contract + tolerance) × 60; week totals are whole
+    minutes, so the verdict is the same. In main's picker a long warning
+    squeezed the name to a few pixels (288 px popover); the name now keeps
+    at least 7rem and the warning wraps below it. E2e "Find cover… stays in
+    view below a long list of people over the weekly limit".
+- Tests: backend `test_validation_context.py`, `test_constraint_policy.py`,
+  `test_swap_blocks.py`, `test_swap_worktime.py`, `test_swap_policy.py`,
+  `test_swap_matching.py`, `test_swap_property.py` (about 15 s),
+  `test_swap_endpoints.py` and `test_weekly_hours_crosscheck.py`; fixtures
+  in `backend/tests/swap_fixtures.py`.
+  Frontend `src/lib/swaps/format.test.ts`, `src/lib/swaps/reveal.test.ts`,
+  `src/api/client.swaps.test.ts`,
+  `src/pages/swapFlow.test.ts`, `SwapAssistantDrawer.test.tsx`,
+  `SwapHistoryButton.test.tsx`, `src/lib/weeklyHours.crossCheck.test.ts`
+  (same JSON as the backend cross-check); e2e `e2e/swap-assistant.spec.ts`
+  (mocked API, in CI).
+- Deploy notes: three new tables, created on startup (`db.py`); stored
+  calendars are not changed. DEPLOY.md's CI section names all eight
+  Playwright specs of `ci-cd.yml` (it lacked `holiday-region` and
+  `swap-assistant`). Version 1.81 (81).
+
 ## v1.82 — The section order is strict for the AI planner
 
 - **Decision** (admin, 2026-11-02, after v1.80's "Not done (b)"): the order
@@ -3656,4 +3992,3 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   name now; `HelpView.test.tsx` (strict rule).
 - Deploy notes: no schema or data change. Version 1.82 (82). Arena reports
   compare within one `QUALITY_VERSION`.
-

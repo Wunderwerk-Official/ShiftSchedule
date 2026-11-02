@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AssignmentPill from "./AssignmentPill";
 import { buildPersonPillStyles } from "./teamColors";
@@ -78,5 +78,93 @@ describe("AssignmentPill with person colors", () => {
     const name = renderPerson("Sarah Neumann", 50);
     expect(name.textContent).toBe("Sarah Neumann");
     expect(name.className).toContain("sr-only");
+  });
+});
+
+describe("AssignmentPill find swap", () => {
+  const pillOf = (button: HTMLElement) => button.closest('[data-assignment-pill="true"]') as HTMLElement;
+  const findSwapButton = () => screen.getByRole("button", { name: "Find swap for Dr. Alice" });
+
+  it("shows no swap button without onFindSwap", () => {
+    render(<AssignmentPill name="Dr. Alice" onToggleLock={() => {}} />);
+    expect(screen.queryByRole("button", { name: /Find swap/ })).toBeNull();
+  });
+
+  it("finds a swap from its button without clicking the pill", () => {
+    const onFindSwap = vi.fn();
+    const onClick = vi.fn();
+    render(<AssignmentPill name="Dr. Alice" onToggleLock={() => {}} onFindSwap={onFindSwap} onClick={onClick} />);
+    expect(findSwapButton()).toHaveAttribute("title", "Find swap (S)");
+    fireEvent.click(findSwapButton());
+    expect(onFindSwap).toHaveBeenCalledOnce();
+    expect(onClick).not.toHaveBeenCalled();
+  });
+
+  it("finds a swap with S while the lock has focus, without toggling the lock", () => {
+    const onFindSwap = vi.fn();
+    const onToggleLock = vi.fn();
+    render(<AssignmentPill name="Dr. Alice" onToggleLock={onToggleLock} onFindSwap={onFindSwap} />);
+    const lock = screen.getByRole("button", { name: "Lock assignment for Dr. Alice" });
+    lock.focus();
+    fireEvent.keyDown(lock, { key: "s" });
+    expect(onFindSwap).toHaveBeenCalledOnce();
+    fireEvent.keyDown(lock, { key: "s", ctrlKey: true });
+    fireEvent.keyDown(lock, { key: "S", repeat: true });
+    expect(onFindSwap).toHaveBeenCalledOnce();
+    expect(onToggleLock).not.toHaveBeenCalled();
+  });
+
+  it("shows the button when a rerender adds onFindSwap", () => {
+    const { rerender } = render(<AssignmentPill name="Dr. Alice" onToggleLock={() => {}} />);
+    expect(screen.queryByRole("button", { name: /Find swap/ })).toBeNull();
+    rerender(<AssignmentPill name="Dr. Alice" onToggleLock={() => {}} onFindSwap={() => {}} />);
+    expect(findSwapButton()).toBeInTheDocument();
+  });
+
+  it("locked pill: the button sits left of the in-row lock, touch room comes from a row margin", () => {
+    render(<AssignmentPill name="Dr. Alice" isLocked onToggleLock={() => {}} onFindSwap={() => {}} />);
+    const swap = findSwapButton();
+    const pill = pillOf(swap);
+    const lock = within(pill).getByRole("button", { name: "Lock assignment for Dr. Alice" });
+    expect(lock.compareDocumentPosition(swap) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(swap.className).toContain("right-[21px]");
+    expect(swap.className).toContain("pill-swap-reveal");
+    const row = pill.firstElementChild as HTMLElement;
+    expect(row.className).toContain("pill-swap-fade-inrow");
+    expect(row.className).toContain("[@media(hover:none)]:mr-5");
+    expect(row.className).not.toContain("pill-lock-fade");
+    expect(pill.classList).toContain("pr-px");
+    expect(pill.className).not.toContain("[@media(hover:none)]:pr-");
+  });
+
+  it("unlocked pill: the button sits left of the hover lock, with touch room for both", () => {
+    render(<AssignmentPill name="Dr. Alice" onToggleLock={() => {}} onFindSwap={() => {}} />);
+    const pill = pillOf(findSwapButton());
+    expect(findSwapButton().className).toContain("right-[21px]");
+    expect(pill.classList).toContain("[@media(hover:none)]:pr-[42px]");
+    expect(pill.classList).not.toContain("[@media(hover:none)]:pr-[22px]");
+    const row = pill.firstElementChild as HTMLElement;
+    expect(row.classList).toContain("pill-swap-fade");
+    expect(row.classList).not.toContain("pill-swap-fade-inrow");
+    expect(row.classList).not.toContain("pill-lock-fade");
+    expect(row.className).not.toContain("mr-5");
+  });
+
+  it("person colors: the button follows a hover lock to 22 px; next to an in-row lock it stays at 21 px", () => {
+    const { unmount } = render(
+      <AssignmentPill name="Dr. Alice" personStyle={personStyle} onToggleLock={() => {}} onFindSwap={() => {}} />,
+    );
+    expect(findSwapButton().className).toContain("right-[22px]");
+    unmount();
+    // The in-row lock takes 1–19 px in both looks; the touch row margin ends at 39 px.
+    render(<AssignmentPill name="Dr. Alice" personStyle={personStyle} isLocked onToggleLock={() => {}} onFindSwap={() => {}} />);
+    expect(findSwapButton().className).toContain("right-[21px]");
+  });
+
+  it("without a lock the button takes the lock's place", () => {
+    render(<AssignmentPill name="Dr. Alice" onFindSwap={() => {}} />);
+    const pill = pillOf(findSwapButton());
+    expect(findSwapButton().className).toContain("right-0.5");
+    expect(pill.classList).toContain("[@media(hover:none)]:pr-[22px]");
   });
 });

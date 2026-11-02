@@ -34,6 +34,8 @@ export type ShiftDetailContentProps = {
   locationsById: Map<string, Location>;
   /** "Show in team plan": the team grid jumps to this shift's row and pulses the pill. */
   onShowInTeam: (shift: PlanShift) => void;
+  /** "Find swap" action (first, full width); no button without it. */
+  onFindSwap?: (shift: PlanShift) => void;
   /** Close button + "Close" action; omitted for the static inline card. */
   onClose?: () => void;
   headingId: string;
@@ -146,7 +148,7 @@ function splitWhen(shift: PlanShift): [string, string] {
 }
 
 export default function ShiftDetailContent(props: ShiftDetailContentProps) {
-  const { shift, plan, source, isMe, isMobile, onClose } = props;
+  const { shift, plan, source, isMe, isMobile, onClose, onFindSwap } = props;
   const max = props.maxPerGroup ?? 3;
   const coworkers = useMemo(() => findCoworkers(source, shift), [source, shift]);
   const rest = useMemo(() => (isMe ? restBefore(plan, shift) : null), [isMe, plan, shift]);
@@ -173,6 +175,12 @@ export default function ShiftDetailContent(props: ShiftDetailContentProps) {
     "inline-flex items-center justify-center gap-1.5 rounded-xl border px-3 shadow-sm",
     isMobile ? "h-12 text-[15px]" : "h-9 text-sm",
   );
+  const primaryActionClass = cx(
+    actionClass,
+    "border-slate-300 bg-white text-slate-900 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700",
+  );
+  // Desktop with a close action: "Show in team plan | Close" side by side.
+  const actionsSideBySide = Boolean(onClose) && !isMobile;
 
   const headBlock = (
     <div className="flex items-center gap-2">
@@ -291,15 +299,18 @@ export default function ShiftDetailContent(props: ShiftDetailContentProps) {
     </div>
   );
   const actionsBlock = (
-    <div className={cx("grid gap-2", onClose && !isMobile ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1")}>
-      <button
-        type="button"
-        onClick={() => props.onShowInTeam(shift)}
-        className={cx(
-          actionClass,
-          "border-slate-300 bg-white text-slate-900 hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700",
-        )}
-      >
+    <div className={cx("grid gap-2", actionsSideBySide ? "grid-cols-[minmax(0,1fr)_auto]" : "grid-cols-1")}>
+      {onFindSwap ? (
+        <button
+          type="button"
+          onClick={() => onFindSwap(shift)}
+          className={cx(primaryActionClass, actionsSideBySide && "col-span-2")}
+        >
+          <PlanIcon name="swap" size={16} />
+          Find swap
+        </button>
+      ) : null}
+      <button type="button" onClick={() => props.onShowInTeam(shift)} className={primaryActionClass}>
         <PlanIcon name="users" size={16} />
         Show in team plan
       </button>

@@ -75,4 +75,6 @@ export type ShiftDetailProps = {
   onClose: () => void;
   /** "Show in team plan" of this shift (row, date and person). */
   onShowInTeam: (shift: PlanShift) => void;
+  /** "Find swap" of this shift; no button without it. */
+  onFindSwap?: (shift: PlanShift) => void;
 };

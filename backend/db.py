@@ -217,6 +217,102 @@ def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # Swap assistant (v1.81): one row per swap with its exact patch for undo, an
+    # append-only event log, and per-calendar swap rules. Columns that a later
+    # request type leaves empty are nullable, so later stages only ADD COLUMN;
+    # swaps/store.py checks on insert what stage 1 requires.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS swap_requests (
+            id TEXT PRIMARY KEY,                 -- 'swp-<ms hex>-<6 hex>'
+            username TEXT NOT NULL,
+            kind TEXT NOT NULL,                  -- swap | handover | cover (stage 2: offer)
+            status TEXT NOT NULL,                -- stage 1: 'applied' | 'reverted'
+            requester_id TEXT,                   -- A; NULL for cover
+            partner_id TEXT,                     -- B (stage-2 offers: NULL)
+            -- JSON [{assignmentId, rowId, dateISO, clinicianId, fp}]: A's items, or the
+            -- cover instance with clinicianId null
+            give_items TEXT NOT NULL,
+            take_items TEXT,                     -- JSON, same shape (swap), else NULL
+            summary TEXT NOT NULL DEFAULT '{}',  -- JSON names and labels at apply time
+            note TEXT,                           -- trimmed, <= 280 chars, NULL when empty
+            consent TEXT,                        -- 'confirmed_by_planner'
+            created_via TEXT NOT NULL,           -- 'planner' (stage 2: 'link')
+            created_by TEXT NOT NULL,            -- 'user:<username>'
+            approver_name TEXT,                  -- trimmed, <= 80 chars, NULL when empty
+            notice_override INTEGER NOT NULL DEFAULT 0,
+            acknowledged_warnings TEXT NOT NULL DEFAULT '[]',  -- JSON [{id, code, message}]
+            starts_at TEXT,                      -- earliest moved start, UTC ISO
+            expires_at TEXT,                     -- stage 2; NULL
+            client_request_id TEXT,              -- stage 2; NULL
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            decided_at TEXT,                     -- = applied_at in stage 1
+            decided_by TEXT,                     -- 'user:<username>'
+            applied_at TEXT,
+            applied_revision TEXT,               -- calendar revision right after the apply
+            applied_patch TEXT,                  -- JSON {removed, added}: Assignment dumps;
+                                                 -- {resolved}: violations the swap resolved
+            change_id TEXT,                      -- schedule_changes row of the apply
+            reverted_at TEXT,
+            reverted_by TEXT,
+            reverted_revision TEXT,
+            revert_change_id TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_swap_requests_user_time
+            ON swap_requests (username, created_at DESC, id DESC)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_swap_requests_user_status
+            ON swap_requests (username, status, starts_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS swap_events (
+            id TEXT PRIMARY KEY,                 -- 'swe-<ms hex>-<6 hex>'
+            request_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            actor TEXT NOT NULL,                 -- 'user:<username>'
+            action TEXT NOT NULL,                -- 'applied' | 'reverted'
+            -- applied: {"revision", "noticeOverride", "acknowledgedWarnings": [ids],
+            -- "approverName"}; reverted: {"revision"}
+            detail TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_swap_events_request
+            ON swap_events (request_id, created_at)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_swap_events_user_time
+            ON swap_events (username, created_at)
+        """
+    )
+    # Deliberately not part of solverSettings, which feed the planning
+    # fingerprint and the calendar revision.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS swap_settings (
+            username TEXT PRIMARY KEY,
+            -- JSON object, e.g. {"timeZone": "Europe/Berlin", "noticeHours": 48,
+            -- "minRestHours": 11, "maxBlockHours": 24}
+            data TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(app_state)").fetchall()]
     if "updated_at" not in columns:
         conn.execute("ALTER TABLE app_state ADD COLUMN updated_at TEXT")

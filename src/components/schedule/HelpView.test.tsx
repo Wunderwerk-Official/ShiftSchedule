@@ -76,3 +76,19 @@ it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () =
   expect(text).not.toContain("+N next to a row name");
   expect(text).not.toContain("names its own workplace");
 });
+
+it("explains Find a swap: the S key and Undo (v1.81)", () => {
+  const { container } = render(<HelpView />);
+  expect(screen.getByRole("heading", { name: "13. Find a swap" })).toBeVisible();
+  const text = container.textContent ?? "";
+  expect(text).toMatch(/press S while its\s+lock or ⇄ button has focus/);
+  expect(text).toMatch(/Undo is in the toast for 10 seconds and later\s+under Swap history/);
+  expect(text).toMatch(/inside 48 h before the start also tick the notice override/);
+  expect(text).toMatch(
+    /A hand-over that leaves the giver\s+under their contract hours says so once, in an amber note under the shift/,
+  );
+  // A Rest Day is a day off placed by hand (v1.75): removing it is never a best match.
+  expect(text).toMatch(
+    /A Rest Day of the person who\s+takes a shift is removed on that day, as when you add a shift by hand; such an\s+option is listed under Also possible with the\s+note Rest Day removed\./,
+  );
+});
