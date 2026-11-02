@@ -631,3 +631,27 @@ def test_classic_candidates_inside_one_section_keep_the_fairness_order():
     first, second = out["candidates"][:2]
     assert first["clinicianId"] == "Quinn (behind)" and first["meets_daily_minimum"]
     assert second["clinicianId"] == "Pat (ahead)" and second["block_hours"] > first["block_hours"]
+
+
+def test_upward_rescues_open_the_lowest_ranked_slot_first():
+    """Review of v1.82: two people can move up to S (A) and nobody can take
+    over their slots. Cara's move opens B1 (rank 2), Dan's opens C1 (rank 3):
+    Dan's leaves the better plan, so it comes first, also for the final
+    audit, which applies the first improving offer."""
+    from threading import Event
+
+    def fixture():
+        state = section_state([make_clinician("cara", "Cara", ["A", "B"], working_hours_per_week=40),
+                               make_clinician("dan", "Dan", ["A", "C"], working_hours_per_week=40)],
+                              [make_template_slot("S", block_id="A", row_band_id="row-1"),
+                               make_template_slot("B1", block_id="B", row_band_id="row-2"),
+                               make_template_slot("C1", block_id="C", row_band_id="row-3")], ["A", "B", "C"])
+        return executor(state, [make_assignment("d1", "B1", MON, "cara", source="solver"),
+                                make_assignment("d2", "C1", MON, "dan", source="solver")])
+
+    result = run(fixture(), "suggest_rescue_moves", dateISO=MON)
+    assert [(r["frees"], r["substitute"]) for r in result["rescues"]] == [("Dan", None), ("Cara", None)]
+    assert [r["quality_after"]["open_by_section_order"] for r in result["rescues"]] == [[0, 0, 1], [0, 1, 0]]
+    ex = fixture()
+    assert ex.workflow.final_audit([MON], Event())["repairs"] == 1
+    assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 0, 1]

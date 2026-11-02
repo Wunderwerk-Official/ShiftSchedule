@@ -2091,6 +2091,7 @@ class PlanToolExecutor:
                                 "vacated_slot": self._alias_slot_key(vacated_key),
                                 "substitute": None,
                                 "leaves_open": self._alias_slot_key(vacated_key) if opens else None,
+                                "vacated_key": vacated_key,
                                 "batch": [
                                     {
                                         "action": "unassign",
@@ -2109,8 +2110,15 @@ class PlanToolExecutor:
                         break
             if not found:
                 # Distribute-all headroom first (it opens nothing), then the
-                # moves that leave a lower-ranked slot open.
-                found = sorted(upward, key=lambda r: r["leaves_open"] is not None)[:2]
+                # moves that leave the lowest-ranked slot open: both fill the
+                # same stuck slot, so the lower the opened slot, the better
+                # the plan under the strict section order.
+                found = sorted(upward, key=lambda r: (
+                    r["leaves_open"] is not None,
+                    -self.section_rank(self.ctx.instances[r["vacated_key"]].slot_id),
+                ))[:2]
+            for rescue in upward:
+                del rescue["vacated_key"]  # internal sort key only
             if found:
                 rescues.extend(found)
             else:

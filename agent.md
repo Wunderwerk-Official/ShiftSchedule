@@ -3940,7 +3940,9 @@ server checking every option against all planning rules.
     person's substitute rescue was never found; the final audit and a model
     taking the first offer then left the vacated slot open for good (A > B >
     C: Cara up from B instead of Eve to A with Finn on Eve's C slot). Now
-    2-moves are offered only when no substitute rescue exists for the slot.
+    2-moves are offered only when no substitute rescue exists for the slot,
+    headroom moves first, then the move opening the lowest-ranked slot
+    (both fill the same stuck slot, so that plan is better).
   - Final audit: `next_fillable_slot` walked the instances in template
     block order. With a section's blocks apart (A-mon, B-tue, A-tue) it
     filled B first and marked the day complete ([1, 0] instead of [0, 2]).
