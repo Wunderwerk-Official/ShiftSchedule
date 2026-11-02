@@ -35,6 +35,25 @@ describe("import backup request", () => {
     );
   });
 
+  it("names the first problem of a rejected request body (422)", async () => {
+    stubFetch(
+      Response.json(
+        {
+          detail: [
+            {
+              loc: ["body", "state", "assignments", 3, "dateISO"],
+              msg: "Value error, '2026-02-30' is not a real calendar date",
+            },
+          ],
+        },
+        { status: 422 },
+      ),
+    );
+    await expect(createImportBackup(state)).rejects.toThrow(
+      "Failed to save the backup: 422: Value error, '2026-02-30' is not a real calendar date (state.assignments.3.dateISO)",
+    );
+  });
+
   it("knows the revision of the loaded calendar", async () => {
     adoptSavedState({ ...state, revision: "r9" });
     await expect(savedStateRevision()).resolves.toBe("r9");

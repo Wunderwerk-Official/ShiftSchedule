@@ -592,6 +592,13 @@ async function throwWithDetail(res: Response, fallback: string): Promise<never> 
     const body = await res.json();
     if (typeof body?.detail === "string") detail = body.detail;
     else if (typeof body?.detail?.message === "string") detail = body.detail.message;
+    else if (Array.isArray(body?.detail) && typeof body.detail[0]?.msg === "string") {
+      // A rejected request body (422): the first problem and where it is,
+      // e.g. "Value error, … (assignments.3.dateISO)".
+      const first = body.detail[0] as { msg: string; loc?: unknown[] };
+      const where = Array.isArray(first.loc) ? first.loc.filter((part) => part !== "body").join(".") : "";
+      detail = `${fallback}: ${first.msg}${where ? ` (${where})` : ""}`;
+    }
   } catch {
     /* non-JSON error body */
   }
