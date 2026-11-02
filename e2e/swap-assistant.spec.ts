@@ -18,7 +18,8 @@ import type {
 // from a My plan shift; a refused apply (also far down the list: its message
 // is shown where focus went); an apply that another tab's save refuses; what
 // the page saves before a search or an apply; the modals that close the
-// drawer; Reveal on hover, also beside a narrow stacked week whose labels keep
+// drawer; Reveal on hover (one that needs no sideways move still stops the
+// previous one's scroll), also beside a narrow stacked week whose labels keep
 // whole words and over one (below lg) whose labels keep their widths; the
 // target (a cover's cell) revealed once the drawer has opened beside a narrow
 // week; the phone sheet and its Tab trap; cover from the person list (also
@@ -866,6 +867,88 @@ async function offerLeonardoSun(page: Page, api: Calendar, calls: SwapCalls) {
     return route.fulfill({ json: { ...answer, best: [option] } });
   });
 }
+
+/** Every search finds two options: Leonardo's Friday, then his Sunday. */
+async function offerFridayThenSunday(page: Page, api: Calendar, calls: SwapCalls) {
+  await page.route(/\/v1\/swaps\/candidates$/, (route) => {
+    const body = route.request().postDataJSON() as SwapCandidatesRequest;
+    calls.candidates.push({ body, statePosts: api.statePosts.length });
+    const answer = candidates(body, api.state().revision ?? "r0");
+    const sunday = { ...answer.best[0], key: `${SECOND}|sunday`, take: unitOf(LEONARDO_SUN) };
+    return route.fulfill({
+      json: { ...answer, best: [answer.best[0], sunday], totals: { ...answer.totals, best: 2 } },
+    });
+  });
+}
+
+test.describe("clinic sheet in a short window", () => {
+  test.use({ viewport: { width: 1280, height: 320 } });
+
+  test("Reveal on hover stops the previous option's sideways scroll even when the next needs none", async ({ page }) => {
+    const state = calendarWithLeonardoSun();
+    state.solverSettings = { ...state.solverSettings!, scheduleLayout: "clinicSheet" };
+    // Fake page timers: a reveal fires when the test moves the clock, so the
+    // second one comes while the first one's smooth scroll still runs (in the
+    // app they are 400 ms apart, which a long scroll outlasts).
+    const api = await openCalendar(page, state, { clock: "manual" });
+    await offerFridayThenSunday(page, api, await mockSwapApi(page, api));
+    await page.clock.pauseAt(new Date(Date.parse(NOW) + 60_000));
+    const sheetName = (rowId: string, dateISO: string, clinicianId: string) =>
+      page.locator(`[data-sheet-assignment-key="${rowId}__${dateISO}__${clinicianId}"]`);
+    const galileo = sheetName(THU_CT, "2026-01-08", FIRST);
+    await galileo.hover();
+    await findSwapIn(galileo).click();
+    await page.clock.runFor(250);
+    await expect(page.getByText("Best matches (2)")).toBeVisible();
+    await drawer(page).getByRole("heading", { name: "Find a swap" }).hover();
+
+    // Leonardo's Sunday name shows 20 px right of the row labels; his Friday
+    // name lies two days further left, out of view.
+    const friday = sheetName(FRI_MRI, "2026-01-09", SECOND);
+    const sunday = sheetName(SUN_ON_CALL, "2026-01-11", SECOND);
+    await sunday.evaluate((element) => {
+      const labels = element.closest("[data-schedule-grid]")!.firstElementChild!.getBoundingClientRect();
+      const left = element.getBoundingClientRect().left - (labels.right + 20);
+      element.closest(".calendar-scroll")!.scrollBy({ left, behavior: "instant" });
+      const { top, height } = element.getBoundingClientRect();
+      window.scrollBy({ top: top + height / 2 - window.innerHeight / 2, behavior: "instant" });
+    });
+    expect(await fullyShown(sunday)).toBe(true);
+    // The window scrolls up until two thirds of it lie below its bottom edge.
+    await sunday.evaluate((element) => {
+      const { bottom, height } = element.getBoundingClientRect();
+      window.scrollBy({ top: bottom - window.innerHeight - (2 * height) / 3, behavior: "instant" });
+    });
+    expect(await fullyShown(sunday)).toBe(false);
+
+    const options = drawer(page).locator("li[data-swap-option]");
+    // Friday's reveal starts a smooth scroll of about 950 px to the left,
+    // which would carry Sunday's name out under the drawer ...
+    await options.nth(0).hover();
+    await expect(friday).toHaveCSS("outline-color", "rgb(13, 148, 136)");
+    const second = (await options.nth(1).boundingBox())!;
+    await page.clock.runFor(400);
+    // ... and Sunday's comes while it runs: it needs only the window to scroll.
+    // The mouse goes straight to the second option (hover() would wait for it
+    // to be stable): within about 150 ms that scroll has moved the name out.
+    await page.mouse.move(second.x + second.width / 2, second.y + second.height / 2);
+    await expect(sunday).toHaveCSS("outline-color", "rgb(13, 148, 136)");
+    await page.clock.runFor(400);
+    // Once neither the grid nor the window moves any more, Sunday's name shows.
+    let last = "";
+    const settled = async () => {
+      const now = await sunday.evaluate(
+        (element) => `${element.closest(".calendar-scroll")!.scrollLeft} ${window.scrollY}`,
+      );
+      const same = now === last;
+      last = now;
+      return same;
+    };
+    await expect.poll(settled, { intervals: [300] }).toBe(true);
+    expect(await fullyShown(sunday)).toBe(true);
+    expect(api.errors).toEqual([]);
+  });
+});
 
 /** Widths of the stacked week's label cells. */
 const stackedLabelWidths = (page: Page) =>

@@ -40,6 +40,7 @@ import {
   swapToastMessage,
   undoToastMessage,
 } from "../lib/swaps/format";
+import { nearestScrollDelta } from "../lib/swaps/reveal";
 import type {
   SwapApplyRequest,
   SwapAssignmentRef,
@@ -311,6 +312,11 @@ function stickyLabelWidth(element: HTMLElement): number {
  * the drawer's width free (the narrowed stacked week keeps whole-word labels
  * and scrolls sideways, index.css); below lg the drawer overlays the grid,
  * whose run-out (index.css) lets its right-hand days scroll out from under it.
+ *
+ * The offsets are computed here (nearestScrollDelta) rather than left to
+ * scrollIntoView with scroll margins: with "nearest", Chromium 143 (CI's
+ * browser) does not scroll when the element's own box already lies inside the
+ * scroll box, so a shift under the drawer or the sticky labels stayed hidden.
  */
 function revealBesideSwapDrawer(key: string): void {
   // The key's cell part; rowIds may contain "__" (see extractDateFromAssignmentKey).
@@ -321,23 +327,24 @@ function revealBesideSwapDrawer(key: string): void {
     document.querySelector<HTMLElement>(`[data-sheet-assignment-key="${escaped}"]`) ??
     (match ? document.querySelector<HTMLElement>(cellSelector(key.slice(0, match.index), match[1])) : null);
   if (!element) return;
-  const scroller = element.closest(".calendar-scroll")?.getBoundingClientRect();
-  const drawerLeft = window.innerWidth - SWAP_DRAWER_WIDTH;
+  const scrollBox = element.closest<HTMLElement>(".calendar-scroll");
+  const scroller = scrollBox?.getBoundingClientRect();
+  // The fixed drawer sits left of a classic page scrollbar: clientWidth, not innerWidth.
+  const drawerLeft = document.documentElement.clientWidth - SWAP_DRAWER_WIDTH;
   const labels = stickyLabelWidth(element);
   const left = Math.max(0, (scroller?.left ?? 0) + labels);
   const right = Math.min(drawerLeft, scroller?.right ?? drawerLeft);
   const rect = element.getBoundingClientRect();
   if (rect.left >= left && rect.top >= 0 && rect.right <= right && rect.bottom <= window.innerHeight) return;
-  // The part of the grid's scroll box that lies under the drawer.
-  const covered = scroller ? Math.max(0, scroller.right - drawerLeft) : 0;
-  // scrollIntoView honours scroll margins: the pill stops right of the labels and left of the drawer.
-  element.style.scrollMarginLeft = `${labels + 8}px`;
-  element.style.scrollMarginRight = `${covered + 16}px`;
-  element.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
-  requestAnimationFrame(() => {
-    element.style.scrollMarginLeft = "";
-    element.style.scrollMarginRight = "";
-  });
+  // Sideways the grid scrolls: the pill stops 8 px right of the labels and 16 px left of the drawer.
+  const dx = scrollBox ? nearestScrollDelta(rect.left, rect.right, left + 8, right - 16) : 0;
+  // Also when dx is 0: a smooth scroll to where the grid is stops the previous
+  // reveal's sideways scroll if it still runs (as scrollIntoView did), which
+  // would otherwise carry this shift out of view.
+  if (scrollBox) scrollBox.scrollTo({ left: scrollBox.scrollLeft + dx, behavior: "smooth" });
+  // Up and down the window scrolls (.calendar-scroll has overflow-y: hidden).
+  const dy = nearestScrollDelta(rect.top, rect.bottom, 0, window.innerHeight);
+  if (dy !== 0) window.scrollTo({ top: window.scrollY + dy, behavior: "smooth" });
 }
 import { buildICalendar, type ICalEvent } from "../lib/ical";
 import {

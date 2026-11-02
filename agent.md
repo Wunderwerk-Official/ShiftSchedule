@@ -272,6 +272,7 @@ Testing
   - In sandboxed runs, Playwright may need escalated permissions to access `localhost:8000` and launch Chromium (otherwise EPERM/permission-denied errors).
   - Diagnostics on failure: console, page errors, failed requests, >=400 responses, screenshot, HTML snapshot, and trace (see `e2e/fixtures.ts`).
   - Mocked-API specs: the team grid shows the built-in demo calendar (`src/data/mockData.ts`, row band "Row 1") at once and the mocked one only after `GET /v1/state` has answered, so a visible `[data-schedule-grid]` does not mean the mocked calendar is in. Wait for it before reading or clicking (`openCalendar` in `e2e/team-page.spec.ts` and `e2e/swap-assistant.spec.ts` waits for a cell of the mocked template), and assert on lists with `expect.poll`: a single `evaluateAll` does not retry.
+  - CI runs the specs with Playwright's own browser build (`npx playwright install --with-deps chromium`: the headless shell of Chromium 143 for @playwright/test 1.57). A newer local Chromium can pass what CI fails (v1.81: with "nearest", Chromium 143's scrollIntoView does not scroll at all for an element already inside the scroll box, so scroll-margin has no effect; Chrome 153 honours it), so run the CI spec list with Playwright's build before pushing a scrolling or layout change.
   - PDF export test calls `/v1/pdf/week` and asserts the generated PDF has exactly one page.
   - Print layout test opens `/print/week` in print media and asserts the scaled schedule fits within one A4 page (portrait or landscape) and fills at least 70% of one dimension.
   - ColBand explosion tests (`e2e/colband-explosion.spec.ts`): verify colBand counts stay stable through settings, Copy Day, column operations, and solver runs; checks for console explosion errors.
@@ -1566,7 +1567,7 @@ Frontend
 - `src/lib/clipboard.ts` (v1.64: `copyTextToClipboard`, reports success)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
 - `src/components/swaps/*` (v1.81 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
-- `src/lib/swaps/*` (v1.81: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
+- `src/lib/swaps/*` (v1.81: `types.ts` = the API contract, `format.ts` = pure labels and the apply request, `reveal.ts` = `nearestScrollDelta`, the scroll offsets of Reveal on hover)
 - `src/pages/swapFlow.ts` (v1.81: search, apply and undo order — save only unsaved edits, send, hydrate)
 
 Backend
@@ -3667,7 +3668,19 @@ server checking every option against all planning rules.
   and Export close the drawer first. Reveal on hover finds clinic sheet
   names and keeps them right of the sticky row labels; below lg the grid
   gets a 440 px run-out (`data-swap-drawer-open`, index.css) so its
-  right-hand days can scroll out from under the drawer. Once the first
+  right-hand days can scroll out from under the drawer. Reveal computes its
+  offsets (`nearestScrollDelta`, `src/lib/swaps/reveal.ts`; the grid scrolls
+  sideways, the window up and down) instead of calling scrollIntoView with
+  scroll margins: with "nearest", CI's headless Chromium 143 does not scroll
+  at all when the shift's own box already lies inside the grid's scroll box,
+  as one under the drawer or the labels does, so the margins had no effect
+  and the shift stayed hidden (Chrome 153 honours them). The drawer's left
+  edge is the page's clientWidth − 440 px, left of a classic scrollbar.
+  Reveal scrolls the grid even by 0 px: like scrollIntoView,
+  that stops the previous reveal's sideways scroll if it still runs (a long
+  one outlasts the 400 ms between two reveals), which would otherwise carry
+  the shift out of view (e2e "Reveal on hover stops the previous option's
+  sideways scroll even when the next needs none"). Once the first
   answer is in, the drawer also reveals the target's pill (a cover's cell),
   once, unless an option's shift was revealed first: from lg on, opening
   it narrows the page and can push a weekend target out of view.
@@ -3795,7 +3808,8 @@ server checking every option against all planning rules.
   `test_swap_matching.py`, `test_swap_property.py` (about 15 s),
   `test_swap_endpoints.py` and `test_weekly_hours_crosscheck.py`; fixtures
   in `backend/tests/swap_fixtures.py`.
-  Frontend `src/lib/swaps/format.test.ts`, `src/api/client.swaps.test.ts`,
+  Frontend `src/lib/swaps/format.test.ts`, `src/lib/swaps/reveal.test.ts`,
+  `src/api/client.swaps.test.ts`,
   `src/pages/swapFlow.test.ts`, `SwapAssistantDrawer.test.tsx`,
   `SwapHistoryButton.test.tsx`, `src/lib/weeklyHours.crossCheck.test.ts`
   (same JSON as the backend cross-check); e2e `e2e/swap-assistant.spec.ts`
