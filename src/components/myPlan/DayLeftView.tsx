@@ -10,7 +10,7 @@ import { GROUP_LABELS, GroupLabel, HiddenColleagues, LaneHeader, laneLocationTex
 import type { DayLane, DayViewProps } from "./types";
 import { useElementWidth } from "./useElementWidth";
 import { Avatar } from "./viewParts";
-import { displayName, TEXT_1, TEXT_3 } from "./planChrome";
+import { givenNameOf, TEXT_1, TEXT_3 } from "./planChrome";
 
 // Day · date on left (SPEC E4 / mobile E12 "left"): lanes are rows — me
 // (80 px), then group rows and colleague rows (48 px) — and time runs right
@@ -52,7 +52,7 @@ export default function DayLeftView(props: DayLeftViewProps) {
             <span className="flex min-w-0 items-center gap-1.5" title={lane.name}>
               <Avatar name={lane.name} size={owner ? "m" : "s"} tone={personTone(lane.colorIndex, props.isDark)} />
               <span className={cx("truncate text-[13px] font-semibold", TEXT_1)}>
-                {lane.isMe ? "Me" : displayName(lane.name).split(" ")[0]}
+                {lane.isMe ? "Me" : givenNameOf(lane.name)}
               </span>
             </span>
           ) : (

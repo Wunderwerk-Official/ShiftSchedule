@@ -41,7 +41,7 @@ import { useMinuteClock } from "./useMinuteClock";
 import { useMyPlanData, visibleRange } from "./useMyPlanData";
 import { adjacentShift, defaultDayShiftId, findShift, footerSummary } from "./planSummary";
 import { SHORTCUT_HELP, usePlanShortcuts } from "./usePlanShortcuts";
-import { displayName, initialsOf } from "./planChrome";
+import { givenNameOf, initialsOf } from "./planChrome";
 import { orientationOf, orientationUpdate, rangeOf, rangeUpdate } from "./viewConfig";
 import WeekLeftView from "./WeekLeftView";
 import WeekTopView from "./WeekTopView";
@@ -239,7 +239,7 @@ export default function MyPlanView(props: MyPlanViewProps) {
             onOpenDay={openDay}
             isMobile={isMobile}
             isDark={isDark}
-            forName={viewingOther && viewed ? displayName(viewed.name).split(" ")[0] : undefined}
+            forName={viewingOther && viewed ? givenNameOf(viewed.name) : undefined}
           />
         ) : null
       }

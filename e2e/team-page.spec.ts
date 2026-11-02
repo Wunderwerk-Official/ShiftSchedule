@@ -187,6 +187,46 @@ test("moving a planner shift by hand locks it (v1.69)", async ({ page }) => {
   expect(api.errors).toEqual([]);
 });
 
+test("printed short names stand for one person of the team (v1.78)", async ({ page }) => {
+  // A PDF has no hover: two people may never print under one label, and
+  // "Last, First" names with titles must not shorten to "Müller, D." or "M. Dr.".
+  const state = structuredClone(defaultState);
+  state.clinicians[0].name = "Mehmet Yildirim";
+  state.clinicians[1].name = "Mehmet Yılmaz";
+  state.clinicians.push({ ...state.clinicians[0], id: "c-mueller", name: "Müller, Jörg; Dr." });
+  state.assignments = [
+    assignment("ct", "mon", "CT", FIRST),
+    assignment("mri", "mon", "MRI", SECOND),
+    assignment("sono", "mon", "Sonography", "c-mueller"),
+  ];
+  await page.addInitScript(() => localStorage.setItem("authToken", "test-token"));
+  await page.route("**/auth/me", (route) =>
+    route.fulfill({ json: { username: "test", role: "user", active: true } }),
+  );
+  await page.route("**/v1/**", (route) =>
+    new URL(route.request().url()).pathname.endsWith("/v1/state")
+      ? route.fulfill({ json: { ...state, revision: "r0" } })
+      : route.fulfill({ json: {} }),
+  );
+  const labelOf = (clinicianId: string) =>
+    page
+      .locator(`[data-assignment-key$="__${clinicianId}"] span.whitespace-nowrap`)
+      .first()
+      .innerText();
+  for (const layout of ["", "&layout=portrait"]) {
+    await page.goto(`/print/week?start=2026-01-05${layout}`);
+    await page.waitForFunction("window.__PDF_READY__ === true");
+    const [yildirim, yilmaz, mueller] = [await labelOf(FIRST), await labelOf(SECOND), await labelOf("c-mueller")];
+    // The narrow print columns shorten the names, never to one label for both.
+    expect(yildirim).not.toBe("Mehmet Yildirim");
+    expect(yildirim).not.toBe(yilmaz);
+    expect([yildirim, yilmaz]).not.toContain("Mehmet Y.");
+    expect([yildirim, yilmaz]).not.toContain("M. Y.");
+    expect(mueller).toMatch(/J/);
+    expect(mueller).not.toMatch(/Dr\./);
+  }
+});
+
 test("a locked shift moved into the Rest Day row becomes a plain rest day entry (v1.69)", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [assignment("ct", "mon", "CT", FIRST, { source: "solver", locked: true })];

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RenderedAssignment } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { EXCEL_CYAN, buildClinicSheetModel, buildMonthDays } from "../../lib/clinicSheet";
+import { buildNameLabels } from "../../lib/personName";
 import ClinicSheetGrid from "./ClinicSheetGrid";
 
 const makeSlotRow = (overrides: Partial<ScheduleRow> = {}): ScheduleRow => ({
@@ -256,6 +257,49 @@ describe("ClinicSheetGrid", () => {
     fireEvent.drop(sheetCell("pool-vacation", "2026-07-06"), { dataTransfer: broken });
     expect(onMoveWithinDay).not.toHaveBeenCalled();
     expect(onRemoveAssignment).not.toHaveBeenCalled();
+  });
+
+  it("lists 'Last, First' and titled names by their surname, unique in the team", () => {
+    const slotRow = makeSlotRow({ requiredSlots: 4 });
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const model = buildClinicSheetModel({
+      calendarRows: [groupedRow, poolRow],
+      days: buildMonthDays(new Date(2026, 6, 1), new Set()),
+    });
+    const team = [
+      { id: "jm", name: "Müller, Jörg; Dr." },
+      { id: "as", name: "Dr. med. Anna Schmidt" },
+      { id: "mp", name: "Marion P." },
+      { id: "tm", name: "Thomas Müller" },
+    ];
+    const assignments: RenderedAssignment[] = ["jm", "as", "mp"].map((clinicianId) => ({
+      id: `a-${clinicianId}`,
+      rowId: slotRow.id,
+      dateISO: "2026-07-06",
+      clinicianId,
+    }));
+    // Thomas Müller works the next Monday: his surname still counts.
+    assignments.push({ id: "a-tm", rowId: slotRow.id, dateISO: "2026-07-13", clinicianId: "tm" });
+    const assignmentMap = new Map<string, RenderedAssignment[]>([
+      [`${slotRow.id}__2026-07-06`, assignments.slice(0, 3)],
+      [`${slotRow.id}__2026-07-13`, assignments.slice(3)],
+    ]);
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={assignmentMap}
+        rows={[groupedRow, poolRow]}
+        readOnly
+        getClinicianName={(id) => team.find((person) => person.id === id)?.name ?? "Unknown"}
+        nameLabels={buildNameLabels(team)}
+        getIsQualified={() => true}
+      />,
+    );
+    const names = Array.from(document.querySelectorAll('[data-sheet-name="true"]')).map(
+      (element) => element.textContent,
+    );
+    // Once "Dr.", "P." and "Müller" for both Müllers.
+    expect(names).toEqual(["J. Müller", "Marion P.", "Schmidt", "T. Müller"]);
   });
 
   it("uses the sheet cyan constant for weekend blocks", () => {

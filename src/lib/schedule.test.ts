@@ -134,6 +134,18 @@ describe("sortAssignmentsBySurname", () => {
     expect(sorted.map((entry) => entry.clinicianId)).toEqual(["c", "a", "b", "d"]);
   });
 
+  it("reads the surname of 'Last, First' names, titles and particles", () => {
+    const people: Record<string, string> = {
+      m: "Müller, Jörg; Dr.",
+      b: "Ludwig van Beethoven",
+      d: "Anna Dahl",
+      s: "Prof. Dr. Hans Schulz",
+    };
+    const sorted = sortAssignmentsBySurname(entries("s", "m", "d", "b"), (id) => people[id]);
+    // Beethoven, Dahl, Müller, Schulz (not "Dr.", "Jörg;" or "van").
+    expect(sorted.map((entry) => entry.clinicianId)).toEqual(["b", "d", "m", "s"]);
+  });
+
   it("returns lists of fewer than two unchanged and leaves the input alone", () => {
     const single = entries("a");
     expect(sortAssignmentsBySurname(single, getName)).toBe(single);

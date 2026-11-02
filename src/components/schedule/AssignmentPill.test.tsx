@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AssignmentPill from "./AssignmentPill";
+import { buildNameLabels } from "../../lib/personName";
 import { buildPersonPillStyles } from "./teamColors";
 
 // Person colors pick the name's abbreviation from canvas text widths.
@@ -49,9 +50,11 @@ const personStyle = buildPersonPillStyles([
   { id: "c1", name: "Sarah Neumann", qualifiedClassIds: [], preferredClassIds: [], vacations: [] },
 ]).get("c1");
 
-const renderPerson = (name: string, width: number) => {
+const renderPerson = (name: string, width: number, labels?: readonly string[]) => {
   rowWidth = width;
-  render(<AssignmentPill name={name} personStyle={personStyle} isLocked onToggleLock={() => {}} />);
+  render(
+    <AssignmentPill name={name} labels={labels} personStyle={personStyle} isLocked onToggleLock={() => {}} />,
+  );
   return screen.getByText(/./, { selector: "span.min-w-0" });
 };
 
@@ -78,5 +81,21 @@ describe("AssignmentPill with person colors", () => {
     const name = renderPerson("Sarah Neumann", 50);
     expect(name.textContent).toBe("Sarah Neumann");
     expect(name.className).toContain("sr-only");
+  });
+
+  it("shows the team-wide label of its level", () => {
+    // 96 - 24 = 72 px: "Mehmet Yildirim" (90 px) misses, "Mehmet Yild." (72 px) fits.
+    const labels = buildNameLabels([
+      { id: "a", name: "Mehmet Yildirim" },
+      { id: "b", name: "Mehmet Yılmaz" },
+    ]).get("a")?.levels;
+    const name = renderPerson("Mehmet Yildirim", 96, labels);
+    expect(name.textContent).toBe("Mehmet Yild.");
+  });
+
+  it("shortens 'Last, First' names with titles to the given name and the family initial", () => {
+    // 66 - 24 = 42 px: "Jörg M." (42 px) fits; once "Müller, D." (QA).
+    const name = renderPerson("Müller, Jörg; Dr.", 66);
+    expect(name.textContent).toBe("Jörg M.");
   });
 });
