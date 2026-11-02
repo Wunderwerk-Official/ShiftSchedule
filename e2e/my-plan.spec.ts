@@ -324,6 +324,14 @@ test("My plan waits for the calendar instead of calling the link stale", async (
   await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toHaveCount(0);
   await expect(page.locator('[data-schedule-grid="true"]')).toHaveCount(0);
 
+  // The loading card keeps the switch (v1.77): back to Team and again to My plan.
+  await expect(scope.getByRole("button", { name: "My plan" })).toHaveAttribute("aria-pressed", "true");
+  await scope.getByRole("button", { name: "Team" }).click();
+  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  await expect(page.getByText("Loading calendar…")).toHaveCount(0);
+  await scope.getByRole("button", { name: "My plan" }).click();
+  await expect(page.getByText("Loading calendar…")).toBeVisible();
+
   releaseState();
   await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^CT, / })).toHaveCount(1);

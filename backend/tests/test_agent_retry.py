@@ -262,7 +262,7 @@ def test_persistent_day_failure_skips_day_and_continues():
     assert agent["daysSkipped"] == []
     assert agent["daysPlanned"] == 3
     # The skipped Tuesday is filled before the review by the cross-day
-    # coverage repair (v1.77; earlier the final audit filled it). It stays
+    # coverage repair (v1.79; earlier the final audit filled it). It stays
     # a day the model skipped (modelDaysSkipped), so the arena never counts it.
     assert agent["cross_day_repair"]["status"] == "applied"
     assert agent["cross_day_repair"]["days"] == [TUE]

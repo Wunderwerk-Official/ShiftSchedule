@@ -54,7 +54,7 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits). The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits); since v1.77 that card keeps the "Team | My plan" switch, so the way back to the team plan never waits for loading. The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
 - Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). Since v1.73 a cell whose section differs from its lane's names it in a small tag (before a differing time). See the v1.65, v1.66, v1.71 and v1.73 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
@@ -89,7 +89,7 @@ Cells
 - Drag/drop does not block rule-violating placements (same-day location mix, multiple shifts); solver enforces rules but manual overrides are allowed and shown in red. Overlap within the same day is blocked by drag/drop (uses time intervals).
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
-- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.77: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`).
+- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.79: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`).
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -193,17 +193,12 @@ Clinician Editor (modal)
 - Week solver nudges total assigned minutes toward `workingHoursPerWeek` within the tolerance (manual assignments count toward totals).
 - Per-clinician working hours tolerance: stored as `clinician.workingHoursToleranceHours` (default 5 hours). Each clinician can have a different tolerance for how much their assigned hours can deviate from their contract hours.
 
-Working Hours Overview
-- Dashboard panel opens a full-screen modal showing yearly working hours for all clinicians.
-- Year selector with navigation buttons; "Today" button jumps to current year/week.
-- Each clinician shows: name, contract hours (e.g., "40h/w"), weekly hours worked, yearly total.
-- If contract hours are set, also shows: Expected (fractional for partial weeks), Difference, Cumulative.
-- Weeks span Jan 1 to Dec 31 with partial weeks at year boundaries (e.g., if Jan 1 is Thursday, first week has 4 days).
-- Expected hours for partial weeks are calculated as `expectedWeeklyHours * (daysInWeek / 7)`.
-- Color coding: emerald (within ±2h of expected), amber (under by >2h), rose (over by >2h).
-- Pool assignments (rest day, vacation) do not count toward working hours.
-- Slot duration comes from the weekly template; defaults to 8 hours if not set.
-- Current week is highlighted with sky-blue background; sticky header + Total column.
+Working Hours Overview (reworked in v1.78)
+- Dashboard panel opens a full-screen modal with a "Week | Year" switch; every opening starts at this week's week view. Calculations: `src/lib/workingHours.ts` (pure), views `WorkingHoursWeekView.tsx` / `WorkingHoursYearView.tsx`, shared bits `WorkingHoursParts.tsx`.
+- Week view: one row per person (initials in the team color, contract "41 h/wk"), hours per day (Vac / Rest chips, the shifts in the tooltip), Planned, Target, Difference (signed + bar around the target with the tolerance band) and the year's running Balance through this week. Team sums on top (planned, target, difference, under / on / over counts) and per day in the footer. Sort: team order or most under first. Week navigation crosses year boundaries; Today returns to this week.
+- Year view: one row per person, one cell per week (W = ISO week number), tinted under (amber) / on (emerald) / over (rose); "Show: Hours | Difference | Balance". Sticky Planned / Target / Balance columns; a week header opens that week in the week view; today's week is outlined and centered.
+- Rules: shifts (non-pool) count their slot's duration on the start day (8 h without times). A week counts once the team has at least half of its target hours planned (`COUNTED_WEEK_SHARE`; people with contract hours; without any, once anybody has a shift) — weeks before the planner was used, a few test entries and weeks with only the on-call duties planned stay out of targets, totals and balance (hatched in the year view, hours still shown). Target = contract hours × (days in the year's week not on vacation) / 7 (the planner's working-hours rule). On target = within `workingHoursToleranceHours` (default 5 h) scaled the same way; the balance is colored against one week's tolerance.
+- Weeks span Jan 1 to Dec 31 with partial weeks at year boundaries.
 
 Holidays
 - Year selector with stepper buttons.
@@ -959,7 +954,7 @@ stays usable); a reload re-attaches to the running job.
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
 Strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
 (**day_by_day is the default since v1.38**; the UI no longer offers repair —
-it remains for the arena benchmarks and explicit API calls, like the v1.77
+it remains for the arena benchmarks and explicit API calls, like the v1.79
 experiment `direct`):
 
 **repair**: the classic improve-the-draft loop.
@@ -1003,25 +998,25 @@ planner works, with four extra tools (`get_day_priorities`,
    single-handover batches that keep both days contiguous and never
    create a new over-long or mini-stint day; fixed/manual assignments
    are never touched.
-5. **Cross-day coverage repair** (v1.77, `backend/agent/cross_day.py`):
+5. **Cross-day coverage repair** (v1.79, `backend/agent/cross_day.py`):
    after the last day and before the final range review, when required
    places are still open and the model placed something, CP-SAT re-solves
    the whole range from the current plan (fewest open required places,
    then fewest changed assignments, at most 60) and applies the result
    only through the gate (valid batch preview that improves the best
    plan). It trades weekly hours between days of one ISO week, which no
-   per-day step can (see v1.77).
+   per-day step can (see v1.79).
 6. **Zero-progress guard**: an empty day-by-day result never reaches the
    client — it falls back to a fresh heuristic draft
    (`AGENT_FALLBACK_SEED`).
 
-**direct** (v1.77, arena only, `backend/agent/direct.py`): no tools; the
+**direct** (v1.79, arena only, `backend/agent/direct.py`): no tools; the
 model gets one digest of the whole range (rules, every person's weekly
 hours booked/cap per ISO week, vacations, fixed shifts, windows, every open
 place with the people the gate accepts) and answers with a plan block; the
 placements go through the gate one by one, one correction round sends the
 rejections and the remaining open places back. It measures whether a strong
-model plans better or cheaper without the tool procedure (v1.77 results).
+model plans better or cheaper without the tool procedure (v1.79 results).
 
 The iteration budget follows the admin rule **total slot instances × 10**
 (floor 10), computed per solve; `AGENT_MAX_ITERATIONS` is no longer read at
@@ -1253,7 +1248,7 @@ with a foreign objective scale, which shows up as a full-height "jump".
 - `backend/tests/test_agent_anthropic_provider.py`, `test_agent_retry.py` —
   Anthropic adapter (empty replies, thinking display per model, SDK errors)
   and provider exceptions inside a run (v1.64)
-- `backend/tests/test_cross_day_repair.py` — v1.77: CP-SAT repair mode,
+- `backend/tests/test_cross_day_repair.py` — v1.79: CP-SAT repair mode,
   `coverage_repair` through the gate, the day-by-day integration, the
   weekly-hours magnitudes and the direct strategy (parser, gate, digest)
 - `backend/tests/test_solver_monitor.py` — monitor end states (watchdog kill,
@@ -1518,7 +1513,7 @@ Frontend
 - `src/components/schedule/RowLabel.tsx`
 - `src/components/schedule/AssignmentPill.tsx`
 - `src/components/schedule/VacationOverviewModal.tsx` (vacation planner, scrolls to today on open)
-- `src/components/schedule/WorkingHoursOverviewModal.tsx` (yearly working hours overview for all clinicians)
+- `src/components/schedule/WorkingHoursOverviewModal.tsx` (v1.78: working hours, week view and year view; `WorkingHoursWeekView.tsx`, `WorkingHoursYearView.tsx`, `WorkingHoursParts.tsx`; calculations in `src/lib/workingHours.ts`)
 - `src/components/schedule/SolverOverlay.tsx` (live solver progress overlay; v1.69 layout: header, day track + current step (`AgentActivityPanel`), best plan so far (`ConstraintPulse`), collapsed activity log, action footer)
 - `src/components/schedule/SolverDebugPanel.tsx` (debug info visualization after solve completes)
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
@@ -1545,7 +1540,7 @@ Frontend
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
-- `src/lib/weeklyHours.ts` (v1.77: weekly hours per ISO week as the backend gate counts them; the picker's "Over weekly limit")
+- `src/lib/weeklyHours.ts` (v1.79: weekly hours per ISO week as the backend gate counts them; the picker's "Over weekly limit")
 - `src/lib/templateLimits.ts` (v1.64: `MAX_TOTAL_COLBANDS` = 300, `countTemplateColBands`)
 - `src/lib/time.ts` (v1.64: the one strict `parseTimeToMinutes`)
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
@@ -1564,8 +1559,8 @@ Backend
 - `backend/pdf.py` (PDF export endpoints)
 - `backend/ical_routes.py` (iCal endpoints)
 - `backend/publication.py` (tokens + caching helpers)
-- `backend/solver.py` (CP-SAT solver endpoint + logic; v1.77 repair mode for the agent's cross-day repair)
-- `backend/agent/cross_day.py` (v1.77: cross-day coverage repair), `backend/agent/direct.py` (v1.77: arena-only direct strategy)
+- `backend/solver.py` (CP-SAT solver endpoint + logic; v1.79 repair mode for the agent's cross-day repair)
+- `backend/agent/cross_day.py` (v1.79: cross-day coverage repair), `backend/agent/direct.py` (v1.79: arena-only direct strategy)
 - `backend/heuristic/solver_v2.py` (heuristic solver v2 implementation)
 - `backend/state_routes.py` (health + state endpoints + database inspection)
 - `backend/preferences.py` (v1.64: `GET/PUT /v1/me/preferences`, 32 KB cap)
@@ -3060,13 +3055,62 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `repeat(3, auto)`.
 - Deploy notes: frontend only, no schema or data change. Version 1.76 (76).
 
-## v1.77 — Planning across days, weekly hours in the picker
+## v1.77 — Team switch while My plan is loading
 
-- **Merged onto main's v1.74–v1.76.** Built on its branch
+- `src/components/schedule/CalendarPlaceholder.tsx` (shown in scope "My plan"
+  until this user's calendar is loaded, see the core UI notes) used to be an
+  empty card: the page had no "Team | My plan" switch until loading finished,
+  so a slow load trapped the user in the empty My plan card. It now has the
+  same frame and header position as `MyPlanView` and shows `PlanScopeSwitch`
+  (scope "me", compact on phones) above a busy status "Loading calendar…"
+  with a small spinner (still for `prefers-reduced-motion`). The switch shows
+  no initials yet: the linked person is only known once the calendar is
+  loaded (until then the page holds the demo people). Props:
+  `onScopeChange` (the page's `setPlanScope`), `isMobile`.
+- Tests: `CalendarPlaceholder.test.tsx` (switch usable and reports "team",
+  busy status text, plain "My plan" label, compact on phones).
+- Deploy notes: frontend only, no schema or data change. Version 1.77 (77).
+
+## v1.78 — Working hours: week view, compact year view, fair targets
+
+- **Why.** The overview showed four rows per person (hours, expected,
+  difference, cumulative) for all 53 weeks, and expected the contract hours
+  for every week since January — also before the planner was used — so the
+  cumulative column read −1694 h for people who were exactly on plan. It
+  also counted vacation weeks as missing hours.
+- **Week view (new, the default).** One row per person: hours per day
+  (vacation and rest days marked, the shifts in the tooltip), planned,
+  target, the difference as a number and a bar around the target with the
+  tolerance band, and the year's running balance through the week. Team sums
+  above the table and per day in the footer; sort by team order or most
+  under first; previous / next week across year boundaries, Today.
+- **Year view (compact).** One row per person instead of four; each week a
+  cell tinted under / on / over target, switchable between hours,
+  difference and running balance; Planned / Target / Balance columns stay
+  in view; a week header opens that week; weeks labelled with ISO numbers
+  (before, years starting on Friday to Sunday were numbered one week off).
+- **Fair targets** (`src/lib/workingHours.ts`): a week counts once the team
+  has half of its target hours planned (`COUNTED_WEEK_SHARE = 0.5`), so test
+  entries, weeks still being planned and future weeks with only the on-call
+  duties do not create deficits; vacation days lower the target (days / 7,
+  as in the planner); "on target" uses each person's tolerance (Clinician
+  editor, default ± 5 h) instead of a fixed ± 2 h. Totals and balance cover
+  the counted weeks only; hours of other weeks still show (hatched).
+- Tests: `src/lib/workingHours.test.ts` (new: weeks and ISO labels,
+  counting rule, vacation-scaled target and tolerance, statuses, day
+  details, running balance, vacation week, fallback without contracts),
+  `WorkingHoursOverviewModal.test.tsx` (rewritten: week view rows, vacation,
+  sort, uncounted week, navigation across years, year view cells and
+  totals, metric switch, week header, time zones, close).
+- Deploy notes: frontend only, no schema or data change. Version 1.78 (78).
+
+## v1.79 — Planning across days, weekly hours in the picker
+
+- **Merged onto main's v1.74–v1.78.** Built on its branch
   (`claude/practical-cannon-9flogp`) as "v1.74": that word in the branch's
   commit messages means this release, not main's v1.74 above (its docs,
   comments, the arena README and the arena workflow's strategy help now say
-  v1.77). Main is the base; what the merge adapted:
+  v1.79). Main is the base; what the merge adapted:
   - Run card: main's v1.74 card layout stays; its warning box shows
     `runReviewLine` (see "Run card" below) instead of the fixed "Incomplete
     draft: N day(s) need review before applying." line.
@@ -3120,13 +3164,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
      hours a scarce person needs on a later day of the same week
      (`reserved_for`). Needs the scarcity of later days, which the repair
      below already computes exactly; not worth a heuristic yet.
-  2. *Repair across days* (v1.77): once all days are built, an exact
+  2. *Repair across days* (v1.79): once all days are built, an exact
      search over the whole range trades assignments between days. CP-SAT
      already models every hard rule (weekly hours, rest days, overlaps,
      sites, windows), solves a week's repair in seconds and finds chains a
      model would need dozens of tool calls for; the agent's plan stays the
      starting point and the gate keeps the final say.
-  3. *Transparency* (v1.77): the picker and the tools say how far a person
+  3. *Transparency* (v1.79): the picker and the tools say how far a person
      is over the week, so neither the planner nor a human retries a blocked
      person.
 - **Cross-day coverage repair** (`backend/agent/cross_day.py`,
@@ -3302,4 +3346,4 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   auto-select order); frontend `weeklyHours.test.ts`,
   `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`,
   `solverOutcome.test.ts`, `SolverInfoModal.test.tsx` (run-card wording).
-- Deploy notes: no schema or data change. Version 1.77 (77).
+- Deploy notes: no schema or data change. Version 1.79 (79).

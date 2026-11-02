@@ -395,7 +395,7 @@ def test_arena_flags_days_the_repair_completed_for_the_model():
 
 
 # ---------------------------------------------------------------------------
-# The repair model must accept every plan the gate accepts (review of v1.77):
+# The repair model must accept every plan the gate accepts (review of v1.79):
 # a stricter model makes the agent's legal plan an infeasible hint, and the
 # repair then breaks legal placements or is rejected.
 # ---------------------------------------------------------------------------
@@ -579,7 +579,7 @@ def test_parse_direct_reply_reads_every_plan_block_and_only_those():
 
 
 # ---------------------------------------------------------------------------
-# Rest Day row entries (main's v1.75 rule REST_DAY, merged in v1.77): CP-SAT
+# Rest Day row entries (main's v1.75 rule REST_DAY, merged in v1.79): CP-SAT
 # has no variable on such a date, the shared gate refuses it.
 # ---------------------------------------------------------------------------
 

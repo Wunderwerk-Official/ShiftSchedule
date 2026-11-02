@@ -233,6 +233,8 @@ npx playwright show-report
 
 **Frontend Tests (v1.76 stacked week: one row per section)**: `src/lib/stackedTeamLayout.test.ts` (`buildTimeLanes`: a slot that overlaps no free lane opens its own, however near its start; `buildSectionLanes`: lanes never mix sections — the user's rotating "IRM HK" row; a section's separate time blocks on different days (the user's IRM cardio HK: Mon/Thu 07:30, Wed 13:00 and 16:00) get a lane each with no differing time; sections by earliest start, then first slot in template column order, then name; a section's lanes by start even when a later day opened them; a weekend variant with another time stays in its section's lane; two slots of one section on a day get two lanes; sections by id, by name without one; `buildStackedTeamLayout`: a day of another section gets its own lane and color, a section named like its row band is titled when another section comes first, lane ids and order are the same whatever days are on screen, also when a hidden day or a holiday decides the order, row/section spans and first/last-in-section flags), `ScheduleGrid.test.tsx` (three label columns with spanning row band and section cells, header and pool row labels span them; divider levels lane / section / row on cells and label cells; single day keeps one label cell and names the section on every lane; no section tag in cells, own time as a quiet clock note under the people (no chip) and tooltip kept, no "+N"; section tints per lane label and cell; a later lane's section for screen readers and in its tooltip; location shade on every label cell), `HelpView.test.tsx` (stacked text), e2e `team-page.spec.ts` (see above).
 
+**Frontend Tests (v1.77 team switch while loading)**: `CalendarPlaceholder.test.tsx` (the "Team | My plan" switch is usable while My plan waits for the calendar and reports "team"; busy status "Loading calendar…"; plain "My plan" label without initials; compact switch on phones).
+
 **Frontend Tests (v1.65 stacked times)**: `src/lib/stackedTeamLayout.test.ts` (time lanes: weekend columns by time, shorter shifts by nearest start, same-time columns by section), `ScheduleGrid.test.tsx` ("stacked times": one column per day, labels, own-time captions, drag between lanes), `TeamPlanHeader.test.tsx` (Times switch).
 
 ### 3.11 Background runs (v1.64)
@@ -266,7 +268,13 @@ npx playwright show-report
 
 **Frontend Tests**: `SettingsView.test.tsx` (Rest Day row helper, Planning goals on-call note), `HelpView.test.tsx` (Rest Day row day off).
 
-### 3.14 Planning across days and weekly hours (v1.77)
+### 3.14 Working hours overview (v1.78)
+
+**Frontend Tests**:
+- [x] `src/lib/workingHours.test.ts` — year weeks (partial ends, ISO labels incl. a year starting on Friday), a week counts from half of the team's target hours (fallback: any shift without contracts), target and tolerance scaled by vacation days, statuses, day details (minutes, shifts, rest days), running balance and totals over counted weeks, a vacation week without status
+- [x] `WorkingHoursOverviewModal.test.tsx` — opens on this week; days with Rest / Vac, tooltips, planned, target with vacation note, difference with status, balance, team counts; sort most under first; a week that does not count yet explains why; week navigation across years; year view cells, hatched uncounted weeks, totals, Hours / Difference / Balance; a week header opens the week; Monday and Sunday stay in one week in three time zones; close button and Escape
+
+### 3.15 Planning across days and weekly hours (v1.79)
 
 **Backend Tests** (`backend/tests/test_cross_day_repair.py`; the case: a person with a 32 + 8 h cap and 27.5 h booked Mon–Wed, Thursday's 10 h slot and Friday's two 4 h slots of higher priority, nobody else qualified):
 - [x] CP-SAT repair mode moves her hours from Thursday to Friday (one more required place) and keeps the best plan when nothing improves
@@ -387,4 +395,5 @@ Areas identified for future test expansion:
 | 2026-11-01 | Claude | v1.74 (merge of the feature-branch "v1.71" work): My plan always opens in Team and relinks, import backup, holidays added by hand |
 | 2026-11-01 | Claude | v1.75: hand-placed rest days block automatic planning (`REST_DAY`); Balanced on-call fairness follows the rest rule |
 | 2026-11-02 | Claude | v1.76: stacked team week with one lane per section (no "+N", no in-cell section tag), three-column label with spanning row band / section cells; review round: overlap rule for time lanes, auto label tracks, own time as a note, phone labels name every lane |
-| 2026-11-02 | Claude | v1.77 (merged onto v1.74–v1.76; the branch called it v1.74): cross-day coverage repair, weekly hours in the picker, direct strategy (arena), why a slot stayed open; `REST_DAY` among the blocking reasons |
+| 2026-11-02 | Claude | v1.77: the My-plan loading card keeps the "Team | My plan" switch |
+| 2026-11-02 | Claude | v1.79 (merged onto v1.74–v1.78; the branch called it v1.74): cross-day coverage repair, weekly hours in the picker, direct strategy (arena), why a slot stayed open; `REST_DAY` among the blocking reasons |
