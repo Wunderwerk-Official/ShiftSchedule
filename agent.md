@@ -3520,10 +3520,11 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `section_rank` (1 = top; the digest shows `rank N` instead of `prio N`).
   The per-slot `order_weight` they used is capped at 100, so with more than
   100 template slots the top sections tied, and it ranked the shifts of one
-  section among each other. Classic candidates of `suggest_day_blocks` sort
-  by the sections their block reaches first (a block that also reaches an
-  open slot of a higher-ranked section comes first), then in the v1.80 order
-  (daily minimum, window fit, YTD); the balanced profile sorts by
+  section among each other. Classic candidates of `suggest_day_blocks` keep
+  the v1.80 order (daily minimum, window fit, YTD), except that a block
+  that also reaches an open slot of a section ranked ABOVE the selected slot
+  comes first (a single-candidate or on-call slot worked before the higher
+  sections, or a slot the model picked); the balanced profile sorts by
   `quality_after`. `suggest_rescue_moves` also offers a 2-move
   batch without a substitute when the vacated slot ranks lower than the
   stuck one (`substitute: null`, `leaves_open`): under the strict order that
@@ -3579,9 +3580,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
     the note names stages skipped for lack of time.
   - Classic candidates: the first key was the whole vector after the block,
     which put the block filling more positions first even inside one
-    section, overriding daily minimum, window fit and YTD fairness (more
-    short days and YTD inversions in the first-offer baseline). Now only the
-    sections a block reaches decide first.
+    section, overriding daily minimum, window fit and YTD fairness. Ranking
+    by every section a block reaches did no better. In the first-offer
+    baseline (`arena/workflow_eval.py`, no model, no repair) both left 34
+    open in the carnival week 2026-02-16 with 10 short days (v1.80: 32 and
+    6). Now only a block reaching a section above the selected slot moves
+    ahead: 30 open, 5 short days; base week 2026-02-02 0 open, 3 short days
+    (v1.80: 0 and 4); the weekly-hours deviation is 3-5% higher.
   - Rescue in distribute-all mode: a 2-move batch whose vacated slot keeps
     its target opens nothing; it is offered whatever the ranks, without
     `leaves_open`.

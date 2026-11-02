@@ -290,8 +290,8 @@ TOOL_SPECS_RAW = [
             "section order; slots nobody can take are skipped); when "
             "nothing fillable remains it returns day_complete=true instead. "
             "Candidates are pre-sorted (balanced profile: by quality_after; "
-            "classic: a block that also reaches an open slot of a "
-            "higher-ranked section first, then daily minimum met, "
+            "classic: a block that also reaches an open slot of a section "
+            "ranked above the selected slot first, then daily minimum met, "
             "preferred-working-time fit (window_fit) next, then lowest "
             "ytd_worked_pct; when no block reaches the minimum, longest "
             "block first). Each candidate "
@@ -1863,19 +1863,24 @@ class PlanToolExecutor:
             out = sorted(checked, key=lambda c: tuple(c["quality_after"][field] for field in self.quality_fields))
         else:
             # Strict section order: a block that also reaches an open slot of
-            # a higher-ranked section comes first (sections reached, top
-            # first). Blocks reaching the same sections keep the day-length,
-            # window and fairness order: filling more slots of one section
-            # is no reason to skip it (the day loop fills them next).
-            def _sections_reached(c: dict) -> tuple:
+            # a section ranked ABOVE the selected slot comes first (it can
+            # happen when a single-candidate or on-call slot is worked before
+            # the higher sections, or the model picks the slot). Everything
+            # else keeps the day-length, window and fairness order: blocks
+            # reaching more or other lower sections are no reason to skip it
+            # (the day loop works those sections next; ranking them first
+            # cost short days and coverage in the first-offer baseline).
+            selected_index = self.section_index_by_slot_id.get(inst.slot_id, len(self.section_order))
+
+            def _higher_reached(c: dict) -> tuple:
                 reached = set()
                 for key in raw_blocks.get(c["clinicianId"], []):
                     block_inst = self.ctx.instances.get(key)
                     if block_inst is not None and block_inst.target - counts.get(key, 0) > 0:
                         reached.add(self.section_index_by_slot_id[block_inst.slot_id])
-                return tuple(0 if index in reached else 1 for index in range(len(self.section_order)))
+                return tuple(0 if index in reached else 1 for index in range(selected_index))
 
-            out.sort(key=lambda c: (_sections_reached(c), _rank(c)))
+            out.sort(key=lambda c: (_higher_reached(c), _rank(c)))
         # Limit the response AFTER comparing work blocks. A later candidate
         # may be the only person able to turn a one-hour stint into a full day.
         total_options = len(out)
@@ -1901,7 +1906,7 @@ class PlanToolExecutor:
             "up to their preferred daily hours, all legality-checked). "
             "In the balanced profile candidates are sorted by quality_after. "
             "In classic: a block that also reaches an open slot of a "
-            "higher-ranked section first, then daily minimum met, within "
+            "section ranked above this one first, then daily minimum met, within "
             "that preferred-working-time fit (window_fit), then lowest "
             "ytd_worked_pct; when NO block reaches the minimum, the "
             "LONGEST block first — one person on a longer stint beats two "

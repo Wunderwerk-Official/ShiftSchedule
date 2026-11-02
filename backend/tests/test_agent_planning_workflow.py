@@ -457,9 +457,27 @@ def test_full_slot_candidate_list_does_not_claim_replacements_are_impossible():
 
 @pytest.mark.parametrize("profile", ["classic", "balanced"])
 def test_day_block_candidates_follow_the_strict_section_order(profile):
-    """v1.81: both profiles list first the candidate whose block leaves the
-    better section vector. P's block also fills B; Q's fills both C slots,
-    one position more, yet B ranks above C, so P comes first."""
+    """v1.81: the selected slot X ranks below A. P's block also reaches A's
+    open slot, Q's does not; Q is otherwise first (P's block misses the
+    daily minimum by stretching into a short stint, Q's meets it). Both
+    profiles list P first: A ranks above X's section."""
+    clinicians = [make_clinician("p", "P (A+X)", ["A", "X"], working_hours_per_week=40),
+                  make_clinician("q", "Q (X)", ["X"], working_hours_per_week=40)]
+    slots = [make_template_slot("X1", block_id="X", row_band_id="row-1", start_time="08:00", end_time="12:00"),
+             make_template_slot("X2", block_id="X", row_band_id="row-1", start_time="12:00", end_time="14:00"),
+             make_template_slot("A1", block_id="A", row_band_id="row-1", start_time="12:00", end_time="13:00")]
+    state = section_state(clinicians, slots, ["A", "X"])
+    state.solverSettings["agentQualityProfile"] = profile
+    ex = executor(state)
+    out = run(ex, "suggest_day_blocks", slot_key=f"X1__{MON}")
+    order = [c["clinicianId"] for c in out["candidates"]]
+    assert order[0] == "P (A+X)", out["candidates"]
+
+
+def test_classic_candidates_keep_the_day_order_inside_lower_sections():
+    """Review of v1.81: reaching more or other LOWER sections does not move a
+    block ahead; the day-length and fairness order decides (ranking every
+    reached section first cost short days in the first-offer baseline)."""
     clinicians = [make_clinician("p", "P (A+B)", ["A", "B"], working_hours_per_week=40),
                   make_clinician("q", "Q (A+C)", ["A", "C"], working_hours_per_week=40)]
     slots = [make_template_slot("X", block_id="A", row_band_id="row-1", start_time="08:00", end_time="10:00"),
@@ -467,12 +485,12 @@ def test_day_block_candidates_follow_the_strict_section_order(profile):
              make_template_slot("C1", block_id="C", row_band_id="row-1", start_time="10:00", end_time="12:00"),
              make_template_slot("C2", block_id="C", row_band_id="row-1", start_time="12:00", end_time="14:00")]
     state = section_state(clinicians, slots, ["A", "B", "C"])
-    state.solverSettings["agentQualityProfile"] = profile
     ex = executor(state)
     out = run(ex, "suggest_day_blocks", slot_key=f"X__{MON}")
-    assert [c["clinicianId"] for c in out["candidates"]][:2] == ["P (A+B)", "Q (A+C)"], out["candidates"]
-
-
+    # Both blocks meet the daily minimum and fit; Q's is longer (6 h against
+    # 4 h), so the v1.80 order puts Q first although P's block reaches B,
+    # which ranks above C: both lie below the selected slot's section A.
+    assert [c["clinicianId"] for c in out["candidates"]] == ["Q (A+C)", "P (A+B)"]
 def test_rescue_in_distribute_all_mode_moves_a_person_off_a_slot_above_its_target():
     """Review of v1.81: when the vacated slot keeps its target without the
     person (distribute-all headroom), the 2-move rescue opens nothing: it is
