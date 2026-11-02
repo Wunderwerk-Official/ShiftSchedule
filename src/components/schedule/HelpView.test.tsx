@@ -52,6 +52,17 @@ it("describes the import backup and the regional holiday loading", () => {
   expect(text).toContain("without one, the regional holidays of every state are loaded");
 });
 
+it("says that a holiday change removes the shifts of the changed days only after asking", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain(
+    "A day that becomes a holiday or stops being one (adding, removing or loading holidays) " +
+      "switches to the other day's columns, so the shifts planned on it no longer fit and are " +
+      "removed, locked ones too.",
+  );
+  expect(text).toContain("when you confirm, the calendar is saved as the automatic backup (see 10) before the change");
+});
+
 it("says that a name dragged into the Rest Day row keeps automatic planning away (v1.75)", () => {
   const { container } = render(<HelpView />);
   const text = (container.textContent ?? "").replace(/\s+/g, " ");

@@ -56,10 +56,14 @@ type SettingsViewProps = {
   onChangeHolidayCountry: (countryCode: string) => void;
   onChangeHolidayRegion: (region: string | undefined) => void;
   onChangeHolidayYear: (year: number) => void;
-  /** Loads the public holidays; resolves to how many were added. */
-  onFetchHolidays: (countryCode: string, year: number, region?: string) => Promise<number | void>;
-  onAddHoliday: (holiday: Holiday) => void;
-  onRemoveHoliday: (holiday: Holiday) => void;
+  // Holiday changes ask first when they remove shifts that no longer fit
+  // their day; they reject when the change could not be applied.
+  /** Loads the public holidays; resolves to how many were added, null when cancelled. */
+  onFetchHolidays: (countryCode: string, year: number, region?: string) => Promise<number | null>;
+  /** Resolves to false when cancelled. */
+  onAddHoliday: (holiday: Holiday) => Promise<boolean>;
+  /** Resolves to false when cancelled. */
+  onRemoveHoliday: (holiday: Holiday) => Promise<boolean>;
   onChangeSolverSettings: (settings: SolverSettings) => void;
   onChangeWeeklyTemplate: (template: WeeklyCalendarTemplate) => void;
   onCreateSection: (name: string) => string;
@@ -126,6 +130,7 @@ export default function SettingsView({
   const [holidayError, setHolidayError] = useState<string | null>(null);
   const [holidayNotice, setHolidayNotice] = useState<string | null>(null);
   const [holidayInputError, setHolidayInputError] = useState<string | null>(null);
+  const [holidayListError, setHolidayListError] = useState<string | null>(null);
   const [snapshotImportError, setSnapshotImportError] = useState<string | null>(null);
   const [snapshotImportResult, setSnapshotImportResult] =
     useState<ScheduleSnapshotImportResult | null>(null);
@@ -855,12 +860,12 @@ export default function SettingsView({
                       holidayYear,
                       selectedRegion,
                     );
+                    // Cancelled: the list (and the note about it) stays.
+                    if (added === null) return;
                     setHolidayRegionChanged(false);
-                    if (typeof added === "number") {
-                      setHolidayNotice(
-                        `Loaded ${added} public holiday${added === 1 ? "" : "s"} for ${holidayYear}.`,
-                      );
-                    }
+                    setHolidayNotice(
+                      `Loaded ${added} public holiday${added === 1 ? "" : "s"} for ${holidayYear}.`,
+                    );
                   } catch (error) {
                     setHolidayError(
                       error instanceof Error
@@ -932,7 +937,16 @@ export default function SettingsView({
                   </div>
                   <button
                     type="button"
-                    onClick={() => onRemoveHoliday(holiday)}
+                    onClick={async () => {
+                      setHolidayListError(null);
+                      try {
+                        await onRemoveHoliday(holiday);
+                      } catch (error) {
+                        setHolidayListError(
+                          error instanceof Error ? error.message : "The holiday could not be removed.",
+                        );
+                      }
+                    }}
                     className={buttonSmall.base}
                   >
                     Remove
@@ -941,6 +955,11 @@ export default function SettingsView({
               ))
             )}
             </div>
+            {holidayListError ? (
+              <div className="text-xs font-semibold text-rose-600 dark:text-rose-200">
+                {holidayListError}
+              </div>
+            ) : null}
           </div>
           <div className="mt-4">
             <button
@@ -980,7 +999,7 @@ export default function SettingsView({
                 />
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     const trimmedName = newHolidayName.trim();
                     const parsedDate = parseHolidayDate(newHolidayDate);
                     if (!parsedDate || !trimmedName) {
@@ -989,10 +1008,20 @@ export default function SettingsView({
                       );
                       return;
                     }
-                    onAddHoliday({ dateISO: parsedDate, name: trimmedName });
+                    setHolidayInputError(null);
+                    let added: boolean;
+                    try {
+                      added = await onAddHoliday({ dateISO: parsedDate, name: trimmedName });
+                    } catch (error) {
+                      setHolidayInputError(
+                        error instanceof Error ? error.message : "The holiday could not be added.",
+                      );
+                      return;
+                    }
+                    // Cancelled: the form stays open with its entries.
+                    if (!added) return;
                     setNewHolidayDate("");
                     setNewHolidayName("");
-                    setHolidayInputError(null);
                     setShowNewHoliday(false);
                   }}
                   className={buttonPrimary.base}

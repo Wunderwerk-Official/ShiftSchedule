@@ -39,8 +39,8 @@ function setup(overrides: Partial<ComponentProps<typeof SettingsView>> = {}) {
     onRenamePool: vi.fn(), onAddLocation: vi.fn(), onRenameLocation: vi.fn(), onRemoveLocation: vi.fn(),
     onReorderLocations: vi.fn(), onAddClinician: vi.fn(), onEditClinician: vi.fn(), onRemoveClinician: vi.fn(),
     onChangeHolidayCountry: vi.fn(), onChangeHolidayRegion: vi.fn(), onChangeHolidayYear: vi.fn(),
-    onFetchHolidays: vi.fn(), onAddHoliday: vi.fn(),
-    onRemoveHoliday: vi.fn(), onChangeSolverSettings: vi.fn(), onChangeWeeklyTemplate: vi.fn(),
+    onFetchHolidays: vi.fn().mockResolvedValue(0), onAddHoliday: vi.fn().mockResolvedValue(true),
+    onRemoveHoliday: vi.fn().mockResolvedValue(true), onChangeSolverSettings: vi.fn(), onChangeWeeklyTemplate: vi.fn(),
     onCreateSection: vi.fn().mockReturnValue("section"), onUpdateSectionColor: vi.fn(), onExportScheduleSnapshot: vi.fn(),
     onImportScheduleSnapshot: vi.fn().mockResolvedValue({ imported: 0, droppedClinicians: 0, droppedSlots: 0 }),
     ...overrides,
@@ -286,6 +286,34 @@ it("adds a holiday picked in the date picker", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   const month = String(now.getMonth() + 1).padStart(2, "0");
   expect(props.onAddHoliday).toHaveBeenCalledWith({ dateISO: `${now.getFullYear()}-${month}-15`, name: "Clinic day" });
+  await waitFor(() => expect(screen.queryByPlaceholderText("Holiday name")).toBeNull());
+});
+
+it("keeps the new holiday's form when adding it is cancelled or fails", async () => {
+  const onAddHoliday = vi.fn().mockResolvedValueOnce(false)
+    .mockRejectedValueOnce(new Error("The backup could not be saved, so the holidays were not changed."));
+  setup({ onAddHoliday });
+  fireEvent.click(screen.getByRole("button", { name: "Add Holiday" }));
+  fireEvent.click(screen.getByRole("button", { name: "DD.MM.YYYY" }));
+  fireEvent.click(screen.getByRole("button", { name: "15" }));
+  fireEvent.change(screen.getByPlaceholderText("Holiday name"), { target: { value: "Clinic day" } });
+
+  // Cancelled in the confirmation: nothing changed, the entries stay.
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(onAddHoliday).toHaveBeenCalledTimes(1));
+  expect(screen.getByPlaceholderText("Holiday name")).toHaveValue("Clinic day");
+
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("The backup could not be saved, so the holidays were not changed.")).toBeVisible();
+  expect(screen.getByPlaceholderText("Holiday name")).toHaveValue("Clinic day");
+});
+
+it("shows why a holiday could not be removed", async () => {
+  const onRemoveHoliday = vi.fn().mockRejectedValue(new Error("Wait until the calendar has loaded before changing holidays."));
+  setup({ holidays: [{ dateISO: "2026-12-24", name: "Heiligabend", source: "manual" }], onRemoveHoliday });
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  expect(await screen.findByText("Wait until the calendar has loaded before changing holidays.")).toBeVisible();
+  expect(onRemoveHoliday).toHaveBeenCalledWith({ dateISO: "2026-12-24", name: "Heiligabend", source: "manual" });
 });
 
 
@@ -430,5 +458,16 @@ describe("holidays: state and holidays added by hand", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
     expect(await screen.findByText("Loaded 10 public holidays for 2026.")).toBeVisible();
     expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, "DE-NW");
+  });
+
+  it("keeps the list and its note when loading is cancelled", async () => {
+    const props = setup({ onFetchHolidays: vi.fn().mockResolvedValue(null) });
+    fireEvent.click(screen.getByRole("button", { name: "State: All states" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sachsen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, undefined));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load holidays for 2026" })).toBeEnabled());
+    expect(screen.getByText(/unchanged until you load holidays again/)).toBeVisible();
+    expect(screen.queryByText(/^Loaded/)).toBeNull();
   });
 });

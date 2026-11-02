@@ -610,16 +610,24 @@ export async function createSnapshot(
   return res.json();
 }
 
+/** What replaces the shifts after the backup; names it in Calendar snapshots. */
+export type BackupReason = "shifts_file_import" | "holiday_change";
+
 /**
  * Save the calendar as shown into the auto-backup slot before a shifts file
- * replaces its shifts ("Auto-backup before shifts file import"). The slot is
+ * ("Auto-backup before shifts file import", the default) or a holiday change
+ * ("Auto-backup before holiday change") replaces its shifts. The slot is
  * shared with the backup made before a restore; the newest one wins.
  */
-export async function createImportBackup(state: AppState): Promise<SnapshotMeta> {
+export async function createImportBackup(
+  state: AppState,
+  options: { reason?: BackupReason } = {},
+): Promise<SnapshotMeta> {
   const res = await fetch(`${API_BASE}/v1/state/snapshots/import-backup`, {
     method: "POST",
     headers: buildHeaders(),
-    body: JSON.stringify({ state }),
+    // Without a reason the server names it after a shifts file import.
+    body: JSON.stringify({ state, reason: options.reason }),
   });
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {

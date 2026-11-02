@@ -231,9 +231,11 @@ import {
   buildScheduleRows,
   buildShiftRowId,
   DEFAULT_LOCATION_ID,
+  findAssignmentsDroppedByHolidayChange,
   normalizeAppState,
   type ScheduleRow,
 } from "../lib/shiftRows";
+import { useConfirmHolidayChange } from "./useConfirmHolidayChange";
 
 type ScheduleSnapshotImportResult = {
   imported: number;
@@ -497,6 +499,7 @@ export default function WeeklySchedulePage({
   const runStatsRef = useRef<Map<string, StatsHistoryEntry[]>>(new Map());
   const [solverInfoOpen, setSolverInfoOpen] = useState(false);
   const [holidays, setHolidays] = useState<Holiday[]>(defaultAppState.holidays ?? []);
+  const confirmHolidayChange = useConfirmHolidayChange();
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
   );
@@ -2996,10 +2999,47 @@ export default function WeeklySchedulePage({
     setSolverSettings(settings);
   };
 
+  // Every change of the holiday list goes through here. A date that becomes
+  // or stops being a holiday switches to another day's plan, and its shifts
+  // no longer fit (normalizeAppState and the server drop them): they are
+  // removed only after a confirmation and an automatic backup, from the
+  // screen too, so it shows what is saved. Resolves to false when the user
+  // cancels; throws when the change cannot be applied.
+  const changeHolidays = async (update: (previous: Holiday[]) => Holiday[]) => {
+    const current = buildCurrentStatePayload();
+    if (!current) throw new Error("The current calendar cannot be saved. Fix its template first.");
+    const nextHolidays = update(holidays);
+    const dropped = findAssignmentsDroppedByHolidayChange(current, nextHolidays);
+    if (dropped.length > 0) {
+      if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
+        // Same guard as the shifts file import: before the load the screen is
+        // not the user's calendar, and with a failed save pending the change
+        // would not be stored after the backup replaced the previous one.
+        throw new Error(saveError ?? "Wait until the calendar has loaded before changing holidays.");
+      }
+      if (!(await confirmHolidayChange(current, dropped))) return false;
+      // The screen keeps exactly what the next save stores.
+      setAssignmentMap((prev) =>
+        buildAssignmentMap(
+          normalizeAppState({
+            ...current,
+            holidays: nextHolidays,
+            assignments: Array.from(prev.values()).flat(),
+          }).state.assignments,
+        ),
+      );
+    }
+    setHolidays(nextHolidays);
+    return true;
+  };
+  // Loading holidays applies the list as it is once the request returns.
+  const changeHolidaysRef = useRef(changeHolidays);
+  changeHolidaysRef.current = changeHolidays;
+
   const handleAddHoliday = (holiday: Holiday) => {
     const trimmedName = holiday.name.trim();
-    if (!holiday.dateISO || !trimmedName) return;
-    setHolidays((prev) => {
+    if (!holiday.dateISO || !trimmedName) return Promise.resolve(false);
+    return changeHolidays((prev) => {
       const exists = prev.some(
         (item) => item.dateISO === holiday.dateISO && item.name === trimmedName,
       );
@@ -3007,13 +3047,12 @@ export default function WeeklySchedulePage({
       return [...prev, { dateISO: holiday.dateISO, name: trimmedName, source: "manual" }];
     });
   };
-  const handleRemoveHoliday = (holiday: Holiday) => {
-    setHolidays((prev) =>
+  const handleRemoveHoliday = (holiday: Holiday) =>
+    changeHolidays((prev) =>
       prev.filter(
         (item) => !(item.dateISO === holiday.dateISO && item.name === holiday.name),
       ),
     );
-  };
   const handleChangeHolidayCountry = (countryCode: string) => {
     setHolidayCountry(countryCode);
     // A region belongs to one country ("DE-NW"): another country starts without.
@@ -3023,7 +3062,8 @@ export default function WeeklySchedulePage({
   // without a region those of every region) and replaces this year's
   // previously loaded ones; holidays added by hand stay. Already loaded
   // lists are never rewritten when only the region changes; the user loads
-  // again. Resolves to how many holidays were added.
+  // again. Resolves to how many holidays were added, or null when the user
+  // cancelled removing the shifts the new list no longer fits.
   const handleFetchHolidays = async (countryCode: string, year: number, region?: string) => {
     const normalizedCountry = countryCode.trim().toUpperCase();
     const response = await fetch(
@@ -3035,10 +3075,14 @@ export default function WeeklySchedulePage({
     const data = (await response.json()) as NagerPublicHoliday[];
     const entries = Array.isArray(data) ? data : [];
     const regionForCountry = holidayRegionForCountry(normalizedCountry, region);
-    // The count comes from the list as shown; the update applies to the
-    // latest list (a holiday added while loading is kept).
-    const { added } = mergeLoadedHolidays(holidays, entries, year, regionForCountry);
-    setHolidays((prev) => mergeLoadedHolidays(prev, entries, year, regionForCountry).holidays);
+    // Merged into the latest list (a holiday added while loading is kept).
+    let added = 0;
+    const applied = await changeHolidaysRef.current((prev) => {
+      const merged = mergeLoadedHolidays(prev, entries, year, regionForCountry);
+      added = merged.added;
+      return merged.holidays;
+    });
+    if (!applied) return null;
     setHolidayCountry(normalizedCountry);
     setHolidayYear(year);
     return added;

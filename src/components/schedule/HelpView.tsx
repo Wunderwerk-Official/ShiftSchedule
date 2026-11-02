@@ -238,6 +238,14 @@ export default function HelpView() {
               every state are loaded, and the calendar plans those days with holiday
               staffing. Load again after changing it.
             </li>
+            <li>
+              A day that becomes a holiday or stops being one (adding, removing or loading
+              holidays) switches to the other day&apos;s columns, so the shifts planned on it
+              no longer fit and are removed, locked ones too. The app first says how many
+              shifts on which days and asks; when you confirm, the calendar is saved as the
+              automatic backup (see 10) before the change. Cancel keeps the holidays as they
+              were.
+            </li>
           </ul>
         </Section>
 

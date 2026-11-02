@@ -2,6 +2,7 @@ import type {
   AppState,
   Assignment,
   DayType,
+  Holiday,
   Location,
   MinSlots,
   ScheduleLayout,
@@ -1180,6 +1181,31 @@ export function normalizeAppState(state: AppState): { state: AppState; changed: 
     },
     changed,
   };
+}
+
+/**
+ * The shifts of `state` that replacing its holidays with `nextHolidays` would
+ * delete. A shift belongs to its date's plan: the template's Holiday column
+ * on a holiday, the weekday's columns otherwise. normalizeAppState (and the
+ * server's normalization) drop every shift whose slot is in another day's
+ * plan, so a date that becomes or stops being a holiday loses its shifts.
+ */
+export function findAssignmentsDroppedByHolidayChange(
+  state: AppState,
+  nextHolidays: Holiday[],
+): Assignment[] {
+  const { state: normalized } = normalizeAppState(state);
+  const assignments = normalized.assignments ?? [];
+  // The normalization never reads assignment ids: number the shifts to see
+  // which ones it keeps under the new holidays.
+  const kept = new Set(
+    normalizeAppState({
+      ...normalized,
+      holidays: nextHolidays,
+      assignments: assignments.map((assignment, index) => ({ ...assignment, id: String(index) })),
+    }).state.assignments.map((assignment) => assignment.id),
+  );
+  return assignments.filter((_, index) => !kept.has(String(index)));
 }
 
 export function buildScheduleRows(
