@@ -54,6 +54,20 @@ describe("MyPlanView shortcuts", () => {
     expect(view.prefs().myPlanRange).toBe("week");
   });
 
+  it("ignores single keys while focus is in the date picker", () => {
+    const view = renderPlan({ prefs: LENA });
+    fireEvent.click(screen.getByRole("button", { name: /^Pick a week/ }));
+    const picker = screen.getByRole("dialog", { name: "Select a week" });
+    // Browsing to another month puts focus on the picker's chevron.
+    const next = within(picker).getByRole("button", { name: "Next month" });
+    next.focus();
+    fireEvent.click(next);
+    fireEvent.keyDown(next, { key: "m" });
+    fireEvent.keyDown(next, { key: "t" });
+    expect(view.prefs().myPlanRange).toBe("week");
+    expect(screen.getByRole("dialog", { name: "Select a week" })).toHaveTextContent("November 2026");
+  });
+
   it("ignores single keys in the open shift detail, but N / Shift+N step on from there", () => {
     const view = renderPlan({ prefs: LENA });
     fireEvent.keyDown(document.body, { key: "n" });

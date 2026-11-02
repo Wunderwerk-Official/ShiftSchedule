@@ -3,8 +3,8 @@ import { useEffect, useRef } from "react";
 // Global single-key shortcuts of My plan (SPEC R16). They act without
 // Ctrl/Alt/Meta, not while a modal sheet is open, and not while focus is in an
 // editable element or inside a popover, list, menu or dialog (modal or not:
-// the person picker, the shift detail, the day popover). The one exception:
-// N / Shift+N also step on from the shift detail they open.
+// the person picker, the shift detail, the day popover, the date picker). The
+// one exception: N / Shift+N also step on from the shift detail they open.
 
 export type PlanShortcut =
   | "day"

@@ -56,6 +56,17 @@ describe("CalendarPlaceholder", () => {
     expect(onReload).toHaveBeenCalledTimes(1);
   });
 
+  it("stands in for Settings: a heading, no plan switch, no fields", () => {
+    render(<CalendarPlaceholder scope="settings" />);
+
+    const card = screen.getByRole("region", { name: "Settings" });
+    expect(within(card).getByRole("heading", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Choose plan" })).toBeNull();
+    expect(screen.queryAllByRole("button")).toEqual([]);
+    expect(screen.queryAllByRole("textbox")).toEqual([]);
+    expect(screen.getByRole("status")).toHaveTextContent("Loading calendar…");
+  });
+
   it("uses the compact switch on phones", () => {
     render(<CalendarPlaceholder scope="me" onScopeChange={() => {}} isMobile />);
     const team = screen.getByRole("button", { name: "Team" });

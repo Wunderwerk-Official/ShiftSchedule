@@ -48,8 +48,9 @@ export default function HelpView() {
             </li>
             <li>On phones the team plan shows one day at a time.</li>
             <li>
-              The week you look at is part of the page address: a reload keeps it, and
-              the address opens that week for anyone you send it to.
+              A week you move to becomes part of the page address: a reload keeps it,
+              and the address opens that week for anyone you send it to. The plain
+              address, without a week, always opens the current week.
             </li>
           </ul>
         </Section>
@@ -129,7 +130,8 @@ export default function HelpView() {
                   Rest days from the on-call rule follow the on-call shift: change that shift
                   or the rule to change them. If you place the person in a shift on such a
                   day anyway, they leave the Rest Day row and the shift counts as a rule
-                  violation.
+                  violation (the monthly sheet, which lists no violations, underlines the
+                  name in red).
                 </li>
                 <li>
                   <span className="font-medium">Vacation row</span>: people on vacation;

@@ -19,6 +19,7 @@ import {
   formatTimeRangeLabel,
   REST_DAY_POOL_ID,
   sortAssignmentsBySurname,
+  VACATION_POOL_ID,
 } from "../../lib/schedule";
 import { getDayType } from "../../lib/dayTypes";
 import {
@@ -845,7 +846,8 @@ function RowSection({
   // its own cell is a no-op. A Rest Day pill dropped on the Rest Day row of
   // another day moves there. Any other drop from another day, onto an
   // inactive cell or onto a slot that clashes with another shift of the
-  // person removes the assignment. A malformed payload is ignored.
+  // person removes the assignment; a Vacation pill stays (a vacation day ends
+  // only when its pill leaves the calendar). A malformed payload is ignored.
   const handleCellDrop = (
     event: ReactDragEvent<HTMLElement>,
     targetRowId: string,
@@ -856,6 +858,9 @@ function RowSection({
     const payload = readDragPayload(event.dataTransfer);
     setDragging(null);
     if (!payload) return;
+    const removeOnMissedDrop = () => {
+      if (payload.rowId !== VACATION_POOL_ID) onRemoveAssignment?.(payload);
+    };
     if (payload.dateISO !== dateISO) {
       if (isRestDayMove(payload.rowId, targetRowId) && onMoveRestDay) {
         onMoveRestDay({
@@ -865,13 +870,13 @@ function RowSection({
           clinicianId: payload.clinicianId,
         });
       } else {
-        onRemoveAssignment?.(payload);
+        removeOnMissedDrop();
       }
       return;
     }
     if (payload.rowId === targetRowId) return;
     if (isInactiveTarget || !canDropAssignment(payload, targetRowId, dateISO)) {
-      onRemoveAssignment?.(payload);
+      removeOnMissedDrop();
       return;
     }
     onMoveWithinDay({

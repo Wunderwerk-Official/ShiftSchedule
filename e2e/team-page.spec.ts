@@ -255,6 +255,103 @@ test("a hand-placed rest day moves to another day and leaves when dragged out; a
   expect(api.errors).toEqual([]);
 });
 
+test("a hand-placed rest day on an automatic one leaves it in its place, and the notice says why", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    // On call on Wednesday: automatic rest days on Tuesday and Thursday.
+    { ...assignment("oncall", "wed", "On Call", SECOND), dateISO: "2026-01-07" },
+    { id: "rest", rowId: "pool-rest-day", dateISO: "2026-01-06", clinicianId: SECOND, source: "manual" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const restPill = page.locator(
+    `[data-schedule-grid="true"] [data-assignment-key="pool-rest-day__2026-01-06__${SECOND}"]`,
+  );
+  await restPill.dragTo(page.getByRole("button", { name: "Open Vacation Planner" }));
+  await expect
+    .poll(() => api.state().assignments.filter((item) => item.rowId === "pool-rest-day"))
+    .toEqual([]);
+  await expect(restPill).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Automatic rest day" })).toHaveText(
+    "Automatic rest day before on-call duty on Wed 07.01. Change the on-call shift or the rest-day rule to change it.",
+  );
+  expect(api.errors).toEqual([]);
+});
+
+test("a vacation day ends only when its pill leaves the calendar", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [];
+  state.clinicians[0].vacations = [{ id: "v1", startISO: "2026-01-05", endISO: "2026-01-09" }];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const vacationPill = (dateISO: string) =>
+    page.locator(`[data-schedule-grid="true"] [data-assignment-key="pool-vacation__${dateISO}__${FIRST}"]`);
+  const vacations = () => api.state().clinicians[0].vacations.map(({ startISO, endISO }) => `${startISO}..${endISO}`);
+
+  // Onto another day's Vacation cell (like moving a rest day) or slot: nothing changes.
+  await vacationPill("2026-01-05").dragTo(
+    page.locator('[data-schedule-cell="true"][data-row-id="pool-vacation"][data-date-iso="2026-01-06"]'),
+  );
+  await vacationPill("2026-01-05").dragTo(
+    page.locator('[data-schedule-cell="true"][data-row-kind="class"][data-date-iso="2026-01-06"]').first(),
+  );
+  await page.waitForTimeout(700);
+  expect(vacations()).toEqual(["2026-01-05..2026-01-09"]);
+  await expect(vacationPill("2026-01-05")).toBeVisible();
+
+  // Out of the calendar: that day's vacation ends.
+  await vacationPill("2026-01-05").dragTo(page.getByRole("button", { name: "Open Vacation Planner" }));
+  await expect.poll(vacations).toEqual(["2026-01-06..2026-01-09"]);
+  await expect(vacationPill("2026-01-05")).toHaveCount(0);
+  expect(api.errors).toEqual([]);
+});
+
+test("a shift on a rest day after on-call duty in the week before is still flagged", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    // On call on Sunday 04.01, the last day of the week before; MRI on Monday 05.01.
+    { ...assignment("oncall", "sun", "On Call", SECOND), dateISO: "2026-01-04" },
+    assignment("mri", "mon", "MRI", SECOND),
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const range = page.getByRole("button", { name: "Pick a week" });
+  const badge = page.getByRole("button", { name: /^1 rule violation/ });
+  // Shown once (in MRI, no Rest Day pill), and the badge names the conflict.
+  await expect(
+    page.locator(`[data-schedule-grid="true"] [data-assignment-key="pool-rest-day__2026-01-05__${SECOND}"]`),
+  ).toHaveCount(0);
+  await expect(badge).toBeVisible();
+  await page.getByTitle("Show the violation list").click();
+  await expect(
+    page.getByRole("button", { name: /Scheduled on 05\.01\.2026, but needs 1 rest day after On Call shift on 04\.01\.2026/ }),
+  ).toBeVisible();
+  // Picking it stays in this week (the on-call day is in the week before).
+  await page.getByRole("button", { name: /Scheduled on 05\.01\.2026/ }).click();
+  await expect(range).toHaveText(/05\.01\.2026 – 11\.01\.2026/);
+  await page.mouse.click(5, 300);
+  // The week before, with the on-call shift, flags it as well.
+  await page.getByRole("button", { name: "Previous week" }).click();
+  await expect(range).toHaveText(/29\.12\.2025 – 04\.01\.2026/);
+  await expect(badge).toBeVisible();
+  expect(api.errors).toEqual([]);
+});
+
+test("the clinic sheet marks a shift on an automatic rest day", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.solverSettings = { ...state.solverSettings, scheduleLayout: "clinicSheet" };
+  state.assignments = [
+    { ...assignment("oncall", "wed", "On Call", SECOND), dateISO: "2026-01-14" },
+    { ...assignment("mri", "thu", "MRI", SECOND), dateISO: "2026-01-15" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const name = page.locator(
+    `[data-schedule-cell="true"][data-row-id="${slotId("thu", "MRI")}"][data-date-iso="2026-01-15"] [data-sheet-name="true"]`,
+  );
+  await expect(name).toHaveAttribute("title", "Leonardo DaVinci — scheduled on a rest day");
+  await expect(
+    page.locator('[data-schedule-cell="true"][data-row-id="pool-rest-day"][data-date-iso="2026-01-15"]'),
+  ).not.toContainText("DaVinci");
+  expect(api.errors).toEqual([]);
+});
+
 test("a hand-placed rest day next to a shift that day is flagged as a rule violation", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [

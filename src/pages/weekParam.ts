@@ -3,10 +3,11 @@ import { toISODate } from "../lib/date";
 
 // The calendar's viewed period in the address bar (?week=YYYY-MM-DD), so a
 // reload keeps it and a link opens it. The team week writes its Monday, the
-// phone day view its day and the clinic sheet the first of its month. The
-// period around today writes no parameter: a bookmark of the plain address
-// keeps opening the current week. Only the calendar page reads and writes it;
-// the print and public routes keep their own addresses.
+// phone day view and My plan their day, the clinic sheet the first of its
+// month. The period around today writes no parameter: the plain address (a
+// bookmark, a home screen icon, a tab reopened days later) keeps opening the
+// current week. Only the calendar page reads and writes it; the print and
+// public routes keep their own addresses.
 
 const WEEK_PARAM = "week";
 

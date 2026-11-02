@@ -338,6 +338,15 @@ test("both plans wait for the calendar: no demo calendar in Team, no stale link 
   await scope.getByRole("button", { name: "My plan" }).click();
   await expect(page.getByText("Loading calendar…")).toBeVisible();
 
+  // Settings wait too: the demo calendar's people, shifts and rules are not
+  // offered for editing (the real calendar would overwrite those edits).
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Settings" }).getByText("Loading calendar…")).toBeVisible();
+  await expect(page.getByText("Set up locations, shifts, people, holidays and planning rules")).toHaveCount(0);
+  await expect(page.getByRole("textbox")).toHaveCount(0);
+  await page.getByRole("button", { name: "Back", exact: true }).click();
+  await expect(page.getByRole("region", { name: "My plan" }).getByText("Loading calendar…")).toBeVisible();
+
   releaseState();
   await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^CT, / })).toHaveCount(1);
@@ -347,6 +356,40 @@ test("both plans wait for the calendar: no demo calendar in Team, no stale link 
   await scope.getByRole("button", { name: "Team" }).click();
   await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
   expect(api.prefsPuts).toEqual([]);
+  expect(api.errors).toEqual([]);
+});
+
+test("My plan keeps its own day in the address: a reload brings back its month and day", async ({ page }) => {
+  const api = await openCalendar(page, { initialPrefs: { clinicianId: ME, myPlanRange: "month" } });
+  const scope = page.getByRole("group", { name: "Choose plan" });
+  const search = () => page.evaluate(() => window.location.search);
+  const showsText = (text: string | RegExp) =>
+    expect(page.locator('[aria-live="polite"]').filter({ hasText: text })).toHaveCount(1);
+
+  await scope.getByRole("button", { name: "My plan" }).click();
+  await showsText(/^January 2026,/);
+  await page.getByRole("button", { name: "Next month" }).click();
+  await showsText(/^February 2026,/);
+  // 1 February is a Sunday: the Monday of its team week lies in January.
+  await expect.poll(search).toBe("?week=2026-02-01");
+
+  // The calendar reopens in Team, on that day's week (named by its Monday);
+  // My plan still shows February, not the Monday's January.
+  await page.reload();
+  await expect(page.getByRole("button", { name: "Pick a week" })).toHaveText(/26\.01\.2026 – 01\.02\.2026/);
+  await expect.poll(search).toBe("?week=2026-01-26");
+  await scope.getByRole("button", { name: "My plan" }).click();
+  await showsText(/^February 2026,/);
+  await expect.poll(search).toBe("?week=2026-02-01");
+
+  // Day range: the day itself, not its Monday.
+  await page.getByRole("group", { name: "Period" }).getByRole("button", { name: "Day" }).click();
+  await page.getByRole("button", { name: "Next day" }).click();
+  await page.getByRole("button", { name: "Next day" }).click();
+  await expect.poll(search).toBe("?week=2026-02-03");
+  await page.reload();
+  await scope.getByRole("button", { name: "My plan" }).click();
+  await showsText(/3 Feb 2026/);
   expect(api.errors).toEqual([]);
 });
 

@@ -67,8 +67,10 @@ it("explains moving and removing rest days and the week in the address (v1.78)",
     "Drag such a name to another day’s Rest Day row to move the day off, or out of the calendar to remove it.",
   );
   expect(text).toContain("Rest days from the on-call rule follow the on-call shift");
+  expect(text).toContain("the monthly sheet, which lists no violations, underlines the name in red");
   expect(text).toContain("or out of the calendar, to end the vacation that day");
-  expect(text).toContain("The week you look at is part of the page address");
+  expect(text).toContain("A week you move to becomes part of the page address");
+  expect(text).toContain("The plain address, without a week, always opens the current week.");
 });
 
 it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () => {

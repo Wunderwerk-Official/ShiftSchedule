@@ -265,6 +265,7 @@ describe("ScheduleGrid drag and drop", () => {
     // Only active on Tuesdays: the Monday cell is inactive.
     slot("tue-only", "08:00", "09:00", { dayType: "tue", colBandOrder: 1 }),
     { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" },
+    { id: "pool-vacation", name: "Vacation", kind: "pool", dotColorClass: "bg-slate-200" },
   ];
   const entry = (rowId: string, dateISO: string, clinicianId: string): [string, RenderedAssignment[]] => [
     `${rowId}__${dateISO}`,
@@ -275,6 +276,7 @@ describe("ScheduleGrid drag and drop", () => {
     [`late__${MON}`, [{ id: `late-${MON}-y`, rowId: "late", dateISO: MON, clinicianId: "y" }]],
     entry("broken", MON, "z"),
     entry("pool-rest-day", MON, "r"),
+    entry("pool-vacation", MON, "v"),
   ]);
   dndMap.get(`early__${MON}`)!.push({ id: `early-${MON}-y`, rowId: "early", dateISO: MON, clinicianId: "y" });
 
@@ -411,6 +413,32 @@ describe("ScheduleGrid drag and drop", () => {
     // A shift pill greys every other day out, the Rest Day row too.
     fireEvent.dragStart(pill("early", MON, "x"), { dataTransfer: makeDataTransfer() });
     expect(cell("pool-rest-day", TUE).className).toContain(grey);
+  });
+
+  it("keeps a Vacation pill dropped on a cell that cannot take it; out of the grid it leaves", () => {
+    const { onMoveWithinDay, onRemoveAssignment, onMoveRestDay } = renderDnd();
+    const vacation = () => pill("pool-vacation", MON, "v");
+    // Another day's Vacation cell or slot, an inactive cell of the same day.
+    dragTo(vacation(), cell("pool-vacation", TUE));
+    dragTo(vacation(), cell("late", TUE));
+    dragTo(vacation(), cell("tue-only", MON));
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+    expect(onMoveRestDay).not.toHaveBeenCalled();
+    expect(onMoveWithinDay).not.toHaveBeenCalled();
+    // Into a slot of the same day it still moves.
+    dragTo(vacation(), cell("late", MON));
+    expect(onMoveWithinDay).toHaveBeenCalledWith(
+      expect.objectContaining({ fromRowId: "pool-vacation", toRowId: "late", clinicianId: "v" }),
+    );
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(vacation(), { dataTransfer });
+    fireEvent.drop(document.body, { dataTransfer });
+    expect(onRemoveAssignment).toHaveBeenCalledWith({
+      rowId: "pool-vacation",
+      dateISO: MON,
+      assignmentId: `pool-vacation-${MON}-v`,
+      clinicianId: "v",
+    });
   });
 
   it("removes the assignment when the target overlaps another shift of that person", () => {

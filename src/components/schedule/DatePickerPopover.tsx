@@ -159,9 +159,15 @@ export default function DatePickerPopover({
     onClose();
   };
 
+  const hint = unit === "month" ? "Select a month" : "Select a week";
+
+  // A (non-modal) dialog: it names the picker for screen readers, and My
+  // plan's single-key shortcuts leave keys pressed inside it alone.
   return createPortal(
     <div
       ref={popoverRef}
+      role="dialog"
+      aria-label={hint}
       className="fixed z-[1000] rounded-xl border border-slate-200 bg-white p-3 shadow-lg dark:border-slate-700 dark:bg-slate-800"
       style={{ minWidth: 280, top: position.top, left: position.left }}
     >
@@ -190,7 +196,7 @@ export default function DatePickerPopover({
 
       {/* Hint text */}
       <div className="mb-2 text-center text-[10px] text-slate-400 dark:text-slate-500">
-        {unit === "month" ? "Select a month" : "Select a week"}
+        {hint}
       </div>
 
       {/* Weekday headers */}
