@@ -92,27 +92,9 @@ export function formatDayMonth(dateISO: string): string {
   return `${date.getDate()} ${MONTHS_SHORT[date.getMonth()]}`;
 }
 
-const TITLES = new Set(["dr", "dr.", "prof", "prof.", "pd", "med", "med."]);
-
-function nameWords(name: string): string[] {
-  const words = name.split(/\s+/).filter(Boolean);
-  const plain = words.filter((word) => !TITLES.has(word.toLowerCase()) && !word.endsWith("."));
-  return plain.length > 0 ? plain : words;
-}
-
-/** "Dr. Lena Hoffmann" → "Lena Hoffmann" (titles dropped for tight labels). */
-export function displayName(name: string): string {
-  const words = name.split(/\s+/).filter((word) => word && !TITLES.has(word.toLowerCase()));
-  return words.length > 0 ? words.join(" ") : name;
-}
-
-/** "Dr. Lena Hoffmann" → "LH" (titles such as "Dr." / "Prof" are skipped). */
-export function initialsOf(name: string): string {
-  const words = nameWords(name);
-  const first = words[0]?.[0] ?? "";
-  const last = words.length > 1 ? words[words.length - 1][0] : "";
-  return `${first}${last}`.toUpperCase() || "?";
-}
+// Names: "Dr. Lena Hoffmann" / "Hoffmann, Lena; Dr." → "Lena Hoffmann",
+// first name "Lena", initials "LH" (one parser for the whole app).
+export { displayName, givenNameOf, initialsOf } from "../../lib/personName";
 
 /** Minutes of a day (clamped to 0–24 h) → CSS percentage of a 0–24 h track. */
 export function dayPct(min: number): string {

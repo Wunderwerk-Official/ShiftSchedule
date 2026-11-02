@@ -33,6 +33,7 @@ import {
   type ClinicSheetRow,
 } from "../../lib/clinicSheet";
 import { toISODate } from "../../lib/date";
+import { nameLabelsOf, type PersonNameLabels } from "../../lib/personName";
 import ClinicianPickerPopover from "./ClinicianPickerPopover";
 
 // Faithful web rendering of the clinic's Excel Arbeitsplan: the whole month
@@ -46,36 +47,6 @@ const SHEET_FONT_FAMILY = '"Arial", "Helvetica Neue", Helvetica, sans-serif';
 // Names never widen it (inline-size containment, renderName).
 const DAY_COLUMN_WIDTH = "minmax(312px, 1fr)";
 const LABEL_COLUMN_WIDTH = "minmax(150px, 190px)";
-
-// The Excel sheet lists people by surname only. Use the last name token and
-// fall back to an initial + surname when two people in the same cell collide.
-const surnameOf = (name: string) => {
-  const parts = name.trim().split(/\s+/);
-  return parts[parts.length - 1] || name;
-};
-
-const buildDisplayNames = (
-  assignments: RenderedAssignment[],
-  getClinicianName: (id: string) => string,
-): Map<string, string> => {
-  const surnameCounts = new Map<string, number>();
-  for (const assignment of assignments) {
-    const surname = surnameOf(getClinicianName(assignment.clinicianId));
-    surnameCounts.set(surname, (surnameCounts.get(surname) ?? 0) + 1);
-  }
-  const result = new Map<string, string>();
-  for (const assignment of assignments) {
-    const fullName = getClinicianName(assignment.clinicianId);
-    const surname = surnameOf(fullName);
-    if ((surnameCounts.get(surname) ?? 0) > 1) {
-      const first = fullName.trim().split(/\s+/)[0] ?? "";
-      result.set(assignment.id, first ? `${first[0]}. ${surname}` : surname);
-    } else {
-      result.set(assignment.id, surname);
-    }
-  }
-  return result;
-};
 
 const WEEKDAY_FORMAT = new Intl.DateTimeFormat("de-DE", { weekday: "long" });
 const WEEKDAY_SHORT_FORMAT = new Intl.DateTimeFormat("de-DE", { weekday: "short" });
@@ -111,6 +82,12 @@ type ClinicSheetGridProps = {
   header?: ReactNode;
   readOnly?: boolean;
   getClinicianName: (clinicianId: string) => string;
+  /**
+   * Short names by clinician id (lib/personName buildNameLabels). The Excel
+   * sheet lists people by surname; one shared by two people in the team gets
+   * given-name letters ("J. Müller"), everywhere.
+   */
+  nameLabels?: Map<string, PersonNameLabels>;
   getIsQualified: (clinicianId: string, rowId: string) => boolean;
   clinicians?: SlotOptionClinician[];
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
@@ -142,6 +119,7 @@ export default function ClinicSheetGrid({
   header,
   readOnly = false,
   getClinicianName,
+  nameLabels,
   getIsQualified,
   clinicians = [],
   getIsOnRestDay,
@@ -309,9 +287,9 @@ export default function ClinicSheetGrid({
     dateISO: string,
     textClass: string,
     isPoolCell: boolean,
-    displayName: string,
   ) => {
     const name = getClinicianName(assignment.clinicianId);
+    const surname = nameLabels?.get(assignment.clinicianId)?.surname ?? nameLabelsOf(name).surname;
     const isUnqualified =
       !isPoolCell && !getIsQualified(assignment.clinicianId, slotRowId);
     // A shift on the person's rest day (on-call rule or Rest Day row): the
@@ -370,7 +348,7 @@ export default function ClinicSheetGrid({
         )}
       >
         <span className={cx("min-w-0 flex-1 truncate", hasLock && !isLocked && "pill-lock-fade")}>
-          {displayName}
+          {surname}
         </span>
         {/* The same lock as the weekly grid: a locked name shows it, an
             unlocked one on hover (index.css); hand-placed shifts start locked. */}
@@ -395,7 +373,6 @@ export default function ClinicSheetGrid({
       assignmentMap.get(`${area.slotId}__${day.dateISO}`) ?? [],
       getClinicianName,
     );
-    const displayNames = buildDisplayNames(assignments, getClinicianName);
     const areaBackground = day.isCyan
       ? undefined
       : area.areaIndex > 0
@@ -454,14 +431,7 @@ export default function ClinicSheetGrid({
           style={{ gridTemplateColumns: areaTracks }}
         >
           {assignments.map((assignment) =>
-            renderName(
-              assignment,
-              area.slotId,
-              day.dateISO,
-              textClass,
-              false,
-              displayNames.get(assignment.id) ?? getClinicianName(assignment.clinicianId),
-            ),
+            renderName(assignment, area.slotId, day.dateISO, textClass, false),
           )}
           {canEdit && openSlots > 0
             ? Array.from({ length: openSlots }, (_, idx) => (
@@ -492,7 +462,6 @@ export default function ClinicSheetGrid({
       assignmentMap.get(`${poolRow.id}__${day.dateISO}`) ?? [],
       getClinicianName,
     );
-    const displayNames = buildDisplayNames(assignments, getClinicianName);
     return (
       <div
         key={`${poolRow.id}__${day.dateISO}`}
@@ -511,14 +480,7 @@ export default function ClinicSheetGrid({
       >
         <div className="grid" style={{ gridTemplateColumns: nameTracks(SHEET_DAY_COLUMNS, assignments.length) }}>
           {assignments.map((assignment) =>
-            renderName(
-              assignment,
-              poolRow.id,
-              day.dateISO,
-              "text-slate-900",
-              true,
-              displayNames.get(assignment.id) ?? getClinicianName(assignment.clinicianId),
-            ),
+            renderName(assignment, poolRow.id, day.dateISO, "text-slate-900", true),
           )}
         </div>
       </div>

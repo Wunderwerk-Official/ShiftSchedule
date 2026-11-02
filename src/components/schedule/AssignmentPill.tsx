@@ -3,126 +3,30 @@ import { cx } from "../../lib/classNames";
 import { memo, useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 import type { CSSProperties, DragEventHandler, MouseEventHandler } from "react";
 import type { PersonPillStyle } from "./teamColors";
-
-/**
- * Abbreviate a name to fit in limited space.
- * Strategy: "First Last" -> "First L." -> "F. Last" -> "F. L." -> "FL"
- * If disambiguation is needed, adds more characters from first name.
- */
-function abbreviateName(
-  name: string,
-  level: number,
-  siblingNames?: string[],
-): string {
-  const parts = name.trim().split(/\s+/);
-  if (parts.length === 1) {
-    // Single name - truncate if needed
-    if (level >= 3) return parts[0].charAt(0);
-    return parts[0];
-  }
-
-  const firstName = parts[0];
-  const lastName = parts[parts.length - 1];
-
-  let result: string;
-  if (level === 0) {
-    // Full name: "John Smith"
-    result = name;
-  } else if (level === 1) {
-    // "First L.": "John S."
-    result = `${firstName} ${lastName.charAt(0)}.`;
-  } else if (level === 2) {
-    // "F. Last": "J. Smith"
-    result = `${firstName.charAt(0)}. ${lastName}`;
-  } else if (level === 3) {
-    // "F. L.": "J. S."
-    result = `${firstName.charAt(0)}. ${lastName.charAt(0)}.`;
-  } else {
-    // "FL": "JS"
-    result = `${firstName.charAt(0)}${lastName.charAt(0)}`;
-  }
-
-  // Check for collisions with sibling names and disambiguate if needed
-  if (siblingNames && siblingNames.length > 0 && level > 0) {
-    const otherAbbreviations = siblingNames
-      .filter((n) => n !== name)
-      .map((n) => abbreviateName(n, level));
-
-    if (otherAbbreviations.includes(result)) {
-      // Collision detected - add more characters to disambiguate
-      if (level === 1) {
-        // "First L." -> try adding more chars from last name: "John Sm.", "John Smi."
-        for (let i = 2; i <= lastName.length; i++) {
-          const disambiguated = `${firstName} ${lastName.slice(0, i)}.`;
-          const othersWithMoreChars = siblingNames
-            .filter((n) => n !== name)
-            .map((n) => {
-              const p = n.trim().split(/\s+/);
-              if (p.length === 1) return n;
-              return `${p[0]} ${p[p.length - 1].slice(0, i)}.`;
-            });
-          if (!othersWithMoreChars.includes(disambiguated)) {
-            return disambiguated;
-          }
-        }
-      } else if (level === 2) {
-        // "F. Last" -> "Fi. Last" or "Fir. Last"
-        for (let i = 2; i <= firstName.length; i++) {
-          const disambiguated = `${firstName.slice(0, i)}. ${lastName}`;
-          const othersWithMoreChars = siblingNames
-            .filter((n) => n !== name)
-            .map((n) => {
-              const p = n.trim().split(/\s+/);
-              if (p.length === 1) return n;
-              return `${p[0].slice(0, i)}. ${p[p.length - 1]}`;
-            });
-          if (!othersWithMoreChars.includes(disambiguated)) {
-            return disambiguated;
-          }
-        }
-      } else if (level === 3) {
-        // "F. L." -> "Fi. L." or use first 2 chars of last name
-        const disambiguated = `${firstName.slice(0, 2)}. ${lastName.charAt(0)}.`;
-        const othersDisambiguated = siblingNames
-          .filter((n) => n !== name)
-          .map((n) => {
-            const p = n.trim().split(/\s+/);
-            if (p.length === 1) return n.charAt(0);
-            return `${p[0].slice(0, 2)}. ${p[p.length - 1].charAt(0)}.`;
-          });
-        if (!othersDisambiguated.includes(disambiguated)) {
-          return disambiguated;
-        }
-      }
-      // level 4 (initials) - not much we can do, fall through
-    }
-  }
-
-  return result;
-}
+import { NAME_LABEL_LEVELS, nameLabelsOf, type PersonNameLabels } from "../../lib/personName";
 
 /**
  * Person colors — one order per column: "First Last" → "First L." → the
- * initials circle alone. "F. Last" / "F. L." are skipped: the circle next to
- * the name already carries the initials (and mixing "S. Klein" with "Felix W."
- * in one column reads unevenly).
+ * initials circle alone. "F. Last" is skipped: the circle next to the name
+ * already carries the initials (and mixing "S. Klein" with "Felix W." in one
+ * column reads unevenly). "F. L." stands in only where a cut "First L." could
+ * be someone else of the team (see personLevel).
  */
-const PERSON_INITIALS_ONLY_LEVEL = 2;
+const PERSON_SHORT_LEVEL = 3;
+/** Person colors: the circle alone, the name only read out. */
+const PERSON_INITIALS_ONLY = NAME_LABEL_LEVELS;
 /**
  * Person colors — "First L." that does not fit is cut with an ellipsis
  * ("Sophie…") as long as this much room is left next to the circle (about
  * four letters). Only below it does the circle stand alone: in the narrow
  * team columns many names miss by a few pixels, and a lone circle left most
- * of the pill blank. Known limit: two people in one cell with the same first
- * name and surname initial ("Sophie Mü." / "Sophie Me.") can both read
- * "Sophie…"; the full name on hover (and usually the person color) tells
- * them apart. Still better than the two identical "SM" circles shown before.
+ * of the pill blank.
  */
 const PERSON_MIN_NAME_PX = 30;
 
 // Text widths via a shared canvas: lets the person-colored pill pick its
 // abbreviation in one pass instead of one re-render per level. Null where
-// canvas text metrics are unavailable (jsdom): the stepwise check runs then.
+// canvas text metrics are unavailable (jsdom).
 let measureContext: CanvasRenderingContext2D | null | undefined;
 function measureText(text: string, font: string): number | null {
   if (measureContext === undefined) {
@@ -134,10 +38,36 @@ function measureText(text: string, font: string): number | null {
   return measureContext.measureText(text).width;
 }
 
+/**
+ * Person colors — the level that fits `room` px: the name, "First L.", or
+ * "First L." cut with an ellipsis while the cut still shows the characters
+ * that tell this person apart. Two people of the team whose cut labels would
+ * read the same ("Sophie…" for Sophie Wagner and Sophie Weber) show their
+ * team-unique "F. L." instead ("S. Wa."). Where not even that fits, the cut
+ * "First L." stays (the full name on hover and the person color tell them
+ * apart); below PERSON_MIN_NAME_PX the circle stands alone.
+ */
+function personLevel(labels: PersonNameLabels, room: number, width: (text: string) => number): number {
+  const { levels, distinctLength } = labels;
+  if (width(levels[0]) <= room) return 0;
+  if (width(levels[1]) <= room) return 1;
+  if (room < PERSON_MIN_NAME_PX) return PERSON_INITIALS_ONLY;
+  // What the ellipsis leaves of "First L.": the longest start that fits with it.
+  const chars = Array.from(levels[1]);
+  let shown = chars.length - 1;
+  while (shown > 0 && width(`${chars.slice(0, shown).join("")}…`) > room) shown -= 1;
+  if (shown >= distinctLength) return 1;
+  return width(levels[PERSON_SHORT_LEVEL]) <= room ? PERSON_SHORT_LEVEL : 1;
+}
+
 type AssignmentPillProps = {
   name: string;
-  /** Other names in the same cell, used to ensure unique abbreviations */
-  siblingNames?: string[];
+  /**
+   * Short forms of the name by abbreviation level ("First L.", "F. Last",
+   * "F. L.", "FL"; lib/personName buildNameLabels), unique in the whole team.
+   * Absent = the name's own short forms.
+   */
+  labels?: PersonNameLabels;
   /** Unique key for violation line drawing: `${rowId}__${dateISO}__${clinicianId}` */
   assignmentKey?: string;
   showNoEligibilityWarning?: boolean;
@@ -182,7 +112,7 @@ type AssignmentPillProps = {
 
 function AssignmentPillImpl({
   name,
-  siblingNames,
+  labels,
   assignmentKey,
   showNoEligibilityWarning,
   showIneligibleWarning,
@@ -210,17 +140,16 @@ function AssignmentPillImpl({
   // it); an unlocked pill's lock only appears on hover and takes none.
   const lockInRow = !!onToggleLock && isLocked;
   const lockOnHover = !!onToggleLock && !isLocked;
-  // Person colors end with the initials circle alone (the name is only read
-  // out); the section look ends with "FL" initials as text.
-  const maxAbbreviationLevel = hasInitials ? PERSON_INITIALS_ONLY_LEVEL : 4;
   const [abbreviationLevel, setAbbreviationLevel] = useState(0);
   // Bumped when the row width changes (person mode): measure again.
   const [layoutVersion, setLayoutVersion] = useState(0);
 
-  const displayName = useMemo(
-    () => abbreviateName(name, abbreviationLevel, siblingNames),
-    [name, abbreviationLevel, siblingNames],
-  );
+  const nameLabels = useMemo(() => labels ?? nameLabelsOf(name), [labels, name]);
+  const { levels } = nameLabels;
+  // Person colors end with the initials circle alone (the name is only read
+  // out); the section look ends with "FL" initials as text.
+  const initialsOnly = hasInitials && abbreviationLevel === PERSON_INITIALS_ONLY;
+  const displayName = initialsOnly ? name : levels[abbreviationLevel];
 
   // Check if name fits and increase abbreviation level if needed
   useLayoutEffect(() => {
@@ -231,7 +160,7 @@ function AssignmentPillImpl({
     // Reset to full name first
     setAbbreviationLevel(0);
     // lockInRow: locking a pill takes room for its lock, unlocking frees it.
-  }, [name, hasInitials, lockInRow]);
+  }, [name, levels, hasInitials, lockInRow]);
 
   // Person colors and the compact grid — the grid may settle its column
   // widths after the first measurement (scope switch, resize, a lock taking
@@ -251,58 +180,43 @@ function AssignmentPillImpl({
     return () => observer.disconnect();
   }, [hasInitials, compact]);
 
-  // Person colors — the first level whose name fits next to the circle,
-  // measured in one pass (all pills read layout in the same commit).
-  const siblingKey = siblingNames?.join("|");
-  const [measuredInOnePass, setMeasuredInOnePass] = useState(false);
+  // Person colors — the level that fits next to the circle, measured in one
+  // pass (all pills read layout in the same commit). A row without width is
+  // not laid out yet (hidden); the resize observer measures it once it is.
   useLayoutEffect(() => {
     const nameEl = nameRef.current;
     const containerEl = containerRef.current;
-    if (!hasInitials || !nameEl || !containerEl) return;
+    if (!hasInitials || !nameEl || !containerEl || containerEl.clientWidth === 0) return;
     const font = window.getComputedStyle(nameEl).font;
-    const available = containerEl.clientWidth - (initialsRef.current?.offsetWidth ?? 0) - 4;
-    let level = 0;
-    for (; level < PERSON_INITIALS_ONLY_LEVEL; level += 1) {
-      const width = measureText(abbreviateName(name, level, siblingNames), font);
-      if (width === null) return;
-      if (width <= available) break;
-    }
-    if (level === PERSON_INITIALS_ONLY_LEVEL && available >= PERSON_MIN_NAME_PX) {
-      level -= 1; // "First L." with an ellipsis
-    }
-    setMeasuredInOnePass(true);
-    setAbbreviationLevel(level);
-    // siblingKey stands for siblingNames (a new array on every grid render).
-  }, [name, siblingKey, hasInitials, layoutVersion, lockInRow]);
+    const room = containerEl.clientWidth - (initialsRef.current?.offsetWidth ?? 0) - 4;
+    // Without canvas metrics (jsdom): the rendered name's width per character.
+    const rendered = Array.from(nameEl.textContent ?? "").length;
+    const perChar = rendered > 0 ? nameEl.scrollWidth / rendered : 0;
+    const width = (text: string) => measureText(text, font) ?? Array.from(text).length * perChar;
+    setAbbreviationLevel(personLevel(nameLabels, room, width));
+  }, [nameLabels, hasInitials, layoutVersion, lockInRow]);
 
+  // The section look — one level per frame until the name fits.
   useLayoutEffect(() => {
     const nameEl = nameRef.current;
     const containerEl = containerRef.current;
-    if (!nameEl || !containerEl || (hasInitials && measuredInOnePass)) return;
+    if (hasInitials || !nameEl || !containerEl) return;
 
     // Use requestAnimationFrame to ensure layout is computed
     const rafId = requestAnimationFrame(() => {
-      // The initials circle (person colors) shares the row with the name; a
-      // locked pill's lock sits next to the row, so the row is already narrower.
-      const initialsWidth = initialsRef.current ? initialsRef.current.offsetWidth + 4 : 0;
-      const isOverflowing = nameEl.scrollWidth + initialsWidth > containerEl.clientWidth;
-      // Person colors keep "First L." with an ellipsis while it has room.
-      const keepEllipsis =
-        hasInitials &&
-        abbreviationLevel === PERSON_INITIALS_ONLY_LEVEL - 1 &&
-        containerEl.clientWidth - initialsWidth >= PERSON_MIN_NAME_PX;
-      if (isOverflowing && abbreviationLevel < maxAbbreviationLevel && !keepEllipsis) {
+      // A locked pill's lock sits next to the row, so the row is already narrower.
+      const isOverflowing = nameEl.scrollWidth > containerEl.clientWidth;
+      if (isOverflowing && abbreviationLevel < NAME_LABEL_LEVELS - 1) {
         setAbbreviationLevel((prev) => prev + 1);
       }
     });
 
     return () => cancelAnimationFrame(rafId);
-    // hasInitials changes the room for the name; so does a lock in the row
-    // (also at level 0, where the reset above changes no state).
-  }, [displayName, abbreviationLevel, maxAbbreviationLevel, hasInitials, layoutVersion, measuredInOnePass, lockInRow]);
+    // A lock in the row changes the room for the name (also at level 0, where
+    // the reset above changes no state).
+  }, [displayName, abbreviationLevel, hasInitials, layoutVersion, lockInRow]);
 
   const isAbbreviated = abbreviationLevel > 0;
-  const initialsOnly = hasInitials && abbreviationLevel >= PERSON_INITIALS_ONLY_LEVEL;
   const showHighlight = isHighlighted && !isDragging;
   const showViolation = isViolation && !isDragging;
   const showDragFocus = isDragFocus;
@@ -418,7 +332,7 @@ function AssignmentPillImpl({
             initialsOnly && "sr-only",
           )}
         >
-          {initialsOnly ? name : displayName}
+          {displayName}
         </span>
       </div>
       {onToggleLock ? (
@@ -474,19 +388,6 @@ function AssignmentPillImpl({
   );
 }
 
-function arraysShallowEqual<T>(
-  a: ReadonlyArray<T> | undefined,
-  b: ReadonlyArray<T> | undefined,
-): boolean {
-  if (a === b) return true;
-  if (!a || !b) return a === b;
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-
 /**
  * Pills are rendered hundreds at a time in the schedule grid. Any state
  * change in the parent (e.g. the drag state during a drag) would otherwise
@@ -521,7 +422,7 @@ function arePillPropsEqual(
     prev.personStyle?.initials === next.personStyle?.initials &&
     prev.isMe === next.isMe &&
     prev.compact === next.compact &&
-    arraysShallowEqual(prev.siblingNames, next.siblingNames)
+    prev.labels === next.labels
   );
 }
 

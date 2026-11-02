@@ -16,12 +16,12 @@ const option = (id: string, name: string): ClinicianOption => ({
 const clinicians = [option("c1", "Anna Alpha"), option("c2", "Bert Beta")];
 const anchorRect = { top: 100, bottom: 120, left: 100, right: 200, width: 100, height: 20 } as DOMRect;
 
-const renderPicker = (onClose: () => void) => (
+const renderPicker = (onClose: () => void, options: ClinicianOption[] = clinicians) => (
   <ClinicianPickerPopover
     open
     onClose={onClose}
     onSelect={vi.fn()}
-    clinicians={clinicians}
+    clinicians={options}
     anchorRect={anchorRect}
     rowName="MRI"
     dateLabel="Mon 5 Oct"
@@ -56,5 +56,31 @@ describe("ClinicianPickerPopover", () => {
     fireEvent.mouseDown(document.body);
     expect(latest).toHaveBeenCalledTimes(2);
     expect(first).not.toHaveBeenCalled();
+  });
+
+  it("finds names without typing their accents", () => {
+    const roster = [
+      option("c1", "Müller, Jörg; Dr."),
+      option("c2", "Zoë O'Brien-Łukasiewicz"),
+      option("c3", "Ünal Çelik"),
+      option("c4", "Björn Ødegård"),
+      option("c5", "Anaïs Lefèvre"),
+      option("c6", "Bert Beta"),
+    ];
+    render(renderPicker(() => {}, roster));
+    const search = screen.getByPlaceholderText("Search clinicians...");
+    const found = (query: string) => {
+      fireEvent.change(search, { target: { value: query } });
+      return screen.queryAllByRole("button").map((button) => button.textContent ?? "");
+    };
+    for (const query of ["Jorg", "joerg", "muller", "mueller"]) {
+      expect(found(query).some((text) => text.includes("Müller, Jörg; Dr."))).toBe(true);
+    }
+    expect(found("zoe").some((text) => text.includes("Zoë"))).toBe(true);
+    expect(found("lukasiewicz").some((text) => text.includes("Łukasiewicz"))).toBe(true);
+    expect(found("celik").some((text) => text.includes("Çelik"))).toBe(true);
+    expect(found("odegard").some((text) => text.includes("Ødegård"))).toBe(true);
+    expect(found("Lefevre").some((text) => text.includes("Lefèvre"))).toBe(true);
+    expect(found("muller").some((text) => text.includes("Bert Beta"))).toBe(false);
   });
 });

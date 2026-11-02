@@ -123,6 +123,7 @@ import {
 } from "../lib/holidays";
 import type { MoveRestDayArgs } from "../lib/clinicianSlotOptions";
 import { computeOpenSlots } from "../lib/openSlots";
+import { buildNameLabels } from "../lib/personName";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
@@ -758,6 +759,8 @@ export default function WeeklySchedulePage({
     () => buildPersonPillStyles(clinicians, isDark),
     [clinicians, isDark],
   );
+  // Short names unique in the whole team: pills and the clinic sheet's surnames.
+  const nameLabels = useMemo(() => buildNameLabels(clinicians), [clinicians]);
   const outlinedClinicianId = linkedClinician?.id ?? null;
   // Without locations every row belongs to the default location: its color.
   const locationRowTints = useMemo(
@@ -3554,6 +3557,7 @@ export default function WeeklySchedulePage({
                 </TeamPlanHeader>
               }
               getClinicianName={(id) => clinicianNameById.get(id) ?? "Unknown"}
+              nameLabels={nameLabels}
               getIsQualified={(clinicianId, rowId) => {
                 const scheduleRow = rowById.get(rowId);
                 const classId =
@@ -3656,6 +3660,7 @@ export default function WeeklySchedulePage({
             onMoveRestDay={handleMoveRestDay}
             onCellClick={() => {}}
             personPillStyles={personPillStyles}
+            nameLabels={nameLabels}
             myClinicianId={outlinedClinicianId}
             locationRowTints={locationRowTints}
           />

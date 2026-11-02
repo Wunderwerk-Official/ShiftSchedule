@@ -15,6 +15,7 @@ import {
   type MoveRestDayArgs,
 } from "../../lib/clinicianSlotOptions";
 import { formatDayHeader, toISODate } from "../../lib/date";
+import type { PersonNameLabels } from "../../lib/personName";
 import {
   formatTimeRangeLabel,
   REST_DAY_POOL_ID,
@@ -108,6 +109,8 @@ type ScheduleGridProps = {
   onMoveRestDay?: (args: MoveRestDayArgs) => void;
   /** Person colors of the team grid by clinician id (absent = section look: print and public pages). */
   personPillStyles?: Map<string, PersonPillStyle>;
+  /** Short names by clinician id, unique in the whole team (lib/personName buildNameLabels). */
+  nameLabels?: Map<string, PersonNameLabels>;
   /** Clinician whose pills get the "you" outline (the linked person, with person colors). */
   myClinicianId?: string | null;
   /**
@@ -167,6 +170,7 @@ export default function ScheduleGrid({
   onMoveRestDay,
   onToggleAssignmentLock,
   personPillStyles,
+  nameLabels,
   myClinicianId,
   locationRowTints,
   timeLayout = "columns",
@@ -632,6 +636,7 @@ export default function ScheduleGrid({
                         rowKindById={rowKindById}
                         onEmptySlotClick={onAddAssignment ? handleEmptySlotClick : undefined}
                         personPillStyles={personPillStyles}
+                        nameLabels={nameLabels}
                         myClinicianId={myClinicianId}
                         labelTint={labelTint}
                         stackedMeta={stackedMeta}
@@ -706,6 +711,7 @@ function RowSection({
   rowKindById,
   onEmptySlotClick,
   personPillStyles,
+  nameLabels,
   myClinicianId,
   labelTint,
   stackedMeta,
@@ -773,6 +779,7 @@ function RowSection({
     rowName: string,
   ) => void;
   personPillStyles?: Map<string, PersonPillStyle>;
+  nameLabels?: Map<string, PersonNameLabels>;
   myClinicianId?: string | null;
   /** Location color of the label cell: its row band's shade and the text on it. */
   labelTint?: { background: string; ink: string };
@@ -910,12 +917,7 @@ function RowSection({
   };
   // One pill of a pool or class cell; slotRowId is the row it lives in. Only
   // class rows show the lock, the eligibility warning and the highlights.
-  const renderPill = (
-    assignment: RenderedAssignment,
-    slotRowId: string,
-    dateISO: string,
-    siblingNames: string[],
-  ) => {
+  const renderPill = (assignment: RenderedAssignment, slotRowId: string, dateISO: string) => {
     const isClassRow = row.kind === "class";
     const isDraggingAssignment =
       dragging?.assignmentId === assignment.id &&
@@ -930,7 +932,7 @@ function RowSection({
       <AssignmentPill
         key={assignment.id}
         name={getClinicianName(assignment.clinicianId)}
-        siblingNames={siblingNames}
+        labels={nameLabels?.get(assignment.clinicianId)}
         assignmentKey={violationKey}
         personStyle={personPillStyles?.get(assignment.clinicianId)}
         isMe={!!myClinicianId && assignment.clinicianId === myClinicianId}
@@ -1034,8 +1036,6 @@ function RowSection({
             const cellKey = `${row.id}__${dateISO}__pool`;
             const assignments = assignmentMap.get(`${row.id}__${dateISO}`) ?? [];
             const sortedAssignments = sortAssignmentsBySurname(assignments, getClinicianName);
-            // For unique abbreviations within the cell.
-            const siblingNames = sortedAssignments.map((a) => getClinicianName(a.clinicianId));
             // A dragged Rest Day pill can move to another day's Rest Day
             // cell: those stay bright, the rest of the other days greys out.
             const isOtherDay =
@@ -1085,7 +1085,7 @@ function RowSection({
                 {sortedAssignments.length > 0 ? (
                   <div className="flex flex-col gap-1">
                     {sortedAssignments.map((assignment) =>
-                      renderPill(assignment, row.id, dateISO, siblingNames),
+                      renderPill(assignment, row.id, dateISO),
                     )}
                   </div>
                 ) : null}
@@ -1139,8 +1139,6 @@ function RowSection({
           ? assignmentMap.get(`${activeRow.id}__${dateISO}`) ?? []
           : [];
         const sortedAssignments = sortAssignmentsBySurname(assignments, getClinicianName);
-        // For unique abbreviations within the cell.
-        const siblingNames = sortedAssignments.map((a) => getClinicianName(a.clinicianId));
         const targetSlots = isCellActive
           ? Math.max(0, baseRequired + slotOverride)
           : 0;
@@ -1281,7 +1279,7 @@ function RowSection({
                 <>
                   {sortedAssignments.length > 0
                     ? sortedAssignments.map((assignment) =>
-                        renderPill(assignment, activeRow.id, dateISO, siblingNames),
+                        renderPill(assignment, activeRow.id, dateISO),
                       )
                     : null}
                   {emptySlots > 0

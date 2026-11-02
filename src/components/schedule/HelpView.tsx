@@ -175,6 +175,23 @@ export default function HelpView() {
             <li>
               Drag a shift assignment out of the calendar to remove it.
             </li>
+            <li>
+              Searching for a person ignores case, accents and word order: &ldquo;muller&rdquo;
+              or &ldquo;mueller&rdquo; finds &ldquo;Müller&rdquo;, &ldquo;celik&rdquo; finds
+              &ldquo;Çelik&rdquo;, &ldquo;jörg müller&rdquo; finds &ldquo;Müller, Jörg&rdquo;.
+            </li>
+            <li>
+              Where space is short, names shorten (&ldquo;Lena H.&rdquo;, &ldquo;L.
+              Hoffmann&rdquo;, &ldquo;L. H.&rdquo;) and point at the full name on hover.
+              A short name always stands for one person of the team, also in PDFs and on the
+              public page: when two people would share one, both get more letters
+              (&ldquo;Sophie Wa.&rdquo; and &ldquo;Sophie We.&rdquo;; in a narrow column
+              &ldquo;S. Wa.&rdquo; and &ldquo;S. We.&rdquo; rather than two cut-off
+              &ldquo;Sophie…&rdquo;). Names written
+              &ldquo;Müller, Jörg&rdquo; or with titles (&ldquo;Dr. med.&rdquo;,
+              &ldquo;Prof.&rdquo;) shorten to &ldquo;Jörg M.&rdquo;; the clinic sheet lists
+              the surname.
+            </li>
           </ul>
           <p className="mt-2">
             A shift assignment is also removed when you drop it on another day, on a

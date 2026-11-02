@@ -13,6 +13,7 @@ import {
 } from "../data/mockData";
 import { addDays, addWeeks, formatRangeLabel, startOfWeek, toISODate } from "../lib/date";
 import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
+import { buildNameLabels, type PersonNameLabels } from "../lib/personName";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState, type ScheduleRow } from "../lib/shiftRows";
@@ -48,6 +49,8 @@ type PrintableWeekProps = {
   calendarRows: ReturnType<typeof buildCalendarRows>;
   assignmentMap: Map<string, Assignment[]>;
   clinicians: Clinician[];
+  /** Short names unique in the team, shared by all weeks. */
+  nameLabels: Map<string, PersonNameLabels>;
   holidayDates: Set<string>;
   holidayNameByDate: Record<string, string>;
   weeklyTemplate?: WeeklyCalendarTemplate;
@@ -74,6 +77,7 @@ const PrintableWeek = ({
   calendarRows,
   assignmentMap,
   clinicians,
+  nameLabels,
   holidayDates,
   holidayNameByDate,
   weeklyTemplate,
@@ -218,6 +222,7 @@ const PrintableWeek = ({
                   getClinicianName={(id) =>
                     clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                   }
+                  nameLabels={nameLabels}
                   getIsQualified={(clinicianId, rowId) => {
                     const scheduleRow = rowById.get(rowId);
                     const classId =
@@ -248,6 +253,7 @@ const PrintableWeek = ({
               getClinicianName={(id) =>
                 clinicians.find((c) => c.id === id)?.name ?? "Unknown"
               }
+              nameLabels={nameLabels}
               getHasEligibleClasses={(id) => {
                 const clinician = clinicians.find((item) => item.id === id);
                 return clinician ? clinician.qualifiedClassIds.length > 0 : false;
@@ -350,6 +356,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
     [scheduleRows],
   );
   const rowById = useMemo(() => new Map(scheduleRows.map((row) => [row.id, row])), [scheduleRows]);
+  const nameLabels = useMemo(() => buildNameLabels(clinicians), [clinicians]);
 
   // Stable per-week arrays, so each PrintableWeek's memos (rendered assignment
   // map, columns, sheet model) do not recompute on every parent render.
@@ -480,6 +487,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
               calendarRows={calendarRows}
               assignmentMap={assignmentMap}
               clinicians={clinicians}
+              nameLabels={nameLabels}
               holidayDates={holidayDates}
               holidayNameByDate={holidayNameByDate}
               weeklyTemplate={weeklyTemplate}

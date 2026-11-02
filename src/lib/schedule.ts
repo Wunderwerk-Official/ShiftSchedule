@@ -2,6 +2,7 @@ import { addDays, toISODate } from "./date";
 import type { SolverSettings } from "../api/client";
 import type { Assignment, Clinician, RestContextAssignment } from "../api/client";
 import type { ScheduleRow } from "./shiftRows";
+import { surnameSortKey } from "./personName";
 import { parseTimeToMinutes } from "./time";
 
 export const REST_DAY_POOL_ID = "pool-rest-day";
@@ -57,19 +58,19 @@ export function intervalsOverlap(a: TimeRange, b: TimeRange): boolean {
 }
 
 /**
- * Order of the people in a grid cell: by surname (the last word of the
- * name), then by the full name. Lists of fewer than two come back as is.
+ * Order of the people in a grid cell: by surname (the main family name, also
+ * for "Müller, Jörg; Dr." or "Ludwig van Beethoven"; lib/personName), then
+ * by the full name. Lists of fewer than two come back as is.
  */
 export function sortAssignmentsBySurname<T extends { clinicianId: string }>(
   assignments: T[],
   getName: (clinicianId: string) => string,
 ): T[] {
   if (assignments.length < 2) return assignments;
-  const surnameOf = (name: string) => name.trim().split(/\s+/).slice(-1)[0] ?? name;
   return [...assignments].sort((a, b) => {
     const nameA = getName(a.clinicianId);
     const nameB = getName(b.clinicianId);
-    const bySurname = surnameOf(nameA).localeCompare(surnameOf(nameB));
+    const bySurname = surnameSortKey(nameA).localeCompare(surnameSortKey(nameB));
     return bySurname !== 0 ? bySurname : nameA.localeCompare(nameB);
   });
 }

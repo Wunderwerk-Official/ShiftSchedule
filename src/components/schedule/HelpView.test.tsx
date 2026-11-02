@@ -106,3 +106,11 @@ it("describes what the public web link shows", () => {
   expect(text).toContain("the same layout and Times (stacked or side by side)");
   expect(text).toContain("On a phone it shows one day at a time, its times stacked.");
 });
+
+it("explains short names and the accent-insensitive person search", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain("“muller” or “mueller” finds “Müller”");
+  expect(text).toContain("A short name always stands for one person of the team, also in PDFs and on the public page");
+  expect(text).toContain("shorten to “Jörg M.”; the clinic sheet lists the surname.");
+});

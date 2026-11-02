@@ -13,6 +13,7 @@ import {
 } from "../data/mockData";
 import { addDays, startOfWeek, formatRangeLabel, toISODate } from "../lib/date";
 import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
+import { buildNameLabels } from "../lib/personName";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState } from "../lib/shiftRows";
@@ -133,6 +134,8 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     [weekDays, weeklyTemplate, holidayDates, columnTimeMetaByKey],
   );
   const rowById = useMemo(() => new Map(scheduleRows.map((row) => [row.id, row])), [scheduleRows]);
+  // A PDF has no hover: every short name must stand for one person of the team.
+  const nameLabels = useMemo(() => buildNameLabels(clinicians), [clinicians]);
 
   const renderAssignmentMap = useMemo(
     () =>
@@ -339,6 +342,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                   getClinicianName={(id) =>
                     clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                   }
+                  nameLabels={nameLabels}
                   getIsQualified={(clinicianId, rowId) => {
                     const scheduleRow = rowById.get(rowId);
                     const classId =
@@ -369,6 +373,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                 getClinicianName={(id) =>
                   clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                 }
+                nameLabels={nameLabels}
                 getHasEligibleClasses={(id) => {
                   const clinician = clinicians.find((item) => item.id === id);
                   return clinician ? clinician.qualifiedClassIds.length > 0 : false;

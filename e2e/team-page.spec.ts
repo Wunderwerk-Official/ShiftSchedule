@@ -188,6 +188,85 @@ test("moving a planner shift by hand locks it (v1.69)", async ({ page }) => {
   expect(api.errors).toEqual([]);
 });
 
+test("printed short names stand for one person of the team (v1.78)", async ({ page }) => {
+  // A PDF has no hover: two people may never print under one label, and
+  // "Last, First" names with titles must not shorten to "Müller, D." or "M. Dr.".
+  const state = structuredClone(defaultState);
+  state.clinicians[0].name = "Mehmet Yildirim";
+  state.clinicians[1].name = "Mehmet Yılmaz";
+  state.clinicians.push({ ...state.clinicians[0], id: "c-mueller", name: "Müller, Jörg; Dr." });
+  state.assignments = [
+    assignment("ct", "mon", "CT", FIRST),
+    assignment("mri", "mon", "MRI", SECOND),
+    assignment("sono", "mon", "Sonography", "c-mueller"),
+  ];
+  await page.addInitScript(() => localStorage.setItem("authToken", "test-token"));
+  await page.route("**/auth/me", (route) =>
+    route.fulfill({ json: { username: "test", role: "user", active: true } }),
+  );
+  await page.route("**/v1/**", (route) =>
+    new URL(route.request().url()).pathname.endsWith("/v1/state")
+      ? route.fulfill({ json: { ...state, revision: "r0" } })
+      : route.fulfill({ json: {} }),
+  );
+  const labelOf = (clinicianId: string) =>
+    page
+      .locator(`[data-assignment-key$="__${clinicianId}"] span.whitespace-nowrap`)
+      .first()
+      .innerText();
+  for (const layout of ["", "&layout=portrait"]) {
+    await page.goto(`/print/week?start=2026-01-05${layout}`);
+    await page.waitForFunction("window.__PDF_READY__ === true");
+    const [yildirim, yilmaz, mueller] = [await labelOf(FIRST), await labelOf(SECOND), await labelOf("c-mueller")];
+    // The narrow print columns shorten the names, never to one label for both.
+    expect(yildirim).not.toBe("Mehmet Yildirim");
+    expect(yildirim).not.toBe(yilmaz);
+    expect([yildirim, yilmaz]).not.toContain("Mehmet Y.");
+    expect([yildirim, yilmaz]).not.toContain("M. Y.");
+    expect(mueller).toMatch(/J/);
+    expect(mueller).not.toMatch(/Dr\./);
+  }
+});
+
+test("team grid pills never show two people under one visible name (v1.78)", async ({ page }) => {
+  // Person colors cut a long "First L." with an ellipsis: "Sophie Wa." and
+  // "Sophie We." would both read "Sophie…", so those two show "S. Wa." /
+  // "S. We." where the full label does not fit.
+  const state = structuredClone(defaultState);
+  state.clinicians[0].name = "Sophie Wagner";
+  state.clinicians[1].name = "Sophie Weber";
+  state.assignments = [
+    assignment("ct", "mon", "CT", FIRST),
+    assignment("mri", "mon", "MRI", SECOND),
+    assignment("sono", "mon", "Sonography", FIRST, { locked: true }),
+    assignment("ctn", "mon", "CT Neuro", SECOND, { locked: true }),
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const shown = () =>
+    page.$$eval("[data-assignment-pill] span.min-w-0", (spans) =>
+      spans.map((span) => {
+        const text = span.textContent ?? "";
+        if (span.classList.contains("sr-only")) return { text, visible: "" };
+        // What the ellipsis leaves: the text up to the row's right edge.
+        const cut = span.scrollWidth > span.clientWidth + 1;
+        return { text, visible: cut ? `${text}…(cut)` : text };
+      }),
+    );
+  const times = page.getByRole("group", { name: "Times" });
+  for (const layout of ["Side by side", "Stacked"]) {
+    await times.getByRole("button", { name: layout }).click();
+    await page.waitForTimeout(300);
+    const pills = await shown();
+    expect(pills).toHaveLength(4);
+    for (const pill of pills) {
+      // Each pill shows a label of its own in full: the team-unique
+      // "Sophie Wa." where it fits, "S. Wa." where it does not.
+      expect(pill.visible, layout).toMatch(/^(Sophie Wagner|Sophie Weber|Sophie Wa\.|Sophie We\.|S\. Wa\.|S\. We\.)$/);
+    }
+  }
+  expect(api.errors).toEqual([]);
+});
+
 test("a locked shift moved into the Rest Day row becomes a plain rest day entry (v1.69)", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [assignment("ct", "mon", "CT", FIRST, { source: "solver", locked: true })];

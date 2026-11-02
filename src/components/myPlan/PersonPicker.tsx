@@ -2,6 +2,7 @@ import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Clinician } from "../../api/client";
 import { cx } from "../../lib/classNames";
 import { personColor } from "../../lib/myPlan";
+import { matchesSearch } from "../../lib/textSearch";
 import PlanIcon from "./PlanIcons";
 import { displayName, initialsOf, popoverPanelClass, roundIconButtonClass } from "./planChrome";
 import { useDismiss } from "./useDismiss";
@@ -52,11 +53,11 @@ export default function PersonPicker({
     [clinicians],
   );
   const options = useMemo(() => {
-    const needle = query.trim().toLowerCase();
     const sorted = [...clinicians].sort((a, b) =>
       a.id === myId ? -1 : b.id === myId ? 1 : a.name.localeCompare(b.name),
     );
-    return needle ? sorted.filter((c) => c.name.toLowerCase().includes(needle)) : sorted;
+    // Accent-insensitive: "muller" and "mueller" find "Müller".
+    return sorted.filter((c) => matchesSearch(c.name, query));
   }, [clinicians, myId, query]);
   const myName = myId ? clinicians.find((clinician) => clinician.id === myId)?.name : undefined;
 
