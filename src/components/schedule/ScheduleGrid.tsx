@@ -24,7 +24,7 @@ import {
 } from "../../lib/stackedTeamLayout";
 import AssignmentPill from "./AssignmentPill";
 import EmptySlotPill from "./EmptySlotPill";
-import RowLabel from "./RowLabel";
+import RowLabel, { STACKED_DIVIDER, StackedLabelCells, stackedDividerLevel } from "./RowLabel";
 import { labelShade, type LocationRowTint, type PersonPillStyle } from "./teamColors";
 import ClinicianPickerPopover from "./ClinicianPickerPopover";
 import type { ClinicianOption } from "./ClinicianPickerPopover";
@@ -37,7 +37,7 @@ import type {
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getContrastTextColor } from "../../lib/shiftRows";
 
-// Stacked cells: the quiet tag for a section or time other than the lane's.
+// Stacked cells: the quiet tag for a time other than the lane's.
 const STACKED_CELL_TAG =
   "max-w-full break-words rounded-md bg-slate-900/[0.05] px-1.5 py-0.5 text-[10px] font-semibold leading-3 text-slate-600 ring-1 ring-inset ring-slate-900/[0.07] dark:bg-white/[0.07] dark:text-slate-300 dark:ring-white/10";
 
@@ -267,14 +267,21 @@ export default function ScheduleGrid({
   const todayISO = toISODate(new Date());
   const isSingleDay = uniqueDayCount === 1;
   // Stacked: day columns may shrink to 64 px (names abbreviate down to
-  // initials), so the week fits next to even the widest label (~290 px), also
+  // initials), so the week fits next to even the widest label (~315 px: row
+  // band, section and time columns at their widest), also
   // on A4 portrait.
   const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : 120;
+  // Stacked week: the label column is three columns (row band | section |
+  // time), so names and times line up and a row band or section cell can span
+  // its lanes. A single day (phone) keeps one label cell per lane.
+  const splitLabels = !!stacked && !isSingleDay;
   const leftColumn = isSingleDay
     ? stacked
       ? "minmax(112px, 168px)"
       : "minmax(96px, 140px)"
-    : "max-content";
+    : splitLabels
+      ? "repeat(3, max-content)"
+      : "max-content";
   const shiftIntervalsByRowId = useMemo(() => buildShiftIntervalsByRowId(rows), [rows]);
   const { assignedIntervalsByDate, unknownIntervalsByDate } = useMemo(
     () => buildDateIntervalIndex(assignmentMap, rowKindById, shiftIntervalsByRowId),
@@ -450,7 +457,10 @@ export default function ScheduleGrid({
                     )}, minmax(${dayColumnMin}px, 1fr))`,
                   }}
                 >
-                  <div className="sticky top-0 z-30 flex items-center border-b border-r-2 border-slate-300 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-900 sm:px-4">
+                  <div
+                    className="sticky top-0 z-30 flex items-center border-b border-r-2 border-slate-300 bg-white px-3 py-2 dark:border-slate-700 dark:bg-slate-900 sm:px-4"
+                    style={splitLabels ? { gridColumn: "span 3" } : undefined}
+                  >
                     <div className="text-base font-semibold text-slate-900 dark:text-slate-100">
                       {leftHeaderTitle}
                     </div>
@@ -531,6 +541,15 @@ export default function ScheduleGrid({
                     rowTint && bandIndex !== undefined
                       ? { background: labelShade(rowTint, bandIndex), ink: rowTint.ink }
                       : undefined;
+                  // Bottom border of a label cell spanning `span` lanes from
+                  // this one: its last lane's level, none before a separator.
+                  const spanDivider = (span: number | undefined) => {
+                    if (!span) return undefined;
+                    const nextId = gridRows[index + span]?.id;
+                    if (nextId && separatorBeforeRowIds.includes(nextId)) return "border-b-0";
+                    const lastMeta = stacked?.metaByRowId.get(gridRows[index + span - 1]?.id ?? "");
+                    return STACKED_DIVIDER[lastMeta ? stackedDividerLevel(lastMeta) : "row"];
+                  };
                   return (
                     <Fragment key={row.id}>
                       {showLocationSeparator ? (
@@ -582,6 +601,9 @@ export default function ScheduleGrid({
                         myClinicianId={myClinicianId}
                         labelTint={labelTint}
                         stackedMeta={stackedMeta}
+                        splitLabels={splitLabels}
+                        groupDivider={splitLabels ? spanDivider(stackedMeta?.groupSpan) : undefined}
+                        sectionDivider={splitLabels ? spanDivider(stackedMeta?.sectionSpan) : undefined}
                       />
                     </Fragment>
                   );
@@ -651,6 +673,9 @@ function RowSection({
   myClinicianId,
   labelTint,
   stackedMeta,
+  splitLabels = false,
+  groupDivider,
+  sectionDivider,
 }: {
   row: ScheduleRow;
   dayColumns: {
@@ -713,8 +738,13 @@ function RowSection({
   myClinicianId?: string | null;
   /** Location color of the label cell: its row band's shade and the text on it. */
   labelTint?: { background: string; ink: string };
-  /** Set in the stacked layout: this row is one time band of a class row. */
+  /** Set in the stacked layout: this row is one lane of a class row. */
   stackedMeta?: StackedRowMeta;
+  /** Stacked week: the label is three cells (row band | section | time). */
+  splitLabels?: boolean;
+  /** Bottom borders of the row band and section cells that span lanes from here. */
+  groupDivider?: string;
+  sectionDivider?: string;
 }) {
   const rowBg =
     row.id === "pool-vacation"
@@ -725,10 +755,10 @@ function RowSection({
   const borderBottomClass =
     suppressBottomBorder || row.id === "pool-vacation"
       ? "border-b-0"
-      : stackedMeta && !stackedMeta.isLastInGroup
-        ? // Between the time lanes of one row: a hairline only. Bottom-side
-          // colors, so the cells' other border colors stay as they are.
-          "border-b border-b-slate-100 dark:border-b-slate-800/50"
+      : stackedMeta
+        ? // Stacked: a hairline between the lanes of a section, a line
+          // between sections, a stronger one between rows.
+          STACKED_DIVIDER[stackedDividerLevel(stackedMeta)]
         : "border-b border-slate-200 dark:border-slate-800";
   const applyDragImage = (
     source: HTMLElement,
@@ -907,26 +937,37 @@ function RowSection({
   };
   return (
     <>
-      <div
-        className={cx(
-          "row border-r-2 border-slate-300 py-1 dark:border-slate-700 sm:py-1",
-          borderBottomClass,
-          // Team grid: the label carries its location's color, one shade per
-          // row band (labelTint). Without location colors (print, public)
-          // a stacked lane label carries its section's color instead.
-          !labelTint && (stackedMeta?.sectionColor ? "stacked-label-tint" : rowBg),
-        )}
-        data-label-shade={labelTint ? labelTint.background : undefined}
-        style={
-          labelTint
-            ? { backgroundColor: labelTint.background }
-            : stackedMeta?.sectionColor
-              ? ({ "--section-color": stackedMeta.sectionColor } as CSSProperties)
-              : undefined
-        }
-      >
-        <RowLabel row={row} ink={labelTint?.ink} stacked={stackedMeta} />
-      </div>
+      {stackedMeta && splitLabels ? (
+        <StackedLabelCells
+          meta={stackedMeta}
+          tint={labelTint}
+          laneDivider={borderBottomClass}
+          groupDivider={groupDivider}
+          sectionDivider={sectionDivider}
+        />
+      ) : (
+        <div
+          className={cx(
+            "row border-r-2 border-slate-300 py-1 dark:border-slate-700 sm:py-1",
+            borderBottomClass,
+            // Team grid: the label carries its location's color, one shade per
+            // row band (labelTint). Without location colors (print, public)
+            // a stacked lane label carries its section's color instead.
+            !labelTint && (stackedMeta?.sectionColor ? "stacked-label-tint" : rowBg),
+          )}
+          data-label-shade={labelTint ? labelTint.background : undefined}
+          style={{
+            ...(splitLabels ? { gridColumn: "span 3" } : null),
+            ...(labelTint
+              ? { backgroundColor: labelTint.background }
+              : stackedMeta?.sectionColor
+                ? ({ "--section-color": stackedMeta.sectionColor } as CSSProperties)
+                : null),
+          }}
+        >
+          <RowLabel row={row} ink={labelTint?.ink} stacked={stackedMeta} />
+        </div>
+      )}
       {row.kind === "pool"
         ? dayGroups.map((group, groupIndex) => {
             const { dateISO } = group;
@@ -1091,13 +1132,6 @@ function RowSection({
                 ? "bg-slate-50/70 dark:bg-slate-800/50"
                 : "bg-white dark:bg-slate-900";
         const stackedTime = stackedMeta && isCellActive ? slotTimeLabel(activeRow) : undefined;
-        // A day of another section than the lane's names that section in the
-        // cell (the label column names only the lane's; its "+N" lists the
-        // other days).
-        const isOtherSection =
-          !!stackedMeta?.sectionName &&
-          isCellActive &&
-          (activeRow.sectionName ?? activeRow.name) !== stackedMeta.sectionName;
 
         return (
           // Same Safari drag-routing fix as the grouped-view cell above —
@@ -1150,7 +1184,8 @@ function RowSection({
             data-row-id={activeRow.id}
             data-row-kind={row.kind}
             data-date-iso={dateISO}
-            // Stacked cells name no section: the tooltip keeps the exact one.
+            // Stacked cells name no section (their lane's label does): the
+            // tooltip repeats section and time.
             title={
               stackedMeta && isCellActive
                 ? [activeRow.sectionName ?? activeRow.name, stackedTime].filter(Boolean).join(" · ")
@@ -1223,30 +1258,21 @@ function RowSection({
                 </>
               );
               if (stackedMeta) {
-                // No block: the label column names the lane's section and
-                // time. A cell writes out only what differs from them, its
-                // section and its time.
-                const ownSection = isOtherSection ? (activeRow.sectionName ?? activeRow.name) : null;
+                // No block: the label column names the lane's section (a lane
+                // holds one section only) and time. A cell writes out only a
+                // time other than its lane's.
                 const ownTime =
                   stackedTime && stackedTime !== stackedMeta.timeLabel ? stackedTime : null;
                 return (
                   <>
-                    {ownSection || ownTime ? (
-                      // Quiet tags with room below them, so they do not crowd
-                      // the first pill or its "me" outline. They wrap in
-                      // narrow columns (a time after its dash) instead of
-                      // cutting the text off.
+                    {ownTime ? (
+                      // A quiet tag with room below it, so it does not crowd
+                      // the first pill or its "me" outline. It wraps in narrow
+                      // columns (after the dash) instead of cutting off.
                       <div className="mb-1.5 flex flex-wrap gap-1">
-                        {ownSection ? (
-                          <span data-other-section="true" className={STACKED_CELL_TAG}>
-                            {ownSection}
-                          </span>
-                        ) : null}
-                        {ownTime ? (
-                          <span data-own-time="true" className={cx(STACKED_CELL_TAG, "tabular-nums")}>
-                            {compactTimeLabel(ownTime)}
-                          </span>
-                        ) : null}
+                        <span data-own-time="true" className={cx(STACKED_CELL_TAG, "tabular-nums")}>
+                          {compactTimeLabel(ownTime)}
+                        </span>
                       </div>
                     ) : null}
                     <div className="flex flex-col gap-1">{cellContent}</div>

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { buildCalendarRows, type DayColumn } from "./calendarView";
 import type { ScheduleRow } from "./shiftRows";
-import { buildStackedColumns, buildStackedTeamLayout, buildTimeLanes } from "./stackedTeamLayout";
+import {
+  buildSectionLanes,
+  buildStackedColumns,
+  buildStackedTeamLayout,
+  buildTimeLanes,
+} from "./stackedTeamLayout";
 
 const slot = (id: string, overrides: Partial<ScheduleRow> = {}): ScheduleRow => ({
   id,
@@ -113,6 +118,92 @@ describe("buildTimeLanes", () => {
   });
 });
 
+describe("buildSectionLanes", () => {
+  const sec = (name: string) => ({ sectionId: `sec-${name}`, sectionName: name, name });
+  const lanes = (slots: ScheduleRow[]) =>
+    buildSectionLanes(slots).map((lane) => `${lane.sectionName}: ${lane.slots.map((s) => s.id).join(" ")}`);
+  // The user's "IRM HK" row: sections rotate per weekday over the same three
+  // time columns (07:30 / 13:00 / 16:00).
+  const rotating = [
+    slot("mon-1", { ...sec("Cardio"), startTime: "07:30", endTime: "13:00" }),
+    slot("mon-2", { ...sec("Neuro"), colBandOrder: 2, startTime: "13:00", endTime: "16:00" }),
+    slot("mon-3", { ...sec("Neuro"), colBandOrder: 3, startTime: "16:00", endTime: "19:00" }),
+    slot("tue-1", { ...sec("Prostate"), dayType: "tue", startTime: "07:30", endTime: "13:00" }),
+    slot("tue-2", { ...sec("Neuro"), dayType: "tue", colBandOrder: 2, startTime: "13:00", endTime: "16:00" }),
+    slot("wed-1", { ...sec("Cardio"), dayType: "wed", startTime: "07:30", endTime: "13:00" }),
+    slot("wed-2", { ...sec("Prostate"), dayType: "wed", colBandOrder: 2, startTime: "13:00", endTime: "16:00" }),
+  ];
+
+  it("never puts two sections into one lane", () => {
+    const result = buildSectionLanes(rotating);
+    for (const lane of result) {
+      expect(new Set(lane.slots.map((s) => s.sectionId))).toEqual(new Set([`sec-${lane.sectionName}`]));
+    }
+    // Before v1.76 Monday's Neuro and Tuesday's Prostate shared the 13:00 lane.
+    expect(lanes(rotating)).toEqual([
+      "Cardio: mon-1 wed-1",
+      "Prostate: tue-1 wed-2",
+      "Neuro: mon-2 tue-2",
+      "Neuro: mon-3",
+    ]);
+  });
+
+  it("orders sections by earliest start, then first slot in column order, then name", () => {
+    expect(
+      lanes([
+        // Mon column 2 comes before Tue column 1 in template column order.
+        slot("tue-b", { ...sec("Beta"), dayType: "tue", startTime: "08:00", endTime: "12:00" }),
+        slot("mon-late", { ...sec("Late"), startTime: "06:00", endTime: "07:00" }),
+        slot("mon-a", { ...sec("Alpha"), colBandOrder: 2, startTime: "08:00", endTime: "12:00" }),
+        slot("mon-z", { ...sec("Zulu"), colBandOrder: 3, startTime: "06:00", endTime: "07:00" }),
+      ]),
+    ).toEqual(["Late: mon-late", "Zulu: mon-z", "Alpha: mon-a", "Beta: tue-b"]);
+    // Same start and same first column (a slot collision): by name.
+    expect(
+      lanes([
+        slot("b", { ...sec("Bravo"), startTime: "08:00", endTime: "12:00" }),
+        slot("a", { ...sec("Alpha"), startTime: "08:00", endTime: "12:00" }),
+      ]).map((lane) => lane.split(":")[0]),
+    ).toEqual(["Alpha", "Bravo"]);
+  });
+
+  it("orders a section's lanes by start, also when a later day opened them", () => {
+    expect(
+      lanes([
+        // Saturday has the most slots and lists its evening shift first.
+        slot("sat-eve", { dayType: "sat", startTime: "16:00", endTime: "19:00" }),
+        slot("sat-am", { dayType: "sat", colBandOrder: 2, startTime: "07:00", endTime: "13:00" }),
+        slot("mon-am", { startTime: "07:00", endTime: "13:00" }),
+      ]),
+    ).toEqual(["CT: mon-am sat-am", "CT: sat-eve"]);
+  });
+
+  it("keeps a variant of the same section with another time in its lane", () => {
+    expect(
+      lanes([
+        slot("fri-am", { startTime: "07:30", endTime: "13:00" }),
+        slot("fri-pm", { colBandOrder: 2, dayType: "fri", startTime: "13:00", endTime: "16:00" }),
+        slot("mon-am", { startTime: "07:30", endTime: "13:00" }),
+        slot("sat-am", { dayType: "sat", startTime: "08:00", endTime: "13:00" }),
+      ].map((s) => (s.id === "fri-am" ? { ...s, dayType: "fri" as const } : s))),
+    ).toEqual(["CT: mon-am fri-am sat-am", "CT: fri-pm"]);
+  });
+
+  it("gives two slots of one section on the same day their own lanes", () => {
+    expect(lanes([slot("a"), slot("b", { colBandOrder: 2 })])).toEqual(["CT: a", "CT: b"]);
+  });
+
+  it("tells sections apart by id, by name without one", () => {
+    expect(
+      lanes([
+        slot("a", { sectionId: undefined, sectionName: "One", name: "One" }),
+        slot("b", { dayType: "tue", sectionId: undefined, sectionName: "Two", name: "Two" }),
+        slot("c", { dayType: "wed", sectionId: undefined, sectionName: "One", name: "One" }),
+      ]),
+    ).toEqual(["One: a c", "Two: b"]);
+  });
+});
+
 describe("buildStackedColumns", () => {
   it("keeps one column per day, renumbered and without column times", () => {
     const result = buildStackedColumns(columns);
@@ -178,39 +269,120 @@ describe("buildStackedTeamLayout", () => {
     expect(layout.metaByRowId.get(`${ctGroup}__t1`)).toEqual({
       sourceRowId: ctGroup,
       groupLabel: "CT",
+      groupSpan: 2,
       title: undefined,
       sectionName: "CT",
+      sectionColor: undefined,
+      sectionSpan: 2,
       timeLabel: "07:00 - 15:00",
       isFirstInGroup: true,
       isLastInGroup: false,
+      isFirstInSection: true,
+      isLastInSection: false,
     });
     expect(layout.metaByRowId.get(`${ctGroup}__t2`)).toMatchObject({
       groupLabel: undefined,
+      groupSpan: undefined,
+      sectionSpan: undefined,
       // A tie (one Monday, one Tuesday time) goes to the first day.
       timeLabel: "14:00 - 22:00",
       isFirstInGroup: false,
       isLastInGroup: true,
+      isFirstInSection: false,
+      isLastInSection: true,
     });
   });
 
   it("titles a lane whose section is not the row's own name", () => {
     expect(layout.metaByRowId.get(`${mrGroup}__t1`)?.title).toBeUndefined();
-    expect(layout.metaByRowId.get(`${mrGroup}__t2`)).toMatchObject({ title: "Senior" });
+    expect(layout.metaByRowId.get(`${mrGroup}__t2`)).toMatchObject({
+      title: "Senior",
+      sectionSpan: 1,
+      isFirstInSection: true,
+      isLastInSection: true,
+    });
   });
 
-  it("colors a lane by its main section and lists the days of other sections", () => {
-    const mixed = buildStackedTeamLayout(
+  it("gives a day of another section a lane of its own, colored by that section", () => {
+    const split = buildStackedTeamLayout(
       buildCalendarRows([
         slot("mon", { blockColor: "#BFDBFE" }),
         slot("tue", { dayType: "tue", sectionId: "sec-pro", sectionName: "Prostate", blockColor: "#FBCFE8" }),
       ]),
       [...columns, column("2026-01-07", "wed", 1, 4)],
     );
-    // A tie between the two sections goes to the first day's (Monday's) section.
-    expect(mixed.metaByRowId.get(ctGroup)).toMatchObject({
+    expect(split.rows.map((row) => row.slotRows?.map((s) => s.id))).toEqual([["mon"], ["tue"]]);
+    expect(split.metaByRowId.get(`${ctGroup}__t1`)).toMatchObject({
+      title: undefined,
+      sectionName: "CT",
       sectionColor: "#BFDBFE",
-      otherSections: ["Tue: Prostate"],
     });
+    expect(split.metaByRowId.get(`${ctGroup}__t2`)).toMatchObject({
+      title: "Prostate",
+      sectionName: "Prostate",
+      sectionColor: "#FBCFE8",
+      timeLabel: "07:00 - 15:00",
+    });
+    expect(split.metaByRowId.get(`${ctGroup}__t1`)).not.toHaveProperty("otherSections");
+  });
+
+  it("names a section called like its row when another section comes first", () => {
+    const result = buildStackedTeamLayout(
+      buildCalendarRows([
+        slot("ct", { colBandOrder: 2 }),
+        slot("early", { sectionId: "sec-early", sectionName: "Early", startTime: "06:00", endTime: "07:00" }),
+      ]),
+      columns,
+    );
+    // Under "Early" an untitled lane would read as Early's second time.
+    expect(result.rows.map((row) => result.metaByRowId.get(row.id)?.title)).toEqual(["Early", "CT"]);
+  });
+
+  it("keeps lane ids and order the same whatever days are on screen", () => {
+    const slots = [
+      slot("mon-ct"),
+      slot("mon-ct-late", { colBandOrder: 2, startTime: "14:00", endTime: "22:00" }),
+      slot("tue-pro", { dayType: "tue", sectionId: "sec-pro", sectionName: "Prostate" }),
+    ];
+    const lanesOn = (cols: DayColumn[]) =>
+      buildStackedTeamLayout(buildCalendarRows(slots), cols).rows.map((row) => [
+        row.id,
+        row.slotRows?.map((s) => s.id),
+      ]);
+    expect(lanesOn(columns)).toEqual([
+      [`${ctGroup}__t1`, ["mon-ct"]],
+      [`${ctGroup}__t2`, ["mon-ct-late"]],
+      [`${ctGroup}__t3`, ["tue-pro"]],
+    ]);
+    expect(lanesOn([column("2026-01-05", "mon", 1, 0), column("2026-01-05", "mon", 2, 1)])).toEqual([
+      [`${ctGroup}__t1`, ["mon-ct"]],
+      [`${ctGroup}__t2`, ["mon-ct-late"]],
+    ]);
+    // One lane on screen: the row keeps its own id.
+    expect(lanesOn([column("2026-01-06", "tue", 1, 0)])).toEqual([[ctGroup, ["tue-pro"]]]);
+  });
+
+  it("counts the visible lanes of a row and of each section for the spanning label cells", () => {
+    const result = buildStackedTeamLayout(
+      buildCalendarRows([
+        slot("ct-early"),
+        slot("ct-late", { colBandOrder: 2, startTime: "14:00", endTime: "22:00" }),
+        slot("senior", { colBandOrder: 3, sectionId: "sec-senior", sectionName: "Senior", startTime: "09:00", endTime: "17:00" }),
+        // Hidden in a Monday–Tuesday view: not counted.
+        slot("ct-sat", { dayType: "sat", colBandOrder: 3, startTime: "22:00", endTime: "07:00", endDayOffset: 1 }),
+      ]),
+      columns,
+    );
+    expect(
+      result.rows.map((row) => {
+        const meta = result.metaByRowId.get(row.id)!;
+        return [meta.groupSpan, meta.sectionSpan, meta.isFirstInSection, meta.isLastInSection];
+      }),
+    ).toEqual([
+      [3, 2, true, false],
+      [undefined, undefined, false, true],
+      [undefined, 1, true, true],
+    ]);
   });
 
   it("passes pool rows through without meta", () => {
@@ -221,7 +393,14 @@ describe("buildStackedTeamLayout", () => {
   it("keeps a row with one lane under its own id", () => {
     const single = buildStackedTeamLayout(buildCalendarRows([slot("only")]), columns);
     expect(single.rows.map((row) => row.id)).toEqual([ctGroup]);
-    expect(single.metaByRowId.get(ctGroup)).toMatchObject({ isFirstInGroup: true, isLastInGroup: true });
+    expect(single.metaByRowId.get(ctGroup)).toMatchObject({
+      isFirstInGroup: true,
+      isLastInGroup: true,
+      isFirstInSection: true,
+      isLastInSection: true,
+      groupSpan: 1,
+      sectionSpan: 1,
+    });
   });
 
   it("keeps one inactive row for a row without any slot on the visible days", () => {

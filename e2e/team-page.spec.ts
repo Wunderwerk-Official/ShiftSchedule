@@ -223,7 +223,8 @@ test("Times switches between side-by-side and stacked columns and stores the cho
   });
   const grid = page.locator('[data-schedule-grid="true"]');
   const columnCount = async () =>
-    Number(/repeat\((\d+),/.exec((await grid.getAttribute("style")) ?? "")?.[1]);
+    // The day columns (Stacked also repeats three label columns first).
+    Number(/repeat\((\d+), minmax/.exec((await grid.getAttribute("style")) ?? "")?.[1]);
   const times = page.getByRole("group", { name: "Times" });
   const pill = page.locator(
     `[data-schedule-cell="true"][data-row-id="${slotId("mon", "CT")}"][data-date-iso="2026-01-05"] [data-assignment-pill="true"]`,
@@ -241,6 +242,39 @@ test("Times switches between side-by-side and stacked columns and stores the cho
   // The saved answer keeps the choice.
   await page.waitForTimeout(300);
   expect(await columnCount()).toBeGreaterThan(7);
+  expect(api.errors).toEqual([]);
+});
+
+test("Stacked gives every section of a row band its own lanes, named in the label (v1.76)", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  const template = state.weeklyTemplate!;
+  // Wednesday's morning CT slot becomes a Sonography slot: before v1.76 it
+  // shared the CT lane and only a tag in its cell named it. (Tuesday Jan 6 is
+  // a holiday in the default state.)
+  const movedId = slotId("wed", "CT");
+  const sonographyId = state.rows.find((row) => row.name === "Sonography")!.id;
+  const sonographyBlock = template.blocks.find((block) => block.sectionId === sonographyId)!;
+  const moved = template.locations[0].slots.find((slot) => slot.id === movedId)!;
+  moved.blockId = sonographyBlock.id;
+  state.assignments = [
+    { id: "sono-wed", rowId: movedId, dateISO: "2026-01-07", clinicianId: FIRST, source: "manual" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const labels = (kind: string) =>
+    page.locator(`[data-stacked-label="${kind}"]`).evaluateAll((cells) => cells.map((cell) => cell.textContent));
+
+  expect(await labels("band")).toEqual(["MRI", "CT", "Sonography", "On call"]);
+  // CT row: its own section (named by the row), then Sonography, then CT Neuro.
+  expect(await labels("section")).toEqual(["", "MRI Neuro", "", "Sonography", "CT Neuro", "", ""]);
+  const ctGroup = `group-${template.locations[0].locationId}__${moved.rowBandId}`;
+  // Wednesday in the CT lane is hatched; the Sonography slot sits in its own lane.
+  await expect(
+    page.locator(`[data-schedule-cell="true"][data-row-id="${ctGroup}__t1"][data-date-iso="2026-01-07"]`),
+  ).toHaveClass(/stacked-off-cell/);
+  const sonoCell = page.locator(`[data-schedule-cell="true"][data-row-id="${movedId}"][data-date-iso="2026-01-07"]`);
+  await expect(sonoCell.locator('[data-assignment-pill="true"]')).toBeVisible();
+  await expect(sonoCell).toHaveAttribute("title", "Sonography · 08:00 - 12:00");
+  await expect(page.locator("[data-other-section]")).toHaveCount(0);
   expect(api.errors).toEqual([]);
 });
 

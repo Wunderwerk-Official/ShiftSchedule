@@ -1508,7 +1508,7 @@ Frontend
 - `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints; v1.71: every location, two label shades + band, `labelShade`)
 - `src/components/schedule/AssignmentLockButton.tsx` (v1.69: the one lock of a shift, `LockGlyph`)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment` = locked; v1.69 `toggleAssignmentLock`)
-- `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — time lanes per class row, one grid column per day, label meta)
+- `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — lanes per class row, one grid column per day, label meta; v1.76: lanes by section, then by time — `buildSectionLanes`)
 - `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder; v1.71: Auto + 11 presets)
 - `src/lib/locationColors.ts` (v1.71: `resolveLocationColors` — picked color or the next free automatic one in location order; `autoLocationColor` for the picker)
 - `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while My plan waits for this user's calendar)
@@ -2186,14 +2186,18 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `normalizePreferences`). It is not part of saved views or start pages.
   Side by side is the unchanged pre-v1.65 grid (one column per col band of a
   day). Stacked has one column per day: each class row (location × row band)
-  splits into one sub-row per time lane, the label column shows the row band
+  splits into one sub-row per time lane (superseded in v1.76: per section,
+  then per time — a lane never mixes sections), the label column shows the row band
   name (on its first lane), the lane's section when it is not the row band
   name (e.g. a second column with another section) and the lane's time
   right-aligned; the location separator names the location (neutral band when
   uncolored) and the per-column time headings disappear. Cells are compact
   section blocks (open slots 24 px high, "nobody needed" blocks faint); a cell
-  shows its own section or time only where it differs from its lane's.
-- **Time lanes** (`src/lib/stackedTeamLayout.ts::buildTimeLanes`, pure):
+  shows its own section or time only where it differs from its lane's (since
+  v1.76 only a time: a lane holds one section).
+- **Time lanes** (`src/lib/stackedTeamLayout.ts::buildTimeLanes`, pure;
+  since v1.76 called once per section by `buildSectionLanes`, so the
+  "same time and section" step only matters within one section):
   at most one slot per day type per lane. The day type with the most slots
   opens the lanes in column order; the other days join them by the same time
   and section, then the same time, then the nearest start on the clock
@@ -2236,8 +2240,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   qualified drop target gets an inset ring. A cell writes only a time other
   than its lane's (compact "08:00–20:00", wrapping after the dash in narrow
   columns); a cell of another section than the
-  lane's gets a small corner mark (no text); its section and time are in its
-  tooltip.
+  lane's gets a small corner mark (no text; replaced by a tag in v1.73, and
+  impossible since v1.76, where a lane holds one section); its section and
+  time are in its tooltip.
 - **Lane labels like shift colors.** The label cell is tinted with the lane's
   section color (`.stacked-label-tint`; it replaces the location tint there,
   the location band above the rows keeps it). It shows the row band name
@@ -2245,9 +2250,12 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   not the row band name and the compact time. When some visible days belong to another section, a "+N"
   badge lists them in its tooltip and for screen readers ("Other days: Tue: X
   · Wed: Y"); `StackedRowMeta` gains `sectionColor` and `otherSections`
-  (`src/lib/stackedTeamLayout.ts`).
+  (`src/lib/stackedTeamLayout.ts`). Superseded in v1.76: the badge and
+  `otherSections` are gone (a lane holds one section) and the label is three
+  cells (row band | section | time).
 - **Narrower columns.** Stacked day columns may shrink to 64 px, so seven
-  days fit next to even the widest label (about 290 px) on A4 portrait; names
+  days fit next to even the widest label (about 290 px; about 315 px with the
+  v1.76 three-column label) on A4 portrait; names
   abbreviate (down to initials). `AssignmentPill` `compact`: an unfixed solver
   pill shows its fix button only on hover or keyboard focus (always on touch
   screens) and keeps no room for it; a fixed pill keeps the button. Compact
@@ -2610,6 +2618,10 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 
 ## v1.73 — Stacked cells name a different section
 
+> Superseded in v1.76: lanes never mix sections, so a cell never belongs to
+> another section than its lane; the tag, `data-other-section` and the "+N"
+> badge are gone. Kept here for history.
+
 - **The confusion.** In "Times: Stacked" a lane is named after the section
   it holds on most days ("IRM tout ZK +2"). A day whose slot belongs to
   another section ("IRM prostate ZK" on Thursday) only got a small corner
@@ -2904,3 +2916,86 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Deploy notes: no migration. Rest days placed by hand before v1.75 count from
   the next planning run on; stored drafts that conflict with them are refused
   on apply. Version 1.75 (75).
+
+## v1.76 — Stacked team week: one row per section
+
+- **The confusion.** v1.65's lanes were time lanes: the busiest day opened
+  them and the other days joined by time, so one lane could hold "IRM neuro
+  HK" on Monday and "IRM prostate HK" on Tuesday. The label named the most
+  common section plus a "+N" badge, and v1.73 added a grey tag in cells of
+  another section. Users read the lane as one workplace, or took the in-cell
+  tag for the row label and thought nobody was planned. "STAFF GYN" (one
+  Monday slot) had a lane of its own, hatched on the other days; that is now
+  the look everywhere.
+- **Lanes by section** (`src/lib/stackedTeamLayout.ts::buildSectionLanes`,
+  pure): a class row's slots are grouped by section (`sectionId`, else
+  `sectionName` / `name`) and each section is split by `buildTimeLanes`
+  (same time first, then the nearest start). Two slots of one section on the
+  same day get two lanes; a variant of the section with another time (e.g.
+  Saturday 08:00–13:00 next to weekday 07:30–13:00) stays in the section's
+  lane and its cell shows its own time.
+- **Lane order** is computed from all of the row's slots, not only the
+  visible days, so it and the lane ids (`${row.id}__t${n}`, or `row.id` when
+  one lane is on screen) are the same in every week: sections by their
+  earliest start (minutes from midnight; slots without a valid time count as
+  never), then by the position of their first slot in template column order
+  (day Mon…Sun, Holiday, then the day's col band order), then by name; within
+  a section, lanes by the start of their most common time (the first day's on
+  a tie; lanes without a time last), then by creation order. Lanes without a
+  slot on the visible days stay hidden; a row without any keeps its first.
+- **Meta.** `StackedRowMeta.otherSections` is removed; new `groupSpan`
+  (visible lanes of the row, on its first lane), `sectionSpan` (visible lanes
+  of the section, on its first lane), `isFirstInSection`, `isLastInSection`.
+  `title` is the lane's section unless it equals the row band name on the
+  row's first section; a later section named like the row band is titled (an
+  untitled lane would read as the section above), and so is a later lane
+  without a time. `sectionName` / `sectionColor` are now exact for the lane.
+- **Label design** (`RowLabel.tsx::StackedLabelCells`). In the stacked week
+  the label column is three grid columns (`repeat(3, max-content)` in
+  `ScheduleGrid`, `splitLabels`): row band | section | time. The row band
+  cell spans all visible lanes of its row (`grid-row: span groupSpan`), the
+  section cell all lanes of its section (`span sectionSpan`), the time cell is
+  per lane — merged cells, so the label reads location band → row band →
+  section → its times. Grid auto-placement puts later lanes' cells next to
+  the spans (no explicit rows; separators only come before a row's first
+  lane). Row band: bold capitals, up to three lines at 84 px; section: up to
+  two lines at 112 px; time: tabular digits, right-aligned, one column. Team
+  grid: every label cell takes its row band's location shade (v1.71 colors
+  and alternation unchanged); a faint line separates the row band column.
+  Print, PDF and public pages (no location tints): row band cells neutral
+  (slate-50), section and time cells in the section's color
+  (`.stacked-label-tint`). A later lane of a section shows only its time; its
+  section is in an sr-only span and in the time cell's tooltip ("IRM neuro
+  HK · 16:00–19:00"). The top-left header and the pool row labels span the
+  three columns. A single-day view (phone) keeps one label cell per lane
+  (`StackedRowLabel`: row band on the row's first lane, section on its first
+  lane, time).
+- **Dividers** (`STACKED_DIVIDER` in `RowLabel.tsx`, bottom borders in
+  see-through ink so a line looks the same on white, hatched, section-tinted
+  and location-colored cells): a hairline between the lanes of a section, a
+  line between sections, a stronger line between rows (row bands). Spanning
+  label cells end with their last lane's level, and with none before the
+  pools separator.
+- **Cells.** The in-cell section tag (`data-other-section`) is gone; the
+  own-time tag (`data-own-time`, `STACKED_CELL_TAG`), the tooltip (section ·
+  time) and the hatched days without a slot stay.
+- **Width.** The widest label is about 315 px (row band 17 + 84, section
+  14 + 112, time 86); on A4 portrait (764 px in print media) seven 64 px day
+  columns still fit. The demo of the user's plan: label 286 px, days 68 px.
+- **More rows.** Mon–Sun lanes: arena `fixture_complex.json` 33 → 39 (14
+  class rows), `default_state.json` 7 → 7, the user's demo plan 13 → 24.
+- Unchanged: side by side, the clinic sheet, the v1.71 colors, person pills,
+  slot ids, assignment keys and cell `data-*` attributes, so drag & drop, the
+  picker, highlights and "Show in team plan" work as before.
+- Help → "Times: Stacked" rewritten (one workplace per row, line weights, no
+  "+N"). README feature line updated.
+- Tests: `src/lib/stackedTeamLayout.test.ts` (`buildSectionLanes`; layout
+  meta, spans, stable ids and order), `ScheduleGrid.test.tsx` (three label
+  columns and spans, divider levels, single-day label, no section tag, tints,
+  screen-reader section, location shades), `HelpView.test.tsx`,
+  `e2e/team-page.spec.ts` ("Stacked gives every section of a row band its
+  own lanes"); the column counts in `team-page.spec.ts`,
+  `PrintWeekPage.test.tsx` and `PrintWeeksPage.test.tsx` now read the day
+  columns (`repeat(N, minmax`), since the stacked grid starts with
+  `repeat(3, max-content)`.
+- Deploy notes: frontend only, no schema or data change. Version 1.76 (76).

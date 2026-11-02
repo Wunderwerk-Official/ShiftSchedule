@@ -5,29 +5,39 @@ import type { ScheduleRow } from "./shiftRows";
 // "Times: Stacked" team layout (compact week, like a "plan for all"): the
 // time columns of a day (col bands) become rows below each other, so every
 // day needs one column only and the whole week fits on screen. Each class
-// row (location × row band) splits into time lanes, one sub-row each; the
-// row band name, the lane's section and time move into the label column and
-// the cells hold only the people. Slots, their ids and all assignment keys
-// stay the same — only the grid's rows and columns change, so drag & drop,
-// the picker and "Show in team" keep working.
+// row (location × row band) splits into lanes, one sub-row each: first by
+// section, then by time, so a lane never mixes sections (v1.76). The row band
+// name, the lane's section and time move into the label column and the cells
+// hold only the people. Slots, their ids and all assignment keys stay the
+// same — only the grid's rows and columns change, so drag & drop, the picker
+// and "Show in team" keep working.
 
 export type StackedRowMeta = {
   /** The class row this sub-row belongs to (location separators refer to it). */
   sourceRowId: string;
   /** Row band name; set on the first sub-row of its row only. */
   groupLabel?: string;
-  /** The sub-row's section when it is not just the row band name again. */
+  /** Visible lanes of the class row; set on its first lane (the row band cell spans them). */
+  groupSpan?: number;
+  /**
+   * The lane's section as the label names it. Not set when the section is
+   * just the row band name again on the row's first section (the row band
+   * name says it).
+   */
   title?: string;
-  /** Section most of the lane's visible slots have; a cell of another one gets a corner mark. */
+  /** The lane's section: every slot of a lane belongs to it. */
   sectionName?: string;
   /** Block color of that section: tints the label like a shift color. */
   sectionColor?: string;
-  /** Visible days whose slot belongs to another section, as "Tue: Section". */
-  otherSections?: string[];
+  /** Visible lanes of the section in a row; set on its first lane (the section cell spans them). */
+  sectionSpan?: number;
   /** Time most of the sub-row's visible slots have; a cell with another one shows its own. */
   timeLabel?: string;
   isFirstInGroup: boolean;
   isLastInGroup: boolean;
+  /** First / last visible lane of its section within the class row. */
+  isFirstInSection: boolean;
+  isLastInSection: boolean;
 };
 
 export type StackedTeamLayout = {
@@ -39,9 +49,6 @@ export type StackedTeamLayout = {
 };
 
 const DAY_ORDER = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday"];
-const DAY_SHORT: Record<string, string> = {
-  mon: "Mon", tue: "Tue", wed: "Wed", thu: "Thu", fri: "Fri", sat: "Sat", sun: "Sun", holiday: "Holiday",
-};
 const dayIndex = (dayType: string) => {
   const index = DAY_ORDER.indexOf(dayType);
   return index === -1 ? DAY_ORDER.length : index;
@@ -74,6 +81,9 @@ const mostCommon = (values: string[]): string | undefined => {
 };
 
 const slotSection = (slot: ScheduleRow) => slot.sectionName ?? slot.name;
+/** What makes two slots the same section (the id, else the name). */
+const slotSectionKey = (slot: ScheduleRow) => slot.sectionId ?? slot.sectionName ?? slot.name;
+const slotStart = (slot: ScheduleRow) => buildShiftInterval(slot)?.start;
 
 export const slotTimeLabel = (slot: ScheduleRow): string | undefined => {
   const interval = buildShiftInterval(slot);
@@ -88,8 +98,8 @@ const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().t
 type Lane = { time?: string; section?: string; start?: number; slots: ScheduleRow[] };
 
 /**
- * Splits a row's slots into time lanes, at most one slot per day type each.
- * The day type with the most slots opens the lanes in column order; the
+ * Splits slots into time lanes, at most one slot per day type each (since
+ * v1.76 called per section by buildSectionLanes). The day type with the most slots opens the lanes in column order; the
  * other days join them by the same time and section, then by the same time,
  * then by the nearest start — so a weekend with fewer columns still puts its
  * night shift into the night lane, and a shorter Friday shift stays in its
@@ -156,6 +166,68 @@ export function buildTimeLanes(slots: ScheduleRow[]): ScheduleRow[][] {
   );
 }
 
+export type SectionLane = {
+  sectionKey: string;
+  sectionName: string;
+  /** The lane's slots, at most one per day type, in day order. */
+  slots: ScheduleRow[];
+};
+
+/**
+ * Splits a class row's slots into lanes that never mix sections: the slots
+ * are grouped by section, and each section is split into time lanes by
+ * buildTimeLanes (same time first, then the nearest start — a weekend
+ * variant with another time stays in its section's lane and its cell shows
+ * its own time). The order depends only on the row's slots, not on the days
+ * on screen, so it is the same in every week:
+ * - sections by their earliest start, then by their first slot in template
+ *   column order (Mon column 1, Mon column 2, …, Tue column 1, …), then by
+ *   name;
+ * - a section's lanes by their start: the start of the time most of the
+ *   lane's slots have (the first day's on a tie), lanes without a valid time
+ *   last.
+ */
+export function buildSectionLanes(slots: ScheduleRow[]): SectionLane[] {
+  // Position in template column order: day, then the day's column.
+  const position = (slot: ScheduleRow) =>
+    dayIndex(slot.dayType ?? "") * 1000 + (slot.colBandOrder ?? 0);
+  type Section = { key: string; name: string; first: number; earliest: number; slots: ScheduleRow[] };
+  const sections = new Map<string, Section>();
+  for (const slot of slots) {
+    const key = slotSectionKey(slot);
+    let section = sections.get(key);
+    if (!section) {
+      section = { key, name: slotSection(slot), first: Infinity, earliest: Infinity, slots: [] };
+      sections.set(key, section);
+    }
+    section.slots.push(slot);
+    section.first = Math.min(section.first, position(slot));
+    section.earliest = Math.min(section.earliest, slotStart(slot) ?? Infinity);
+  }
+  const byStart = (a: number, b: number) => (a === b ? 0 : a < b ? -1 : 1);
+  return [...sections.values()]
+    .sort(
+      (a, b) =>
+        byStart(a.earliest, b.earliest) ||
+        byStart(a.first, b.first) ||
+        a.name.localeCompare(b.name),
+    )
+    .flatMap((section) =>
+      buildTimeLanes(section.slots)
+        .map((laneSlots, order) => {
+          const time = mostCommon(laneSlots.map(slotTimeLabel).filter((label): label is string => !!label));
+          const typical = laneSlots.find((slot) => slotTimeLabel(slot) === time);
+          return { laneSlots, order, start: (typical && slotStart(typical)) ?? Infinity };
+        })
+        .sort((a, b) => byStart(a.start, b.start) || a.order - b.order)
+        .map(({ laneSlots }) => ({
+          sectionKey: section.key,
+          sectionName: section.name,
+          slots: laneSlots,
+        })),
+    );
+}
+
 /** One column per day: the first col band column of each date. */
 export const buildStackedColumns = (columns: DayColumn[]): DayColumn[] => {
   const seen = new Set<string>();
@@ -196,46 +268,65 @@ export function buildStackedTeamLayout(
       metaByRowId.set(row.id, {
         sourceRowId: row.id,
         groupLabel,
+        groupSpan: 1,
+        sectionName: slotSection(row),
+        sectionColor: row.blockColor,
+        sectionSpan: 1,
         timeLabel: slotTimeLabel(row),
         isFirstInGroup: true,
         isLastInGroup: true,
+        isFirstInSection: true,
+        isLastInSection: true,
       });
       stackedRows.push({ ...row, colBandOrder: 1 });
       continue;
     }
-    const lanes = buildTimeLanes(slots).map((laneSlots, index) => ({
+    const lanes = buildSectionLanes(slots).map((lane, index) => ({
+      ...lane,
       number: index + 1,
-      laneSlots,
-      visible: laneSlots.filter((slot) => !slot.dayType || visibleDayTypes.has(slot.dayType)),
+      visible: lane.slots.filter((slot) => !slot.dayType || visibleDayTypes.has(slot.dayType)),
     }));
     // A lane without a slot on the visible days would be an empty row; a row
     // without any keeps its first (inactive) lane, as in the side-by-side
     // layout, instead of vanishing from the plan.
     const visibleLanes = lanes.filter((lane) => lane.visible.length > 0);
     const subRows = visibleLanes.length > 0 ? visibleLanes : lanes.slice(0, 1);
-    subRows.forEach(({ number, laneSlots, visible }, index) => {
+    let sectionIndex = -1;
+    subRows.forEach((lane, index) => {
+      const { number, slots: laneSlots, visible, sectionKey, sectionName } = lane;
       const id = subRows.length === 1 ? row.id : `${row.id}__t${number}`;
-      const sectionName = mostCommon(visible.map(slotSection).filter(Boolean));
-      const sectionColor = visible.find((slot) => slotSection(slot) === sectionName)?.blockColor;
-      const otherSections = visible
-        .filter((slot) => slotSection(slot) !== sectionName)
-        .map((slot) => `${DAY_SHORT[slot.dayType ?? ""] ?? slot.dayType}: ${slotSection(slot)}`);
+      const isFirstInSection = index === 0 || subRows[index - 1].sectionKey !== sectionKey;
+      const isLastInSection =
+        index === subRows.length - 1 || subRows[index + 1].sectionKey !== sectionKey;
+      if (isFirstInSection) sectionIndex += 1;
+      let sectionSpan = 0;
+      if (isFirstInSection) {
+        while (subRows[index + sectionSpan]?.sectionKey === sectionKey) sectionSpan += 1;
+      }
+      const sectionColor = (
+        visible.find((slot) => slot.blockColor) ?? laneSlots.find((slot) => slot.blockColor)
+      )?.blockColor;
       const timeLabel = mostCommon(
         visible.map(slotTimeLabel).filter((label): label is string => !!label),
       );
-      // A later lane without its own time still needs a name in its label.
+      // The row band name stands for a section of the same name only on the
+      // row's first section; a later one, or a later lane without a time of
+      // its own, is named.
       const showTitle =
-        !!sectionName && (!sameName(sectionName, groupLabel) || (index > 0 && !timeLabel));
+        !sameName(sectionName, groupLabel) || sectionIndex > 0 || (index > 0 && !timeLabel);
       metaByRowId.set(id, {
         sourceRowId: row.id,
         groupLabel: index === 0 ? groupLabel : undefined,
+        groupSpan: index === 0 ? subRows.length : undefined,
         title: showTitle ? sectionName : undefined,
         sectionName,
         sectionColor,
-        otherSections: otherSections.length > 0 ? otherSections : undefined,
+        sectionSpan: isFirstInSection ? sectionSpan : undefined,
         timeLabel,
         isFirstInGroup: index === 0,
         isLastInGroup: index === subRows.length - 1,
+        isFirstInSection,
+        isLastInSection,
       });
       stackedRows.push({
         ...row,

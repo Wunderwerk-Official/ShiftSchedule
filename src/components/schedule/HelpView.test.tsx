@@ -59,3 +59,13 @@ it("says that a name dragged into the Rest Day row keeps automatic planning away
     "A name you drag in marks a day off: automatic planning leaves that person free that day.",
   );
 });
+
+it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain("A row of the plan never mixes workplaces");
+  expect(text).toContain("hatched on the days without it");
+  expect(text).toContain("a cell names its own time only where it differs from its row");
+  expect(text).not.toContain("+N next to a row name");
+  expect(text).not.toContain("names its own workplace");
+});

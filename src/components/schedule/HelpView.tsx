@@ -363,11 +363,13 @@ export default function HelpView() {
             <li>
               <span className="font-medium">Times: Stacked</span> (team plan, standard weekly
               grid) shows one column per day and a day&rsquo;s times as rows below each other.
-              The left column names each row and its time and carries its location&rsquo;s color;
-              the cells show only the people (names shorten to initials in narrow columns). A
-              cell names its own workplace or time only where it differs from its row; a{" "}
-              <span className="font-medium">+N</span> next to a row name means some days belong
-              to another workplace (hover it to see which).{" "}
+              The left column reads from left to right: the row (MR, CT, …) in its
+              location&rsquo;s color, its workplaces, and each workplace&rsquo;s times, lined up
+              in one column. A row of the plan never mixes workplaces: a workplace that runs only
+              on some days has its own row, hatched on the days without it. Thicker lines
+              separate the rows (MR, CT, …), thinner ones the workplaces, the finest the times of
+              one workplace. The cells show only the people (names shorten to initials in narrow
+              columns); a cell names its own time only where it differs from its row.{" "}
               <span className="font-medium">Side by side</span> gives every time of a day its
               own column, as before.
             </li>
