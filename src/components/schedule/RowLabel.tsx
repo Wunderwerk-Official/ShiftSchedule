@@ -118,10 +118,10 @@ export function StackedLabelCells({
             // breaks only as a last resort: when the grid's auto label
             // columns must give way (A4 portrait with long names), which
             // overflow-wrap: anywhere allows instead of an overflowing week.
-            // Print (.print-wrap) shows every line and breaks a word only
-            // when it alone is wider than the label; the page shrinks the
-            // week a little instead.
-            className={cx(BAND_TEXT, "print-wrap max-w-[128px] [overflow-wrap:anywhere]")}
+            // Print (.print-wrap) shows every line and keeps every word whole:
+            // the label is never narrower than its longest word (min-w-min);
+            // the page shrinks the week a little instead.
+            className={cx(BAND_TEXT, "print-wrap max-w-[128px] [overflow-wrap:anywhere] print:min-w-min")}
             title={meta.groupLabel}
             style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: bandLines }}
           >
@@ -138,7 +138,11 @@ export function StackedLabelCells({
         >
           {meta.title ? (
             <span
-              className={cx(SECTION_TEXT, "print-wrap max-w-[112px] [overflow-wrap:anywhere] lg:max-w-[160px]")}
+              className={cx(
+                SECTION_TEXT,
+                // Print: whole words, like the row band above.
+                "print-wrap max-w-[112px] [overflow-wrap:anywhere] lg:max-w-[160px] print:min-w-min",
+              )}
               title={meta.title}
               style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: sectionLines }}
             >

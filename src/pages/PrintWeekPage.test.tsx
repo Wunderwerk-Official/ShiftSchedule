@@ -40,9 +40,9 @@ describe("PrintWeekPage layout", () => {
     expect(columnCount()).toBeGreaterThan(7);
     const page = container.querySelector(".print-page") as HTMLElement;
     expect(parseFloat(page.style.width)).toBeGreaterThan(parseFloat(page.style.height));
-    // Print: the narrower side-by-side columns (ScheduleGrid print).
+    // Print: side-by-side columns sized by their widest word (ScheduleGrid print).
     const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
-    expect(grid.style.gridTemplateColumns).toContain("minmax(84px, 1fr)");
+    expect(grid.style.gridTemplateColumns).toContain("minmax(min-content, 1fr)");
     expect(page.style.contain).toBe("strict");
   });
 

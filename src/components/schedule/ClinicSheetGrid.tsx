@@ -36,7 +36,9 @@ import ClinicianPickerPopover from "./ClinicianPickerPopover";
 // have no faithful dark equivalents and fidelity is the point of this layout.
 
 const SHEET_FONT_FAMILY = '"Arial", "Helvetica Neue", Helvetica, sans-serif';
-const DAY_COLUMN_WIDTH = "minmax(252px, 1fr)";
+// Six name columns of 52px: an eight-letter surname fits one column.
+// Names never widen it (inline-size containment, renderName).
+const DAY_COLUMN_WIDTH = "minmax(312px, 1fr)";
 const LABEL_COLUMN_WIDTH = "minmax(150px, 190px)";
 
 // The Excel sheet lists people by surname only. Use the last name token and
@@ -80,6 +82,13 @@ const sheetTextClass = (bgColor: string | undefined) => {
   if (!bgColor) return "text-slate-900";
   return getLuminance(bgColor) < 0.3 ? "text-white" : "text-slate-900";
 };
+
+// Names share their area's columns: fewer names than columns get equal,
+// wider tracks, so an ordinary surname is not cut while columns next to it
+// stay empty. A full area keeps one name per column and wraps the rest to
+// extra lines, like the Excel sheet's continuation rows.
+const nameTracks = (columns: number, items: number) =>
+  `repeat(${Math.min(columns, Math.max(items, 1))}, minmax(0, 1fr))`;
 
 const formatSheetDate = (date: Date) => {
   const day = String(date.getDate()).padStart(2, "0");
@@ -316,8 +325,9 @@ export default function ClinicSheetGrid({
         className={cx(
           // Inline-size containment: a long name never widens the day
           // columns (they would all grow to it, and the printed sheet shrink
-          // to fit); it is cut off instead, the full name in the title.
-          "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px] [contain:inline-size]",
+          // to fit); it is cut off instead, the full name in the title. A
+          // PDF has no title: there a double name wraps at its hyphen.
+          "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px] [contain:inline-size] print:[&>span]:whitespace-normal",
           // Touch screens always show an unlocked name's lock: keep its room.
           hasLock && !isLocked && "[@media(hover:none)]:pr-5",
           textClass,
@@ -363,13 +373,13 @@ export default function ClinicSheetGrid({
       : "text-slate-900";
     const openSlots = Math.max(0, area.requiredSlots - assignments.length);
     const canEdit = !readOnly && Boolean(onAddAssignment);
+    // The open-slot "+" marks take tracks like names.
+    const areaTracks = nameTracks(area.colSpan, assignments.length + (canEdit ? openSlots : 0));
     const timeLabel =
       area.startTime && area.endTime ? `${area.startTime}–${area.endTime}` : undefined;
     const areaTitle = [area.sectionName ?? row.label, timeLabel, openSlots > 0 ? `${openSlots} offen` : undefined]
       .filter(Boolean)
       .join(" · ");
-    // Names occupy the area's fixed columns; overflow wraps to extra lines,
-    // like the Excel sheet's continuation rows.
     return (
       <div
         key={`${area.slotId}`}
@@ -408,7 +418,7 @@ export default function ClinicSheetGrid({
       >
         <div
           className="grid items-start"
-          style={{ gridTemplateColumns: `repeat(${area.colSpan}, minmax(0, 1fr))` }}
+          style={{ gridTemplateColumns: areaTracks }}
         >
           {assignments.map((assignment) =>
             renderName(
@@ -466,7 +476,7 @@ export default function ClinicSheetGrid({
         )}
         style={{ backgroundColor: day.isCyan ? EXCEL_CYAN : undefined }}
       >
-        <div className="grid" style={{ gridTemplateColumns: `repeat(${SHEET_DAY_COLUMNS}, minmax(0, 1fr))` }}>
+        <div className="grid" style={{ gridTemplateColumns: nameTracks(SHEET_DAY_COLUMNS, assignments.length) }}>
           {assignments.map((assignment) =>
             renderName(
               assignment,

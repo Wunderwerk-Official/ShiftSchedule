@@ -44,10 +44,6 @@ import { getContrastTextColor } from "../../lib/shiftRows";
 const STACKED_OWN_TIME =
   "mt-1 flex max-w-full items-center gap-1 text-[10px] font-medium leading-3 tabular-nums text-slate-500 dark:text-slate-400";
 
-// Print pages, times side by side: the minimum day column holds a slot's
-// time ("07:30 - 13:00") on one line next to the tighter print paddings.
-const PRINT_DAY_COLUMN_MIN = 84;
-
 type ScheduleGridProps = {
   leftHeaderTitle: string;
   weekDays: Date[];
@@ -120,9 +116,10 @@ type ScheduleGridProps = {
    */
   timeLayout?: TeamTimeLayout;
   /**
-   * Print pages (PDF): times side by side get narrower columns and tighter
-   * paddings, so the week shrinks less to fit the A4 page and its text stays
-   * legible. Labels wrap in print anyway (index.css .print-wrap).
+   * Print pages (PDF): times side by side get columns as wide as their
+   * widest word and tighter paddings, so the week shrinks less to fit the A4
+   * page and its text stays legible; names wrap onto two lines there instead
+   * of shortening. Labels wrap in print anyway (index.css .print-wrap).
    */
   print?: boolean;
 };
@@ -282,8 +279,12 @@ export default function ScheduleGrid({
   const isSingleDay = uniqueDayCount === 1;
   // Stacked: day columns may shrink to 64 px (names abbreviate down to
   // initials), so the week fits next to the label, also on A4 portrait.
-  // Print: just room for a slot's time, so the week shrinks less on A4.
-  const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : print ? PRINT_DAY_COLUMN_MIN : 120;
+  const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : 120;
+  // Print, times side by side: a column is as wide as its widest word (a
+  // slot's time on one line, a section or name word; names and labels wrap),
+  // so the week shrinks no more than it must to fit A4 and no word is cut.
+  const dayColumnTrack =
+    print && !stacked ? "minmax(min-content, 1fr)" : `minmax(${dayColumnMin}px, 1fr)`;
   // Stacked week: the label column is three columns (row band | section |
   // time), so names and times line up and a row band or section cell can span
   // its lanes. A single day (phone) keeps one label cell per lane. The three
@@ -474,7 +475,7 @@ export default function ScheduleGrid({
                     gridTemplateColumns: `${leftColumn} repeat(${Math.max(
                       columns.length,
                       1,
-                    )}, minmax(${dayColumnMin}px, 1fr))`,
+                    )}, ${dayColumnTrack})`,
                   }}
                 >
                   <div
@@ -768,7 +769,7 @@ function RowSection({
   /** Bottom borders of the row band and section cells that span lanes from here. */
   groupDivider?: string;
   sectionDivider?: string;
-  /** Print pages: tighter paddings (see ScheduleGrid). */
+  /** Print pages: tighter paddings, wrapped names (see ScheduleGrid). */
   print: boolean;
 }) {
   const rowBg =
@@ -956,6 +957,10 @@ function RowSection({
         className={cx(
           !readOnly && "cursor-grab active:cursor-grabbing",
           isDraggingAssignment && "opacity-0",
+          // Print, times side by side (splitLabels = the compact week, whose
+          // 64 px names keep shortening): "Laurent / Catel" on two lines
+          // instead of "L. C."; the column fits the name's widest word.
+          print && !splitLabels && "[&_span]:whitespace-normal",
         )}
       />
     );
@@ -1331,7 +1336,7 @@ function RowSection({
                           {activeRow.sectionName ?? activeRow.name}
                         </span>
                         {effectiveRowTimeLabel ? (
-                          <span className={cx("text-[10px] font-medium", textColors.secondary)}>
+                          <span className={cx("text-[10px] font-medium print:whitespace-nowrap", textColors.secondary)}>
                             {effectiveRowTimeLabel}
                           </span>
                         ) : null}
