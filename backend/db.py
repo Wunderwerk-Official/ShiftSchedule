@@ -7,6 +7,9 @@ DB_PATH = os.environ.get("SCHEDULE_DB_PATH", "schedule.db")
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
 
+# Event format the iCal feeds serve (timed since v1.78).
+ICAL_FORMAT = "timed"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
@@ -216,6 +219,21 @@ def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         )
         """
+    )
+    # When this database first served each iCal event format. The previous
+    # version had stopped serving by then, so feed validators that start
+    # here never match a copy in the previous format (backend/ical_routes.py).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ical_formats (
+            format TEXT PRIMARY KEY,
+            since TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO ical_formats (format, since) VALUES (?, ?)",
+        (ICAL_FORMAT, _utcnow_iso()),
     )
     columns = [row["name"] for row in conn.execute("PRAGMA table_info(app_state)").fetchall()]
     if "updated_at" not in columns:

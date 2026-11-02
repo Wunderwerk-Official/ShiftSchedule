@@ -1,5 +1,5 @@
 import { toISODate } from "../date";
-import { addDaysISO, localDateTime } from "./dates";
+import { addDaysISO } from "./dates";
 import { buildPersonPlan } from "./timeline";
 import type { PersonPlan, PlanShift, PlanSource } from "./types";
 
@@ -18,7 +18,9 @@ const DEFAULT_HORIZON_DAYS = 14;
 /**
  * The running or next own shift from `now`, within `horizonDays`. The plan
  * must cover today−1 … today+horizon (build a dedicated plan for the chip).
- * Minutes are counted between wall-clock minutes, so 14:32 → 17:00 = 148.
+ * Minutes are counted between whole minutes of the shift's real instants in
+ * the plan's zone (14:32 → 17:00 = 148), so the countdown holds across a DST
+ * change and in a browser set to another zone.
  */
 export function findNextShift(
   plan: PersonPlan,
@@ -28,8 +30,8 @@ export function findNextShift(
   const nowMinute = Math.floor(now.getTime() / 60_000);
   const horizon = nowMinute + horizonDays * 24 * 60;
   for (const shift of plan.shifts.values()) {
-    const start = Math.floor(localDateTime(shift.dateISO, shift.startMin).getTime() / 60_000);
-    const end = Math.floor(localDateTime(shift.dateISO, shift.endMin).getTime() / 60_000);
+    const start = Math.floor(shift.startsAt / 60_000);
+    const end = Math.floor(shift.endsAt / 60_000);
     if (end <= nowMinute) continue;
     if (start > horizon) return null;
     const running = start <= nowMinute;

@@ -1,7 +1,45 @@
 from __future__ import annotations
 
+import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, Mapping, Optional
+
+from .plan_timezone import plan_time_zone, wall_clock_to_utc
+from .state import _parse_time_to_minutes
+
+# Download (src/lib/ical.ts) and subscription feed build the same events and
+# calendar header; keep both in step.
+
+MINUTES_PER_DAY = 24 * 60
+
+_GERMAN_LETTERS = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"}
+
+
+def ical_calendar_name(person: Optional[Mapping[str, Any]] = None) -> str:
+    """X-WR-CALNAME: "Shift Planner – All people" or "Shift Planner – <person>"."""
+    if person is None:
+        return "Shift Planner – All people"
+    return f"Shift Planner – {person.get('name') or person.get('id')}"
+
+
+def _file_slug(text: str) -> str:
+    lowered = text.lower()
+    for letter, replacement in _GERMAN_LETTERS.items():
+        lowered = lowered.replace(letter, replacement)
+    # NFD splits other accented letters into base letter + mark; every
+    # character still outside ASCII (marks, CJK, emoji) is dropped.
+    ascii_text = unicodedata.normalize("NFD", lowered).encode("ascii", "ignore").decode("ascii")
+    kept = re.sub(r"[^\w\s-]+", "", ascii_text, flags=re.ASCII)
+    return re.sub(r"\s+", "-", kept.strip(), flags=re.ASCII)
+
+
+def ical_file_name(person: Optional[Mapping[str, Any]] = None) -> str:
+    """ASCII file name: shift-planner-all.ics or shift-planner-<transliterated name>.ics."""
+    if person is None:
+        return "shift-planner-all.ics"
+    slug = _file_slug(str(person.get("name") or "")) or _file_slug(str(person.get("id") or ""))
+    return f"shift-planner-{slug or 'person'}.ics"
 
 
 def _escape_text(value: str) -> str:
@@ -15,17 +53,26 @@ def _escape_text(value: str) -> str:
     )
 
 
-def _format_dtstamp(dt: datetime) -> str:
+def _format_utc(dt: datetime) -> str:
     utc = dt.astimezone(timezone.utc).replace(microsecond=0)
     return utc.strftime("%Y%m%dT%H%M%SZ")
 
 
-def _iso_to_yyyymmdd(date_iso: str) -> str:
-    return date_iso.replace("-", "")
+def _yyyymmdd(day: date) -> str:
+    return day.strftime("%Y%m%d")
 
 
-def _add_days_iso(date_iso: str, days: int) -> str:
-    return (date.fromisoformat(date_iso) + timedelta(days=days)).isoformat()
+def _slot_minutes(slot: Mapping[str, Any]) -> Optional[tuple[int, int]]:
+    """(start, end) minutes after the start day's midnight, as the team grid
+    reads them (src/lib/schedule.ts buildShiftInterval); None without usable times."""
+    start = _parse_time_to_minutes(slot.get("startTime"))
+    end = _parse_time_to_minutes(slot.get("endTime"))
+    if start is None or end is None:
+        return None
+    raw_offset = slot.get("endDayOffset")
+    offset = raw_offset if isinstance(raw_offset, int) and not isinstance(raw_offset, bool) else 0
+    end += max(0, min(3, offset)) * MINUTES_PER_DAY
+    return (start, end) if end > start else None
 
 
 def _fold_ical_line(line: str) -> str:
@@ -109,6 +156,7 @@ def generate_ics(
         vacation_ranges_by_clinician[clinician_key] = ranges
 
     stamp = dtstamp or datetime.now(timezone.utc)
+    zone_name, zone = plan_time_zone(app_state.get("holidayCountry"))
 
     lines: list[str] = [
         "BEGIN:VCALENDAR",
@@ -117,11 +165,13 @@ def generate_ics(
         "CALSCALE:GREGORIAN",
         "METHOD:PUBLISH",
         f"X-WR-CALNAME:{_escape_text(cal_name)}",
+        f"X-WR-TIMEZONE:{zone_name}",
     ]
     if not published_weeks:
         lines.append("END:VCALENDAR")
         return _fold_lines(lines)
 
+    events: list[tuple[tuple[str, int, str], list[str]]] = []
     for assignment in assignments:
         row_id = assignment.get("rowId")
         if not row_id:
@@ -175,26 +225,42 @@ def generate_ics(
             if slot_label
             else f"{row_name} - {clinician_name}"
         )
-        start = _iso_to_yyyymmdd(date_iso)
-        # All-day events: DTEND is exclusive, so a single-day shift ends at
-        # start+1. Shifts crossing midnight (endDayOffset >= 1) extend into
-        # the following day(s) and must block them in subscribers' calendars.
-        end_day_offset = slot.get("endDayOffset")
-        extra_days = end_day_offset if isinstance(end_day_offset, int) and end_day_offset > 0 else 0
-        end = _iso_to_yyyymmdd(_add_days_iso(date_iso, 1 + min(3, extra_days)))
         uid = f"{assignment_id}@shiftschedule"
 
-        lines.extend(
+        minutes = _slot_minutes(slot)
+        if minutes:
+            # Wall clock times in the plan's zone, sent as UTC: an overnight
+            # shift ends on a later day, and DST changes give real durations.
+            start_utc = wall_clock_to_utc(date_value, minutes[0], zone)
+            end_utc = wall_clock_to_utc(date_value, minutes[1], zone)
+            when = [f"DTSTART:{_format_utc(start_utc)}"]
+            # A shift inside the spring-forward gap has no real duration, and
+            # DTEND must lie after DTSTART.
+            if end_utc > start_utc:
+                when.append(f"DTEND:{_format_utc(end_utc)}")
+            start_minute = minutes[0]
+        else:
+            # No usable times: an all-day event on the start day.
+            when = [
+                f"DTSTART;VALUE=DATE:{_yyyymmdd(date_value)}",
+                f"DTEND;VALUE=DATE:{_yyyymmdd(date_value + timedelta(days=1))}",
+            ]
+            start_minute = -1
+
+        events.append((
+            (date_iso, start_minute, uid),
             [
                 "BEGIN:VEVENT",
                 f"UID:{_escape_text(uid)}",
-                f"DTSTAMP:{_format_dtstamp(stamp)}",
-                f"DTSTART;VALUE=DATE:{start}",
-                f"DTEND;VALUE=DATE:{end}",
+                f"DTSTAMP:{_format_utc(stamp)}",
+                *when,
                 f"SUMMARY:{_escape_text(summary)}",
                 "END:VEVENT",
-            ]
-        )
+            ],
+        ))
 
+    events.sort(key=lambda event: event[0])
+    for _, event_lines in events:
+        lines.extend(event_lines)
     lines.append("END:VCALENDAR")
     return _fold_lines(lines)

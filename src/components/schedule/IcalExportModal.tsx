@@ -7,6 +7,8 @@ import { useConfirm } from "../ui/ConfirmDialog";
 import CustomNumberInput from "./CustomNumberInput";
 import CustomDatePicker from "./CustomDatePicker";
 
+type IcalDownloadOptions = { startISO?: string; endISO?: string; includeUnpublished: boolean };
+
 type IcalExportModalProps = {
   open: boolean;
   onClose: () => void;
@@ -14,11 +16,10 @@ type IcalExportModalProps = {
   defaultStartISO: string;
   defaultEndISO: string;
   defaultPdfStartISO: string;
-  onDownloadAll: (range: { startISO?: string; endISO?: string }) => void;
-  onDownloadClinician: (
-    clinicianId: string,
-    range: { startISO?: string; endISO?: string },
-  ) => void;
+  /** The plan's time zone (from the holiday country); iCal event times are in it. */
+  timeZone: string;
+  onDownloadAll: (options: IcalDownloadOptions) => void;
+  onDownloadClinician: (clinicianId: string, options: IcalDownloadOptions) => void;
   publishStatus: IcalPublishStatus | null;
   publishLoading: boolean;
   publishError: string | null;
@@ -53,6 +54,7 @@ export default function IcalExportModal({
   defaultStartISO,
   defaultEndISO,
   defaultPdfStartISO,
+  timeZone,
   onDownloadAll,
   onDownloadClinician,
   publishStatus,
@@ -77,6 +79,7 @@ export default function IcalExportModal({
   const confirm = useConfirm();
   const [startText, setStartText] = useState<string>("");
   const [endText, setEndText] = useState<string>("");
+  const [includeUnpublished, setIncludeUnpublished] = useState(false);
   const [tab, setTab] = useState<"pdf" | "ical" | "web">("pdf");
   const [icalTab, setIcalTab] = useState<"download" | "subscribe">("subscribe");
   const [pdfStartText, setPdfStartText] = useState<string>("");
@@ -129,6 +132,7 @@ export default function IcalExportModal({
     setCopyState({ status: "idle" });
     setStartText(isoToEuropean(defaultStartISO));
     setEndText(isoToEuropean(defaultEndISO));
+    setIncludeUnpublished(false);
     setPdfStartText(isoToEuropean(defaultPdfStartISO));
     setPdfWeeks(1);
     setPdfMode("combined");
@@ -369,10 +373,26 @@ export default function IcalExportModal({
                   </div>
                 ) : (
                   <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                    Leave Start/End empty to export everything. If Start is after End, the range
+                    Leave Start/End empty to export all dates. If Start is after End, the range
                     is automatically swapped.
                   </div>
                 )}
+                <label className="mt-3 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={includeUnpublished}
+                    onChange={(event) => setIncludeUnpublished(event.target.checked)}
+                    className="accent-sky-600"
+                  />
+                  Include unpublished weeks
+                </label>
+                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  {includeUnpublished
+                    ? "Draft weeks are included: imported events do not change when the plan does."
+                    : "Only weeks marked Published, like the subscription links."}{" "}
+                  Events have start and end times in the plan&rsquo;s time zone ({timeZone}, from the
+                  holiday country).
+                </div>
               </div>
             ) : tab === "ical" && icalTab === "subscribe" ? (
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -381,7 +401,9 @@ export default function IcalExportModal({
                 </div>
                 <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                   This subscription feed contains only weeks marked{" "}
-                  <span className="font-semibold">Published</span> in the schedule view.
+                  <span className="font-semibold">Published</span> in the schedule view. Events
+                  have start and end times in the plan&rsquo;s time zone ({timeZone}, from the
+                  holiday country).
                 </div>
               </div>
             ) : null}
@@ -611,7 +633,7 @@ export default function IcalExportModal({
                   </div>
                   <button
                     type="button"
-                    onClick={() => onDownloadAll(range)}
+                    onClick={() => onDownloadAll({ ...range, includeUnpublished })}
                     disabled={validation.hasError}
                     className={cx(
                       "inline-flex items-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900",
@@ -641,7 +663,7 @@ export default function IcalExportModal({
                         </div>
                         <button
                           type="button"
-                          onClick={() => onDownloadClinician(clinician.id, range)}
+                          onClick={() => onDownloadClinician(clinician.id, { ...range, includeUnpublished })}
                           disabled={validation.hasError}
                           className={cx(
                             "inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900",

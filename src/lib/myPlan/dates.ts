@@ -44,9 +44,3 @@ export function isoWeekNumber(date: Date): number {
   const yearStart = Date.UTC(d.getUTCFullYear(), 0, 1);
   return Math.ceil(((d.getTime() - yearStart) / 86_400_000 + 1) / 7);
 }
-
-/** Wall-clock instant of `minutes` after the day's local midnight (may roll into later days). */
-export function localDateTime(dateISO: string, minutes: number): Date {
-  const [year, month, day] = dateISO.split("-").map(Number);
-  return new Date(year, (month ?? 1) - 1, day ?? 1, 0, minutes);
-}
