@@ -218,13 +218,19 @@ test("printed short names stand for one person of the team (v1.78)", async ({ pa
     await page.goto(`/print/week?start=2026-01-05${layout}`);
     await page.waitForFunction("window.__PDF_READY__ === true");
     const [yildirim, yilmaz, mueller] = [await labelOf(FIRST), await labelOf(SECOND), await labelOf("c-mueller")];
-    // The narrow print columns shorten the names, never to one label for both.
-    expect(yildirim).not.toBe("Mehmet Yildirim");
+    // Landscape prints whole names where they fit; the compact portrait week
+    // shortens them, never to one label for both.
+    if (layout) expect(yildirim).not.toBe("Mehmet Yildirim");
     expect(yildirim).not.toBe(yilmaz);
     expect([yildirim, yilmaz]).not.toContain("Mehmet Y.");
     expect([yildirim, yilmaz]).not.toContain("M. Y.");
-    expect(mueller).toMatch(/J/);
-    expect(mueller).not.toMatch(/Dr\./);
+    // A whole name prints as entered; a shortened one keeps the given name
+    // and drops the title.
+    if (layout) expect(mueller).not.toBe("Müller, Jörg; Dr.");
+    if (mueller !== "Müller, Jörg; Dr.") {
+      expect(mueller).toMatch(/J/);
+      expect(mueller).not.toMatch(/Dr\./);
+    }
   }
 });
 

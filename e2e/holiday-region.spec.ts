@@ -225,14 +225,16 @@ test("the screen waits while the backup is saved, so no other change is lost", a
   // While the backup is being saved, the calendar cannot be changed: removing
   // Neujahr (no shifts, so no question) is blocked instead of being undone
   // when the first change applies.
-  await expect(page.getByRole("status")).toHaveText("Updating calendar…");
+  // The team notice region (a role="status" live region) is always mounted.
+  const updating = page.getByRole("status").filter({ hasText: "Updating calendar…" });
+  await expect(updating).toBeVisible();
   await expect.poll(() => api.backups.length).toBe(1);
   const neujahr = page.locator("div.grid", { hasText: "Neujahr" }).getByRole("button", { name: "Remove" });
   await expect(neujahr.click({ timeout: 500 })).rejects.toThrow();
   await expect(page.getByText("Buß- und Bettag", { exact: true })).toBeVisible();
 
   backup.release();
-  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(updating).toHaveCount(0);
   await expect(page.getByText("Buß- und Bettag", { exact: true })).toHaveCount(0);
   await neujahr.click();
   await expect(page.getByText("Neujahr", { exact: true })).toHaveCount(0);
