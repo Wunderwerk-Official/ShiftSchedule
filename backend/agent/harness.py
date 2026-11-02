@@ -360,7 +360,13 @@ def agent_solve_range(
         executor.best_score = executor.encode_quality(executor.best_quality)
         executor.workflow.changed()
         emit_solution(executor.best_score, best)
-        return finalize("AGENT_FALLBACK_SEED", list(result.get("notes") or []) + list(extra_notes))
+        # The heuristic's own timing/count lines name an internal solver next
+        # to "basic plan (without AI)"; keep only its warnings.
+        heuristic_notes = [
+            note for note in (result.get("notes") or [])
+            if not note.startswith(("Human Heuristic Solver (v2)", "Created "))
+        ]
+        return finalize("AGENT_FALLBACK_SEED", heuristic_notes + list(extra_notes))
 
     if strategy == "repair":
         on_progress(
@@ -823,7 +829,7 @@ def agent_solve_range(
                 list(extra_notes)
                 + [
                     "The day-by-day agent could not apply any changes; "
-                    "the heuristic draft plan was returned instead."
+                    "the basic plan (without AI) was returned instead."
                 ]
             )
         emit_agent("stage", {"stage": "finalize"})
@@ -832,7 +838,7 @@ def agent_solve_range(
             run_meta["fallback"] = {"producer": "heuristic_v2", "model_stop_reason": run_meta["stop_reason"]}
         notes = [
             (
-                "Agent solver: heuristic fallback, "
+                "Agent solver: basic plan (without AI), "
                 if run_meta.get("fallback")
                 else f"Agent solver (day-by-day): built from scratch, "
                 if strategy == "day_by_day"
@@ -844,7 +850,7 @@ def agent_solve_range(
             f"{executor.moves_accepted} move(s) accepted, {executor.moves_rejected} rejected.",
         ]
         if run_meta.get("fallback"):
-            notes.append("The returned draft was produced by heuristic v2.")
+            notes.append("The returned draft is the basic plan (without AI).")
         elif executor.best_quality < executor.seed_quality:
             notes.append(
                 "Plan improved over the seed: "
@@ -1021,9 +1027,9 @@ def agent_solve_range(
     # ends at the heuristic draft instead of starting the LLM.
     budget_note = (
         "Agent LLM unavailable — the AI agent could not start: this "
-        "account's AI budget is used up. The heuristic draft plan was "
+        "account's AI budget is used up. The basic plan (without AI) was "
         "returned instead. An administrator can raise the budget in "
-        "Settings → Solver."
+        "Settings → Planning rules & AI."
     )
     if payload.agent_budget_exhausted:
         run_meta["stop_reason"] = "budget_exhausted"
@@ -1040,7 +1046,7 @@ def agent_solve_range(
             # unavailable" to show a persistent error in the planning panel.
             unavailable_note = (
                 f"Agent LLM unavailable — the AI agent could not start: {exc} "
-                "The heuristic draft plan was returned instead."
+                "The basic plan (without AI) was returned instead."
             )
             if from_scratch:
                 return heuristic_fallback([unavailable_note])
@@ -1070,7 +1076,7 @@ def agent_solve_range(
             for t in TOOL_SPECS
         ]
 
-    # Free-text guidance from the admin (Settings -> "AI agent instructions").
+    # Free-text guidance from the admin (Settings -> "Instructions for the AI planner").
     # None/absent falls back to the default; an explicitly emptied field
     # means "no instructions". Shared by both strategies.
     admin_instructions = (state.solverSettings or {}).get("agentInstructions")

@@ -50,9 +50,9 @@ def _cleanup_overrides():
     app.dependency_overrides.pop(_get_current_user, None)
 
 
-def test_defaults_are_sonnet_and_five_dollars(temp_db):
+def test_defaults_are_opus_55_and_five_dollars(temp_db):
     settings = get_agent_admin_settings()
-    assert settings["model"] == DEFAULT_AGENT_MODEL == "claude-sonnet-5"
+    assert settings["model"] == DEFAULT_AGENT_MODEL == "claude-opus-5-5"
     assert settings["budget_usd"] == DEFAULT_BUDGET_USD == 5.0
 
 
@@ -75,7 +75,7 @@ def test_settings_endpoint_shows_own_spend(temp_db):
     add_spend_usd("budget-user", 1.25)
     client = _client_as("user")
     data = client.get("/v1/agent/settings").json()
-    assert data["model"] == "claude-sonnet-5"
+    assert data["model"] == "claude-opus-5-5"
     assert data["budget_usd"] == 5.0
     assert data["spent_usd"] == 1.25
     assert data["remaining_usd"] == 3.75
@@ -208,7 +208,7 @@ def test_non_admin_cannot_update_settings(temp_db):
     client = _client_as("user")
     res = client.put("/v1/agent/settings", json={"model": "claude-haiku-4-5"})
     assert res.status_code == 403
-    assert get_agent_admin_settings()["model"] == "claude-sonnet-5"
+    assert get_agent_admin_settings()["model"] == "claude-opus-5-5"
 
 
 def test_spend_accumulates(temp_db):
@@ -349,7 +349,7 @@ def test_client_cannot_smuggle_model_or_budget_flags(temp_db, monkeypatch):
     # Budget is NOT exhausted for this fresh user -> the (mock) agent ran and
     # reports the admin-chosen default model, not the client's wish.
     assert body["debugInfo"]["solver_status"] != "AGENT_FALLBACK_SEED"
-    assert body["debugInfo"]["agent"]["model"] == "claude-sonnet-5"
+    assert body["debugInfo"]["agent"]["model"] == "claude-opus-5-5"
 
 
 def test_verify_tls_setting_roundtrip_and_overlay(temp_db):
@@ -395,3 +395,14 @@ def test_runtime_config_can_run_the_other_saved_provider_without_saving(temp_db)
     assert (overlaid.provider, overlaid.model) == ("anthropic", "claude-opus-5-5")
     assert get_agent_admin_settings()["provider"] == "openai"
     assert resolve_agent_runtime_config(AgentConfig(model="m0")).model == "Qwen/Qwen3.5-122B"
+
+
+def test_frontend_default_model_matches_the_backend_default():
+    """The settings picker preselects its first option when nothing is saved;
+    it must be the model the backend runs by default."""
+    import re
+    from pathlib import Path
+
+    source = (Path(__file__).resolve().parents[2] / "src/lib/llmPricing.ts").read_text()
+    options_block = source.split("AGENT_MODEL_OPTIONS", 1)[1]
+    assert re.search(r'id: "([^"]+)"', options_block).group(1) == DEFAULT_AGENT_MODEL

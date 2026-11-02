@@ -161,6 +161,10 @@ export default function LocationColorPicker({ value, onChange, label, autoColor 
               );
             })}
           </div>
+          <p className="mt-2 max-w-[17.5rem] px-1 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
+            Colors this location&apos;s row labels in the team grid; a picked color also tints My
+            plan. All planners see it.
+          </p>
         </div>
       ) : null}
     </div>

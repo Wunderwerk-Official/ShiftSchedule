@@ -92,3 +92,29 @@ def test_holiday_region_round_trips_and_unset_keeps_the_revision(client):
     assert cleared.status_code == 200, cleared.text
     assert "holidayRegion" not in cleared.json()
     assert cleared.json()["revision"] == revision
+
+
+def test_holiday_source_round_trips_and_untagged_keeps_the_revision(client):
+    initial = client.get("/v1/state").json()
+    assert initial["holidays"]
+    assert all("source" not in holiday for holiday in initial["holidays"])
+    revision = initial["revision"]
+
+    resaved = client.post("/v1/state", json=initial)
+    assert resaved.status_code == 200, resaved.text
+    assert resaved.json()["revision"] == revision
+
+    manual = {"dateISO": "2026-03-02", "name": "Clinic day", "source": "manual"}
+    tagged = {**initial, "holidays": [{**initial["holidays"][0], "source": "public"}, *initial["holidays"][1:], manual]}
+    saved = client.post("/v1/state", json=tagged)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["holidays"][0]["source"] == "public"
+    assert saved.json()["holidays"][-1] == manual
+    assert saved.json()["revision"] != revision
+    assert client.get("/v1/state").json()["holidays"][-1] == manual
+
+    # A malformed tag is dropped, not rejected.
+    odd = {**saved.json(), "holidays": [{**manual, "source": "auto"}]}
+    response = client.post("/v1/state", json=odd)
+    assert response.status_code == 200, response.text
+    assert response.json()["holidays"] == [{"dateISO": "2026-03-02", "name": "Clinic day"}]

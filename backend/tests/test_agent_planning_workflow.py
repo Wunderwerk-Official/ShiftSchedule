@@ -219,6 +219,27 @@ def test_final_audit_repair_skips_follow_up_search_but_model_apply_keeps_it():
     assert "proposal-followup" not in calls
 
 
+@pytest.mark.parametrize("rest_enabled", [False, True])
+def test_duty_pass_follow_up_uses_the_on_call_section_only_while_rest_rule_is_on(rest_enabled):
+    # v1.75: the duty pass follows executor.on_call_class like the harness;
+    # with the rule off there is no on-call section, so nothing is left.
+    state = make_app_state(slots=[
+        make_template_slot("mon"), make_template_slot("tue", col_band_id="col-tue-1"),
+    ])
+    state.solverSettings.update(onCallRestClassId="section-a", onCallRestEnabled=rest_enabled,
+                                onCallRestDaysBefore=0, onCallRestDaysAfter=0)
+    ex = executor(state, end=TUE)
+    offers = run(ex, "suggest_day_blocks", slot_key=f"mon__{MON}", single=True)
+    assert offers.get("on_call", False) is rest_enabled
+    applied = run(ex, "apply_proposal", proposal_id=offers["candidates"][0]["proposal_id"])
+    assert applied["applied"]
+    follow_up = applied["next"]["result"]
+    if rest_enabled:
+        assert follow_up["slot_key"] == ex._alias_slot_key(f"tue__{TUE}") and follow_up["on_call"]
+    else:
+        assert follow_up == {"duty_complete": True}
+
+
 def test_other_day_change_invalidates_proposal_and_negative_search_cache():
     state = make_app_state(slots=[
         make_template_slot("mon"), make_template_slot("tue", col_band_id="col-tue-1"),
@@ -300,6 +321,35 @@ def test_neighborhood_preserves_fixed_entries():
     assert not result["proposals"]
     assert fixed.current == {}
     assert fixed.fixed_assignments == state.assignments
+
+
+def test_neighborhood_never_proposes_a_person_on_a_rest_day(monkeypatch):
+    # v1.75: a Rest Day row entry removes the person from the candidate model
+    # (like vacation), so no preview is even spent on them.
+    def fixture(rest_for):
+        state = section_state([make_clinician("a", "Alice", ["A"], working_hours_per_week=40),
+                               make_clinician("b", "Bob", ["A"], working_hours_per_week=40)],
+                              [make_template_slot("A", block_id="A")], ["A"])
+        state.solverSettings["agentNeighborhoodSearch"] = True
+        state.assignments = [make_assignment(f"rest-{c}", "pool-rest-day", MON, c, source="manual")
+                             for c in rest_for]
+        ex = executor(state)
+        previews = []
+        original = ex._tool_apply_moves
+
+        def recorded(arguments):
+            previews.append(arguments["moves"])
+            return original(arguments)
+        monkeypatch.setattr(ex, "_tool_apply_moves", recorded)
+        return ex, previews
+
+    ex, previews = fixture(["a", "b"])
+    result = run(ex, "repair_neighborhood", dateISO=MON)
+    assert result["proposals"] == [] and previews == []
+    ex, previews = fixture(["a"])
+    result = run(ex, "repair_neighborhood", dateISO=MON)
+    assert result["search_status"] == "improvement_found"
+    assert {move["clinicianId"] for moves in previews for move in moves} == {"b"}
 
 
 def test_neighborhood_deadline_returns_unsearched_status_without_changes():

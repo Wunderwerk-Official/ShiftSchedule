@@ -13,6 +13,10 @@ type CustomSelectProps = {
   disabled?: boolean;
   placeholder?: string;
   className?: string;
+  /** Accessible name of the trigger button (when no visible label names it). */
+  ariaLabel?: string;
+  /** Tooltip on the trigger button. */
+  title?: string;
 };
 
 function ChevronDownIcon({ className }: { className?: string }) {
@@ -36,6 +40,8 @@ export default function CustomSelect({
   disabled = false,
   placeholder = "Select...",
   className,
+  ariaLabel,
+  title,
 }: CustomSelectProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -74,6 +80,8 @@ export default function CustomSelect({
         type="button"
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}
+        aria-label={ariaLabel}
+        title={title}
         className={cx(
           "flex w-full items-center justify-between gap-2 rounded-lg border px-3 py-1.5 text-left text-sm transition-colors",
           "border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-950",

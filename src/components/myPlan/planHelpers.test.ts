@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { Location } from "../../api/client";
 import { buildPersonPlan, type PersonPlan } from "../../lib/myPlan";
 import { LOCATIONS, makeSource } from "../../lib/myPlan/testFixtures";
@@ -9,13 +9,15 @@ import { formatDateSpan, monthWeekGroups, vacationSegments } from "./monthParts"
 import { formatNextUpWhen } from "./NextUpChip";
 import { initialsOf } from "./planChrome";
 import { stepAnchor } from "./PeriodNavigator";
+import { changeLinkLabel } from "./PersonPicker";
 import { visibleRange } from "./useMyPlanData";
 import {
-  applyViewConfig,
-  currentViewConfig,
-  describeView,
   orientationLabel,
+  orientationOf,
   orientationTooltip,
+  orientationUpdate,
+  rangeOf,
+  rangeUpdate,
 } from "./viewConfig";
 
 const source = makeSource();
@@ -36,37 +38,19 @@ describe("viewConfig", () => {
     expect(orientationTooltip("day", "left")).toContain("'timeline top'");
   });
 
-  it("describes the current view; team views are canonical", () => {
-    const prefs = normalizePreferences({
-      myPlanRange: "month",
-      orientationByRange: { month: "left" },
-    });
-    const me = currentViewConfig(prefs, "me");
-    expect(me).toMatchObject({ scope: "me", range: "month", orientation: "left" });
-    expect(describeView(me)).toBe("My plan · Month · List");
-    const team = currentViewConfig(prefs, "team");
-    expect(team).toEqual({ scope: "team", range: "week", orientation: "top" });
-    expect(describeView(team)).toBe("Team plan");
-    expect(describeView({ ...me, range: "week", orientation: "top" })).toBe("My plan · Week · Date on top");
-  });
-
-  it("applies a view: My plan sets range + its orientation, a team view only the scope, scope last", () => {
-    const calls: string[] = [];
-    let prefs = { ...DEFAULT_PREFERENCES };
-    const update = vi.fn((change) => {
-      calls.push("prefs");
-      prefs = typeof change === "function" ? change(prefs) : { ...prefs, ...change };
-    });
-    const scope = vi.fn(() => calls.push("scope"));
-    applyViewConfig({ scope: "me", range: "day", orientation: "left" }, scope, update);
-    expect(prefs.myPlanRange).toBe("day");
-    expect(prefs.orientationByRange).toEqual({ day: "left", week: "top", month: "top" });
-    expect(scope).toHaveBeenLastCalledWith("me");
-    applyViewConfig({ scope: "team", range: "month", orientation: "left" }, scope, update);
-    expect(scope).toHaveBeenLastCalledWith("team");
-    expect(prefs.myPlanRange).toBe("day");
-    expect(prefs.orientationByRange).toEqual({ day: "left", week: "top", month: "top" });
-    expect(calls).toEqual(["prefs", "scope", "prefs", "scope"]);
+  it("reads and updates the remembered range and orientation per device class", () => {
+    const prefs = normalizePreferences({ myPlanRange: "month", orientationByRange: { month: "left" } });
+    expect(rangeOf(prefs)).toBe("month");
+    expect(rangeOf(prefs, true)).toBe("week");
+    expect(orientationOf(prefs, "month")).toBe("left");
+    // Phones open the week as the agenda by default.
+    expect(orientationOf(prefs, "week", true)).toBe("left");
+    expect(rangeUpdate("day")).toEqual({ myPlanRange: "day" });
+    expect(rangeUpdate("day", true)).toEqual({ myPlanRangeMobile: "day" });
+    const update = orientationUpdate("day", "left", true);
+    const next = typeof update === "function" ? update(DEFAULT_PREFERENCES) : update;
+    expect(next.orientationByRangeMobile).toEqual({ day: "left", week: "left", month: "top" });
+    expect(next.orientationByRange).toEqual(DEFAULT_PREFERENCES.orientationByRange);
   });
 });
 
@@ -95,6 +79,13 @@ describe("ranges and labels", () => {
     const night = week.shifts.get(week.days[2].segments[0].shiftId)!;
     expect(formatNextUpWhen(night, TODAY)).toBe("today 17:00 – Thu 08:00");
     expect(formatNextUpWhen(night, "2026-10-13")).toBe("tomorrow 17:00 – Thu 08:00");
+  });
+
+  it("names the linked person in the person picker footer, without titles", () => {
+    expect(changeLinkLabel("Dr. Lena Hoffmann")).toBe("Not Lena Hoffmann? Change who you are");
+    expect(changeLinkLabel("Jonas Weber")).toBe("Not Jonas Weber? Change who you are");
+    expect(changeLinkLabel(undefined)).toBe("Not you? Change who you are");
+    expect(changeLinkLabel("  ")).toBe("Not you? Change who you are");
   });
 });
 

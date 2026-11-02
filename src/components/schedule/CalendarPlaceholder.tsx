@@ -1,7 +1,7 @@
-// Empty calendar card, shown while the start view is not known yet (the
-// preferences are loading) or My plan waits for the calendar. Same frame as the
-// grids, no content: the first real paint is the right view instead of the
-// team grid flashing before a "My plan" start page.
+// Empty calendar card, shown while My plan waits for this user's calendar
+// (until then the page holds the built-in demo people, and My plan would call
+// the linked person "no longer in the plan"). Same frame as the grids, no
+// content. The team plan never waits: it is shown at once.
 
 export default function CalendarPlaceholder() {
   return (

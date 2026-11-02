@@ -21,6 +21,9 @@ describe("openSlotReasonSummary", () => {
       .toBe("weekly-hours limit (1), vacation (1)");
     expect(openSlotReasonSummary([slot("NO_QUALIFIED"), slot("SPLIT_SHIFT")])?.text)
       .toBe("split shift (1), no qualified person left (1)");
+    // A hand-placed rest day (REST_DAY, v1.75) ranks with vacation, before overlaps.
+    expect(openSlotReasonSummary([slot("OVERLAP"), slot("REST_DAY")])?.text)
+      .toBe("rest day (1), overlapping shift (1)");
   });
 
   it("names every reason: no top-N cut", () => {

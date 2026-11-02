@@ -21,10 +21,14 @@ def planning_fingerprint(state: AppState) -> str:
     # Include boundary assignments and history: rest, weekly hours and YTD
     # fairness all depend on context outside the requested dates.
     # The holiday pickers only steer the next "Load Holidays"; the holidays
-    # list itself is the planning input.
+    # list itself (dates and names) is the planning input.
     data = state.model_dump(exclude={"revision", "publishedWeekStartISOs",
                                      "holidayCountry", "holidayRegion", "holidayYear"})
     data["solverSettings"].pop("scheduleLayout", None)
+    # Where a holiday came from (loaded / by hand) does not change planning;
+    # dropping it also keeps fingerprints of runs made before v1.74 valid.
+    for holiday in data["holidays"]:
+        holiday.pop("source", None)
     # Location colors are presentation only: recoloring never stales a run.
     for location in data["locations"]:
         location.pop("color", None)

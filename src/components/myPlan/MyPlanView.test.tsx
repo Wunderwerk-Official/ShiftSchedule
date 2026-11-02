@@ -1,4 +1,4 @@
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { freezeClock, renderPlan } from "./testHarness";
 
@@ -62,56 +62,70 @@ describe("MyPlanView", () => {
     expect(screen.getByText(/Wed 14 Oct:/)).toBeInTheDocument();
   });
 
-  it("toggles the start page with a toast that can undo", () => {
-    const view = renderPlan({ prefs: { clinicianId: "lh" } });
-    // Constant name; the state is aria-pressed.
-    const star = screen.getByRole("button", { name: "Start page on computers" });
-    expect(star).toHaveAttribute("aria-pressed", "false");
-    fireEvent.click(star);
-    expect(view.prefs().startViewDesktop).toMatchObject({ scope: "me", range: "week", orientation: "top" });
-    expect(screen.getByRole("button", { name: "Start page on computers" })).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByRole("status")).toHaveTextContent("Start page on computers: My plan · Week · Date on top");
-    act(() => {
-      fireEvent.click(screen.getByRole("button", { name: "Undo" }));
-    });
-    expect(view.prefs().startViewDesktop).toBeNull();
+  it("has no start-page star and no Views menu in the header", () => {
+    renderPlan({ prefs: { clinicianId: "lh" } });
+    expect(screen.queryByRole("button", { name: /Start page/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Views" })).not.toBeInTheDocument();
   });
 
-  it("saves (without a date), applies and deletes a named view, keeping focus in the menu", () => {
+  it("names the linked person behind the initials on My plan", () => {
+    renderPlan({ prefs: { clinicianId: "lh" } });
+    const myPlan = screen.getByRole("button", { name: "My plan (Dr. Lena Hoffmann)" });
+    expect(myPlan).toHaveAttribute("title", "My plan · Dr. Lena Hoffmann");
+    expect(myPlan).toHaveTextContent("LH");
+    expect(myPlan).toHaveAttribute("aria-pressed", "true");
+  });
+
+  it("offers 'Not <name>? Change who you are' only while the account is linked", () => {
+    const unlinked = renderPlan();
+    fireEvent.click(screen.getByRole("button", { name: "Open the plan of another person" }));
+    const picker = screen.getByRole("dialog", { name: "Choose person" });
+    expect(within(picker).queryByRole("button", { name: /Change who you are/ })).not.toBeInTheDocument();
+    unlinked.unmount();
+
+    // Phones have no hover: the visible label itself names the linked person.
+    renderPlan({ prefs: { clinicianId: "lh" } });
+    fireEvent.click(screen.getByRole("button", { name: "Open the plan of another person" }));
+    const footer = within(screen.getByRole("dialog", { name: "Choose person" })).getByRole("button", {
+      name: /Change who you are/,
+    });
+    expect(footer).toHaveTextContent(/^Not Lena Hoffmann\? Change who you are$/);
+  });
+
+  it("names the linked person in the footer even while another person's plan is shown", () => {
+    renderPlan({ prefs: { clinicianId: "lh" } });
+    const chevron = screen.getByRole("button", { name: "Open the plan of another person" });
+    fireEvent.click(chevron);
+    fireEvent.click(screen.getByRole("button", { name: /Jonas Weber/ }));
+    fireEvent.click(chevron);
+    expect(screen.getByRole("button", { name: "Not Lena Hoffmann? Change who you are" })).toBeInTheDocument();
+  });
+
+  it("'Not <name>? Change who you are' clears the link, so the person can choose again", () => {
     const view = renderPlan({ prefs: { clinicianId: "lh" } });
-    fireEvent.click(screen.getByRole("button", { name: "Views" }));
-    // Opening moves focus into the panel (no views yet: the save action).
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save current view…" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save current view…" }));
-    const name = screen.getByLabelText("Name");
-    expect(document.activeElement).toBe(name);
-    fireEvent.click(screen.getByRole("button", { name: "Back to views" }));
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save current view…" }));
+    // Viewing someone else first: the change goes back to the own (now unlinked) plan.
+    const chevron = screen.getByRole("button", { name: "Open the plan of another person" });
+    fireEvent.click(chevron);
+    fireEvent.click(screen.getByRole("button", { name: /Jonas Weber/ }));
+    expect(screen.getByText(/You are viewing the plan of/)).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Save current view…" }));
-    expect(screen.getByLabelText("Name")).toHaveValue("My week");
-    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Week grid" } });
-    fireEvent.click(screen.getByRole("checkbox", { name: /On computers/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    const [saved] = view.prefs().savedViews;
-    expect(saved).toMatchObject({ name: "Week grid", scope: "me", range: "week", orientation: "top" });
-    expect(Object.keys(saved).sort()).toEqual(["id", "name", "orientation", "range", "scope", "startAt"]);
-    expect(saved.startAt).toBe("today");
-    expect(view.prefs().startViewDesktop).toMatchObject({ range: "week" });
-    expect(screen.getByRole("status")).toHaveTextContent('View "Week grid" saved · start page on computers');
+    fireEvent.click(chevron);
+    fireEvent.click(screen.getByRole("button", { name: "Not Lena Hoffmann? Change who you are" }));
+    expect(view.onUpdatePrefs).toHaveBeenLastCalledWith({ clinicianId: null });
+    expect(view.prefs().clinicianId).toBeNull();
+    expect(screen.queryByRole("dialog", { name: "Choose person" })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(chevron);
+    expect(screen.queryByText(/You are viewing the plan of/)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Who are you in the plan?" })).toBeInTheDocument();
+    // A fresh choice, not the "no longer in the plan" message.
+    expect(screen.getByText(/You can change this later/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "My plan" })).not.toHaveAttribute("aria-label");
 
-    fireEvent.click(screen.getByRole("button", { name: "Month" }));
-    fireEvent.click(screen.getByRole("button", { name: "Views" }));
-    expect(screen.getByText("Computer: Week grid")).toBeInTheDocument();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Week grid/ }));
-    fireEvent.click(screen.getByRole("button", { name: /^Week grid/ }));
-    expect(view.prefs().myPlanRange).toBe("week");
-
-    fireEvent.click(screen.getByRole("button", { name: "Views" }));
-    fireEvent.click(screen.getByRole("button", { name: "Delete view Week grid" }));
-    expect(view.prefs().savedViews).toHaveLength(0);
-    // The deleted row's button is gone: focus moves to the save action.
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Save current view…" }));
+    fireEvent.change(screen.getByLabelText("I am"), { target: { value: "jw" } });
+    fireEvent.click(screen.getByRole("button", { name: "That's me" }));
+    expect(view.prefs().clinicianId).toBe("jw");
+    expect(screen.getByRole("button", { name: "My plan (Jonas Weber)" })).toHaveTextContent("JW");
+    expect(screen.queryByText(/You are viewing the plan of/)).not.toBeInTheDocument();
   });
 
   it("shows another person's plan with a banner and returns to mine", () => {
@@ -121,6 +135,8 @@ describe("MyPlanView", () => {
     fireEvent.click(screen.getByRole("button", { name: /Jonas Weber/ }));
     expect(screen.getByText(/You are viewing the plan of/)).toHaveTextContent("Jonas Weber");
     expect(screen.getByRole("button", { name: "Jonas Weber" })).toHaveAttribute("aria-pressed", "true");
+    // Another person's plan keeps its own label; the tooltip names whose plan it is.
+    expect(screen.getByRole("button", { name: "Jonas Weber" })).toHaveAttribute("title", "Plan of Jonas Weber");
     fireEvent.click(screen.getByRole("button", { name: "Back to my plan" }));
     expect(screen.queryByText(/You are viewing the plan of/)).not.toBeInTheDocument();
   });

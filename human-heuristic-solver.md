@@ -173,7 +173,7 @@ FOR slots with SAME criticality_score:
 
 **Eligibility Criteria** (in `FILTER_ELIGIBLE_DOCTORS`):
 1. **Qualification**: Doctor's eligible sections include the slot's section
-2. **Vacation**: Doctor is NOT on vacation on day D
+2. **Vacation**: Doctor is NOT on vacation on day D and was NOT placed in the Rest Day row by hand for day D
 3. **Time overlap**: Doctor is NOT already assigned to an overlapping time slot on day D
 4. **Preferred working times (mandatory)**: If doctor has `preferredWorkingTimes[weekday].requirement = "mandatory"`, the slot's time must fall within the specified window
 5. **On-call rest days**: If on-call rest is enabled and doctor is assigned to on-call on nearby days (within configured offset), doctor is NOT eligible on rest days
@@ -385,7 +385,7 @@ This explores different solution paths by making different greedy choices at eac
 A doctor is eligible for a slot if ALL of the following are true:
 
 1. **Qualified**: Doctor's `qualifiedClassIds` includes the slot's `sectionId`
-2. **Available**: Doctor is NOT on vacation on that day
+2. **Available**: Doctor is NOT on vacation on that day and NOT in the Rest Day row that day (placed by hand)
 3. **No conflict**: Doctor is NOT assigned to an overlapping time slot on that day
 4. **Mandatory time window**: If doctor has `preferredWorkingTimes[weekday].requirement = "mandatory"`, the slot must fall within the specified `startTime`-`endTime` window
 5. **On-call rest**: If on-call rest days are enabled and doctor has an on-call assignment within the configured window (days before/after), doctor is NOT eligible on those rest days
@@ -758,7 +758,7 @@ This section verifies that the heuristic solver covers all requirements from the
 | Requirement | Covered? | Implementation |
 |-------------|----------|----------------|
 | **Qualification** | ✅ | Eligibility filter (criterion #1) |
-| **Vacation override** | ✅ | Eligibility filter (criterion #2) |
+| **Vacation override** (and Rest Day row entries) | ✅ | Eligibility filter (criterion #2) |
 | **Time overlap prevention** | ✅ | Eligibility filter (criterion #3) |
 | **Mandatory time windows** | ✅ | Eligibility filter (criterion #4) |
 | **On-call rest days** | ✅ | Eligibility filter (criterion #5) |

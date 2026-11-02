@@ -120,18 +120,17 @@ describe("MyPlanView flows", () => {
     expect(within(group).getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("stores the start view for the device class it was set on", () => {
-    const phone = renderPlan({ prefs: { ...LENA, myPlanRangeMobile: "month" }, isMobile: true });
-    fireEvent.click(screen.getByRole("button", { name: "Start page on phones" }));
-    expect(phone.prefs().startViewMobile).toEqual({ scope: "me", range: "month", orientation: "top" });
-    expect(phone.prefs().startViewDesktop).toBeNull();
-    expect(screen.getByRole("button", { name: "Start page on phones" })).toHaveAttribute("aria-pressed", "true");
-    phone.unmount();
-
-    const desktop = renderPlan({ prefs: { ...LENA, orientationByRange: { week: "left" } } });
-    fireEvent.click(screen.getByRole("button", { name: "Start page on computers" }));
-    expect(desktop.prefs().startViewDesktop).toEqual({ scope: "me", range: "week", orientation: "left" });
-    expect(desktop.prefs().startViewMobile).toBeNull();
+  it("phone header: scope row without star or Views; a stored start view changes nothing", () => {
+    // Start views stored before v1.74 are ignored: My plan shows the phone's own range.
+    renderPlan({
+      prefs: { ...LENA, startViewMobile: { scope: "me", range: "month", orientation: "top" } },
+      isMobile: true,
+    });
+    expect(screen.getByRole("group", { name: "Choose plan" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open the plan of another person" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Start page/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Views" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Week" })).toHaveAttribute("aria-pressed", "true");
   });
 
   it("shows the running shift as 'Now' once it started", () => {

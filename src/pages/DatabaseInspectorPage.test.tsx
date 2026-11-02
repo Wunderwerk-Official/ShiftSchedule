@@ -74,4 +74,27 @@ describe("DatabaseInspectorPage", () => {
     expect(diffDays(starts[1], starts[0])).toBe(7);
     expect(diffDays(starts[0], starts[3])).toBe(7);
   });
+
+  it("names the Rest Day and Vacation entries with the current terms", async () => {
+    render(<DatabaseInspectorPage theme="light" onBack={() => {}} />);
+    const [first] = pending;
+    await act(async () =>
+      first.resolve({
+        ...resultFor(first.weekStart),
+        poolAssignments: [{
+          poolId: "pool-vacation", poolName: "Vacation", dateISO: first.weekStart, dayOfWeek: "Mon",
+          assignments: [{ assignmentId: "a1", clinicianId: "c1", clinicianName: "Alice", source: "manual" }],
+        }],
+        stats: { totalSlots: 0, assignedSlots: 0, openSlots: 0, poolAssignments: 1 },
+      }),
+    );
+
+    expect(screen.getByText("Rest & vacation")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Rest Day & Vacation entries (placed by hand)" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Row" })).toBeTruthy();
+    expect(screen.getByRole("columnheader", { name: "Person" })).toBeTruthy();
+    expect(screen.getByRole("cell", { name: "Alice" })).toBeTruthy();
+    expect(screen.queryByText(/Pool Assign/)).toBeNull();
+    expect(screen.queryByRole("columnheader", { name: "Clinician" })).toBeNull();
+  });
 });

@@ -3,12 +3,22 @@ import type { Clinician } from "../../api/client";
 import { cx } from "../../lib/classNames";
 import { personColor } from "../../lib/myPlan";
 import PlanIcon from "./PlanIcons";
-import { initialsOf, popoverPanelClass, roundIconButtonClass } from "./planChrome";
+import { displayName, initialsOf, popoverPanelClass, roundIconButtonClass } from "./planChrome";
 import { useDismiss } from "./useDismiss";
 
 // Chevron next to the scope switch: open the plan of another person (plan
 // §2.2). Viewing someone else is page state only; the container shows the
-// "You are viewing the plan of X" banner.
+// "You are viewing the plan of X" banner. While the account is linked, the
+// footer "Not <name>? Change who you are" lets the person undo the link, so
+// "Who are you in the plan?" asks again. It names the linked person in the
+// visible text because phones have no hover tooltip on the "My plan" circle
+// (HelpView "12. My plan" quotes that label: keep both in step).
+
+/** Footer label: "Not Lena Hoffmann? Change who you are" ("Not you? …" without a name). */
+export function changeLinkLabel(name: string | undefined): string {
+  const shown = name ? displayName(name).trim() : "";
+  return `Not ${shown || "you"}? Change who you are`;
+}
 
 type PersonPickerProps = {
   clinicians: Clinician[];
@@ -17,10 +27,19 @@ type PersonPickerProps = {
   /** The linked "I am" person (marked "you", listed first). */
   myId: string | null;
   onChange: (clinicianId: string) => void;
+  /** Unlink the account ("Not <name>? Change who you are"); offered only while `myId` is set. */
+  onChangeLink?: () => void;
   isMobile?: boolean;
 };
 
-export default function PersonPicker({ clinicians, viewedId, myId, onChange, isMobile = false }: PersonPickerProps) {
+export default function PersonPicker({
+  clinicians,
+  viewedId,
+  myId,
+  onChange,
+  onChangeLink,
+  isMobile = false,
+}: PersonPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const rootRef = useRef<HTMLDivElement>(null);
@@ -39,6 +58,7 @@ export default function PersonPicker({ clinicians, viewedId, myId, onChange, isM
     );
     return needle ? sorted.filter((c) => c.name.toLowerCase().includes(needle)) : sorted;
   }, [clinicians, myId, query]);
+  const myName = myId ? clinicians.find((clinician) => clinician.id === myId)?.name : undefined;
 
   useEffect(() => {
     if (open) searchRef.current?.focus();
@@ -53,11 +73,18 @@ export default function PersonPicker({ clinicians, viewedId, myId, onChange, isM
     (target) => Boolean(rootRef.current?.contains(target)),
   );
 
-  const choose = (clinicianId: string) => {
-    onChange(clinicianId);
+  const close = () => {
     setOpen(false);
     setQuery("");
     buttonRef.current?.focus();
+  };
+  const choose = (clinicianId: string) => {
+    onChange(clinicianId);
+    close();
+  };
+  const changeLink = () => {
+    onChangeLink?.();
+    close();
   };
 
   return (
@@ -139,6 +166,21 @@ export default function PersonPicker({ clinicians, viewedId, myId, onChange, isM
               <li className="px-2 py-3 text-sm text-slate-600 dark:text-slate-400">No person found.</li>
             ) : null}
           </ul>
+          {myId && onChangeLink ? (
+            <div className="mt-2 border-t border-slate-200 pt-2 dark:border-slate-700">
+              <button
+                type="button"
+                onClick={changeLink}
+                title="Link your account to a different person in the plan"
+                className={cx(
+                  "flex w-full items-center rounded-lg px-2 text-left text-sm font-medium text-sky-800 hover:bg-slate-100 dark:text-sky-300 dark:hover:bg-slate-800",
+                  isMobile ? "h-10" : "h-9",
+                )}
+              >
+                {changeLinkLabel(myName)}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
     </div>

@@ -6,8 +6,6 @@ import type { ReactNode, SVGProps } from "react";
 
 export type PlanIconName =
   | "users"
-  | "star"
-  | "bookmark"
   | "moon"
   | "sun"
   | "clock"
@@ -16,9 +14,6 @@ export type PlanIconName =
   | "lock"
   | "x"
   | "check"
-  | "plus"
-  | "monitor"
-  | "smartphone"
   | "chevronDown"
   | "chevronLeft"
   | "chevronRight"
@@ -30,7 +25,7 @@ export type PlanIconName =
   | "continue"
   | "layers";
 
-const PATHS: Record<PlanIconName, (filled: boolean) => ReactNode> = {
+const PATHS: Record<PlanIconName, () => ReactNode> = {
   users: () => (
     <>
       <circle cx="9" cy="8" r="3.5" />
@@ -38,13 +33,6 @@ const PATHS: Record<PlanIconName, (filled: boolean) => ReactNode> = {
       <path d="M16 4.6a3.5 3.5 0 0 1 0 6.8M18 14.2a5.5 5.5 0 0 1 3.5 5.3v.5" />
     </>
   ),
-  star: (filled) => (
-    <path
-      fill={filled ? "currentColor" : "none"}
-      d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.3-4.1 5.9-.9z"
-    />
-  ),
-  bookmark: () => <path d="M7 3.5h10a1 1 0 0 1 1 1V21l-6-4-6 4V4.5a1 1 0 0 1 1-1z" />,
   moon: () => <path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z" />,
   sun: () => (
     <>
@@ -78,19 +66,6 @@ const PATHS: Record<PlanIconName, (filled: boolean) => ReactNode> = {
   ),
   x: () => <path d="M6 6l12 12M18 6 6 18" />,
   check: () => <path d="M5 12.5l4.5 4.5L19 7.5" />,
-  plus: () => <path d="M12 5v14M5 12h14" />,
-  monitor: () => (
-    <>
-      <rect x="3" y="4" width="18" height="12" rx="2" />
-      <path d="M8 20h8M12 16v4" />
-    </>
-  ),
-  smartphone: () => (
-    <>
-      <rect x="7" y="2.5" width="10" height="19" rx="2" />
-      <path d="M11 18h2" />
-    </>
-  ),
   chevronDown: () => <path d="M6 9l6 6 6-6" />,
   chevronLeft: () => <path d="M15 5l-7 7 7 7" />,
   chevronRight: () => <path d="M9 5l7 7-7 7" />,
@@ -143,15 +118,13 @@ const PATHS: Record<PlanIconName, (filled: boolean) => ReactNode> = {
 
 type PlanIconProps = Omit<SVGProps<SVGSVGElement>, "name"> & {
   name: PlanIconName;
-  /** Filled variant (star). */
-  filled?: boolean;
   /** Width/height in px; without it the size comes from className (default h-4 w-4). */
   size?: number;
   /** Accessible name (renders <title>, role img); otherwise the icon is decorative. */
   title?: string;
 };
 
-export default function PlanIcon({ name, filled = false, size, title, className, ...props }: PlanIconProps) {
+export default function PlanIcon({ name, size, title, className, ...props }: PlanIconProps) {
   const labelled = Boolean(title) || typeof props["aria-label"] === "string";
   return (
     <svg
@@ -170,7 +143,7 @@ export default function PlanIcon({ name, filled = false, size, title, className,
       {...props}
     >
       {title ? <title>{title}</title> : null}
-      {PATHS[name](filled)}
+      {PATHS[name]()}
     </svg>
   );
 }

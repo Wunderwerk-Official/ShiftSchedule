@@ -65,4 +65,4 @@ docker run --rm -v app_backend_data:/data:ro -v /root:/backup alpine \
   automatically at backend start.
 - `AGENT_MAX_ITERATIONS` in `.env`/compose is ignored since v1.64.
 - After the v1.64 deploy, run the admin model connection test once on
-  Sonnet 5 (Settings → Solver), see agent.md "v1.64 › Deploy and data notes".
+  Sonnet 5 (Settings → Planning rules & AI), see agent.md "v1.64 › Deploy and data notes".

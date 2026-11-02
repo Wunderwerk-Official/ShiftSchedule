@@ -2,7 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { expect, it, vi } from "vitest";
 import type { SolverAgentDebug, SolverDebugInfo, SolverRunDetail } from "../../api/client";
 import { agentReviewNotice, heuristicFallbackNotice } from "../../lib/solverOutcome";
-import SolverInfoModal from "./SolverInfoModal";
+import SolverInfoModal, { parseUnresolvedNote } from "./SolverInfoModal";
 import { buildRunLog, modelSelectionNotice, serverRunToHistoryEntry } from "../../lib/runLog";
 
 function debug(agent?: SolverAgentDebug): SolverDebugInfo {
@@ -25,9 +25,9 @@ it.each(["legacy", "current"])("shows heuristic provenance for %s fallback metad
     onApplyRun={vi.fn()} onDiscardRun={vi.fn()} onRefreshRuns={vi.fn()}
     onFetchRunDetail={vi.fn().mockResolvedValue(run)} onSendFeedback={vi.fn()} />);
   fireEvent.click(screen.getByTitle("Show run details (stats, changes, log)."));
-  expect(await screen.findByText("Heuristic fallback", { exact: true })).toBeVisible();
+  expect(await screen.findByText("Basic plan (without AI)", { exact: true })).toBeVisible();
   expect(screen.queryByText(/could not start/)).toBeNull();
-  expect(heuristicFallbackNotice(debugInfo)).toContain("produced by heuristic v2");
+  expect(heuristicFallbackNotice(debugInfo)).toContain("the returned draft was made without the AI");
   if (format === "current") {
     expect(screen.getByText(/The model request failed/)).toBeVisible();
     expect(screen.getByText(/Tokens and costs below belong to the model attempts/)).toBeVisible();
@@ -67,10 +67,10 @@ it.each([true, false])("reports actual model selection and preserves every attem
   expect(screen.getByText(/Model not found/)).toBeVisible();
   if (available) {
     expect(screen.getByText(/Automatically switched from/)).toBeVisible();
-    expect(screen.queryByText("Heuristic fallback", { exact: true })).toBeNull();
+    expect(screen.queryByText("Basic plan (without AI)", { exact: true })).toBeNull();
   } else {
     expect(screen.getByText(/No model answered successfully/)).toBeVisible();
-    expect(screen.getByText("Heuristic fallback", { exact: true })).toBeVisible();
+    expect(screen.getByText("Basic plan (without AI)", { exact: true })).toBeVisible();
   }
   const log = buildRunLog(serverRunToHistoryEntry(run));
   expect(log).toContain(`Requested model: ${requested}`);
@@ -156,6 +156,48 @@ it("explains that the weights only affect the classic CP-SAT optimizer", () => {
   renderModal();
   fireEvent.click(screen.getByText("Optimization Weights"));
   expect(screen.getByText(/ignores these weights/)).toBeVisible();
+});
+
+it("turns the unresolved note into issue chips and keeps unknown shapes as text", () => {
+  expect(parseUnresolvedNote(
+    "Unresolved after this run: 11 open slot(s), 3 short day(s), 0 over-long day(s), 1 placement(s) outside preferred working times.",
+  )).toEqual([
+    { count: 11, label: "open slots", severe: true },
+    { count: 3, label: "short days", severe: false },
+    { count: 1, label: "outside preferred times", severe: false },
+  ]);
+  expect(parseUnresolvedNote("Unresolved after this run: 1 open slot(s).")).toEqual([
+    { count: 1, label: "open slot", severe: true },
+  ]);
+  expect(parseUnresolvedNote("Unresolved after this run: something new")).toBeNull();
+  expect(parseUnresolvedNote("No unresolved issues")).toBeNull();
+});
+
+it("shows a run card with issue chips, the cost and Apply as the main action", () => {
+  const run: SolverRunDetail = { ...plainRun, id: "run-chips", created_at: "2026-11-01T16:56:12",
+    finished_at: "2026-11-01T17:00:00", incomplete_dates: ["2026-11-05", "2026-11-06"],
+    notes: "Unresolved after this run: 11 open slot(s), 3 short day(s), 7 over-long day(s), 4 placement(s) outside preferred working times." };
+  const onApplyRun = vi.fn();
+  renderModal({ serverRuns: [run], onApplyRun });
+  const card = screen.getByTestId("run-card-run-chips");
+  const chips = within(card).getByRole("list", { name: "Unresolved after this run" });
+  expect(within(chips).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+    "11 open slots", "3 short days", "7 over-long days", "4 outside preferred times",
+  ]);
+  expect(within(card).getByText("01.11.2026, 16:56")).toBeVisible();
+  expect(within(card).getByText(/Incomplete draft: 2 day\(s\) need review/)).toBeVisible();
+  fireEvent.click(within(card).getByRole("button", { name: "Apply" }));
+  expect(onApplyRun).toHaveBeenCalledWith("run-chips");
+  expect(within(card).getByRole("button", { name: "Discard" })).toBeVisible();
+});
+
+it("marks a run without open issues and folds the explanation away while runs exist", () => {
+  renderModal({ serverRuns: [{ ...plainRun, notes: "No unresolved issues." }] });
+  expect(screen.getByText("No unresolved issues")).toBeVisible();
+  const toggle = screen.getByRole("button", { name: "How the agent plans" });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(toggle);
+  expect(screen.getByText(/the way an experienced human planner does/)).toBeVisible();
 });
 
 it.each([

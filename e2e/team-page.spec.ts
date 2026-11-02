@@ -4,7 +4,9 @@ import type { AppState, Assignment } from "../src/api/client";
 
 // Team page behaviour on a mocked API: the rule-violation and split-shift
 // popovers, badge jumps in the phone day view, the "template too large"
-// banner and Reset on vacation days.
+// banner, Reset on vacation days, the backup before a shifts file import and
+// loading public holidays without losing those added by hand (the state
+// filter itself is covered by holiday-region.spec.ts).
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -221,7 +223,8 @@ test("Times switches between side-by-side and stacked columns and stores the cho
   });
   const grid = page.locator('[data-schedule-grid="true"]');
   const columnCount = async () =>
-    Number(/repeat\((\d+),/.exec((await grid.getAttribute("style")) ?? "")?.[1]);
+    // The day columns (Stacked also repeats three label columns first).
+    Number(/repeat\((\d+), minmax/.exec((await grid.getAttribute("style")) ?? "")?.[1]);
   const times = page.getByRole("group", { name: "Times" });
   const pill = page.locator(
     `[data-schedule-cell="true"][data-row-id="${slotId("mon", "CT")}"][data-date-iso="2026-01-05"] [data-assignment-pill="true"]`,
@@ -239,6 +242,39 @@ test("Times switches between side-by-side and stacked columns and stores the cho
   // The saved answer keeps the choice.
   await page.waitForTimeout(300);
   expect(await columnCount()).toBeGreaterThan(7);
+  expect(api.errors).toEqual([]);
+});
+
+test("Stacked gives every section of a row band its own lanes, named in the label (v1.76)", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  const template = state.weeklyTemplate!;
+  // Wednesday's morning CT slot becomes a Sonography slot: before v1.76 it
+  // shared the CT lane and only a tag in its cell named it. (Tuesday Jan 6 is
+  // a holiday in the default state.)
+  const movedId = slotId("wed", "CT");
+  const sonographyId = state.rows.find((row) => row.name === "Sonography")!.id;
+  const sonographyBlock = template.blocks.find((block) => block.sectionId === sonographyId)!;
+  const moved = template.locations[0].slots.find((slot) => slot.id === movedId)!;
+  moved.blockId = sonographyBlock.id;
+  state.assignments = [
+    { id: "sono-wed", rowId: movedId, dateISO: "2026-01-07", clinicianId: FIRST, source: "manual" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const labels = (kind: string) =>
+    page.locator(`[data-stacked-label="${kind}"]`).evaluateAll((cells) => cells.map((cell) => cell.textContent));
+
+  expect(await labels("band")).toEqual(["MRI", "CT", "Sonography", "On call"]);
+  // CT row: its own section (named by the row), then Sonography, then CT Neuro.
+  expect(await labels("section")).toEqual(["", "MRI Neuro", "", "Sonography", "CT Neuro", "", ""]);
+  const ctGroup = `group-${template.locations[0].locationId}__${moved.rowBandId}`;
+  // Wednesday in the CT lane is hatched; the Sonography slot sits in its own lane.
+  await expect(
+    page.locator(`[data-schedule-cell="true"][data-row-id="${ctGroup}__t1"][data-date-iso="2026-01-07"]`),
+  ).toHaveClass(/stacked-off-cell/);
+  const sonoCell = page.locator(`[data-schedule-cell="true"][data-row-id="${movedId}"][data-date-iso="2026-01-07"]`);
+  await expect(sonoCell.locator('[data-assignment-pill="true"]')).toBeVisible();
+  await expect(sonoCell).toHaveAttribute("title", "Sonography · 08:00 - 12:00");
+  await expect(page.locator("[data-other-section]")).toHaveCount(0);
   expect(api.errors).toEqual([]);
 });
 
@@ -274,7 +310,7 @@ test.describe("template above the column limit", () => {
     expect(api.errors).toEqual([]);
   });
 
-  test("importing a schedule snapshot is refused", async ({ page }) => {
+  test("importing a shifts file is refused", async ({ page }) => {
     const api = await openCalendar(page, oversizedState().state, "2026-01-05T08:00:00Z");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await page.locator('input[type="file"][accept="application/json"]').setInputFiles({
@@ -282,7 +318,7 @@ test.describe("template above the column limit", () => {
       mimeType: "application/json",
       buffer: Buffer.from(JSON.stringify({ assignments: [assignment("ct", "mon", "CT", FIRST)] })),
     });
-    await page.getByRole("button", { name: "Import snapshot" }).click();
+    await page.getByRole("button", { name: "Replace shifts" }).click();
     await expect(
       page.getByText("The current calendar cannot be saved. Fix its template first."),
     ).toBeVisible();
@@ -372,5 +408,134 @@ test("Reset → Unlocked shifts and rest days removes planner entries on vacatio
   await expect
     .poll(() => api.state().assignments.map((item) => item.id).sort())
     .toEqual(["fixed", "hidden-manual", "manual"]);
+  expect(api.errors).toEqual([]);
+});
+
+test.describe("shifts file import", () => {
+  const BACKUP_NAME = "Auto-backup before shifts file import";
+  const importFile = (page: Page) =>
+    page.locator('input[type="file"][accept="application/json"]').setInputFiles({
+      name: "shifts.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify({ assignments: [assignment("new", "mon", "MRI", SECOND)] })),
+    });
+  const hasNew = (posted: AppState) => (posted.assignments ?? []).some((item) => item.id === "new");
+
+  test("saves a backup of the shown calendar before replacing the shifts", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    const backups: AppState[] = [];
+    let postsAtBackup = -1;
+    await page.route("**/v1/state/snapshots/import-backup", (route) => {
+      backups.push((route.request().postDataJSON() as { state: AppState }).state);
+      postsAtBackup = api.statePosts.length;
+      const at = "2026-01-05T08:00:00Z";
+      return route.fulfill({
+        status: 201,
+        json: { id: "auto", name: BACKUP_NAME, kind: "auto_backup", created_at: at, updated_at: at, size_bytes: 1 },
+      });
+    });
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page);
+    await expect(page.getByRole("dialog")).toContainText("The current calendar is saved in Calendar snapshots first.");
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(page.getByText(`A backup of the previous calendar is in Calendar snapshots: “${BACKUP_NAME}”.`)).toBeVisible();
+    expect(backups).toHaveLength(1);
+    expect(backups[0].assignments?.map((item) => item.id)).toEqual(["old"]);
+    // The imported calendar is saved only after the backup.
+    expect(api.statePosts.slice(0, postsAtBackup).some(hasNew)).toBe(false);
+    await expect.poll(() => api.statePosts.slice(postsAtBackup).some(hasNew)).toBe(true);
+    expect(api.state().assignments.map((item) => item.id)).toEqual(["new"]);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("imports nothing when the backup cannot be saved", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    await page.route("**/v1/state/snapshots/import-backup", (route) =>
+      route.fulfill({ status: 500, json: { detail: "Database is locked" } }),
+    );
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page);
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(
+      page.getByText("The backup could not be saved, so nothing was imported. (Database is locked)"),
+    ).toBeVisible();
+    await page.waitForTimeout(800);
+    expect(api.statePosts.some(hasNew)).toBe(false);
+    expect(api.state().assignments.map((item) => item.id)).toEqual(["old"]);
+    expect(api.errors).toEqual([]);
+  });
+});
+
+test("loading holidays for the chosen state keeps the holidays added by hand", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.holidayCountry = "DE";
+  state.holidayRegion = "DE-NW";
+  state.holidays = [
+    { dateISO: "2026-03-02", name: "Clinic day", source: "manual" },
+    // Loaded for all states before holidays carried a source: the service
+    // lists it, so loading replaces it.
+    { dateISO: "2026-03-08", name: "Internationaler Frauentag" },
+    // Added by hand before holidays carried a source: not listed, so kept.
+    { dateISO: "2026-12-24", name: "Heiligabend (Klinik)" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  await page.route("https://date.nager.at/api/v3/PublicHolidays/2026/DE", (route) =>
+    route.fulfill({
+      headers: { "Access-Control-Allow-Origin": "*" },
+      json: [
+        { date: "2026-01-01", localName: "Neujahr", name: "New Year's Day", global: true, counties: null },
+        { date: "2026-01-06", localName: "Heilige Drei Könige", name: "Epiphany", global: false, counties: ["DE-BW", "DE-BY", "DE-ST"] },
+        { date: "2026-03-08", localName: "Internationaler Frauentag", name: "Women's Day", global: false, counties: ["DE-BE", "DE-MV"] },
+        { date: "2026-06-04", localName: "Fronleichnam", name: "Corpus Christi", global: false, counties: ["DE-NW", "DE-BY"] },
+      ],
+    }),
+  );
+
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await expect(page.getByRole("button", { name: "State: Nordrhein-Westfalen" })).toBeVisible();
+  // A holiday added by hand now is tagged and survives the load as well.
+  await page.getByRole("button", { name: "Add Holiday", exact: true }).click();
+  await page.getByRole("button", { name: "DD.MM.YYYY", exact: true }).click();
+  await page.getByRole("button", { name: "15", exact: true }).click();
+  await page.getByPlaceholder("Holiday name").fill("Team day");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Team day")).toContainText("added by hand");
+
+  await page.getByRole("button", { name: "Load holidays for 2026" }).click();
+
+  await expect(page.getByText("Loaded 2 public holidays for 2026.")).toBeVisible();
+  await expect(page.getByText("Neujahr", { exact: true })).toBeVisible();
+  await expect(page.getByText("Fronleichnam", { exact: true })).toBeVisible();
+  await expect(page.getByText("Clinic day")).toContainText("added by hand");
+  await expect(page.getByText("Team day")).toContainText("added by hand");
+  await expect(page.getByText("Heiligabend (Klinik)")).toBeVisible();
+  await expect(page.getByText("Heilige Drei Könige")).toHaveCount(0);
+  await expect(page.getByText("Internationaler Frauentag")).toHaveCount(0);
+  await expect
+    .poll(() => {
+      const saved = api.state();
+      return {
+        region: saved.holidayRegion,
+        holidays: (saved.holidays ?? []).map((h) => `${h.dateISO} ${h.name}:${h.source ?? "untagged"}`).sort(),
+      };
+    })
+    .toEqual({
+      region: "DE-NW",
+      holidays: [
+        "2026-01-01 Neujahr:public",
+        "2026-01-15 Team day:manual",
+        "2026-03-02 Clinic day:manual",
+        "2026-06-04 Fronleichnam:public",
+        "2026-12-24 Heiligabend (Klinik):untagged",
+      ],
+    });
   expect(api.errors).toEqual([]);
 });

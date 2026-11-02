@@ -1,4 +1,7 @@
-// Public holidays from date.nager.at and the regions they are filtered by.
+// Public holidays from date.nager.at, the regions they are filtered by, and
+// how a load merges into the stored list (holidays added by hand stay).
+
+import type { Holiday } from "../api/client";
 
 /** One entry of GET https://date.nager.at/api/v3/PublicHolidays/{year}/{country}. */
 export type NagerPublicHoliday = {
@@ -179,4 +182,50 @@ export function filterHolidaysByRegion<T extends Pick<NagerPublicHoliday, "globa
       !region ||
       (Array.isArray(holiday.counties) && holiday.counties.includes(region)),
   );
+}
+
+const holidayKey = (holiday: { dateISO: string; name: string }) => `${holiday.dateISO}__${holiday.name}`;
+
+const toLoadedHoliday = (entry: NagerPublicHoliday): Holiday => ({
+  dateISO: entry.date,
+  name: entry.localName ?? entry.name ?? "Holiday",
+  source: "public",
+});
+
+/**
+ * The holiday list after "Load Holidays" for `year` (date.nager.at `entries`):
+ * - keeps every holiday of other years and every holiday added by hand
+ *   (source "manual");
+ * - drops this year's previously loaded holidays: source "public", and older
+ *   untagged entries the service lists for any region (loaded before
+ *   holidays carried a source);
+ * - adds the holidays that apply in `region` (filterHolidaysByRegion: without
+ *   a region, those of all regions), tagged "public", each date and name once.
+ * `added` counts the holidays the load added.
+ */
+export function mergeLoadedHolidays(
+  previous: Holiday[],
+  entries: NagerPublicHoliday[],
+  year: number,
+  region?: string,
+): { holidays: Holiday[]; added: number } {
+  const yearPrefix = `${year}-`;
+  const listedKeys = new Set(entries.map((entry) => holidayKey(toLoadedHoliday(entry))));
+  const kept = previous.filter((holiday) => {
+    if (!holiday.dateISO.startsWith(yearPrefix)) return true;
+    if (holiday.source === "manual") return true;
+    if (holiday.source === "public") return false;
+    // Untagged (older data): the entries the service lists were loaded.
+    return !listedKeys.has(holidayKey(holiday));
+  });
+  const keptKeys = new Set(kept.map(holidayKey));
+  const added: Holiday[] = [];
+  for (const entry of filterHolidaysByRegion(entries, region)) {
+    const holiday = toLoadedHoliday(entry);
+    const key = holidayKey(holiday);
+    if (keptKeys.has(key)) continue;
+    keptKeys.add(key);
+    added.push(holiday);
+  }
+  return { holidays: [...kept, ...added], added: added.length };
 }

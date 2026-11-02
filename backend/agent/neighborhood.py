@@ -61,6 +61,8 @@ def repair_neighborhood(executor, arguments):
                 continue
             if any(v.startISO <= inst.date_iso <= v.endISO for v in clinician.vacations):
                 continue
+            if (clinician.id, inst.date_iso) in executor.manual_rest_days:
+                continue
             window = executor.ctx.window_by_clinician_date.get((clinician.id, inst.date_iso))
             if window and window[0] == "mandatory" and not (inst.start >= window[1] and inst.end <= window[2]):
                 continue

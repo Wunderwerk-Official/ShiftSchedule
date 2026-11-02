@@ -50,8 +50,11 @@ def evaluate(start, days, scenario="base", profile="classic", neighborhood=False
             raise RuntimeError(f"Rejected offered moves: {result}")
         return None
 
-    # Staff on-call slots first, mirroring the harness's duty pre-pass.
-    duties = sorted((i for i in ctx.instances.values() if i.section_id == ctx.settings.onCallRestClassId),
+    # Staff on-call slots first, mirroring the harness's duty pre-pass (no
+    # duties while the on-call rest rule is off; older checkouts lack the
+    # property and read the setting directly).
+    on_call_class = getattr(ex, "on_call_class", ctx.settings.onCallRestClassId)
+    duties = sorted((i for i in ctx.instances.values() if on_call_class and i.section_id == on_call_class),
                     key=lambda i: (i.date_iso, i.start, i.slot_key))
     for inst in duties:
         if ex._tool_seconds_left() <= 5:

@@ -22,22 +22,22 @@ export type AgentModelOption = {
 
 export const AGENT_MODEL_OPTIONS: AgentModelOption[] = [
   {
-    id: "claude-sonnet-5",
-    label: "Sonnet 5",
-    description: "Balanced quality & cost (default)",
-    inputPerMTok: 2,
-    outputPerMTok: 10,
-    approxRunCost: "≈ $0.50 per planned day",
-  },
-  {
     id: "claude-opus-5-5",
     label: "Opus 5.5",
-    description: "Best quality",
+    description: "Best quality (default)",
     inputPerMTok: 4,
     outputPerMTok: 20,
     // $0.20 per MTok cache reads (0.05x).
     cacheReadMultiplier: 0.05,
     approxRunCost: "≈ $0.80 per planned day",
+  },
+  {
+    id: "claude-sonnet-5",
+    label: "Sonnet 5",
+    description: "Balanced quality & cost",
+    inputPerMTok: 2,
+    outputPerMTok: 10,
+    approxRunCost: "≈ $0.50 per planned day",
   },
   {
     id: "claude-opus-4-8",

@@ -658,3 +658,86 @@ def test_holiday_region_round_trips_through_save_and_load(state_db):
     _save_state(loaded, "u", check_revision=True, expected_revision=loaded.revision)
     assert _stored_data(state_db, "u") == stored_without_region
     assert _load_state("u").revision == revision_without_region
+
+
+# -----------------------------------------------------------------------------
+# Holiday source ("public" = loaded, "manual" = added by hand; v1.74)
+# -----------------------------------------------------------------------------
+
+
+def test_untagged_holiday_dumps_without_a_source_key() -> None:
+    assert Holiday(dateISO="2026-01-01", name="Neujahr").model_dump() == {
+        "dateISO": "2026-01-01",
+        "name": "Neujahr",
+    }
+    assert Holiday(dateISO="2026-03-02", name="Clinic day", source="manual").model_dump() == {
+        "dateISO": "2026-03-02",
+        "name": "Clinic day",
+        "source": "manual",
+    }
+
+
+@pytest.mark.parametrize("raw", ["auto", "Manual", "", 12, True, ["manual"], {"source": "public"}])
+def test_unknown_holiday_source_is_dropped_instead_of_rejected(raw) -> None:
+    """A bad tag must not fail the whole calendar save with a 422."""
+    blob = _default_state().model_dump()
+    blob["holidays"][0]["source"] = raw
+    holiday = AppState.model_validate(blob).holidays[0]
+    assert holiday.source is None
+    assert "source" not in holiday.model_dump()
+
+
+def test_calendar_with_untagged_holidays_keeps_its_blob_and_revision(state_db):
+    """A calendar stored before holidays carried a source keeps the revision
+    open tabs hold after the deploy, and saving it does not add the key."""
+    import hashlib
+    import json
+
+    from backend.state import _load_state, _save_state
+
+    normalized, _ = _normalize_state(_default_state())
+    blob = normalized.model_dump(exclude={"revision"})
+    assert blob["holidays"]
+    assert all(set(holiday) == {"dateISO", "name"} for holiday in blob["holidays"])
+    _store_raw_state(state_db, "u", blob)
+    stored = _stored_data(state_db, "u")
+    pre_deploy_revision = hashlib.sha256(json.dumps(blob, sort_keys=True).encode()).hexdigest()
+
+    loaded = _load_state("u")
+
+    assert all(holiday.source is None for holiday in loaded.holidays)
+    assert loaded.revision == pre_deploy_revision
+    assert _stored_updated_at(state_db, "u") == "2020-01-01T00:00:00+00:00"
+    _save_state(loaded, "u", check_revision=True, expected_revision=pre_deploy_revision)
+    assert _stored_data(state_db, "u") == stored
+
+
+def test_holiday_source_round_trips_through_save_and_load(state_db):
+    import json
+
+    from backend.state import _load_state, _save_state
+
+    _save_state(_normalize_state(_default_state())[0], "u")
+    stored_untagged = _stored_data(state_db, "u")
+    state = _load_state("u")
+    untagged_revision = state.revision
+
+    state.holidays[0].source = "public"
+    state.holidays.append(Holiday(dateISO="2026-03-02", name="Clinic day", source="manual"))
+    state, _ = _normalize_state(state)
+    _save_state(state, "u", check_revision=True, expected_revision=untagged_revision)
+    holidays = json.loads(_stored_data(state_db, "u"))["holidays"]
+    assert holidays[0]["source"] == "public"
+    assert "source" not in holidays[1]
+    assert holidays[-1] == {"dateISO": "2026-03-02", "name": "Clinic day", "source": "manual"}
+
+    loaded = _load_state("u")
+    assert (loaded.holidays[0].source, loaded.holidays[-1].source) == ("public", "manual")
+    assert loaded.revision == state.revision != untagged_revision
+
+    # Untagging and removing the added holiday restores the exact bytes and revision.
+    loaded.holidays[0].source = None
+    loaded.holidays.pop()
+    _save_state(loaded, "u", check_revision=True, expected_revision=loaded.revision)
+    assert _stored_data(state_db, "u") == stored_untagged
+    assert _load_state("u").revision == untagged_revision

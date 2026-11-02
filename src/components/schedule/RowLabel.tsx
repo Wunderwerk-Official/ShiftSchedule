@@ -9,64 +9,203 @@ type RowLabelProps = {
    * text takes it instead of the slate defaults.
    */
   ink?: string;
-  /** Stacked layout: one time band of a class row (name on its first band). */
+  /** Stacked single-day layout: one lane of a class row in one label cell. */
   stacked?: StackedRowMeta;
 };
 
 const LABEL_FONT = { fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' };
 
-// Stacked layout label: row band name (first lane only) and the lane's
-// section on the left, its time right-aligned so times line up in a column.
-// The location is named by the band above the rows, not repeated here. When
-// some days of the lane belong to another section, a "+N" badge lists them
-// (the cells name no section).
-function StackedRowLabel({ meta, ink }: { meta: StackedRowMeta; ink?: string }) {
-  const others = meta.otherSections ?? [];
-  const othersTitle = others.length > 0 ? `Other days: ${others.join(" · ")}` : undefined;
-  // On a location-colored label every text takes the location's ink (an
-  // inline color beats the slate classes in both themes).
-  const inkStyle: CSSProperties | undefined = ink ? { color: ink } : undefined;
+// Stacked label text, shared by the week (three cells) and the single day
+// (one cell). Row band: bold capitals; section: medium, up to two lines (the
+// week's spanning cells allow more, see StackedLabelCells); time: tabular
+// digits, so every time has the same width and they line up.
+const BAND_TEXT =
+  "line-clamp-3 break-words text-[11px] font-semibold uppercase leading-4 tracking-wide text-slate-800 dark:text-slate-50";
+const SECTION_TEXT =
+  "line-clamp-2 break-words text-[11px] font-medium leading-4 text-slate-700 dark:text-slate-100";
+const TIME_TEXT =
+  "whitespace-nowrap text-[11px] font-medium leading-4 tabular-nums text-slate-600 dark:text-slate-300";
+
+/**
+ * Stacked dividers by level, as bottom borders (the cells' other border
+ * colors stay): a hairline between the lanes of one section, a line between
+ * the sections of a row, a stronger line between rows (row bands). See-through
+ * ink, so a line looks the same on white, hatched, section-tinted and
+ * location-colored cells (a slate line reads as a white gap on a tint).
+ */
+export const STACKED_DIVIDER = {
+  lane: "border-b border-b-slate-900/[0.06] dark:border-b-white/[0.06]",
+  section: "border-b border-b-slate-900/[0.13] dark:border-b-white/[0.13]",
+  row: "border-b border-b-slate-900/[0.24] dark:border-b-white/[0.22]",
+} as const;
+export type StackedDividerLevel = keyof typeof STACKED_DIVIDER;
+
+export const stackedDividerLevel = (meta: StackedRowMeta): StackedDividerLevel =>
+  meta.isLastInGroup ? "row" : meta.isLastInSection ? "section" : "lane";
+
+/** Tooltip of a lane: its section and time ("IRM neuro HK · 13:00–16:00"). */
+const laneTooltip = (meta: StackedRowMeta) =>
+  [meta.sectionName, meta.timeLabel ? compactTimeLabel(meta.timeLabel) : undefined]
+    .filter(Boolean)
+    .join(" · ") || undefined;
+
+type StackedLabelCellsProps = {
+  meta: StackedRowMeta;
+  /** Location color of the row band (team grid): every label cell takes it. */
+  tint?: { background: string; ink: string };
+  /** Bottom border of the lane (its time cell). */
+  laneDivider: string;
+  /** Bottom border of the row band cell (spans the row's lanes); set on the first lane. */
+  groupDivider?: string;
+  /** Bottom border of the section cell (spans the section's lanes); set on its first lane. */
+  sectionDivider?: string;
+};
+
+/**
+ * Stacked week: the label column is three grid columns — row band, section,
+ * time — so section names and times line up down the whole plan. The row
+ * band cell spans all lanes of its row and the section cell all lanes of its
+ * section (grid-row span), like merged cells in a table: location band →
+ * row band → section → its times. Without location colors (print, PDF,
+ * public) the section and time cells carry the section's color, the cells'
+ * tint in the section look.
+ */
+export function StackedLabelCells({
+  meta,
+  tint,
+  laneDivider,
+  groupDivider,
+  sectionDivider,
+}: StackedLabelCellsProps) {
+  const inkStyle: CSSProperties | undefined = tint ? { color: tint.ink } : undefined;
+  const tintStyle: CSSProperties | undefined = tint
+    ? { backgroundColor: tint.background }
+    : meta.sectionColor
+      ? ({ "--section-color": meta.sectionColor } as CSSProperties)
+      : undefined;
+  const sectionTintClass = tint
+    ? undefined
+    : meta.sectionColor
+      ? "stacked-label-tint"
+      : "bg-white dark:bg-slate-900";
+  const shade = tint?.background;
+  // A spanning cell has the height of all its lanes: long names wrap onto
+  // more lines there instead of being cut off (a row band three at least,
+  // one per lane; a section four at least, two per lane and one more).
+  const bandLines = Math.max(3, meta.groupSpan ?? 1);
+  const sectionLines = Math.max(4, 2 * (meta.sectionSpan ?? 1) + 1);
+  // A later lane of a section shows only its time; screen readers still
+  // hear which section it belongs to.
+  const hiddenSection = !meta.isFirstInSection && meta.title ? meta.title : undefined;
   return (
-    <div className="flex h-full flex-col justify-center gap-0.5 px-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-3">
-      <div className="min-w-0 max-w-[128px] sm:max-w-[160px]" style={LABEL_FONT}>
-        {meta.groupLabel ? (
+    <>
+      {meta.isFirstInGroup ? (
+        <div
+          data-stacked-label="band"
+          data-label-shade={shade}
+          className={cx(
+            "row border-r border-r-slate-900/[0.07] py-[7px] pl-2.5 pr-1.5 dark:border-r-white/[0.08]",
+            groupDivider,
+            !tint && "bg-slate-50 dark:bg-slate-800/60",
+          )}
+          style={{
+            gridRow: `span ${meta.groupSpan ?? 1}`,
+            ...(tint ? { backgroundColor: tint.background } : null),
+          }}
+        >
           <span
-            // Two lines before an ellipsis: long row names stay readable.
-            className="line-clamp-2 break-words text-[11px] font-semibold uppercase leading-4 tracking-wide text-slate-800 dark:text-slate-50"
+            // Room for one long word (BEREITSCHAFT, HINTERGRUNDDIENST). A word
+            // breaks only as a last resort: when the grid's auto label
+            // columns must give way (A4 portrait with long names), which
+            // overflow-wrap: anywhere allows instead of an overflowing week.
+            className={cx(BAND_TEXT, "max-w-[128px] [overflow-wrap:anywhere]")}
             title={meta.groupLabel}
-            style={inkStyle}
+            style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: bandLines }}
           >
             {meta.groupLabel}
           </span>
-        ) : null}
-        {meta.title || others.length > 0 ? (
+        </div>
+      ) : null}
+      {meta.isFirstInSection ? (
+        <div
+          data-stacked-label="section"
+          data-label-shade={shade}
+          className={cx("row py-[7px] pl-2 pr-1.5", sectionDivider, sectionTintClass)}
+          style={{ gridRow: `span ${meta.sectionSpan ?? 1}`, ...tintStyle }}
+        >
+          {meta.title ? (
+            <span
+              className={cx(SECTION_TEXT, "max-w-[112px] [overflow-wrap:anywhere] lg:max-w-[160px]")}
+              title={meta.title}
+              style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: sectionLines }}
+            >
+              {meta.title}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+      <div
+        data-stacked-label="time"
+        data-label-shade={shade}
+        className={cx(
+          "row flex justify-end border-r-2 border-slate-300 py-[7px] pl-1.5 pr-2.5 dark:border-slate-700",
+          laneDivider,
+          sectionTintClass,
+        )}
+        style={tintStyle}
+        title={laneTooltip(meta)}
+      >
+        {hiddenSection ? <span className="sr-only">{hiddenSection} </span> : null}
+        {meta.timeLabel ? (
+          <span className={TIME_TEXT} style={{ ...LABEL_FONT, ...inkStyle }}>
+            {compactTimeLabel(meta.timeLabel)}
+          </span>
+        ) : hiddenSection ? (
+          // No time of its own: the lane still needs a name.
           <span
-            className="flex min-w-0 items-center gap-1 text-[11px] leading-4 text-slate-600 dark:text-slate-50"
+            className={cx(SECTION_TEXT, "max-w-[112px] text-right")}
+            style={{ ...LABEL_FONT, ...inkStyle }}
+            aria-hidden
+          >
+            {hiddenSection}
+          </span>
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+// Stacked single day (phone, one day on screen): one label cell per lane —
+// row band name (first lane), the section and the time, right-aligned when
+// there is room. Without the week's spanning section cell every lane names
+// its section (a later lane of the same section a little quieter), so no
+// label is just a time.
+function StackedRowLabel({ meta, ink }: { meta: StackedRowMeta; ink?: string }) {
+  const inkStyle: CSSProperties | undefined = ink ? { color: ink } : undefined;
+  const section = meta.title;
+  return (
+    <div
+      className="flex h-full flex-col justify-center gap-0.5 px-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-3"
+      title={laneTooltip(meta)}
+    >
+      <div className="min-w-0 max-w-[128px] sm:max-w-[160px]" style={LABEL_FONT}>
+        {meta.groupLabel ? (
+          <span className={BAND_TEXT} title={meta.groupLabel} style={inkStyle}>
+            {meta.groupLabel}
+          </span>
+        ) : null}
+        {section ? (
+          <span
+            className={cx(SECTION_TEXT, !meta.isFirstInSection && "opacity-75")}
+            title={section}
             style={inkStyle}
           >
-            {meta.title ? (
-              <span className="line-clamp-2 break-words" title={meta.title}>
-                {meta.title}
-              </span>
-            ) : null}
-            {others.length > 0 ? (
-              <span
-                className="shrink-0 rounded-full bg-white/70 px-1 text-[10px] font-semibold leading-4 text-slate-600 dark:bg-slate-950/50 dark:text-slate-50"
-                title={othersTitle}
-                style={inkStyle}
-              >
-                +{others.length}
-                <span className="sr-only"> ({othersTitle})</span>
-              </span>
-            ) : null}
+            {section}
           </span>
         ) : null}
       </div>
       {meta.timeLabel ? (
-        <span
-          className="shrink-0 whitespace-nowrap text-[11px] font-medium leading-4 tabular-nums text-slate-600 dark:text-slate-50"
-          style={inkStyle}
-        >
+        <span className={cx(TIME_TEXT, "shrink-0")} style={{ ...LABEL_FONT, ...inkStyle }}>
           {compactTimeLabel(meta.timeLabel)}
         </span>
       ) : null}

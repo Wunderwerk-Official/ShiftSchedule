@@ -1032,6 +1032,29 @@ def test_day_by_day_fallback_respects_deadline_and_fills_when_time_remains():
     assert any("LLM error" in n for n in result2["notes"])
 
 
+@pytest.mark.parametrize("strategy", ["day_by_day", "repair"])
+def test_basic_plan_fallback_and_repair_seed_respect_rest_day_row(strategy):
+    """v1.75: the heuristic behind the basic plan (without AI) and the repair
+    seed leave a person placed in the Rest Day row free that day."""
+    from backend.models import Assignment
+
+    state = _two_day_state()
+    state.assignments = [Assignment(id="rest", rowId="pool-rest-day", dateISO=MON,
+                                    clinicianId="clin-1", source="manual")]
+
+    class FirstCallError(LLMProvider):
+        def complete(self, **kwargs) -> ProviderResponse:
+            return ProviderResponse(text=None, tool_calls=[], stop_reason="error", error="boom")
+
+    result = agent_solve_range(
+        _payload(endISO=TUE, agent_strategy=strategy), state, MockCancelEvent(), ProgressRecorder(),
+        time.time(), provider=FirstCallError(), config=_config(),
+    )
+    monday = [a["clinicianId"] for a in result["assignments"] if a["dateISO"] == MON]
+    assert monday == ["clin-2"]
+    assert len(result["assignments"]) == 2
+
+
 def test_day_by_day_pipelined_turn_gets_post_apply_suggestion():
     """The prompt's step-4 pipeline: apply_moves and suggest_day_blocks in
     ONE response, in that order. The suggestion must be computed AFTER the
@@ -1306,6 +1329,9 @@ def test_open_slot_reasons_are_bounded():
     assert _main_reason(0, 0, Counter()) == "NO_QUALIFIED"
     assert _main_reason(4, 0, Counter({"VACATION": 3, "WEEKLY_HOURS": 2})) == "VACATION"
     assert _main_reason(2, 0, Counter({"OVERLAP": 1, "SAME_LOCATION_PER_DAY": 1})) == "OVERLAP"
+    # main's v1.75 rule: a rest day ranks with vacation, before overlaps.
+    assert _main_reason(2, 0, Counter({"OVERLAP": 1, "REST_DAY": 1})) == "REST_DAY"
+    assert _main_reason(2, 0, Counter({"REST_DAY": 1, "VACATION": 1})) == "VACATION"
     assert blocker_text({"qualified": 3, "addable": 1, "blocked_by": {"OVERLAP": 2}, "main": None}) == (
         "3 qualified; 1 could be added directly; blocked by overlapping shift 2")
     # Nobody left to add because everyone qualified already works the slot.
@@ -1339,6 +1365,23 @@ def test_open_slot_reasons_are_bounded():
     executor.current = {(f"s0", MON, "clin-1"): object()}
     result = open_slot_blockers(executor, gaps, max_slots=1)
     assert result[f"s0__{MON}"]["on_slot"] == 1 and result[f"s0__{MON}"]["qualified"] == 1
+
+
+def test_frontend_rule_labels_follow_the_closing_report():
+    """The banner (src/lib/solverOutcome.ts) uses the closing report's words
+    and breaks ties in its rule order; a rule added to one table only (as
+    REST_DAY was by main's v1.75) would rank last in the other."""
+    import re
+    from pathlib import Path
+
+    from backend.agent.open_reasons import RULE_LABELS
+
+    source = (Path(__file__).resolve().parents[2] / "src/lib/solverOutcome.ts").read_text()
+    body = re.search(r"const RULE_LABELS: Record<string, string> = \{(.*?)\n\};", source, re.S).group(1)
+    frontend = dict(re.findall(r'^\s*([A-Z_]+): "([^"]*)",', body, re.M))
+    assert list(frontend)[:len(RULE_LABELS)] == list(RULE_LABELS)
+    assert {code: frontend[code] for code in RULE_LABELS} == RULE_LABELS
+    assert RULE_LABELS["REST_DAY"] == "rest day"
 
 
 def test_finalize_reports_all_clear_when_nothing_unsolved():

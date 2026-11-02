@@ -14,7 +14,7 @@ from typing import Optional
 DEFAULT_PROVIDER = "anthropic"
 # Keep in sync with the frontend default in src/lib/llmPricing.ts
 # (agent_budget imports this constant).
-DEFAULT_MODEL = "claude-sonnet-5"
+DEFAULT_MODEL = "claude-opus-5-5"
 # Placeholder only: agent_solve_range replaces max_iterations on every solve
 # with slot instances x 10, so neither this default nor an environment
 # variable sets the real cap.

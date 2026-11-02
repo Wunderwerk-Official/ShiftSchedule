@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
+import type { Holiday } from "../api/client";
 import {
   HOLIDAY_REGIONS,
   filterHolidaysByRegion,
   holidayRegionForCountry,
+  mergeLoadedHolidays,
   normalizeHolidayRegion,
   type NagerPublicHoliday,
 } from "./holidays";
@@ -146,5 +148,69 @@ describe("HOLIDAY_REGIONS", () => {
         expect(holidayRegionForCountry(country, code)).toBe(code);
       }
     }
+  });
+});
+
+describe("mergeLoadedHolidays", () => {
+  const loadedNames = (holidays: Holiday[]) => holidays.map((holiday) => holiday.name);
+
+  it("adds the nationwide holidays plus the region's own ones, tagged as loaded", () => {
+    const { holidays, added } = mergeLoadedHolidays([], germany2026, 2026, "DE-NW");
+    expect(loadedNames(holidays)).toEqual(names(filterHolidaysByRegion(germany2026, "DE-NW")));
+    expect(holidays).toHaveLength(11);
+    expect(holidays.every((holiday) => holiday.source === "public")).toBe(true);
+    expect(holidays[0]).toEqual({ dateISO: "2026-01-01", name: "Neujahr", source: "public" });
+    expect(added).toBe(11);
+  });
+
+  it("adds the regional holidays of all regions without a region, like filterHolidaysByRegion", () => {
+    expect(mergeLoadedHolidays([], germany2026, 2026).holidays).toHaveLength(19);
+    expect(mergeLoadedHolidays([], germany2026, 2026, "").holidays).toHaveLength(19);
+  });
+
+  it("keeps holidays added by hand and other years, and replaces this year's loaded ones", () => {
+    const previous: Holiday[] = [
+      { dateISO: "2026-03-02", name: "Betriebsausflug", source: "manual" },
+      { dateISO: "2026-11-18", name: "Buß- und Bettag", source: "public" },
+      { dateISO: "2025-12-25", name: "Erster Weihnachtstag", source: "public" },
+    ];
+    const { holidays, added } = mergeLoadedHolidays(previous, germany2026, 2026, "DE-NW");
+    expect(loadedNames(holidays).slice(0, 2)).toEqual(["Betriebsausflug", "Erster Weihnachtstag"]);
+    expect(holidays[1].dateISO).toBe("2025-12-25");
+    expect(loadedNames(holidays)).not.toContain("Buß- und Bettag");
+    expect(holidays).toHaveLength(2 + 11);
+    expect(added).toBe(11);
+  });
+
+  it("treats older untagged entries the service lists (for any region) as loaded and keeps the rest", () => {
+    const previous: Holiday[] = [
+      { dateISO: "2026-11-18", name: "Buß- und Bettag" }, // loaded for all states before v1.74
+      { dateISO: "2026-12-24", name: "Heiligabend (Klinik)" }, // added by hand before v1.74
+    ];
+    const { holidays } = mergeLoadedHolidays(previous, germany2026, 2026, "DE-NW");
+    expect(loadedNames(holidays)).not.toContain("Buß- und Bettag");
+    expect(holidays[0]).toEqual({ dateISO: "2026-12-24", name: "Heiligabend (Klinik)" });
+    expect(holidays).toHaveLength(1 + 11);
+  });
+
+  it("does not add a loaded holiday twice when the same one was added by hand", () => {
+    const previous: Holiday[] = [{ dateISO: "2026-01-01", name: "Neujahr", source: "manual" }];
+    const { holidays, added } = mergeLoadedHolidays(previous, [nationwide("2026-01-01", "Neujahr")], 2026);
+    expect(holidays).toEqual(previous);
+    expect(added).toBe(0);
+  });
+
+  it("adds an entry the service lists twice only once", () => {
+    const twice = [nationwide("2026-05-01", "Tag der Arbeit"), nationwide("2026-05-01", "Tag der Arbeit")];
+    expect(mergeLoadedHolidays([], twice, 2026)).toEqual({
+      holidays: [{ dateISO: "2026-05-01", name: "Tag der Arbeit", source: "public" }],
+      added: 1,
+    });
+  });
+
+  it("names an entry by localName, then name", () => {
+    const { holidays } = mergeLoadedHolidays([], [{ date: "2026-07-14", name: "Bastille Day", global: true }], 2026);
+    expect(holidays).toEqual([{ dateISO: "2026-07-14", name: "Bastille Day", source: "public" }]);
+    expect(mergeLoadedHolidays([], [{ date: "2026-07-14", global: true }], 2026).holidays[0].name).toBe("Holiday");
   });
 });

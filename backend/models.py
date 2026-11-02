@@ -98,6 +98,27 @@ class VacationRange(BaseModel):
 class Holiday(BaseModel):
     dateISO: str
     name: str
+    # "public": loaded from the public-holiday service (reloading replaces
+    # it); "manual": added by hand (kept on reload). None = older data.
+    # Not a planning input (run_apply.planning_fingerprint drops it).
+    source: Optional[Literal["public", "manual"]] = None
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _unknown_source_is_unset(cls, value: Any) -> Any:
+        # A malformed tag must never block a calendar save with a 422.
+        return value if value in ("public", "manual") else None
+
+    # No return annotation, see Location._omit_unset_color.
+    @model_serializer(mode="wrap")
+    def _omit_unset_source(self, handler):
+        # Same reason as Location.color: an untagged holiday dumps
+        # byte-identical to before the field existed, so stored calendars keep
+        # their revision and open tabs do not get a spurious 409 after a deploy.
+        data = handler(self)
+        if data.get("source") is None:
+            data.pop("source", None)
+        return data
 
 
 class WorkPattern(BaseModel):

@@ -6,8 +6,9 @@ import type { SolverDebugInfo, SolverRunSummary, SolverUnsolvedOpenSlot } from "
 const RULE_LABELS: Record<string, string> = {
   WEEKLY_HOURS: "weekly-hours limit",
   VACATION: "vacation",
+  REST_DAY: "rest day",
   OVERLAP: "overlapping shift",
-  SAME_LOCATION_PER_DAY: "other site that day",
+  SAME_LOCATION_PER_DAY: "other location that day",
   SPLIT_SHIFT: "split shift",
   ON_CALL_REST: "on-call rest",
   MANDATORY_WINDOW: "mandatory working time",
@@ -107,7 +108,7 @@ export function heuristicFallbackNotice(debug?: SolverDebugInfo): string | null 
       : reason === "aborted"
         ? "The model run was stopped."
         : "The model did not produce the returned draft.";
-  return `Heuristic fallback: the returned draft was produced by heuristic v2. ${explanation} Review it in the run inbox.`;
+  return `Basic plan (without AI): the returned draft was made without the AI. ${explanation} Review it in the run inbox.`;
 }
 
 export function agentReviewNotice(debug?: SolverDebugInfo): string | null {

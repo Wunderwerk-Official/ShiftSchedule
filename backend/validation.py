@@ -16,6 +16,8 @@ Only **hard** constraints are checked here:
 
 - Qualification       — assigned clinician must be qualified for the slot's section
 - Vacation            — no assignments on days the clinician is on vacation
+- Rest Day row        — no assignments on days the clinician was placed in the
+                        Rest Day row (stored ``pool-rest-day`` entries)
 - Overlap             — a clinician cannot have overlapping time intervals
                         (correctly handling midnight-spanning overnight slots)
 - Same location/day   — if ``enforceSameLocationPerDay`` is enabled
@@ -72,6 +74,7 @@ from datetime import datetime, timedelta
 from functools import lru_cache
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
+from .assignment_policy import manual_rest_days
 from .constants import (
     DEFAULT_LOCATION_ID,
     DEFAULT_SUB_SHIFT_MINUTES,
@@ -86,6 +89,7 @@ from .models import AppState, Assignment, Clinician, SolverRule, SolverSettings
 
 VIOLATION_QUALIFICATION = "QUALIFICATION"
 VIOLATION_VACATION = "VACATION"
+VIOLATION_REST_DAY = "REST_DAY"
 VIOLATION_OVERLAP = "OVERLAP"
 VIOLATION_SAME_LOCATION = "SAME_LOCATION_PER_DAY"
 VIOLATION_ON_CALL_REST = "ON_CALL_REST"
@@ -441,6 +445,43 @@ def validate_vacations(
                     slot_id=a.rowId,
                 )
             )
+    return out
+
+
+def validate_rest_days(
+    state: AppState,
+    assignments: List[Assignment],
+) -> List[Violation]:
+    """People in the Rest Day row on a date cannot hold slot assignments then.
+
+    Rest days are the stored ``pool-rest-day`` entries of ``state.assignments``
+    and of ``assignments`` together (any source), read once per call. Same date
+    semantics as vacation: an assignment counts on its ``dateISO``. Pool rows
+    are exempt; stored ``pool-vacation`` entries are legacy and never read.
+    """
+    rest_days = manual_rest_days(state.assignments, assignments)
+    if not rest_days:
+        return []
+    clinicians_by_id = {c.id: c for c in state.clinicians}
+    out: List[Violation] = []
+    for a in assignments:
+        if (a.clinicianId, a.dateISO) not in rest_days or a.rowId.startswith("pool-"):
+            continue
+        clinician = clinicians_by_id.get(a.clinicianId)
+        if clinician is None:
+            continue
+        out.append(
+            Violation(
+                code=VIOLATION_REST_DAY,
+                message=(
+                    f"{clinician.name} has a rest day on {a.dateISO} "
+                    f"but is assigned to slot {a.rowId}"
+                ),
+                clinician_id=a.clinicianId,
+                date_iso=a.dateISO,
+                slot_id=a.rowId,
+            )
+        )
     return out
 
 
@@ -969,7 +1010,8 @@ def validate_assignments(
         Candidate assignments to check — can be a complete schedule or any
         subset. Pool-row assignments (``rowId.startswith("pool-")``) are
         intentionally ignored for most checks since they are virtual rows
-        (Rest Day / Vacation), not schedulable slots.
+        (Rest Day / Vacation), not schedulable slots. Rest Day row entries
+        (here or in ``state.assignments``) mark the days ``REST_DAY`` checks.
     solver_settings:
         Override for the settings embedded in ``state``. Pass this when the
         caller wants to try alternate enforcement flags without mutating
@@ -995,6 +1037,7 @@ def validate_assignments(
         report.extend(validate_references(state, assignments))
     report.extend(validate_qualifications(state, assignments))
     report.extend(validate_vacations(state, assignments))
+    report.extend(validate_rest_days(state, assignments))
     report.extend(validate_overlaps(state, assignments))
     report.extend(validate_same_location_per_day(state, assignments, solver_settings))
     report.extend(validate_on_call_rest(state, assignments, solver_settings))
@@ -1010,6 +1053,7 @@ __all__ = [
     "ValidationReport",
     "VIOLATION_QUALIFICATION",
     "VIOLATION_VACATION",
+    "VIOLATION_REST_DAY",
     "VIOLATION_OVERLAP",
     "VIOLATION_SAME_LOCATION",
     "VIOLATION_ON_CALL_REST",
@@ -1024,6 +1068,7 @@ __all__ = [
     "validate_references",
     "validate_qualifications",
     "validate_vacations",
+    "validate_rest_days",
     "validate_overlaps",
     "validate_same_location_per_day",
     "validate_on_call_rest",

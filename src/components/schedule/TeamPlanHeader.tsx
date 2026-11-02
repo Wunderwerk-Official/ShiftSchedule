@@ -1,30 +1,26 @@
 import type { ReactNode } from "react";
-import type { PlanScope, TeamTimeLayout, UserPreferences, ViewConfig } from "../../api/client";
+import type { PlanScope, TeamTimeLayout, UserPreferences } from "../../api/client";
 import { cx } from "../../lib/classNames";
 import { personColor } from "../../lib/myPlan";
 import type { PreferencesUpdate } from "../../lib/userPreferences";
 import PlanScopeSwitch from "../myPlan/PlanScopeSwitch";
 import { TEXT_3, initialsOf, segmentClass, segmentGroupClass } from "../myPlan/planChrome";
-import SavedViewsMenu from "../myPlan/SavedViewsMenu";
-import StartPageStar from "../myPlan/StartPageStar";
-import Toast, { useToast } from "../myPlan/Toast";
-import { currentViewConfig } from "../myPlan/viewConfig";
 
 // Card header of the team calendars (classic grid and clinic sheet), plan
-// §2.1/§2.9. Row 1: "Team | My plan" switch on the left, "Times" (classic
-// grid only), start-page star and Views menu on the right — the same places
-// as in the My-plan header, so switching scope does not move the controls.
-// Row 2: the existing header (navigator, badges, publish), unchanged. The
-// classic grid always colors people (the "Color by" switch is gone).
+// §2.1/§2.9. Row 1: "Team | My plan" switch on the left — the same place as
+// in the My-plan header, so switching scope does not move it — and "Times"
+// on the right (classic grid only; on phones it wraps below the switch when
+// the row is too narrow). Row 2: the existing header (navigator, badges,
+// publish), unchanged. The classic grid always colors people (the "Color by"
+// switch is gone). The start-page star and the saved "Views" menu were
+// removed in v1.74.
 
 type TeamPlanHeaderProps = {
   isMobile: boolean;
   prefs: UserPreferences;
   onUpdatePrefs: (update: PreferencesUpdate) => void;
   onScopeChange: (scope: PlanScope) => void;
-  /** Apply a saved view (scope + range/orientation). */
-  onApplyView: (view: ViewConfig) => void;
-  /** Person linked to the account and their clinician list index (initials on "My plan"). */
+  /** Person linked to the account and their clinician list index (initials and name on "My plan"). */
   me?: { name: string; index: number } | null;
   /** "Times: Side by side | Stacked" — classic grid only; the clinic sheet keeps its look. */
   showTimeLayout?: boolean;
@@ -80,78 +76,32 @@ export default function TeamPlanHeader({
   prefs,
   onUpdatePrefs,
   onScopeChange,
-  onApplyView,
   me,
   showTimeLayout = false,
   children,
 }: TeamPlanHeaderProps) {
-  const { toast, show: notify, dismiss } = useToast();
-  const currentView = currentViewConfig(prefs, "team");
-  const scopeSwitch = (
-    <PlanScopeSwitch
-      scope="team"
-      onChange={onScopeChange}
-      meInitials={me ? initialsOf(me.name) : undefined}
-      meColor={me ? personColor(me.index).strong : undefined}
-      compact={isMobile}
-    />
-  );
-  const displaySwitches = showTimeLayout ? (
-    <SegmentSwitch
-      label="Times"
-      options={TIME_LAYOUT_OPTIONS}
-      value={prefs.teamTimeLayout}
-      onChange={(teamTimeLayout) => onUpdatePrefs({ teamTimeLayout })}
-      compact={isMobile}
-    />
-  ) : null;
-  const tools = (
-    <>
-      <StartPageStar
-        currentView={currentView}
-        prefs={prefs}
-        onUpdatePrefs={onUpdatePrefs}
-        isMobile={isMobile}
-        onNotify={notify}
-      />
-      <SavedViewsMenu
-        currentView={currentView}
-        prefs={prefs}
-        onUpdatePrefs={onUpdatePrefs}
-        onApplyView={onApplyView}
-        isMobile={isMobile}
-        onNotify={notify}
-      />
-    </>
-  );
-
   return (
     <div className={cx("flex flex-col", isMobile ? "gap-2" : "gap-3")}>
-      {isMobile ? (
-        <>
-          <div className="flex items-center justify-between gap-2">
-            {scopeSwitch}
-            <div className="flex shrink-0 items-center gap-1">{tools}</div>
-          </div>
-          {displaySwitches ? (
-            <div className="flex flex-wrap items-center gap-x-4 gap-y-2">{displaySwitches}</div>
-          ) : null}
-        </>
-      ) : (
-        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
-          {scopeSwitch}
-          <div className="flex flex-wrap items-center gap-2">
-            {displaySwitches ? (
-              <div className="mr-2 flex flex-wrap items-center gap-x-4 gap-y-2">
-                {displaySwitches}
-              </div>
-            ) : null}
-            {tools}
-          </div>
-        </div>
-      )}
+      <div className={cx("flex flex-wrap items-center justify-between", isMobile ? "gap-2" : "gap-x-4 gap-y-2")}>
+        <PlanScopeSwitch
+          scope="team"
+          onChange={onScopeChange}
+          meInitials={me ? initialsOf(me.name) : undefined}
+          meColor={me ? personColor(me.index).strong : undefined}
+          meName={me?.name}
+          compact={isMobile}
+        />
+        {showTimeLayout ? (
+          <SegmentSwitch
+            label="Times"
+            options={TIME_LAYOUT_OPTIONS}
+            value={prefs.teamTimeLayout}
+            onChange={(teamTimeLayout) => onUpdatePrefs({ teamTimeLayout })}
+            compact={isMobile}
+          />
+        ) : null}
+      </div>
       {children}
-      <Toast toast={toast} onDismiss={dismiss} isMobile={isMobile} />
     </div>
   );
 }

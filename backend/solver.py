@@ -44,6 +44,7 @@ CONSTRAINTS
 - Overlap: No overlapping time intervals for the same clinician
 - Location: Optionally enforce same location per day per clinician
 - Vacation: Clinicians on vacation cannot be assigned
+- Rest Day row: Clinicians placed there by hand cannot be assigned that day
 - On-call rest: Configurable rest days before/after on-call shifts
 - Continuity: If enabled, each clinician/day has at most one continuous block (or existing manual blocks)
 - Manual assignments: Existing manual assignments are preserved as constraints
@@ -314,7 +315,7 @@ from .models import (
     UserPublic,
 )
 from .state import _load_state
-from .assignment_policy import is_replaced_by_draft
+from .assignment_policy import is_replaced_by_draft, manual_rest_days
 from .planning_preferences import vacation_dates_in_range
 
 router = APIRouter()
@@ -791,9 +792,11 @@ def _collect_manual_assignments(
         if assignment.dateISO not in day_isos:
             continue
         # Existing assignments remain occupied even if the input already
-        # conflicts with vacation. Ignoring them permits a new overlapping
-        # duty on the next day of an overnight assignment.
-        # Skip pool assignments - they are not slot assignments.
+        # conflicts with vacation or a Rest Day row entry. Ignoring them
+        # permits a new overlapping duty on the next day of an overnight
+        # assignment.
+        # Skip pool assignments - they are not slot assignments (Rest Day
+        # row dates are read separately via manual_rest_days).
         if assignment.rowId.startswith("pool-"):
             continue
         # Track all manual assignments for continuity/overlap calculations.
@@ -860,14 +863,17 @@ def _build_assignment_vars(
     active_slots_by_date: Dict[str, List[Dict[str, Any]]],
     slot_intervals: Dict[str, Tuple[int, int, str]],
     working_window_by_clinician_date: Dict[Tuple[str, str], Tuple[str, int, int]],
-    is_on_vac,
+    is_unavailable,
 ) -> Tuple[Dict[Tuple[str, str, str], cp_model.IntVar], List[cp_model.IntVar]]:
-    """Create decision variables for each eligible clinician/date/slot."""
+    """Create decision variables for each eligible clinician/date/slot.
+
+    ``is_unavailable(clinician_id, date_iso)`` is true on vacation and on
+    Rest Day row dates; a slot counts on its start date."""
     var_map: Dict[Tuple[str, str, str], cp_model.IntVar] = {}
     time_window_terms: List[cp_model.IntVar] = []
     for clinician in state.clinicians:
         for date_iso in target_day_isos:
-            if is_on_vac(clinician.id, date_iso):
+            if is_unavailable(clinician.id, date_iso):
                 continue
             window = working_window_by_clinician_date.get((clinician.id, date_iso))
             for ctx in active_slots_by_date.get(date_iso, []):
@@ -2338,6 +2344,15 @@ def _solve_range_impl(
                 return True
         return False
 
+    # People placed in the Rest Day row by hand are off that day, handled
+    # exactly like vacation: no decision variable on that date, while their
+    # existing shifts stay occupied (_collect_manual_assignments). A rest day
+    # is not vacation, so it does not reduce expected hours.
+    rest_days = manual_rest_days(state.assignments)
+
+    def is_unavailable(clinician_id: str, date_iso: str) -> bool:
+        return (clinician_id, date_iso) in rest_days or is_on_vac(clinician_id, date_iso)
+
     # manual_assignments: for solver constraints (slots in the template for target dates)
     # all_manual_assignments: for continuity/overlap checks (includes all template slots)
     manual_assignments, all_manual_assignments, orphaned_assignments = _collect_manual_assignments(
@@ -2374,7 +2389,7 @@ def _solve_range_impl(
         active_slots_by_date,
         slot_intervals,
         working_window_by_clinician_date,
-        is_on_vac,
+        is_unavailable,
     )
     timer.checkpoint("create_variables")
 
@@ -2385,13 +2400,13 @@ def _solve_range_impl(
         total_clinicians = len(state.clinicians)
         clinicians_on_vacation = sum(
             1 for c in state.clinicians
-            if all(is_on_vac(c.id, d) for d in target_day_isos)
+            if all(is_unavailable(c.id, d) for d in target_day_isos)
         )
         total_slots = len(slot_contexts)
         slots_with_sections = len({ctx["section_id"] for ctx in slot_contexts})
         clinician_qualifications = sum(len(c.qualifiedClassIds) for c in state.clinicians)
         diagnostics.append(f"No assignment variables created.")
-        diagnostics.append(f"Clinicians: {total_clinicians} total, {clinicians_on_vacation} fully on vacation.")
+        diagnostics.append(f"Clinicians: {total_clinicians} total, {clinicians_on_vacation} fully on vacation or rest days.")
         diagnostics.append(f"Slots: {total_slots} total across {slots_with_sections} sections.")
         if clinician_qualifications == 0:
             diagnostics.append("No clinicians have any section qualifications.")

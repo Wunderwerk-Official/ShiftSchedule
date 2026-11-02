@@ -78,8 +78,8 @@ def repair_with_solver(reference, seconds=20.0):
     return {(a.rowId, a.dateISO, a.clinicianId) for a in result.assignments}
 
 
-def greedy_executor():
-    state = trap_state()
+def greedy_executor(state=None):
+    state = state or trap_state()
     executor = PlanToolExecutor(state, build_scoring_context(state, THU, FRI, only_fill_required=True), [])
     applied = executor._tool_apply_moves({"moves": [
         {"action": "assign", "slot_key": f"slot-cor-thu__{THU}", "clinicianId": "laurain"}]})
@@ -395,7 +395,7 @@ def test_arena_flags_days_the_repair_completed_for_the_model():
 
 
 # ---------------------------------------------------------------------------
-# The repair model must accept every plan the gate accepts (review of v1.74):
+# The repair model must accept every plan the gate accepts (review of v1.77):
 # a stricter model makes the agent's legal plan an infeasible hint, and the
 # repair then breaks legal placements or is rejected.
 # ---------------------------------------------------------------------------
@@ -576,3 +576,83 @@ def test_parse_direct_reply_reads_every_plan_block_and_only_those():
         "```Plan\nS1__2026-11-05 = Ann\n```\nWeek two:\n``` plan\nS2__2026-11-12 = Bob\n* S3__2026-11-12 = Cy\n```")
     assert adds == [("S1__2026-11-05", "Ann"), ("S2__2026-11-12", "Bob")]
     assert removes == [] and unparsed == 1
+
+
+# ---------------------------------------------------------------------------
+# Rest Day row entries (main's v1.75 rule REST_DAY, merged in v1.77): CP-SAT
+# has no variable on such a date, the shared gate refuses it.
+# ---------------------------------------------------------------------------
+
+
+def rest_day_state() -> AppState:
+    """The trap with Laurain placed in the Rest Day row on Friday."""
+    state = trap_state()
+    state.assignments.append(Assignment(id="rest-fri", rowId="pool-rest-day", dateISO=FRI,
+                                        clinicianId="laurain", source="manual"))
+    return state
+
+
+def _repair_result(reference, max_changes=None):
+    payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=20)
+    result = _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
+                               start_time=time.time(), state_override=rest_day_state(),
+                               repair_reference=reference, repair_max_changes=max_changes)
+    return result.debugInfo.solver_status, {(a.rowId, a.dateISO, a.clinicianId) for a in result.assignments}
+
+
+def test_solver_repair_mode_never_moves_hours_onto_a_rest_day():
+    status, plan = _repair_result({GREEDY_THURSDAY})
+    assert status in cross_day.SOLVED_STATUSES and plan == {GREEDY_THURSDAY}
+
+
+def test_solver_repair_reference_without_a_variable_is_not_a_change():
+    """A reference placement the model has no variable for (here: on her rest
+    day) neither breaks the repair nor counts as a change: with no change
+    allowed the model stays solvable, it just cannot hold that placement."""
+    status, plan = _repair_result(set(FRIDAY_PLAN), max_changes=0)
+    assert status in cross_day.SOLVED_STATUSES and plan == set()
+    status, plan = _repair_result(set(FRIDAY_PLAN), max_changes=1)
+    assert status in cross_day.SOLVED_STATUSES and plan == {GREEDY_THURSDAY}
+
+
+def test_coverage_repair_leaves_a_rest_day_alone():
+    executor = greedy_executor(rest_day_state())
+    report = cross_day.coverage_repair(executor, cancel_event=threading.Event(), time_limit=20)
+    # The model knows the rest day: nothing to propose, nothing for the gate to refuse.
+    assert (report["status"], report["open_before"], report["open_after"]) == ("no_improvement", 2, 2), report
+    assert identities(executor) == {GREEDY_THURSDAY}
+
+
+def test_coverage_repair_gate_refuses_work_on_a_rest_day(monkeypatch):
+    from backend.models import SolveRangeResponse, SolverDebugInfo
+
+    def onto_the_rest_day(*_args, **_kwargs):
+        return SolveRangeResponse(
+            startISO=THU, endISO=FRI, notes=[],
+            assignments=[Assignment(id=f"x{i}", rowId=row, dateISO=day, clinicianId=cid, source="solver")
+                         for i, (row, day, cid) in enumerate(sorted(FRIDAY_PLAN))],
+            debugInfo=SolverDebugInfo(timing={}, solver_status="OPTIMAL"))
+
+    monkeypatch.setattr("backend.solver._solve_range_impl", onto_the_rest_day)
+    executor = greedy_executor(rest_day_state())
+    report = cross_day.coverage_repair(executor, cancel_event=threading.Event(), time_limit=20)
+    assert (report["status"], report["reason"]) == ("rejected", "invalid")
+    assert any("REST_DAY" in item for item in report["sample"]), report["sample"]
+    assert identities(executor) == {GREEDY_THURSDAY}
+
+
+def test_direct_legal_people_and_open_reasons_leave_out_a_rest_day():
+    from backend.agent import direct, open_reasons
+    from backend.scoring import open_slots
+
+    state = rest_day_state()
+    executor = PlanToolExecutor(state, build_scoring_context(state, THU, FRI, only_fill_required=True), [])
+    legal = {inst.slot_key: people for inst, _missing, people in direct.open_places(executor)}
+    assert legal == {f"slot-cor-thu__{THU}": ["Marie Laurain"],
+                     f"slot-seno-fri__{FRI}": [], f"slot-echo-fri__{FRI}": []}
+    assert direct._apply_one(executor, "assign", f"slot-seno-fri__{FRI}", "Marie Laurain") == ["REST_DAY"]
+
+    blockers = open_reasons.open_slot_blockers(executor, open_slots(executor.ctx, executor._working_list()))
+    seno = blockers[f"slot-seno-fri__{FRI}"]
+    assert (seno["blocked_by"], seno["main"]) == ({"REST_DAY": 1}, "REST_DAY")
+    assert open_reasons.blocker_text(seno) == "1 qualified; blocked by rest day 1"

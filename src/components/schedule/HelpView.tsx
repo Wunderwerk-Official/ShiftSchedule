@@ -71,7 +71,7 @@ export default function HelpView() {
           <p>
             The AI plans the selected timeframe day by day: on-call and priority slots
             first, every person with a contiguous block of work. It fills required
-            slots only. Model and instructions are set in Settings → Solver Settings.
+            slots only. Model and instructions are set in Settings → Planning rules &amp; AI.
           </p>
 
           <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -92,8 +92,8 @@ export default function HelpView() {
                   is) or <span className="font-medium">Apply best plan</span>.
                 </li>
                 <li>
-                  When the run finishes, the run inbox opens (also behind the{" "}
-                  <span className="font-medium">?</span> button of the panel). Review the
+                  When the run finishes, the run inbox opens (also behind the gear button
+                  of the panel). Review the
                   result and click <span className="font-medium">Apply</span> or{" "}
                   <span className="font-medium">Discard</span>. Nothing changes in the
                   calendar before you apply; a backup of the previous calendar is saved in
@@ -111,16 +111,17 @@ export default function HelpView() {
 
             <div className="rounded-xl border border-slate-200 bg-white px-4 py-3 dark:border-slate-800 dark:bg-slate-950">
               <div className="text-sm font-medium text-slate-900 dark:text-slate-100">
-                Pools & locked shifts
+                Rest Day/Vacation rows &amp; locked shifts
               </div>
               <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-slate-700 dark:text-slate-200">
                 <li>
-                  <span className="font-medium">Rest Day Pool</span>: people
-                  placed before or after on-call duties to rest.
+                  <span className="font-medium">Rest Day row</span>: people resting around
+                  on-call duty (filled by the on-call rest rule). A name you drag in marks a
+                  day off: automatic planning leaves that person free that day.
                 </li>
                 <li>
-                  <span className="font-medium">Vacation Pool</span>: people
-                  on vacation are excluded from automatic allocation.
+                  <span className="font-medium">Vacation row</span>: people on vacation;
+                  the planner does not plan them.
                 </li>
                 <li>
                   A <span className="font-medium">closed lock</span> on a name means the
@@ -155,7 +156,8 @@ export default function HelpView() {
               the automated planner never plans above it.
             </li>
             <li>
-              Drag a name to another shift or pool on the same day to move it. Dragging a
+              Drag a name to another shift or the Rest Day/Vacation row on the same day to
+              move it. Dragging a
               person into the Vacation row marks that day as vacation (their shifts that
               day are removed); drag them from the Vacation row to another row on the same
               day to end the vacation.
@@ -191,7 +193,7 @@ export default function HelpView() {
             <li>
               The template defines the slots of every location, per weekday (Mon–Sun)
               and for holidays: add locations, rows and columns, then drag a section
-              block into a cell or click an empty cell to add one.
+              into a cell or click an empty cell to add one.
             </li>
             <li>
               On a placed slot, click the time to set start and end, and the number to
@@ -203,8 +205,9 @@ export default function HelpView() {
               planned in them, including past weeks, are deleted.
             </li>
             <li>
-              Removing a slot, block, row, column or location also deletes all shifts
-              planned in it, including past weeks. The app asks for confirmation before
+              Removing a slot, section, row, column or location also deletes all shifts
+              planned in it, including past weeks (a removed section also leaves
+              everyone&apos;s Eligible Sections). The app asks for confirmation before
               removing anything that contains slots.
             </li>
           </ul>
@@ -229,13 +232,15 @@ export default function HelpView() {
               Holiday names appear under the date header.
             </li>
             <li>
-              Holidays can be preloaded by country and year, and added/removed
-              manually (date + name).
+              Public holidays can be loaded by country, state (canton, region) and year:
+              the nationwide holidays plus those of the chosen state. Loading again
+              replaces that year&apos;s loaded holidays; holidays you added by hand (date +
+              name) stay. Any holiday can be removed.
             </li>
             <li>
-              Choose your state (canton, region) before loading: without one, the
-              regional holidays of every state are loaded, and the calendar plans
-              those days with holiday staffing. Load again after changing it.
+              Choose your state before loading: without one, the regional holidays of
+              every state are loaded, and the calendar plans those days with holiday
+              staffing. Load again after changing it.
             </li>
           </ul>
         </Section>
@@ -244,24 +249,25 @@ export default function HelpView() {
           <ul className="list-disc space-y-1 pl-5">
             <li>
               <span className="font-medium">Weekly Calendar Template</span>: locations,
-              slots, required staffing and section blocks (see 6).
+              slots, required staffing and sections (see 6).
             </li>
             <li>
               <span className="font-medium">Calendar Layout</span>: standard weekly grid
               or the monthly sheet (Klinik-Monatslayout).
             </li>
             <li>
-              <span className="font-medium">Solver Settings</span>: rules such as same
-              location per day, the AI model, planning quality profile, AI agent
-              instructions, section priority order and on-call rest days.
+              <span className="font-medium">Planning rules &amp; AI</span>: one location
+              per day, no gaps within a day, the AI model, planning goals, instructions for
+              the AI, section priority and rest days around on-call duty.
             </li>
             <li>
               <span className="font-medium">People</span>: add/edit/remove, eligible
-              sections, vacations, preferred working times, work pattern and planning
-              wishes for the AI. Removing a person also deletes their assignments.
+              sections, vacations, working hours &amp; times, work pattern and planning
+              wishes for the AI. Removing a person also deletes their shifts.
             </li>
             <li>
-              <span className="font-medium">Holidays</span>: preload, add/remove.
+              <span className="font-medium">Holidays</span>: load public holidays by
+              country and state, add/remove.
             </li>
           </ul>
         </Section>
@@ -270,12 +276,15 @@ export default function HelpView() {
           <p>
             The <span className="font-medium">Calendar snapshots</span> button in the top
             bar saves the whole calendar under a name and restores it later. Before a
-            restore, and before a planning result is applied, the current calendar is
-            saved as an automatic backup.
+            restore, a planning result or a shifts file import is applied, the current
+            calendar is saved as an automatic backup. There is one automatic backup: the
+            latest one replaces the previous.
           </p>
           <p className="mt-2">
-            Settings → <span className="font-medium">Schedule snapshot</span> downloads the
-            assignments as a file and imports them again.
+            Settings → <span className="font-medium">Shifts file</span> downloads all shifts
+            as a file; importing one replaces all shifts, locked ones too. The calendar
+            before the import is saved first as the latest automatic backup; if that backup
+            cannot be saved, nothing is imported.
           </p>
         </Section>
 
@@ -331,6 +340,13 @@ export default function HelpView() {
               opens another person's plan.
             </li>
             <li>
+              The circle on <span className="font-medium">My plan</span> shows the initials
+              of the person linked to your account. To change it, open the arrow next to the
+              switch in My plan: the last entry,{" "}
+              <span className="font-medium">&ldquo;Not &lt;your name&gt;? Change who you are&rdquo;</span>,
+              lets you choose again; on a computer, pointing at the circle shows the name.
+            </li>
+            <li>
               Choose <span className="font-medium">Day</span>,{" "}
               <span className="font-medium">Week</span> or{" "}
               <span className="font-medium">Month</span>, and{" "}
@@ -344,12 +360,6 @@ export default function HelpView() {
               that date and briefly highlights your entry.
             </li>
             <li>
-              The <span className="font-medium">star</span> makes the current view your start
-              page on this device type (computer or phone);{" "}
-              <span className="font-medium">Views</span> saves views by name. Views never
-              store a date.
-            </li>
-            <li>
               Keyboard in My plan (not while typing): T / W / M day, week, month · H today ·
               O date on top / left · P team plan · N / Shift+N next / previous shift · ?
               lists the shortcuts.
@@ -357,11 +367,15 @@ export default function HelpView() {
             <li>
               <span className="font-medium">Times: Stacked</span> (team plan, standard weekly
               grid) shows one column per day and a day&rsquo;s times as rows below each other.
-              The left column names each row and its time and carries its location&rsquo;s color;
-              the cells show only the people (names shorten to initials in narrow columns). A
-              cell names its own workplace or time only where it differs from its row; a{" "}
-              <span className="font-medium">+N</span> next to a row name means some days belong
-              to another workplace (hover it to see which).{" "}
+              The left column reads from left to right: the row (MR, CT, …) in its
+              location&rsquo;s color, its workplaces, and each workplace&rsquo;s times, lined up
+              in one column. A row of the plan never mixes workplaces, nor separate times of one
+              workplace: a workplace or time that runs only on some days has its own row, hatched
+              on the days without it. Thicker lines separate the rows (MR, CT, …), thinner ones
+              the workplaces, the finest the times of one workplace. The cells show only the
+              people (names shorten to initials in narrow columns); where a day runs a little
+              differently from its row (say 08:00&ndash;13:00 on Saturday in a 07:30&ndash;13:00
+              row), a small clock under the names gives that day&rsquo;s time.{" "}
               <span className="font-medium">Side by side</span> gives every time of a day its
               own column, as before.
             </li>
@@ -378,8 +392,9 @@ export default function HelpView() {
             </li>
           </ul>
           <p className="mt-2">
-            Team | My plan, range, date on top / left, Times, saved views and start pages
-            are saved per account and never change the shared calendar.
+            The person you are linked to, range, date on top / left and Times are saved per
+            account and never change the shared calendar. The calendar always opens in the
+            team plan.
           </p>
           <p className="mt-2">
             <span className="font-medium">Location colors</span> are different: they are part

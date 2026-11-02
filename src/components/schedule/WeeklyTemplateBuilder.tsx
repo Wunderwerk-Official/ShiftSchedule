@@ -56,11 +56,26 @@ const createId = (prefix: string) => {
 // The colBand cap (max 20 per day type) is enforced where the template is
 // stored: the page's setWeeklyTemplate wrapper and normalizeTemplateColBands.
 
-// Added to the delete dialogs for blocks, rows, columns and locations (the
+// Added to the delete dialogs for sections, rows, columns and locations (the
 // slot dialog and the Copy Day warning say the same in their own words):
 // normalizeAppState drops every assignment whose slot no longer exists, in all weeks.
 const PLANNED_SHIFTS_DELETED =
   "All shifts planned in them, including past weeks, are deleted.";
+
+/** Helper text for the section priority order (Settings card and its dialog). */
+export const SECTION_PRIORITY_HELP =
+  "If not every slot can be filled, sections higher in this list are staffed first. Drag to change the order.";
+
+// Tooltip of the Holiday day chip and column header.
+const HOLIDAY_DAY_TITLE = "Used instead of the weekday on every date in the Holidays list.";
+
+// Options of the slot editor's "Ends" select (value = endDayOffset).
+const END_DAY_OPTIONS = [
+  { value: "0", label: "Same day" },
+  { value: "1", label: "Next day" },
+  { value: "2", label: "+2 days" },
+  { value: "3", label: "+3 days" },
+];
 
 // Position of a fixed popover: below its anchor, or above it when there is no
 // room below, kept 8px inside the viewport.
@@ -541,16 +556,23 @@ export default function WeeklyTemplateBuilder({
   };
 
   const handleDeleteBlock = async (blockId: string) => {
+    const block = blockById.get(blockId);
+    // Deleting the last block of a section removes the section itself (and,
+    // via the page, from everyone's Eligible Sections).
+    const isLastBlockOfSection =
+      !block ||
+      !blocks.some((item) => item.id !== blockId && item.sectionId === block.sectionId);
     const confirmed = await confirm({
-      title: "Delete Block",
-      message: `Delete this block? Any placed slots using it will be removed from the grid. ${PLANNED_SHIFTS_DELETED}`,
+      title: "Delete section",
+      message: isLastBlockOfSection
+        ? `Delete this section? Its slots are removed from the grid and it leaves everyone's Eligible Sections. ${PLANNED_SHIFTS_DELETED}`
+        : `Delete this block? Any placed slots using it will be removed from the grid. ${PLANNED_SHIFTS_DELETED}`,
       confirmLabel: "Delete",
       variant: "danger",
     });
     if (!confirmed) {
       return;
     }
-    const block = blockById.get(blockId);
     const nextBlocks = blocks.filter((item) => item.id !== blockId);
     onChange({
       ...template,
@@ -836,7 +858,7 @@ export default function WeeklyTemplateBuilder({
       ? `${formatTime(slot?.startTime)} - ${formatTime(slot?.endTime)}${
           (slot?.endDayOffset ?? 0) > 0 ? ` +${slot?.endDayOffset}d` : ""
         }`
-      : "Choose time";
+      : "Set time";
     return (
       <div
         className={cx(
@@ -851,6 +873,8 @@ export default function WeeklyTemplateBuilder({
             type="button"
             data-slot-required-trigger={slot?.id}
             onClick={onRequiredClick}
+            aria-label={`People required: ${requiredSlots}. Click to change.`}
+            title={`People required: ${requiredSlots}. Click to change.`}
             className={cx(
               "rounded-md px-1.5 text-[10px] font-semibold",
               isDarkBg
@@ -894,7 +918,7 @@ export default function WeeklyTemplateBuilder({
       >
         <div className="mb-2 flex items-center justify-between">
           <span className="text-xs font-semibold">
-            {slotEditorMode === "required" ? "Required slots" : "Slot time"}
+            {slotEditorMode === "required" ? "People required" : "Shift time"}
           </span>
           <button
             type="button"
@@ -922,19 +946,31 @@ export default function WeeklyTemplateBuilder({
                 handleUpdateSlotTime(locationId, slot.id, { requiredSlots: value });
               }}
             />
+            <p className="mt-1.5 text-[10px] leading-snug text-slate-500 dark:text-slate-400">
+              The planner fills up to this many; you can add more by hand. 0 = not planned
+              automatically.
+            </p>
           </div>
         ) : (
           <div className="flex flex-wrap items-start gap-2">
-            <CustomTimePicker
-              value={slot.startTime ?? ""}
-              onChange={(value) => {
-                handleUpdateSlotTime(locationId, slot.id, { startTime: value });
-              }}
-              step={5}
-              className="w-20"
-            />
-            <span className="pt-1 text-slate-400">-</span>
             <div className="flex flex-col items-start gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Start
+              </span>
+              <CustomTimePicker
+                value={slot.startTime ?? ""}
+                onChange={(value) => {
+                  handleUpdateSlotTime(locationId, slot.id, { startTime: value });
+                }}
+                step={5}
+                className="w-20"
+              />
+            </div>
+            <span className="pt-5 text-slate-400">-</span>
+            <div className="flex flex-col items-start gap-1">
+              <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                End
+              </span>
               <CustomTimePicker
                 value={slot.endTime ?? ""}
                 onChange={(value) => {
@@ -943,19 +979,22 @@ export default function WeeklyTemplateBuilder({
                 step={5}
                 className="w-20"
               />
+              <span className="mt-1 text-[10px] font-semibold uppercase tracking-wide text-slate-500">
+                Ends
+              </span>
               <CustomSelect
                 value={String(slot.endDayOffset ?? 0)}
                 onChange={(value) => {
                   const offset = clampOffset(Number(value));
                   handleUpdateSlotTime(locationId, slot.id, { endDayOffset: offset });
                 }}
-                options={[
-                  { value: "0", label: "+0d" },
-                  { value: "1", label: "+1d" },
-                  { value: "2", label: "+2d" },
-                  { value: "3", label: "+3d" },
-                ]}
-                className="w-16"
+                options={END_DAY_OPTIONS}
+                ariaLabel={`Ends: ${
+                  END_DAY_OPTIONS.find((option) => option.value === String(slot.endDayOffset ?? 0))
+                    ?.label ?? "Same day"
+                }`}
+                title="Pick 'Next day' for night shifts that end after midnight."
+                className="w-32"
               />
             </div>
           </div>
@@ -979,7 +1018,7 @@ export default function WeeklyTemplateBuilder({
         }}
       >
         <div className="flex items-center justify-between text-[11px] font-semibold text-slate-700 dark:text-slate-100">
-          Add block
+          Add section
           <button
             type="button"
             onClick={() => setActiveAddCell(null)}
@@ -990,7 +1029,7 @@ export default function WeeklyTemplateBuilder({
         </div>
         {blocks.length === 0 ? (
           <div className="mt-2 text-[10px] text-slate-400">
-            Create a section block first.
+            Create a section in the Sections list first.
           </div>
         ) : (
           <div className="mt-2 flex max-h-40 flex-col gap-1 overflow-y-auto pr-1">
@@ -1203,6 +1242,7 @@ export default function WeeklyTemplateBuilder({
                   });
                 }}
                 data-template-day-toggle={dayType}
+                title={dayType === "holiday" ? HOLIDAY_DAY_TITLE : undefined}
                 className={cx(
                   "rounded-full border px-3 py-1 text-[10px] font-semibold",
                   activeDayType === dayType
@@ -1279,7 +1319,8 @@ export default function WeeklyTemplateBuilder({
             <div className="border-b border-r border-slate-200 bg-slate-50 p-2 text-slate-500 dark:border-slate-800 dark:bg-slate-900/60">
               <button
                 type="button"
-                onClick={() => onAddLocation("Location Placeholder")}
+                onClick={() => onAddLocation("New Location")}
+                title="Adds a location at the top; type its name in the field."
                 className="rounded-full border border-dashed border-slate-300 px-2 py-0.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 + Location
@@ -1301,12 +1342,15 @@ export default function WeeklyTemplateBuilder({
                 >
                   <div className="flex w-full flex-col gap-1">
                     <div className="flex items-center justify-between">
-                      <span>{DAY_TYPE_LABELS[dayType]}</span>
+                      <span title={dayType === "holiday" ? HOLIDAY_DAY_TITLE : undefined}>
+                        {DAY_TYPE_LABELS[dayType]}
+                      </span>
                       <button
                         type="button"
                         onClick={() => handleAddColBand(dayType)}
                         className="rounded-full border border-slate-200 px-2 py-0.5 text-[10px] font-semibold text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                         aria-label={`Add ${DAY_TYPE_LABELS[dayType]} column`}
+                        title={`Adds a shift-time column to ${DAY_TYPE_LABELS[dayType]} for all locations.`}
                       >
                         Add column
                       </button>
@@ -1371,10 +1415,14 @@ export default function WeeklyTemplateBuilder({
                           value: String(index + 1),
                           label: String(index + 1),
                         }))}
+                        ariaLabel={`Location position: ${locationIndex + 1}`}
+                        title="Position in the calendar and template (1 = top)"
                         className="w-14"
                       />
                       <input
-                        className="w-40 rounded border border-slate-200 px-2 py-1 text-[11px] font-normal text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                        className="w-40 rounded border border-slate-200 px-2 py-1 text-[11px] font-normal text-slate-700 placeholder:text-slate-400 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                        aria-label="Location name"
+                        placeholder="Location name"
                         value={location.name}
                         onChange={(event) =>
                           onRenameLocation(location.id, event.target.value)
@@ -1450,7 +1498,8 @@ export default function WeeklyTemplateBuilder({
                                 event.target.value,
                               )
                             }
-                            placeholder="Row label"
+                            placeholder="Row name, e.g. MRI 1"
+                            title="Shown as this row's name in the calendar, the monthly sheet and My plan."
                             className="flex-1 w-full min-w-0 rounded border border-slate-200 px-2 py-1 text-[11px] font-normal text-slate-700 placeholder:text-slate-400 focus:border-sky-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                           />
                           <div className="absolute left-0 top-0 bottom-0 z-20 flex items-center justify-center">
@@ -1703,7 +1752,7 @@ export default function WeeklyTemplateBuilder({
                                 </div>
                               ) : (
                                 <div className="text-[10px] text-slate-400 dark:text-slate-600">
-                                  {colBand ? "Drop a block or click to add a block." : ""}
+                                  {colBand ? "Drop a section here or click to add one." : ""}
                                 </div>
                               )}
                             </div>
@@ -1803,14 +1852,14 @@ export default function WeeklyTemplateBuilder({
       <div className="w-full rounded-3xl border border-slate-200 bg-white p-2 shadow-sm dark:border-slate-800 dark:bg-slate-950 lg:min-w-56 lg:w-fit lg:max-w-[22rem] self-start sticky top-4 max-h-[calc(100vh-8rem)] overflow-y-auto">
         <div className="flex items-center justify-between gap-2">
           <div className="text-sm font-semibold text-slate-700 dark:text-slate-100">
-            Section blocks
+            Sections
           </div>
           <button
             type="button"
             onClick={() => setShowAddBlockPicker((prev) => !prev)}
             className="rounded-full border border-dashed border-slate-300 bg-slate-50 px-3 py-1 text-[11px] font-semibold text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200"
           >
-            + Add block
+            + Add section
           </button>
         </div>
         {showAddBlockPicker ? (
@@ -1844,7 +1893,7 @@ export default function WeeklyTemplateBuilder({
           </div>
         ) : null}
         <div className="mt-2 text-[11px] text-slate-500 dark:text-slate-400">
-          Drag to reorder. Top blocks get higher solver priority.
+          Drag into a cell to add a slot. Top = staffed first when short-staffed.
         </div>
         <div className="mt-2 flex flex-col gap-1.5">
           {blocks.map((block) => {
@@ -1899,7 +1948,7 @@ export default function WeeklyTemplateBuilder({
                     value={blockColor ?? null}
                     onChange={(color) => handleUpdateBlockColor(block.id, color)}
                     options={BLOCK_COLOR_OPTIONS}
-                    label="Select block color"
+                    label="Section color"
                     buttonClassName="h-5 w-5"
                     swatchClassName="h-3 w-3"
                   />
@@ -1909,7 +1958,8 @@ export default function WeeklyTemplateBuilder({
                   type="button"
                   onClick={() => handleDeleteBlock(block.id)}
                   className="absolute -top-2 left-2 rounded-full border border-slate-200 bg-white px-1 text-[10px] font-semibold text-rose-500 opacity-0 shadow-sm transition-opacity hover:text-rose-600 group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-900"
-                  aria-label="Delete block"
+                  aria-label="Delete section"
+                  title="Delete section"
                 >
                   x
                 </button>

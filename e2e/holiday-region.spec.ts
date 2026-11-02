@@ -73,7 +73,7 @@ async function openHolidaySettings(page: Page, state: AppState) {
   });
   await page.goto("/");
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await expect(page.getByText("Preload holidays")).toBeVisible();
+  await expect(page.getByText("Load public holidays")).toBeVisible();
   return { saved: () => statePosts.at(-1), holidayRequests };
 }
 

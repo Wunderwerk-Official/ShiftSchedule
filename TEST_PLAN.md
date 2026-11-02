@@ -105,6 +105,7 @@ npx playwright show-report
 - [x] Day solver creates assignments only for template slots
 - [x] Solver respects clinician qualifications
 - [x] Solver blocks vacation days
+- [x] Solver blocks dates a person was placed in the Rest Day row by hand (v1.75, `TestSolverRestDayRow`)
 - [x] Solver blocks rest days (when on-call rest enabled)
 - [x] Solver enforces same-location-per-day (when enabled)
 - [x] Solver prevents time overlaps (overlapping intervals forbidden)
@@ -203,7 +204,9 @@ npx playwright show-report
 
 **E2E Tests** (`e2e/my-plan.spec.ts`, mocked API, in CI):
 - [x] Link yourself, change views, jump back into the team plan
-- [x] My plan as start page; the team pills carry person colors (no "Color by" switch since v1.69)
+- [x] The calendar always opens in Team, even with a stored My-plan start view (v1.74: start-page star and saved views removed; opening sends no preferences PUT); the team pills carry person colors (no "Color by" switch since v1.69)
+- [x] "Not <name>? Change who you are" (last entry of the person picker) unlinks the account (PUT `clinicianId: null`) and My plan asks "Who are you in the plan?" again (v1.74)
+- [x] My plan chosen by hand before the calendar has loaded shows "Loading calendar…" instead of calling the link stale, then the plan
 - [x] Without a color the first location is blue (Auto); a picked color is saved with the calendar and colors the label shades and the band; Auto clears it (v1.71)
 - [x] Phone: the scope switch leads to My plan and hides the planning panels
 
@@ -218,12 +221,17 @@ npx playwright show-report
 - [x] Template above the column limit: banner and no save, snapshot import refused, snapshot restore backs up the last saved calendar, sign-out asks first
 - [x] Reset → Unlocked shifts and Unlocked shifts and rest days also remove planner entries on vacation days; both keep locked shifts, hand-placed ones included (v1.69)
 - [x] Times switches between side-by-side and stacked columns and stores the choice (v1.65)
+- [x] Stacked: a section that takes over a row band's slot on one day gets its own lane, named in the label (row band / section / time cells); the other lane is hatched that day; no in-cell section tag (v1.76)
 - [x] Moving a planner shift by hand locks it (v1.69)
 - [x] A locked shift moved into the Rest Day row becomes a plain rest day entry that Reset → Unlocked shifts and rest days removes (v1.69)
+- [x] A shifts file import saves the calendar as shown as an auto-backup first; when the backup fails nothing is imported (v1.74)
+- [x] Loading public holidays keeps the holidays added by hand (v1.74; the state filter is in `holiday-region.spec.ts`)
 
-**Frontend Tests (v1.66 compact cells and portrait PDF)**: `ScheduleGrid.test.tsx` (no section block or name in stacked cells, tooltip, +N badge, corner mark, hatched days without a slot, section tints, hover-only fix button, fixed pill keeps it, "Open"), `AssignmentPill.test.tsx` (full name in the pill's tooltip), `IcalExportModal.test.tsx` (page layout choice), `src/pages/printPage.test.ts` (A4 portrait geometry), `PrintWeekPage.test.tsx` / `PrintWeeksPage.test.tsx` (portrait page rule, seven columns, margins), `src/api/client.pdf.test.ts` (layout reaches the request); backend `test_pdf_revision.py` (layout → orientation, viewport and print route).
+**Frontend Tests (v1.66 compact cells and portrait PDF)**: `ScheduleGrid.test.tsx` (no section block or name in stacked cells, tooltip, corner mark (replaced by a tag in v1.73, gone since v1.76) and +N badge (gone since v1.76), hatched days without a slot, section tints, hover-only fix button, fixed pill keeps it, "Open"), `AssignmentPill.test.tsx` (full name in the pill's tooltip), `IcalExportModal.test.tsx` (page layout choice), `src/pages/printPage.test.ts` (A4 portrait geometry), `PrintWeekPage.test.tsx` / `PrintWeeksPage.test.tsx` (portrait page rule, seven columns, margins), `src/api/client.pdf.test.ts` (layout reaches the request); backend `test_pdf_revision.py` (layout → orientation, viewport and print route).
 
-**Frontend Tests (v1.73 named sections in stacked cells)**: `ScheduleGrid.test.tsx` (a cell of another section than its lane names that section in a tag, before its own time; cells of the lane's section name none).
+**Frontend Tests (v1.73 named sections in stacked cells)**: superseded in v1.76 — lanes never mix sections, so there is no section tag; replaced by the v1.76 tests below.
+
+**Frontend Tests (v1.76 stacked week: one row per section)**: `src/lib/stackedTeamLayout.test.ts` (`buildTimeLanes`: a slot that overlaps no free lane opens its own, however near its start; `buildSectionLanes`: lanes never mix sections — the user's rotating "IRM HK" row; a section's separate time blocks on different days (the user's IRM cardio HK: Mon/Thu 07:30, Wed 13:00 and 16:00) get a lane each with no differing time; sections by earliest start, then first slot in template column order, then name; a section's lanes by start even when a later day opened them; a weekend variant with another time stays in its section's lane; two slots of one section on a day get two lanes; sections by id, by name without one; `buildStackedTeamLayout`: a day of another section gets its own lane and color, a section named like its row band is titled when another section comes first, lane ids and order are the same whatever days are on screen, also when a hidden day or a holiday decides the order, row/section spans and first/last-in-section flags), `ScheduleGrid.test.tsx` (three label columns with spanning row band and section cells, header and pool row labels span them; divider levels lane / section / row on cells and label cells; single day keeps one label cell and names the section on every lane; no section tag in cells, own time as a quiet clock note under the people (no chip) and tooltip kept, no "+N"; section tints per lane label and cell; a later lane's section for screen readers and in its tooltip; location shade on every label cell), `HelpView.test.tsx` (stacked text), e2e `team-page.spec.ts` (see above).
 
 **Frontend Tests (v1.65 stacked times)**: `src/lib/stackedTeamLayout.test.ts` (time lanes: weekend columns by time, shorter shifts by nearest start, same-time columns by section), `ScheduleGrid.test.tsx` ("stacked times": one column per day, labels, own-time captions, drag between lanes), `TeamPlanHeader.test.tsx` (Times switch).
 
@@ -245,8 +253,20 @@ npx playwright show-report
 - [x] A chosen state filters the loaded holidays (NRW: Fronleichnam and Allerheiligen, no Buß- und Bettag) and is saved with the calendar; choosing it alone keeps the stored list
 - [x] A stored state is shown; another country starts without one
 
+**Holidays added by hand (v1.74)**: `src/lib/holidays.test.ts` (`mergeLoadedHolidays`: state filter, all states without one, hand-added holidays and other years kept, untagged entries the service lists replaced, no duplicates), `SettingsView.test.tsx` (load count, "added by hand"); backend `test_state_normalization.py` (untagged holidays dump without `source`, a pre-v1.74 calendar keeps its bytes and revision, round trip, unknown tags dropped instead of a 422), `test_state_routes.py` (GET/POST `/v1/state`), `test_agent_workflow_safety.py` (`source` is not a planning input); e2e `team-page.spec.ts` (with a stored state, holidays added by hand, in the UI or before v1.74, survive a load; older loaded ones are replaced).
 
-### 3.13 Planning across days and weekly hours (v1.74)
+### 3.13 Hand-placed rest days and on-call fairness (v1.75)
+
+**Backend Tests**:
+- [x] `REST_DAY` flags a shift on a stored `pool-rest-day` date (manual, solver or untagged entry), read from the calendar and from the checked list; not other dates or people, not pool rows; a night shift starting the evening before stays allowed (as for vacation); stored Vacation row entries stay ignored (`test_validation.py`)
+- [x] CP-SAT and heuristic v2 give the shift to someone else, leave it open when only the person on the rest day qualifies (solved, no infeasibility), and keep an existing shift on that day (`test_solver.py`, `test_heuristic_v2.py`); the basic plan (without AI) and the repair seed too (`test_agent_harness.py`)
+- [x] Agent: the person is ineligible with `REST_DAY` in candidate lists, day priorities and day blocks, `apply_moves` refuses, a fixed conflict blocks no unrelated move, `get_clinician_summary` lists `rest_days` (`test_agent_tools.py`); `repair_neighborhood` never previews them (`test_agent_planning_workflow.py`)
+- [x] A stored draft is refused (also with force) when a rest day was added after the run; a fixed conflict does not block an unrelated draft; fingerprints of stored runs are unchanged (`test_agent_workflow_safety.py`)
+- [x] Balanced counts on-call burden only while "Rest days around on-call duty" is on; rest days reduce duty opportunity weights; `QUALITY_VERSION` 3 (`test_agent_quality_profile.py`); the duty-pass follow-up reports `duty_complete` with the rule off (`test_agent_planning_workflow.py`)
+
+**Frontend Tests**: `SettingsView.test.tsx` (Rest Day row helper, Planning goals on-call note), `HelpView.test.tsx` (Rest Day row day off).
+
+### 3.14 Planning across days and weekly hours (v1.77)
 
 **Backend Tests** (`backend/tests/test_cross_day_repair.py`; the case: a person with a 32 + 8 h cap and 27.5 h booked Mon–Wed, Thursday's 10 h slot and Friday's two 4 h slots of higher priority, nobody else qualified):
 - [x] CP-SAT repair mode moves her hours from Thursday to Friday (one more required place) and keeps the best plan when nothing improves
@@ -256,12 +276,13 @@ npx playwright show-report
 - [x] Batched `candidates` report `week_over_cap_hours` (1.5 h)
 - [x] Direct strategy (arena): reply parsing (placements, removals, unparsed lines), one plan answer through the gate (3 proposed, 2 accepted, 1 dropped), digest with weekly hours (`W45 27.5/40`), the range target (`target 9.1±2.3`) and the legal people per open place; placements and removals in the model's order (scarce hours go where the model listed them first) with retry passes while a pass makes progress; every plan block read, fenced notes ignored; only answer text parsed, never reasoning; abort during the call applies nothing; a cut-off answer gets one more call; days left fillable count as model-incomplete and the arena flags their repair
 - [x] Repair model = gate (review): a block across two sites with the same-site rule off and work at a site of a fixed two-site day stay in the repaired plan (both tests fail on the stricter model)
+- [x] Rest Day row entries (merge with v1.75): the repair never moves hours onto one (no variable that day), a reference placement without a variable is no change (solvable with no change allowed), the gate refuses work on it should a solution propose it (`rejected`, `REST_DAY`); the direct digest's legal people and the open-slot reasons leave the person out ("blocked by rest day 1"); `REST_DAY` ranks right after vacation and both rule tables stay in step (`test_agent_harness.py`)
 - [x] Why a slot stayed open (`test_agent_harness.py`): per open slot the qualified people, those already on it, the directly addable ones and the people each hard rule blocks (vacation 1, weekly hours 1 → main reason weekly hours by the fixed order; nobody qualified → `NO_QUALIFIED`, "nobody is qualified" / "no other qualified person (1 already on it)"), the run-log line, the slot, time and stop bounds
 - [x] A finished run with open positions is not called stopped (`test_agent_workflow_safety.py`): `unfinished_dates` empty, apply prompt "The planner finished, but 1 required position(s) remain open; the run log lists each one", `stopped: false`; a skipped day, an open day whose check ran out of time, and a run cut short by its budget keep "incomplete or was stopped" with the day in `unfinished_dates`; a CP-SAT result says "remain open in this draft", a calendar that changed since the run says so; a stored open slot the draft fills applies without the question
 - [x] Day digest roster (`test_agent_tools.py`, `test_agent_harness.py`): booked/hard max of the day's ISO week per person (`8/40` with fixed Monday work before a Tuesday range, `4/-` without contract), equal to `_week_hours`; production row shape `…|ytd|0/45|soft work pattern…`; a day's digest includes the earlier days of the run (`0/-` Monday, `8/-` Tuesday); slot list and DAY_SYSTEM_PROMPT name the tools' single-candidate-first order
 - [x] A run where the model placed nothing still falls back to the heuristic (`test_prompt_eval.py`); a day the model ended unplanned (`test_agent_workflow_safety.py`) or skipped after a provider failure (`test_agent_retry.py`, `test_agent_integration.py` through the endpoint) is filled by the repair before the final audit and still counts as skipped by the model (arena: invalid for comparison, `test_arena_claude.py`)
 
-**Frontend Tests**: `src/lib/weeklyHours.test.ts` (ISO weeks as Python's `isocalendar`, counting on the start date, pool rows ignored, slot minutes as the gate counts them incl. slots without times = 08:00–16:00, cap contract + tolerance with 5 h default and explicit 0, over only above the cap, label), `src/lib/clinicianSlotOptions.test.ts` (over-limit flag and label, none for people without a contract or already in the slot), `ClinicianPickerPopover.test.tsx` ("Over weekly limit (…)" shown, sorted after people without warnings), `src/lib/solverOutcome.test.ts` (banner reasons most frequent first whatever the input order, ties in the backend rule order, no top-N cut, "a qualified person is still free", "for 1 of 2 slots", "The run ended early." / "ended before it checked" instead of blaming rules; run card "Finished with open positions" only when nothing is unfinished, the incomplete wording for unfinished, aborted and older runs, nothing for applied or discarded runs), `SolverInfoModal.test.tsx` (the rendered run-card line).
+**Frontend Tests**: `src/lib/weeklyHours.test.ts` (ISO weeks as Python's `isocalendar`, counting on the start date, pool rows ignored, slot minutes as the gate counts them incl. slots without times = 08:00–16:00, cap contract + tolerance with 5 h default and explicit 0, over only above the cap, label), `src/lib/clinicianSlotOptions.test.ts` (over-limit flag and label, none for people without a contract or already in the slot), `ClinicianPickerPopover.test.tsx` ("Over weekly limit (…)" shown, sorted after people without warnings), `src/lib/solverOutcome.test.ts` (banner reasons most frequent first whatever the input order, ties in the backend rule order incl. `REST_DAY` before overlaps, no top-N cut, "a qualified person is still free", "for 1 of 2 slots", "The run ended early." / "ended before it checked" instead of blaming rules; run card "Finished with open positions" only when nothing is unfinished, the incomplete wording for unfinished, aborted and older runs, nothing for applied or discarded runs), `SolverInfoModal.test.tsx` (the rendered run-card line).
 
 ---
 
@@ -363,4 +384,7 @@ Areas identified for future test expansion:
 | 2026-01-03 | Claude | Added iCal and web API tests |
 | 2026-10-15 | Claude | v1.64: My plan / preferences, team page and background-run coverage; CI spec list |
 | 2026-11-01 | Claude | v1.72 holidays by state (incl. `holiday-region` in the CI spec list); v1.73 named sections in stacked cells |
-| 2026-11-01 | Claude | v1.74 cross-day coverage repair, weekly hours in the picker, direct strategy (arena) |
+| 2026-11-01 | Claude | v1.74 (merge of the feature-branch "v1.71" work): My plan always opens in Team and relinks, import backup, holidays added by hand |
+| 2026-11-01 | Claude | v1.75: hand-placed rest days block automatic planning (`REST_DAY`); Balanced on-call fairness follows the rest rule |
+| 2026-11-02 | Claude | v1.76: stacked team week with one lane per section (no "+N", no in-cell section tag), three-column label with spanning row band / section cells; review round: overlap rule for time lanes, auto label tracks, own time as a note, phone labels name every lane |
+| 2026-11-02 | Claude | v1.77 (merged onto v1.74–v1.76; the branch called it v1.74): cross-day coverage repair, weekly hours in the picker, direct strategy (arena), why a slot stayed open; `REST_DAY` among the blocking reasons |

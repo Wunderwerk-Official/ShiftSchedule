@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "./llmPricing";
+import { AGENT_MODEL_OPTIONS, DEFAULT_AGENT_MODEL, estimateAgentCostUSD, formatCostUSD } from "./llmPricing";
 
 const MILLION = {
   input_tokens: 1_000_000,
@@ -9,6 +9,12 @@ const MILLION = {
 };
 
 describe("AGENT_MODEL_OPTIONS", () => {
+  it("offers Opus 5.5 first, as the default (arena round 8)", () => {
+    expect(DEFAULT_AGENT_MODEL).toBe("claude-opus-5-5");
+    expect(AGENT_MODEL_OPTIONS.filter((o) => o.description.includes("(default)")).map((o) => o.id))
+      .toEqual(["claude-opus-5-5"]);
+  });
+
   it("lists Anthropic's list prices per million tokens (input / output)", () => {
     const prices = Object.fromEntries(
       AGENT_MODEL_OPTIONS.map((o) => [o.id, [o.inputPerMTok, o.outputPerMTok]]),

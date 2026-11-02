@@ -142,7 +142,7 @@ internal IP `10.10.10.6`) at the institute. Details:
   convention (compose up + sleep).
 - **LLM config**: no API keys ship with the deploy. An admin sets the
   Anthropic key OR the self-hosted OpenAI-compatible endpoint (base URL,
-  model, key, TLS verification) in Settings → Solver after first login.
+  model, key, TLS verification) in Settings → Planning rules & AI after first login.
 
 ### Operations (production)
 
@@ -245,7 +245,7 @@ JWT_EXPIRE_MINUTES=720
 
 # Optional — AI agent solver (solver_mode="agent"); without a key, agent
 # runs fall back to the heuristic seed plan. Admins can also set provider,
-# model and keys at runtime in Settings → Solver.
+# model and keys at runtime in Settings → Planning rules & AI.
 ANTHROPIC_API_KEY=
 ```
 

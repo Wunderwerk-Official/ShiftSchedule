@@ -35,7 +35,7 @@ on:
         description: "base | vacation-wave | understaffed | crunch | oncall | pinned | daynight | fixed-patterns"
         default: "base"
       strategy:
-        description: "day_by_day (standard) | repair (benchmark reference) | direct (v1.74 experiment: no tools)"
+        description: "day_by_day (standard) | repair (benchmark reference) | direct (v1.77 experiment: no tools)"
         default: "day_by_day"
       reasoning:
         description: "effort: (empty) | low | medium | high — Claude also xhigh | max; empty = model default (Opus 5.5: medium)"

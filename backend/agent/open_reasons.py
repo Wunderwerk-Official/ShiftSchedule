@@ -21,8 +21,9 @@ from typing import Dict, List, Optional
 RULE_LABELS = {
     "WEEKLY_HOURS": "weekly-hours limit",
     "VACATION": "vacation",
+    "REST_DAY": "rest day",
     "OVERLAP": "overlapping shift",
-    "SAME_LOCATION_PER_DAY": "other site that day",
+    "SAME_LOCATION_PER_DAY": "other location that day",
     "SPLIT_SHIFT": "split shift",
     "ON_CALL_REST": "on-call rest",
     "MANDATORY_WINDOW": "mandatory working time",

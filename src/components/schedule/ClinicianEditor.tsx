@@ -213,12 +213,13 @@ export default function ClinicianEditor({
           Eligible Sections
         </div>
         <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-          Drag to set priority, toggle to add or remove.
+          Sections this person may be planned in; the planner never assigns others. Drag to
+          order by preference (top = preferred).
         </div>
         <div className="mt-4 space-y-2">
           {eligibleRows.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-slate-200 px-4 py-3 text-sm text-slate-500 dark:border-slate-700 dark:text-slate-300">
-              No eligible sections selected yet.
+              No sections yet: the planner cannot assign this person.
             </div>
           ) : (
             eligibleRows.map((row, index) => (
@@ -326,12 +327,14 @@ export default function ClinicianEditor({
           <div>
             <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">Vacation periods</div>
             <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-              Define ranges to move the user into Vacation automatically.
+              First and last day both count. The person moves to the Vacation row and is not
+              planned on these days.
             </div>
           </div>
           <button
             type="button"
             onClick={() => onAddVacation(clinician.id)}
+            title="Adds a 2-day period starting in one week; then adjust the dates."
             className={cx(
               "rounded-xl border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600",
               "hover:bg-slate-50 hover:text-slate-900 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100",
@@ -481,21 +484,22 @@ export default function ClinicianEditor({
       {!vacationOnly && (
       <div className="relative mt-4 rounded-2xl border-2 border-indigo-200 bg-indigo-50/60 px-4 py-4 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.8)] dark:border-indigo-500/40 dark:bg-indigo-900/20">
         <div className="absolute -top-3 left-4 rounded-full border border-indigo-200 bg-white px-3 py-1 text-[11px] font-semibold uppercase tracking-wide text-indigo-600 dark:border-indigo-500/40 dark:bg-slate-900 dark:text-indigo-200">
-          Preferred Working Times
+          Working Hours &amp; Times
         </div>
         <div>
           <div className="text-sm font-semibold text-slate-700 dark:text-slate-200">
-            Optional availability windows per weekday.
+            Contract hours, work pattern and an optional time window per weekday.
           </div>
           <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-            Set a time range for each day and mark it as mandatory or a preference.
+            Preferred: the planner tries to stay inside. Only these hours: shifts that day must
+            lie fully inside (no night shifts). Nobody is forced to work.
           </div>
         </div>
         <div className="mt-4 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Working hours per week
+                Contract hours per week
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-3">
                 <input
@@ -520,16 +524,16 @@ export default function ClinicianEditor({
                     "w-24 rounded-lg border border-slate-200 px-2 py-1 text-sm font-medium text-slate-900",
                     "focus:border-indigo-300 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100",
                   )}
-                  placeholder="40"
+                  placeholder="e.g. 40"
                 />
               </div>
               <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                Hours according to contract
+                Weekly target for the planner. Empty = no target and no weekly limit.
               </div>
             </div>
             <div>
               <div className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                Tolerance (hours)
+                Weekly hours tolerance (±)
               </div>
               <div className="mt-2 flex flex-wrap items-center gap-3">
                 <CustomNumberInput
@@ -544,7 +548,8 @@ export default function ClinicianEditor({
                 />
               </div>
               <div className="mt-1 text-xs text-slate-500 dark:text-slate-400">
-                Allowed deviation from target
+                Never planned above contract + this per calendar week; the planner also aims not
+                to fall below contract − this. 0 = strict cap.
               </div>
             </div>
           </div>
@@ -584,7 +589,7 @@ export default function ClinicianEditor({
                   {[
                     { id: "none", label: "No preference" },
                     { id: "preference", label: "Preferred" },
-                    { id: "mandatory", label: "Mandatory" },
+                    { id: "mandatory", label: "Only these hours" },
                   ].map((option) => (
                     <button
                       key={option.id}
@@ -632,8 +637,8 @@ export default function ClinicianEditor({
           Free-text wishes for the AI planner.
         </div>
         <div className="mt-1 text-sm text-slate-500 dark:text-slate-400">
-          Treated as soft preferences — hard rules, vacations, and fixed
-          assignments always win.
+          Soft preferences: rules, vacations and locked shifts always win. Saved when you leave
+          the field.
         </div>
         <textarea
           rows={4}

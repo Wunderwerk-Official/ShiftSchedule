@@ -82,3 +82,47 @@ def test_balanced_suggestion_ranking_respects_structured_day_off():
     offers = run(ex, "suggest_day_blocks", dateISO=MON)["candidates"]
     assert offers[0]["clinicianId"] == "Bob"
     assert offers[0]["quality_after"]["structured_wish_violations"] == 0
+
+
+def _on_call_state(rest_enabled, assignments=()):
+    """Two weekday 08-16 shifts in one section, chosen as the on-call section:
+    only the on_call category can carry duty burden here."""
+    state = make_app_state(clinicians=[make_clinician("a", "Alice", working_hours_per_week=40),
+                                       make_clinician("b", "Bob", working_hours_per_week=40)],
+                           slots=[make_template_slot("mon"), make_template_slot("tue", col_band_id="col-tue-1")],
+                           assignments=list(assignments))
+    state.solverSettings.update(agentQualityProfile="balanced", onCallRestClassId="section-a",
+                                onCallRestEnabled=rest_enabled, onCallRestDaysBefore=0, onCallRestDaysAfter=0)
+    return state
+
+
+def test_on_call_fairness_counts_only_while_the_rest_rule_is_on():
+    # v1.75: with "Rest days around on-call duty" off the on-call section
+    # select is disabled, so its stored value must not steer Balanced.
+    concentrated = [make_assignment("1", "mon", MON, "a"), make_assignment("2", "tue", TUE, "a")]
+    shared = [concentrated[0], make_assignment("3", "tue", TUE, "b")]
+    off = executor(_on_call_state(False), end=TUE)
+    assert off.on_call_class is None
+    assert extra_metrics(off, concentrated)["duty_burden_penalty"] == 0
+    assert extra_metrics(off, shared)["duty_burden_penalty"] == 0
+    assert not any(category == "on_call" for category, _ in off._duty_opportunity_weights)
+    on = executor(_on_call_state(True), end=TUE)
+    assert on.on_call_class == "section-a"
+    assert extra_metrics(on, shared)["duty_burden_penalty"] < extra_metrics(on, concentrated)["duty_burden_penalty"]
+
+
+def test_rest_day_row_entries_count_as_unavailable_for_duty_opportunities():
+    plain = executor(_on_call_state(True), end=TUE)
+    rested = executor(_on_call_state(True, [make_assignment("rest", "pool-rest-day", TUE, "a", "manual")]), end=TUE)
+    extra_metrics(plain, [])
+    extra_metrics(rested, [])
+    assert rested._duty_opportunity_weights[("on_call", "a")] < plain._duty_opportunity_weights[("on_call", "a")]
+    assert rested._duty_opportunity_weights[("on_call", "b")] == plain._duty_opportunity_weights[("on_call", "b")]
+
+
+def test_quality_version_marks_the_v1_75_metric_definition():
+    from backend.agent.quality import QUALITY_VERSION
+
+    ex = executor(_on_call_state(False), end=TUE)
+    assert QUALITY_VERSION == 3
+    assert run(ex, "get_plan_overview")["quality_version"] == 3

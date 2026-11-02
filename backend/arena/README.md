@@ -39,14 +39,14 @@ self-hosted Qwen model on the real endpoint, or (since v1.68,
 `provider=anthropic`) a Claude model with the saved Anthropic key.
 
 
-## Evaluation round 9: cross-day repair and Opus without tools (v1.74, 2026-11-01)
+## Evaluation round 9: cross-day repair and Opus without tools (v1.77, 2026-11-01)
 
 Question: does Claude Opus 5.5 plan better or cheaper when it gets the
 instructions and the whole range in one message, without tools
 (`strategy: direct`), than with the tool-driven day-by-day procedure? And
-what does the v1.74 cross-day coverage repair add to each? Opus 5.5
+what does the v1.77 cross-day coverage repair add to each? Opus 5.5
 (`reasoning` empty = `medium`), `variant baseline`, `scenario base`,
-`timeout 0`, `implementation checkout` (branch v1.74), synthetic-v3. Every
+`timeout 0`, `implementation checkout` (its branch, then numbered v1.74), synthetic-v3. Every
 run below was `valid_for_comparison: true` with 0 hard and 0 new hard
 violations and the fixed context unchanged. One run per configuration
 unless noted (the 5-day direct v1 ran twice), so differences of one or two
@@ -251,7 +251,7 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | model | empty = the model saved for that provider; self-hosted: `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` (`Qwen/Qwen3.8-27B` is no longer served); Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, … |
 | variant | `baseline` (production prompts) / `focused` (prompt experiment) |
 | scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` / `fixed-patterns` |
-| strategy | `day_by_day` (production; LLM builds each day from scratch, then the v1.74 cross-day repair) / `repair` (benchmark reference: heuristic seed + LLM repair) / `direct` (v1.74 experiment: the whole range in one answer, no tools; needs `implementation: checkout` until v1.74 is deployed) |
+| strategy | `day_by_day` (production; LLM builds each day from scratch, then the v1.77 cross-day repair) / `repair` (benchmark reference: heuristic seed + LLM repair) / `direct` (v1.77 experiment: the whole range in one answer, no tools; needs `implementation: checkout` until v1.77 is deployed) |
 | reasoning | empty (endpoint / model default; Opus 5.5: `medium`) / `low` / `medium` / `high`; Claude also `xhigh` / `max` |
 | implementation | `deployed` (container's code and fixture; runs this checkout's `prompt_eval.py` against them, so from v1.68 on it needs v1.68 deployed — use `checkout` until then) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 
@@ -285,7 +285,7 @@ docker compose -f docker-compose.proxied.yml exec -T backend \
 
 Needs v1.68 deployed (`implementation: deployed` runs this checkout's
 `prompt_eval.py` against the deployed modules) and an Anthropic key plus API
-credit saved in Settings → Solver. The arena never charges the per-user AI
+credit saved in Settings → Planning rules & AI. The arena never charges the per-user AI
 budget, but every run costs real API credit: the report's `cost_usd` is the
 estimate (cache tokens included) and the Console shows the bill. Set
 `timeout` to `0`: production runs have no wall-clock limit, and a budget
