@@ -23,6 +23,9 @@ import {
   printPagePx,
   printPageStyle,
   readPrintLayout,
+  unscaledSize,
+  watchPrintContentSize,
+  whenPrintLayoutSettles,
 } from "./printPage";
 import PrintWeekHeader from "./PrintWeekHeader";
 import {
@@ -145,9 +148,8 @@ const PrintableWeek = ({
     if (!content) return;
     const updateScale = () => {
       const available = printArea;
-      const contentRect = content.getBoundingClientRect();
-      const contentWidth = Math.max(content.scrollWidth, contentRect.width);
-      const contentHeight = Math.max(content.scrollHeight, contentRect.height);
+      // The layout box: the scale is applied to this element itself.
+      const { width: contentWidth, height: contentHeight } = unscaledSize(content);
       if (!contentWidth || !contentHeight) return;
       // Calculate scale to fit within printable area, allow scaling up to MAX_SCALE_UP
       const fitScale = Math.min(available.width / contentWidth, available.height / contentHeight);
@@ -166,8 +168,8 @@ const PrintableWeek = ({
         offsetY: 0,
       });
     };
-    const frame = window.requestAnimationFrame(updateScale);
-    return () => window.cancelAnimationFrame(frame);
+    // Again whenever the content changes size (wrapped names), not only once.
+    return watchPrintContentSize(content, updateScale);
   }, [weekIndex, scheduleRows, calendarRows, assignmentMap, clinicians, holidayDates, printArea]);
 
   useEffect(() => {
@@ -199,6 +201,7 @@ const PrintableWeek = ({
         >
           <div
             ref={printContentRef}
+            data-print-content="true"
             style={{
               width:
                 layout === "portrait" && !isClinicSheet
@@ -426,11 +429,10 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
     if (loading) return;
     if (typeof window === "undefined") return;
     if (printReadyWeeks.size < totalWeeks) return;
-    const markReady = () => {
+    // Ready only once every week's names have settled and its page re-fitted.
+    window.__PDF_READY__ = false;
+    return whenPrintLayoutSettles(() => {
       window.__PDF_READY__ = true;
-    };
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(markReady);
     });
   }, [
     loading,

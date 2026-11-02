@@ -23,6 +23,9 @@ import {
   printPagePx,
   printPageStyle,
   readPrintLayout,
+  unscaledSize,
+  watchPrintContentSize,
+  whenPrintLayoutSettles,
 } from "./printPage";
 import PrintWeekHeader from "./PrintWeekHeader";
 import {
@@ -225,11 +228,10 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
   useEffect(() => {
     if (loading || !printLayout.width || !printLayout.height) return;
     if (typeof window === "undefined") return;
-    const markReady = () => {
+    // Ready only once the names have settled and the page has re-fitted.
+    window.__PDF_READY__ = false;
+    return whenPrintLayoutSettles(() => {
       window.__PDF_READY__ = true;
-    };
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(markReady);
     });
   }, [
     loading,
@@ -248,9 +250,8 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     if (!content) return;
     const updateScale = () => {
       const available = printArea;
-      const contentRect = content.getBoundingClientRect();
-      const contentWidth = Math.max(content.scrollWidth, contentRect.width);
-      const contentHeight = Math.max(content.scrollHeight, contentRect.height);
+      // The layout box: the scale is applied to this element itself.
+      const { width: contentWidth, height: contentHeight } = unscaledSize(content);
       if (!contentWidth || !contentHeight) return;
       // Calculate scale to fit within printable area, allow scaling up to MAX_SCALE_UP
       const fitScale = Math.min(available.width / contentWidth, available.height / contentHeight);
@@ -268,8 +269,8 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
         offsetY: 0,
       });
     };
-    const frame = window.requestAnimationFrame(updateScale);
-    return () => window.cancelAnimationFrame(frame);
+    // Again whenever the content changes size (wrapped names), not only once.
+    return watchPrintContentSize(content, updateScale);
   }, [loading, rows, clinicians, assignmentMap, minSlotsByRowId, slotOverridesByKey, printArea]);
 
   if (loading) {
@@ -311,6 +312,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
         >
           <div
             ref={printContentRef}
+            data-print-content="true"
             style={{
               position: "absolute",
               left: printLayout.width ? (printArea.width - printLayout.width) / 2 : 0,

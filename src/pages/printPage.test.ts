@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { printPagePx, printPageStyle, readPrintLayout } from "./printPage";
+import { describe, expect, it, vi } from "vitest";
+import { printPagePx, printPageStyle, readPrintLayout, whenPrintLayoutSettles } from "./printPage";
 
 describe("printPage", () => {
   it("reads portrait only from layout=portrait", () => {
@@ -32,5 +32,26 @@ describe("printPage", () => {
       expect(style.breakAfter).toBe("page");
     }
     expect(printPageStyle("landscape", 8, true).breakAfter).toBe("auto");
+  });
+});
+
+describe("whenPrintLayoutSettles (final check)", () => {
+  it("waits until the print content keeps its size for the given frames", async () => {
+    const content = document.createElement("div");
+    content.setAttribute("data-print-content", "true");
+    document.body.appendChild(content);
+    let height = 100;
+    Object.defineProperty(content, "scrollHeight", { configurable: true, get: () => height });
+    let settled = false;
+    const cancel = whenPrintLayoutSettles(() => {
+      settled = true;
+    }, 3);
+    // Names wrap a few frames in: the content grows, the count starts over.
+    await new Promise((resolve) => window.requestAnimationFrame(() => resolve(null)));
+    height = 140;
+    expect(settled).toBe(false);
+    await vi.waitFor(() => expect(settled).toBe(true), { timeout: 2000 });
+    cancel();
+    content.remove();
   });
 });

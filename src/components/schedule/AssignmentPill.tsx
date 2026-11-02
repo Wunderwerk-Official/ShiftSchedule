@@ -48,16 +48,44 @@ function measureText(text: string, font: string): number | null {
  * apart); below PERSON_MIN_NAME_PX the circle stands alone.
  */
 function personLevel(labels: PersonNameLabels, room: number, width: (text: string) => number): number {
-  const { levels, distinctLength } = labels;
+  const { levels } = labels;
   if (width(levels[0]) <= room) return 0;
   if (width(levels[1]) <= room) return 1;
   if (room < PERSON_MIN_NAME_PX) return PERSON_INITIALS_ONLY;
-  // What the ellipsis leaves of "First L.": the longest start that fits with it.
-  const chars = Array.from(levels[1]);
+  if (endCutIsDistinct(labels, room, width)) return 1;
+  return width(levels[PERSON_SHORT_LEVEL]) <= room ? PERSON_SHORT_LEVEL : 1;
+}
+
+// Whether the ellipsis still leaves the characters of "First L." that tell
+// this person apart (the longest start that fits with the ellipsis).
+function endCutIsDistinct(labels: PersonNameLabels, room: number, width: (text: string) => number): boolean {
+  const chars = Array.from(labels.levels[1]);
   let shown = chars.length - 1;
   while (shown > 0 && width(`${chars.slice(0, shown).join("")}…`) > room) shown -= 1;
-  if (shown >= distinctLength) return 1;
-  return width(levels[PERSON_SHORT_LEVEL]) <= room ? PERSON_SHORT_LEVEL : 1;
+  return shown >= labels.distinctLength;
+}
+
+/**
+ * Person colors, when the end cut of "First L." would read the same for two
+ * people and no team-unique short form fits: keep the start and the part
+ * that tells this person apart ("Anna S…MPH" / "Anna S…(OA)"). Null when not
+ * even that fits.
+ */
+function middleCut(labels: PersonNameLabels, room: number, width: (text: string) => number): string | null {
+  const chars = Array.from(labels.levels[1]);
+  const { distinctLength } = labels;
+  if (distinctLength > chars.length) return null;
+  // Only where a whole word tells them apart (a degree, a note): "Sophie Wa."
+  // vs "Sophie We." keeps its end cut rather than reading "So…a.".
+  const start = distinctLength - 1;
+  if (!/[\s,;(]/.test(chars[start]) && !/[\s,;]/.test(chars[start - 1] ?? "")) return null;
+  const tail = chars.slice(start).join("").replace(/^[\s,;]+/, "");
+  if (!tail) return null;
+  for (let head = distinctLength - 1; head >= 1; head -= 1) {
+    const text = `${chars.slice(0, head).join("").trimEnd()}…${tail}`;
+    if (width(text) <= room) return text;
+  }
+  return null;
 }
 
 type AssignmentPillProps = {
@@ -146,6 +174,11 @@ function AssignmentPillImpl({
   // print columns). It then wraps onto a second line instead of being cut on
   // both sides.
   const [wrapLastLevel, setWrapLastLevel] = useState(false);
+  // Font size of a wrapped label whose longest word is wider than the pill:
+  // smaller (down to 8 px) so words wrap at spaces instead of splitting.
+  const [wrapFontPx, setWrapFontPx] = useState<number | null>(null);
+  // Person colors: a middle cut that keeps the distinguishing end (middleCut).
+  const [personCut, setPersonCut] = useState<string | null>(null);
   // Bumped when the row width changes (person mode): measure again.
   const [layoutVersion, setLayoutVersion] = useState(0);
 
@@ -154,7 +187,7 @@ function AssignmentPillImpl({
   // Person colors end with the initials circle alone (the name is only read
   // out); the section look ends with "FL" initials as text.
   const initialsOnly = hasInitials && abbreviationLevel === PERSON_INITIALS_ONLY;
-  const displayName = initialsOnly ? name : levels[abbreviationLevel];
+  const displayName = initialsOnly ? name : (personStyle && personCut) || levels[abbreviationLevel];
 
   // Check if name fits and increase abbreviation level if needed
   useLayoutEffect(() => {
@@ -165,6 +198,7 @@ function AssignmentPillImpl({
     // Reset to full name first
     setAbbreviationLevel(0);
     setWrapLastLevel(false);
+    setWrapFontPx(null);
     // lockInRow: locking a pill takes room for its lock, unlocking frees it.
   }, [name, levels, hasInitials, lockInRow]);
 
@@ -181,6 +215,7 @@ function AssignmentPillImpl({
       lastWidth = containerEl.clientWidth;
       setAbbreviationLevel(0);
       setWrapLastLevel(false);
+      setWrapFontPx(null);
       setLayoutVersion((version) => version + 1);
     });
     observer.observe(containerEl);
@@ -200,7 +235,13 @@ function AssignmentPillImpl({
     const rendered = Array.from(nameEl.textContent ?? "").length;
     const perChar = rendered > 0 ? nameEl.scrollWidth / rendered : 0;
     const width = (text: string) => measureText(text, font) ?? Array.from(text).length * perChar;
-    setAbbreviationLevel(personLevel(nameLabels, room, width));
+    const level = personLevel(nameLabels, room, width);
+    setAbbreviationLevel(level);
+    // personLevel falls back to the end cut of "First L." when nothing
+    // unique fits; a middle cut keeps what tells this person apart.
+    const endCutAmbiguous =
+      level === 1 && width(nameLabels.levels[1]) > room && !endCutIsDistinct(nameLabels, room, width);
+    setPersonCut(endCutAmbiguous ? middleCut(nameLabels, room, width) : null);
   }, [nameLabels, hasInitials, layoutVersion, lockInRow]);
 
   // The section look — one level per frame until the name fits.
@@ -215,7 +256,16 @@ function AssignmentPillImpl({
       const isOverflowing = nameEl.scrollWidth > containerEl.clientWidth;
       if (isOverflowing && abbreviationLevel < NAME_LABEL_LEVELS - 1) {
         setAbbreviationLevel((prev) => prev + 1);
-      } else if (isOverflowing && abbreviationLevel === NAME_LABEL_LEVELS - 1) {
+      } else if (
+        !wrapLastLevel &&
+        abbreviationLevel === NAME_LABEL_LEVELS - 1 &&
+        // A sub-pixel overflow ("M. Yild." 38.6 px in 38 px) stays on one line.
+        nameEl.scrollWidth > containerEl.clientWidth + 1
+      ) {
+        const room = containerEl.clientWidth;
+        const font = window.getComputedStyle(nameEl).font;
+        const widest = Math.max(0, ...displayName.split(/\s+/).map((word) => measureText(word, font) ?? 0));
+        setWrapFontPx(widest > room ? Math.max(8, Math.floor(((11 * room) / widest) * 4) / 4) : null);
         setWrapLastLevel(true);
       }
     });
@@ -223,7 +273,7 @@ function AssignmentPillImpl({
     return () => cancelAnimationFrame(rafId);
     // A lock in the row changes the room for the name (also at level 0, where
     // the reset above changes no state).
-  }, [displayName, abbreviationLevel, hasInitials, layoutVersion, lockInRow]);
+  }, [displayName, abbreviationLevel, hasInitials, layoutVersion, lockInRow, wrapLastLevel]);
 
   const isAbbreviated = abbreviationLevel > 0;
   const showHighlight = isHighlighted && !isDragging;
@@ -346,6 +396,7 @@ function AssignmentPillImpl({
                 : "whitespace-nowrap text-center",
             initialsOnly && "sr-only",
           )}
+          style={wrapLastLevel && wrapFontPx ? { fontSize: `${wrapFontPx}px`, lineHeight: "11px" } : undefined}
         >
           {displayName}
         </span>

@@ -74,6 +74,14 @@ describe("matchesSearch", () => {
     expect(matchesSearch("Lars Soerensen", "sørensen")).toBe(true);
   });
 
+  it("matches mixed transliterations of a name with several special letters (final check)", () => {
+    for (const query of ["odegaard", "Odegaard", "oedegard", "bjoern oedegard", "bjorn odegaard", "odegaa", "oedegar"]) {
+      expect(matchesSearch("Björn Ødegård", query)).toBe(true);
+    }
+    expect(matchesSearch("Björn Ødegård", "odegaardx")).toBe(false);
+    expect(matchesSearch("Hans Gröönäs", "groonaes")).toBe(true);
+  });
+
   it("matches everything for an empty or blank query and nothing unrelated", () => {
     expect(find("")).toHaveLength(roster.length);
     expect(find("   ")).toHaveLength(roster.length);

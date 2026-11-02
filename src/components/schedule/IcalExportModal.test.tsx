@@ -138,6 +138,20 @@ describe("IcalExportModal iCal download", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Include unpublished weeks" }));
     expect(screen.queryByText(notice)).toBeNull();
   });
+
+  it("shows a person's notice in that person's row (final check)", () => {
+    const notice = "Nothing was downloaded: there are no shifts in this range.";
+    const clinicians = Array.from({ length: 20 }, (_, index) => ({ id: `c${index}`, name: `Person ${index}` }));
+    renderModal({ clinicians, onDownloadClinician: vi.fn(() => notice) });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    const liveRegion = screen.getByRole("status");
+    expect(liveRegion).toHaveTextContent("");
+    fireEvent.click(screen.getByRole("button", { name: "Download iCal file for Person 19" }));
+    expect(liveRegion).toHaveTextContent(notice);
+    const row = screen.getByText("Person 19").parentElement as HTMLElement;
+    expect(within(row).getByText(notice)).toBeInTheDocument();
+  });
 });
 
 describe("IcalExportModal iCal subscription", () => {

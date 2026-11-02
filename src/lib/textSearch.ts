@@ -42,8 +42,24 @@ export function normalizeForSearch(text: string): string {
  * transliteration ("ü" = "ue", "ø" = "oe", "å" = "aa"), on either side. An
  * empty query matches everything.
  */
+// Every mix of plain and transliterated special letters of a name
+// ("Ødegård" → "odegard", "oedegard", "odegaard", "oedegaard"), capped so
+// long names stay cheap.
+const MAX_SPELLINGS = 64;
+function spellings(text: string): string[] {
+  let variants = [""];
+  for (const letter of text.normalize("NFC").toLowerCase()) {
+    const transliterated = TRANSLITERATIONS[letter];
+    variants =
+      transliterated && variants.length * 2 <= MAX_SPELLINGS
+        ? variants.flatMap((prefix) => [prefix + letter, prefix + transliterated])
+        : variants.map((prefix) => prefix + letter);
+  }
+  return [...new Set([fold(text, true), ...variants.map((variant) => fold(variant, false))])];
+}
+
 export function matchesSearch(text: string, query: string): boolean {
-  const haystacks = [fold(text, false), fold(text, true)];
+  const haystacks = spellings(text);
   return query
     .split(/\s+/)
     .every((word) =>

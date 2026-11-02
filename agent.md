@@ -3660,6 +3660,31 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
   one." "Exporting 1 of 1 week…". Snapshot names wrap (badge "Automatic" on
   the date line, full name in the title). Read-only grids show no vacation
   editing hint.
+- **Print pages re-fit and wait for the names (final check).** A wrapped
+  last-level label makes the week taller after the first frame; the print
+  pages used to fit the page once, so wrapped names cut off the bottom rows
+  (Rest Day, Vacation) in portrait PDFs. `PrintWeekPage` and
+  `PrintWeeksPage` now re-fit on every size change of the content
+  (`watchPrintContentSize`, a ResizeObserver; `unscaledSize` measures the
+  layout box, never the transformed one) and set `__PDF_READY__` only once
+  every `[data-print-content]` box has kept its size and scale for 8 frames
+  (`whenPrintLayoutSettles` in `src/pages/printPage.ts`). Pitfall: anything
+  that changes the print content's size after the first frame must keep
+  working with this; a print page whose layout never settles would never be
+  ready (504 after `PDF_RENDER_TIMEOUT_SECONDS`). A wrapped label also gets a
+  smaller font (down to 8 px) when its longest word is wider than the pill,
+  so words wrap at spaces instead of splitting, and a sub-pixel overflow
+  stays on one line. Checked with real PDFs: portrait 1/2/55 weeks keep all
+  rows (55 weeks in about 5 s).
+- **Person pills that differ only by a degree or note** ("Anna Schmidt, MPH"
+  / "Anna Schmidt (OA)") show a middle cut that keeps the distinguishing
+  word when the end cut would read the same and no short form fits
+  (`middleCut` in `AssignmentPill`: "Anna S…MPH" / "Anna…(OA)"); a difference
+  inside a word ("Sophie Wa." / "Sophie We.") keeps the end cut.
+- **Search** builds every mix of plain and transliterated special letters
+  (`spellings`, at most 64), so "odegaard" and "oedegard" find "Ødegård".
+- **iCal download notice** shows in the row of the person clicked (or under
+  "All people"), and a live region that stays mounted reads it out.
 - Stale e2e specs outside the CI list (`colband-explosion`, `app`,
   `full-workflow`) were brought up to date (run inbox + Apply, current
   dialogs, `minSlotsByRowId` in the fixture).

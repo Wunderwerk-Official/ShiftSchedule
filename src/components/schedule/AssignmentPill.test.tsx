@@ -1,4 +1,4 @@
-import { render, waitFor, within } from "@testing-library/react";
+import { cleanup, render, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AssignmentPill from "./AssignmentPill";
 import { buildNameLabels, type PersonNameLabels } from "../../lib/personName";
@@ -123,6 +123,19 @@ describe("AssignmentPill with person colors", () => {
     });
   });
 
+  it("keeps the distinguishing end when two names differ only by a degree or a note (final check)", () => {
+    const team = buildNameLabels([
+      { id: "a", name: "Anna Schmidt, MPH" },
+      { id: "b", name: "Anna Schmidt (OA)" },
+    ]);
+    // 84 - 24 = 60 px = 10 characters: the end cut would read "Anna Schm…" for both.
+    const mph = renderPerson("Anna Schmidt, MPH", 84, team.get("a"));
+    expect(mph.textContent).toBe("Anna S…MPH");
+    cleanup();
+    const oa = renderPerson("Anna Schmidt (OA)", 84, team.get("b"));
+    expect(oa.textContent).toBe("Anna…(OA)");
+  });
+
   it("shortens 'Last, First' names with titles to the given name and the family initial", () => {
     // 66 - 24 = 42 px: "Jörg M." (42 px) fits; once "Müller, D." (QA).
     const name = renderPerson("Müller, Jörg; Dr.", 66);
@@ -169,6 +182,10 @@ describe("AssignmentPill in the section look (print, public page)", () => {
     await waitFor(() => expect(name().className).toContain("whitespace-normal"));
     expect(name().textContent).toBe(labels.levels[4]);
     expect(name().className).not.toContain("whitespace-nowrap");
+    // "Andreas" (42 px at 6 px per character) is wider than the 38 px pill:
+    // the wrapped label gets a smaller font, so it wraps at the space instead
+    // of splitting the word (final check).
+    expect(name().style.fontSize).toBe("9.75px");
   });
 
   it("keeps a label that fits on one line", async () => {

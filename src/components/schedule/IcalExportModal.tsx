@@ -21,6 +21,9 @@ export const formatPdfProgress = (progress: PdfProgress) =>
     ? `Creating PDF for ${progress.total} ${progress.total === 1 ? "week" : "weeks"}…`
     : `Exporting ${progress.current} of ${progress.total} ${progress.total === 1 ? "week" : "weeks"}…`;
 
+const DOWNLOAD_NOTICE_CLASS =
+  "mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100";
+
 type IcalExportModalProps = {
   open: boolean;
   onClose: () => void;
@@ -93,7 +96,11 @@ export default function IcalExportModal({
   const [startText, setStartText] = useState<string>("");
   const [endText, setEndText] = useState<string>("");
   const [includeUnpublished, setIncludeUnpublished] = useState(false);
-  const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
+  // Why a download produced no file, shown where it was clicked ("all" or a
+  // person's id) and read out by a live region that stays mounted.
+  const [downloadNotice, setDownloadNoticeState] = useState<{ text: string; target: string } | null>(null);
+  const setDownloadNotice = (text: string | null | void, target = "all") =>
+    setDownloadNoticeState(text ? { text, target } : null);
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   useModalFocus(open, dialogRef, closeButtonRef);
@@ -681,7 +688,7 @@ export default function IcalExportModal({
                   </div>
                   <button
                     type="button"
-                    onClick={() => setDownloadNotice(onDownloadAll({ ...range, includeUnpublished }) || null)}
+                    onClick={() => setDownloadNotice(onDownloadAll({ ...range, includeUnpublished }), "all")}
                     disabled={validation.hasError}
                     className={cx(
                       "inline-flex items-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900",
@@ -694,13 +701,11 @@ export default function IcalExportModal({
                   </button>
                 </div>
 
-                {downloadNotice ? (
-                  <div
-                    role="status"
-                    className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100"
-                  >
-                    {downloadNotice}
-                  </div>
+                <div role="status" aria-live="polite" className="sr-only">
+                  {downloadNotice?.text ?? ""}
+                </div>
+                {downloadNotice?.target === "all" ? (
+                  <div className={DOWNLOAD_NOTICE_CLASS}>{downloadNotice.text}</div>
                 ) : null}
 
                 <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
@@ -717,11 +722,14 @@ export default function IcalExportModal({
                           <div className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">
                             {clinician.name}
                           </div>
+                          {downloadNotice?.target === clinician.id ? (
+                            <div className={DOWNLOAD_NOTICE_CLASS}>{downloadNotice.text}</div>
+                          ) : null}
                         </div>
                         <button
                           type="button"
                           onClick={() =>
-                            setDownloadNotice(onDownloadClinician(clinician.id, { ...range, includeUnpublished }) || null)
+                            setDownloadNotice(onDownloadClinician(clinician.id, { ...range, includeUnpublished }), clinician.id)
                           }
                           aria-label={`Download iCal file for ${clinician.name}`}
                           disabled={validation.hasError}
