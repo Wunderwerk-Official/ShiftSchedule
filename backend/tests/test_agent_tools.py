@@ -1485,7 +1485,7 @@ def test_day_priorities_processing_order_oncall_and_priority_first():
     key = lambda sid: executor._alias_slot_key(f"{sid}__{MON}")  # noqa: E731
     # Scarce (only Alice) jumps the queue, then the on-call duty, then the
     # two flexible section-a slots. One section shares one rank on every
-    # shift (v1.81, strict section order), so the earlier start comes first.
+    # shift (v1.82, strict section order), so the earlier start comes first.
     assert order == [
         key("slot-scarce__mon"), key("slot-oc__mon"),
         key("slot-lo__mon"), key("slot-hi__mon"),

@@ -9,7 +9,7 @@ from .work_patterns import workday_metrics
 # only compared within one definition. 3 (v1.75): the on-call duty category
 # counts only while "Rest days around on-call duty" is on (the section select
 # is disabled otherwise), and Rest Day row dates count as unavailable for
-# duty opportunity weights, like vacation. 4 (v1.81): the section order is
+# duty opportunity weights, like vacation. 4 (v1.82): the section order is
 # strict: open_by_section_order (open required positions per section, top of
 # the Settings list first) decides before the open-position count, so one
 # open position in a higher section is worse than any number lower down.

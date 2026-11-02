@@ -842,7 +842,7 @@ def test_day_by_day_runs_one_conversation_per_day():
     assert "|2026-W02 hours booked/hard max" in first_day1
     assert alice_row(first_day1).endswith("|0/-")
     assert alice_row(first_day2).endswith("|8/-")
-    # v1.81: the slot lines show the section rank, the digest the strict rule
+    # v1.82: the slot lines show the section rank, the digest the strict rule
     # and its legend, debugInfo the legend as well.
     assert any(line.startswith("- ") and "|rank 1" in line for line in first_day1.splitlines())
     assert "SECTION ORDER: " in first_day1 and "one open position in a higher section outweighs any" in first_day1
@@ -2083,7 +2083,7 @@ def test_a_larger_history_budget_keeps_tool_results_the_default_would_stub():
 
 
 def test_quality_improvement_note_names_the_sections():
-    """v1.81: the run note reads the tuple by field name and names the
+    """v1.82: the run note reads the tuple by field name and names the
     sections whose open positions changed (at most five)."""
     from backend.agent.harness import _quality_improvement_note
     from backend.agent.quality import CLASSIC_FIELDS

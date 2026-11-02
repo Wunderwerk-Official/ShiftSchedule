@@ -27,7 +27,7 @@ it("describes the current planning panel and drop rules", () => {
     `open the arrow next to the switch in My plan: the last entry, “${footerLabel}”, lets you choose again;`,
   );
   expect(text).toContain("on a computer, pointing at the circle shows the name.");
-  // v1.81: the section order is strict for the AI planner.
+  // v1.82: the section order is strict for the AI planner.
   expect(text).toMatch(/The order under Settings → Planning rules\s+& AI → Section priority when short-staffed is strict: a required slot\s+in a section higher in the list comes before any number of slots further\s+down, even if more slots stay open in total/);
   expect(text).toMatch(/filling the\s+sections from the top of the list/);
   expect(text).toMatch(/The on-call section counts at\s+its own place in that list/);

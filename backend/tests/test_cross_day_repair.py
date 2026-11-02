@@ -283,7 +283,7 @@ def strict_repair(state, reference, start, end):
 
 
 def test_strict_order_unstaffs_two_lower_slots_for_one_higher():
-    """v1.81, strict section order: Pat (8 h a week) holds two 4 h slots of
+    """v1.82, strict section order: Pat (8 h a week) holds two 4 h slots of
     the lower section; the top section's 8 h slot is open. One position in a
     higher section outweighs any number lower down, also when more stay
     open in total (the admin's decision)."""
@@ -322,7 +322,7 @@ def test_strict_order_gives_freed_hours_to_the_higher_slot():
 
 def test_strict_order_makes_a_pure_upward_trade():
     """Same number of open positions, the higher section staffed: before
-    v1.81 the gate refused this (the count did not change)."""
+    v1.82 the gate refused this (the count did not change)."""
     state = strict_state(["top", "low"], [("slot-top-mon", "top", "mon", "08:00", "16:00"),
                                           ("slot-low-mon", "low", "mon", "08:00", "16:00")],
                          [("pat", ["top", "low"], 40, [])])
@@ -334,7 +334,7 @@ def test_strict_order_makes_a_pure_upward_trade():
 
 
 def test_strict_repair_spends_a_short_budget_on_the_top_sections_first():
-    """Review of v1.81: with a short budget the stage time was divided by
+    """Review of v1.82: with a short budget the stage time was divided by
     every later TIER with a gap instead of every later window, so the top
     window was skipped and only a lower one moved Pat. 20 sections needing 40
     people each need three windows (exact weights grow 41-fold per tier);
@@ -440,7 +440,7 @@ def test_strict_repair_reports_an_infeasible_model_as_infeasible(monkeypatch):
 
 
 def test_repair_note_does_not_claim_a_section_change_that_did_not_happen():
-    """Review of v1.81: a repair the gate accepts for a later tier (e.g. a
+    """Review of v1.82: a repair the gate accepts for a later tier (e.g. a
     broken rule repaired) leaves the section vector as it was."""
     report = {"applied": True, "open_before": 1, "open_after": 1, "changes": 2, "sections_changed": []}
     assert cross_day.repair_note(report) == (
@@ -449,7 +449,7 @@ def test_repair_note_does_not_claim_a_section_change_that_did_not_happen():
 
 
 def test_strict_repair_reports_the_section_it_staffed_below_the_top():
-    """Review of v1.81: nobody is qualified for TOP; Pat moves up from LOW to
+    """Review of v1.82: nobody is qualified for TOP; Pat moves up from LOW to
     MID. The report and the note name MID, not the top section."""
     state = strict_state(["top", "mid", "low"], [("slot-top-mon", "top", "mon", "08:00", "16:00"),
                                                  ("slot-mid-tue", "mid", "tue", "08:00", "16:00"),
