@@ -69,3 +69,11 @@ it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () =
   expect(text).not.toContain("+N next to a row name");
   expect(text).not.toContain("names its own workplace");
 });
+
+it("explains short names and the accent-insensitive person search", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain("“muller” or “mueller” finds “Müller”");
+  expect(text).toContain("A short name always stands for one person of the team, also in PDFs and on the public page");
+  expect(text).toContain("shorten to “Jörg M.”; the clinic sheet lists the surname.");
+});

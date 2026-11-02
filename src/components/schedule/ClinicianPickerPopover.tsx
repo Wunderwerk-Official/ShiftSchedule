@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { cx } from "../../lib/classNames";
+import { matchesSearch } from "../../lib/textSearch";
 
 function InstantTooltip({ children, content }: { children: ReactNode; content: string }) {
   const [show, setShow] = useState(false);
@@ -118,9 +119,8 @@ export default function ClinicianPickerPopover({
 
   if (!open || !anchorRect) return null;
 
-  const filteredClinicians = clinicians.filter((c) =>
-    c.name.toLowerCase().includes(searchQuery.toLowerCase())
-  );
+  // Accent-insensitive: "muller" and "mueller" find "Müller".
+  const filteredClinicians = clinicians.filter((c) => matchesSearch(c.name, searchQuery));
 
   // Sort: eligible first, then by name
   const sortedClinicians = [...filteredClinicians].sort((a, b) => {
