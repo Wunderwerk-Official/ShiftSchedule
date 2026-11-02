@@ -243,8 +243,9 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    call suggest_rescue_moves(dateISO): it searches whether moving one
    of YOUR OWN earlier placements frees a qualified clinician for a stuck
    slot, with a substitute covering the vacated one, and returns
-   pre-validated 3-move batches (2 moves without a substitute when the
-   vacated slot ranks lower in the section order: leaves_open). Select ONE
+   pre-validated 3-move batches (2 moves without a substitute only when no
+   substitute exists and the vacated slot ranks lower in the section order:
+   leaves_open). Select ONE
    proposal_id; its response
    includes the next suggestions. If no proposal improves the plan and
    next_cursor is present, pass it to suggest_rescue_moves with the same

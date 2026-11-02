@@ -536,3 +536,98 @@ def test_rescue_never_moves_a_person_inside_one_section_without_a_substitute():
     ex = executor(state, [make_assignment("d1", "A1", MON, "a", source="solver")])
     result = run(ex, "suggest_rescue_moves", dateISO=MON)
     assert result["rescues"] == [] and result["no_rescue_found"]
+
+
+def upward_trap_fixture(*, second_b_holder):
+    """Sections A > B > C, one day. S (A) is open. Cara (A, B) holds B1,
+    Eve (A, C) holds C1, Finn (C only) is free: Eve -> S with Finn on C1
+    fills everything. Moving Cara up instead leaves B1 open for good."""
+    clinicians = [make_clinician("cara", "Cara", ["A", "B"], working_hours_per_week=40)]
+    if second_b_holder:
+        clinicians.append(make_clinician("dan", "Dan", ["A", "B"], working_hours_per_week=40))
+    clinicians += [make_clinician("eve", "Eve", ["A", "C"], working_hours_per_week=40),
+                   make_clinician("finn", "Finn", ["C"], working_hours_per_week=40)]
+    slots = [make_template_slot("S", block_id="A", row_band_id="row-1"),
+             make_template_slot("B1", block_id="B", row_band_id="row-2"),
+             make_template_slot("C1", block_id="C", row_band_id="row-4")]
+    seed = [make_assignment("d1", "B1", MON, "cara", source="solver"),
+            make_assignment("d3", "C1", MON, "eve", source="solver")]
+    if second_b_holder:
+        slots.append(make_template_slot("B2", block_id="B", row_band_id="row-3"))
+        seed.append(make_assignment("d2", "B2", MON, "dan", source="solver"))
+    return executor(section_state(clinicians, slots, ["A", "B", "C"]), seed)
+
+
+@pytest.mark.parametrize("second_b_holder", [False, True])
+def test_substitute_rescue_wins_over_upward_moves(second_b_holder):
+    """Review of v1.81: upward 2-moves (Cara, Dan) are offered only when no
+    rescue with a substitute exists, and they never use up the two offers
+    per slot, so Eve -> S with Finn on C1 is found and comes first."""
+    ex = upward_trap_fixture(second_b_holder=second_b_holder)
+    result = run(ex, "suggest_rescue_moves", dateISO=MON)
+    assert [(r["frees"], r["substitute"]) for r in result["rescues"]] == [("Eve", "Finn")]
+    assert result["rescues"][0]["quality_after"]["open_by_section_order"] == [0, 0, 0]
+
+
+def test_final_audit_takes_the_substitute_rescue_over_the_upward_move():
+    from threading import Event
+
+    ex = upward_trap_fixture(second_b_holder=False)
+    audit = ex.workflow.final_audit([MON], Event())
+    assert audit["repairs"] == 1 and audit["checks"][MON]["complete"]
+    assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 0, 0]
+    assert sorted((a.rowId, a.clinicianId) for a in ex.best_assignments) == [
+        ("B1", "cara"), ("C1", "finn"), ("S", "eve")]
+
+
+def test_final_audit_fills_the_higher_section_first_when_its_blocks_are_apart():
+    """Review of v1.81: A's blocks are not next to each other in the
+    template (A-mon, B-tue, A-tue), so the instances of Tuesday come in block
+    order B1, B2, A. The final audit still fills A first: [0, 2], not [1, 0]."""
+    from threading import Event
+
+    tue = TUE
+    clinicians = [make_clinician("p", "Pat", ["A", "B"], working_hours_per_week=40)]
+    slots = [make_template_slot("A-mon", block_id="A-mon", row_band_id="row-1", col_band_id="col-mon-1"),
+             make_template_slot("B1-tue", block_id="B-tue", row_band_id="row-2", col_band_id="col-tue-1",
+                                start_time="08:00", end_time="12:00"),
+             make_template_slot("B2-tue", block_id="B-tue", row_band_id="row-2", col_band_id="col-tue-1",
+                                start_time="12:00", end_time="16:00"),
+             make_template_slot("A-tue", block_id="A-tue", row_band_id="row-1", col_band_id="col-tue-1")]
+    state = make_app_state(clinicians=clinicians, slots=slots,
+                           rows=[make_workplace_row("A", "A"), make_workplace_row("B", "B")])
+    state.weeklyTemplate.blocks = [TemplateBlock(id="A-mon", sectionId="A", requiredSlots=0),
+                                   TemplateBlock(id="B-tue", sectionId="B", requiredSlots=0),
+                                   TemplateBlock(id="A-tue", sectionId="A", requiredSlots=0)]
+    ex = PlanToolExecutor(state, build_scoring_context(state, tue, tue, only_fill_required=True), [])
+    assert [ex.ctx.instances[k].slot_id for k in ex.ctx.instances] == ["B1-tue", "B2-tue", "A-tue"]
+    assert ex.next_fillable_slot(tue)["slot_key"] == ex._alias_slot_key(f"A-tue__{tue}")
+    audit = ex.workflow.final_audit([tue], Event())
+    assert audit["repairs"] == 1
+    assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 2]
+    assert [a.rowId for a in ex.best_assignments] == ["A-tue"]
+
+
+def test_classic_candidates_inside_one_section_keep_the_fairness_order():
+    """Review of v1.81: inside one section the number of filled positions does
+    not decide first. Quinn (YTD 0 %) has a shorter block that meets her
+    daily minimum; it beats Pat's longer block (YTD 140 %)."""
+    from datetime import date, timedelta
+
+    day = "2026-03-02"  # a Monday nine weeks into the year: YTD exists
+    clinicians = [make_clinician("p", "Pat (ahead)", ["A"], working_hours_per_week=40),
+                  make_clinician("q", "Quinn (behind)", ["A"], working_hours_per_week=20)]
+    slots = [make_template_slot("X", block_id="A", row_band_id="row-1", start_time="08:00", end_time="12:00"),
+             make_template_slot("Y", block_id="A", row_band_id="row-2", start_time="12:00", end_time="16:00")]
+    state = section_state(clinicians, slots, ["A"])
+    history, current = [], date(2026, 1, 1)
+    while current.isoformat() < day:
+        for slot in ("X", "Y"):
+            history.append(make_assignment(f"h-{slot}-{current}", slot, current.isoformat(), "p", source="manual"))
+        current += timedelta(days=1)
+    state.assignments = history
+    ex = PlanToolExecutor(state, build_scoring_context(state, day, day, only_fill_required=True), [])
+    out = run(ex, "suggest_day_blocks", slot_key=f"X__{day}")
+    first, second = out["candidates"][:2]
+    assert first["clinicianId"] == "Quinn (behind)" and first["meets_daily_minimum"]
+    assert second["clinicianId"] == "Pat (ahead)" and second["block_hours"] > first["block_hours"]

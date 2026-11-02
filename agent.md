@@ -991,8 +991,8 @@ planner works, with four extra tools (`get_day_priorities`,
    `suggest_rescue_moves` searches depth-1 rearrangements of the agent's
    OWN placements (blocker out, substitute in, freed clinician onto the
    stuck slot) as pre-validated batches before anything is declared
-   unfillable; since v1.81 also without a substitute when the vacated slot
-   ranks lower in the section order (`leaves_open`).
+   unfillable; since v1.81 also without a substitute when none exists and
+   the vacated slot ranks lower in the section order (`leaves_open`).
 4. **Final review** (v1.40): once the day is complete,
    `suggest_balance_moves` re-reads it like a human planner — over-long
    days shed edge slots to less-loaded colleagues, mini-stint days
@@ -1092,7 +1092,7 @@ Day-by-day-only tools (the day pipeline):
 |---|---|---|
 | `get_day_priorities` | One day's unfilled slots in PROCESSING order (single-candidate first, then on-call, then section rank, scarcest first) | slot_key, section, time, missing, section_rank (1 = top), on_call, eligible_count, eligible_preview (≤20 shown + more_open_slots) |
 | `suggest_day_blocks` | For one open slot (auto-selected when only dateISO is passed): up to 6 legal candidates, each with their best contiguous work block starting there (chain capped at the contract workday, ≤10h; a mandatory window only bounds it; a PREFERENCE window also steers the chain's position — past its edge only until the daily minimum is met). `single: true` = duty mode, no chaining | block (slot keys), block_hours, day_hours_after, meets_daily_minimum + `daily_min_hours`, overloaded (>16h), `window_fit` + `preferred_window` (wish fit of the whole block; classic sort: a block reaching an open slot of a section above the selected one first, then the daily minimum, then this), week_hours(_max), ytd_worked_pct; `day_complete` + unfillable_slots when nothing fillable remains |
-| `suggest_rescue_moves` | Depth-1 rearrangement search for eligible_count-0 slots: free a qualified person by moving ONE own placement, substitute covers the vacated slot | ready-to-apply 3-move batches; 2-move batches without a substitute when the vacated slot ranks lower (`leaves_open`, v1.81) or keeps its target (distribute-all); truly_unfillable, not_searched (cap/time cut) |
+| `suggest_rescue_moves` | Depth-1 rearrangement search for eligible_count-0 slots: free a qualified person by moving ONE own placement, substitute covers the vacated slot | ready-to-apply 3-move batches; only when a stuck slot has none, 2-move batches without a substitute when the vacated slot ranks lower (`leaves_open`, v1.81) or keeps its target (distribute-all); truly_unfillable, not_searched (cap/time cut) |
 | `suggest_balance_moves` | End-of-day review: over-long days (> preferred span +1h) and mini-stint days (below daily minimum), with pre-validated handovers that keep both days contiguous | offers (batch, donor/receiver hours before→after, `receiver_overshoot_hours` ≤1h tagged trade-offs), overlong_days, mini_stint_days, balanced flag |
 
 Long tool searches (rescue, balance) check the run's wall-clock deadline
@@ -3531,7 +3531,11 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `quality_after`. `suggest_rescue_moves` also offers a 2-move
   batch without a substitute when the vacated slot ranks lower than the
   stuck one (`substitute: null`, `leaves_open`): under the strict order that
-  is an improvement, and no tool proposed it before. `analyze_bottlenecks`,
+  is an improvement, and no tool proposed it before. It is offered only when
+  no rescue with a substitute exists for that stuck slot (that one fills
+  both slots) and does not count toward the two offers per slot.
+  `next_fillable_slot` (final audit, day-end nudge) takes a day's open slots
+  by section rank, on-call at its own rank, not in template block order. `analyze_bottlenecks`,
   `list_open_slots` and the direct strategy (arena) use the rank too. The prompts' quality ladder,
   the arena's quality guidance and the WORSE warning name the rule.
 - **Cross-day repair**: `solver._solve_repair_lexicographic` replaces v1.80's
@@ -3595,10 +3599,28 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
     `leaves_open`.
   - The repair note does not claim a section change when the vector did
     not change.
+  - Rescue: the 2-move upward offers were listed before rescues with a
+    substitute and used up the two offers per stuck slot, so a later
+    person's substitute rescue was never found; the final audit and a model
+    taking the first offer then left the vacated slot open for good (A > B >
+    C: Cara up from B instead of Eve to A with Finn on Eve's C slot). Now
+    2-moves are offered only when no substitute rescue exists for the slot.
+  - Final audit: `next_fillable_slot` walked the instances in template
+    block order. With a section's blocks apart (A-mon, B-tue, A-tue) it
+    filled B first and marked the day complete ([1, 0] instead of [0, 2]).
+    Now it goes by section rank.
   - Not changed: the optional neighbourhood search (off by default) still
-    maximizes the count; `encode_quality` (display only, the chart is
-    hidden for agent runs) leaves the vector out, so it can rise on a strict
-    improvement that leaves more positions open.
+    maximizes the count, so it can miss a strict improvement that leaves
+    more positions open (the gate rejects what it finds instead);
+    `encode_quality` (display only, the chart is hidden for agent runs)
+    leaves the vector out, so it can rise on a strict improvement that
+    leaves more positions open.
+  - Known: the duty pre-pass and the day loop work on-call first, whatever
+    on-call's rank. That is a processing order, not the priority: when a
+    duty's rest day or hours cost a higher-ranked slot, the gate keeps the
+    better plan and the cross-day repair undoes it (in the arena's on-call
+    week it used 57 of its 60 changes). Help says on-call counts at its own
+    place in the list.
 - **Resolved from v1.80's "Not done"**: a pure 1:1 trade upwards is an
   improvement; a higher section is staffed even when more positions stay
   open in total; the order is lexicographic, not a weighted sum.
@@ -3621,7 +3643,11 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   section-order tests hold), `test_agent_planning_workflow.py` (block
   candidates of both profiles in strict order; the rescue moves a person up
   without a substitute, `leaves_open`; the shallow-rescue and paginated
-  fixtures rank the stuck section lowest so they still have no rescue),
+  fixtures rank the stuck section lowest so they still have no rescue; a
+  substitute rescue wins over upward 2-moves and is not crowded out, also
+  in the final audit; the final audit fills a section whose blocks are apart
+  in rank order; classic candidates inside one section keep the fairness
+  order),
   `test_agent_tools.py`
   (processing order: one rank per section, earlier start first),
   `test_agent_quality_profile.py` (tuple length and fields, version 4); the

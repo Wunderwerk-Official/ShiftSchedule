@@ -327,10 +327,11 @@ TOOL_SPECS_RAW = [
             "substitute taking the vacated slot. Returns ready-to-apply "
             "3-move batches (unassign the blocker, assign the substitute, "
             "assign the freed clinician to the stuck slot), each validated "
-            "against the exact apply gate; without a substitute, a 2-move "
-            "batch when the vacated slot ranks lower in the section order "
-            "than the stuck one (leaves_open: the strict section order makes "
-            "that an improvement). Apply its proposal_id with apply_proposal. "
+            "against the exact apply gate. Only when no such batch exists for "
+            "a stuck slot: a 2-move batch without a substitute when the vacated "
+            "slot ranks lower in the section order than the stuck one "
+            "(leaves_open: the strict section order makes that an "
+            "improvement). Apply its proposal_id with apply_proposal. "
             "Searches up to 16 blocked slots per call; follow next_cursor to "
             "inspect the rest on the SAME unchanged plan. After a change start "
             "again without a cursor. Fixed/manual "
@@ -1661,8 +1662,14 @@ class PlanToolExecutor:
         out check is explicitly inconclusive, never evidence of completion.
         """
         counts = self._counts_by_instance(self._working_list())
-        for inst in self.ctx.instances.values():
-            if inst.date_iso != date_iso or counts.get(inst.slot_key, 0) >= inst.target:
+        # Strict section order (v1.81): the final audit and the day-end nudge
+        # fill the highest-ranked open slot first (on-call at its own rank).
+        # Template block order could put a lower section first when a
+        # section's blocks are not next to each other.
+        day = sorted((i for i in self.ctx.instances.values() if i.date_iso == date_iso),
+                     key=lambda i: (self.section_rank(i.slot_id), i.start, i.slot_key))
+        for inst in day:
+            if counts.get(inst.slot_key, 0) >= inst.target:
                 continue
             for clinician in self.state.clinicians:
                 if self._tool_seconds_left() <= 5:
@@ -1982,6 +1989,10 @@ class PlanToolExecutor:
                 break
             inst = self.ctx.instances[entry["raw_slot_key"]]
             found: List[dict] = []
+            # 2-move batches without a substitute: offered only when no
+            # substitute rescue fills both slots (one is always at least as
+            # good), and they never use up the two offers per slot.
+            upward: List[dict] = []
             for clinician in self.state.clinicians:
                 if len(found) >= 2:
                     break
@@ -2072,7 +2083,7 @@ class PlanToolExecutor:
                         # higher than the vacated one, so moving the person
                         # up improves the plan although the vacated slot
                         # stays open (trial already passed the gate).
-                        found.append(
+                        upward.append(
                             {
                                 "fills": entry["slot_key"],
                                 "section": entry["section"],
@@ -2096,6 +2107,10 @@ class PlanToolExecutor:
                         )
                     if len(found) >= 2:
                         break
+            if not found:
+                # Distribute-all headroom first (it opens nothing), then the
+                # moves that leave a lower-ranked slot open.
+                found = sorted(upward, key=lambda r: r["leaves_open"] is not None)[:2]
             if found:
                 rescues.extend(found)
             else:
