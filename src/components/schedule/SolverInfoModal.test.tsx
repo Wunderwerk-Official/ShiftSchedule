@@ -47,14 +47,16 @@ it("reports budget fallback and unverified days separately from coverage", () =>
   expect(agentReviewNotice(debug())).toBeNull();
 });
 
-it.each([
+const runLineCases: Array<[string, Partial<SolverAgentDebug>, string]> = [
   // test_agent_retry: Tuesday's model call failed; the repair and the final checks completed it.
   ["finished", { stopReason: "partial", modelDaysSkipped: ["2026-01-06"] }, "Run: finished"],
   // Stop clicked while the closing report ran: the harness still says completed.
   ["aborted", { stopReason: "completed" }, "Run: stopped"],
   ["finished", { stopReason: "budget_exhausted" }, "Run: stopped early: planning budget used up"],
   ["finished", { stopReason: "budget_exhausted", iterations: 0 }, "Run: not started: this account's AI budget is used up"],
-] as const)("shows the Run line from the run's status and final state (%s, %j)", async (status, extra, line) => {
+];
+
+it.each(runLineCases)("shows the Run line from the run's status and final state (%s, %j)", async (status, extra, line) => {
   const debugInfo: SolverDebugInfo = { ...debug({
     model: "test-model", iterations: 4, daysSkipped: [], daysIncomplete: [], daysPlanned: 3,
     completion: { plan_revision: 2, workflow_finished: true, required_checks_complete: true,
