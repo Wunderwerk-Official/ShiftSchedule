@@ -2,7 +2,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import { ConfirmDialogProvider } from "../ui/ConfirmDialog";
-import IcalExportModal from "./IcalExportModal";
+import IcalExportModal, { formatPdfProgress } from "./IcalExportModal";
 
 type Props = ComponentProps<typeof IcalExportModal>;
 
@@ -75,6 +75,16 @@ describe("IcalExportModal PDF export", () => {
     fireEvent.click(screen.getByRole("button", { name: "Landscape · times side by side" }));
     fireEvent.click(exportPdfButton());
     expect(props.onExportPdf).toHaveBeenLastCalledWith(expect.objectContaining({ layout: "landscape" }));
+  });
+
+  it("shows no fake counter for one combined file, and k of N for individual files", () => {
+    renderModal({ pdfExporting: true, pdfProgress: { mode: "combined", total: 3 } });
+    expect(screen.getByText("Creating PDF for 3 weeks…")).toBeInTheDocument();
+    expect(screen.queryByText(/0 of 3/)).toBeNull();
+    expect(formatPdfProgress({ mode: "combined", total: 1 })).toBe("Creating PDF for 1 week…");
+    expect(formatPdfProgress({ mode: "individual", current: 2, total: 5 })).toBe(
+      "Exporting 2 of 5 weeks…",
+    );
   });
 
   it("never sends portrait when the option is not offered", () => {

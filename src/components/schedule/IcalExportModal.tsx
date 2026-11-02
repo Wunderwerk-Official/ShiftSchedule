@@ -7,6 +7,17 @@ import { useConfirm } from "../ui/ConfirmDialog";
 import CustomNumberInput from "./CustomNumberInput";
 import CustomDatePicker from "./CustomDatePicker";
 
+/** A running PDF export: one file for all weeks, or one file per week (k of N). */
+export type PdfProgress =
+  | { mode: "combined"; total: number }
+  | { mode: "individual"; current: number; total: number };
+
+/** Progress text of a PDF export (dialog and full-screen overlay). */
+export const formatPdfProgress = (progress: PdfProgress) =>
+  progress.mode === "combined"
+    ? `Creating PDF for ${progress.total} ${progress.total === 1 ? "week" : "weeks"}…`
+    : `Exporting ${progress.current} of ${progress.total} weeks…`;
+
 type IcalExportModalProps = {
   open: boolean;
   onClose: () => void;
@@ -36,7 +47,7 @@ type IcalExportModalProps = {
   /** The compact portrait page exists for the standard week grid only. */
   offerPdfPortrait?: boolean;
   pdfExporting: boolean;
-  pdfProgress?: { current: number; total: number } | null;
+  pdfProgress?: PdfProgress | null;
   pdfError?: string | null;
   webStatus: { published: boolean; token?: string } | null;
   webLoading: boolean;
@@ -392,7 +403,8 @@ export default function IcalExportModal({
                   PDF export
                 </div>
                 <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  Choose a starting week and how many weeks to export.
+                  Choose a starting week and how many weeks to export. Weeks run Monday to
+                  Sunday; a week that is not published prints as a draft.
                 </div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div className="grid gap-1">
@@ -465,7 +477,7 @@ export default function IcalExportModal({
                 ) : null}
                 {pdfProgress ? (
                   <div className="mt-3 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    Exporting {pdfProgress.current} of {pdfProgress.total} weeks…
+                    {formatPdfProgress(pdfProgress)}
                   </div>
                 ) : null}
                 <div className="mt-4 flex flex-wrap items-center gap-2">

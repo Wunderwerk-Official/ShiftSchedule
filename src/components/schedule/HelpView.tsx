@@ -289,7 +289,8 @@ export default function HelpView() {
             <span className="font-medium">Open Export</span> below the calendar.{" "}
             <span className="font-medium">PDF</span> creates printable week exports, either in
             landscape with the times side by side or in portrait as the compact week (Times:
-            Stacked);{" "}
+            Stacked). They always cover whole weeks from Monday; a week that is not published
+            is marked &quot;Draft – not published&quot;, and a running export can be cancelled.{" "}
             <span className="font-medium">Web</span> creates a read-only public view link.
           </p>
           <p className="mt-2">

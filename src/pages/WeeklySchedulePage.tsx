@@ -12,7 +12,10 @@ import ClinicianEditModal from "../components/schedule/ClinicianEditModal";
 import AutomatedPlanningPanel from "../components/schedule/AutomatedPlanningPanel";
 import SolverOverlay, { type LiveSolution, type StatsHistoryEntry } from "../components/schedule/SolverOverlay";
 import HelpView from "../components/schedule/HelpView";
-import IcalExportModal from "../components/schedule/IcalExportModal";
+import IcalExportModal, {
+  formatPdfProgress,
+  type PdfProgress,
+} from "../components/schedule/IcalExportModal";
 import ScheduleGrid from "../components/schedule/ScheduleGrid";
 import SettingsView from "../components/schedule/SettingsView";
 import TopBar from "../components/schedule/TopBar";
@@ -378,10 +381,10 @@ export default function WeeklySchedulePage({
   const [webPublishLoading, setWebPublishLoading] = useState(false);
   const [webPublishError, setWebPublishError] = useState<string | null>(null);
   const [pdfExporting, setPdfExporting] = useState(false);
-  const [pdfProgress, setPdfProgress] = useState<{ current: number; total: number } | null>(
-    null,
-  );
+  const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [pdfError, setPdfError] = useState<string | null>(null);
+  // Cancel of the running PDF export (overlay button).
+  const pdfAbortRef = useRef<AbortController | null>(null);
   const [anchorDate, setAnchorDate] = useState<Date>(new Date());
   const [assignmentMap, setAssignmentMap] = useState<Map<string, Assignment[]>>(() =>
     buildAssignmentMap(defaultAppState.assignments ?? []),
@@ -1233,6 +1236,11 @@ export default function WeeklySchedulePage({
     setPdfError(null);
     setPdfExporting(true);
     pauseCalendarSaving();
+    const abort = new AbortController();
+    pdfAbortRef.current = abort;
+    // The print pages show whole weeks: request and file names start on the
+    // Monday of the chosen date.
+    const firstMonday = startOfWeek(new Date(`${args.startISO}T00:00:00`), 1);
     let exportedWeeks = 0;
     try {
       if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
@@ -1243,27 +1251,35 @@ export default function WeeklySchedulePage({
       const saved = await saveState(current);
       if (!saved.revision) throw new Error("The saved calendar has no revision. Reload before exporting.");
       if (args.mode === "combined") {
-        setPdfProgress({ current: 0, total: args.weeks });
-        const pdfBlob = await exportWeeksPdf(args.startISO, args.weeks, saved.revision, args.layout);
-        const endISO = toISODate(addDays(addWeeks(new Date(`${args.startISO}T00:00:00`), args.weeks), -1));
-        downloadBlob(`shift-planner-${args.startISO}-to-${endISO}.pdf`, pdfBlob);
+        setPdfProgress({ mode: "combined", total: args.weeks });
+        const startISO = toISODate(firstMonday);
+        const pdfBlob = await exportWeeksPdf(
+          startISO, args.weeks, saved.revision, args.layout, abort.signal,
+        );
+        const endISO = toISODate(addDays(addWeeks(firstMonday, args.weeks), -1));
+        downloadBlob(`shift-planner-${startISO}-to-${endISO}.pdf`, pdfBlob);
       } else {
-        const baseDate = startOfWeek(new Date(`${args.startISO}T00:00:00`), 1);
-        for (let i = 0; i < args.weeks; i += 1) {
-          const weekStartDate = addWeeks(baseDate, i);
-          const weekStartISO = toISODate(weekStartDate);
-          setPdfProgress({ current: i + 1, total: args.weeks });
-          const pdfBlob = await exportWeekPdf(weekStartISO, saved.revision, args.layout);
+        for (let i = 0; i < args.weeks && !abort.signal.aborted; i += 1) {
+          const weekStartISO = toISODate(addWeeks(firstMonday, i));
+          setPdfProgress({ mode: "individual", current: i + 1, total: args.weeks });
+          const pdfBlob = await exportWeekPdf(weekStartISO, saved.revision, args.layout, abort.signal);
           downloadBlob(`shift-planner-${weekStartISO}.pdf`, pdfBlob);
           exportedWeeks += 1;
           await new Promise((resolve) => setTimeout(resolve, 400));
         }
       }
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "PDF export failed.";
-      setPdfError(exportedWeeks > 0
-        ? `${exportedWeeks} of ${args.weeks} weeks downloaded. Export stopped: ${reason}` : reason);
+      if (!abort.signal.aborted) {
+        const reason = error instanceof Error ? error.message : "PDF export failed.";
+        setPdfError(exportedWeeks > 0
+          ? `${exportedWeeks} of ${args.weeks} weeks downloaded. Export stopped: ${reason}` : reason);
+      }
     } finally {
+      // Cancelled: the files downloaded so far stay, the running one is dropped.
+      if (abort.signal.aborted && exportedWeeks > 0 && exportedWeeks < args.weeks) {
+        setPdfError(`${exportedWeeks} of ${args.weeks} weeks downloaded. Export cancelled.`);
+      }
+      pdfAbortRef.current = null;
       resumeCalendarSaving();
       setPdfExporting(false);
       setPdfProgress(null);
@@ -3327,8 +3343,23 @@ export default function WeeklySchedulePage({
       />
 
       {calendarTransition && (
-        <div role="status" aria-live="polite" className="fixed inset-0 z-[2000] flex items-center justify-center bg-white/70 text-sm font-medium text-slate-700 dark:bg-slate-950/70 dark:text-slate-200">
-          {pdfExporting ? pdfProgress ? `Exporting ${pdfProgress.current} of ${pdfProgress.total} weeks…` : "Saving calendar for export…" : "Updating calendar…"}
+        <div className="fixed inset-0 z-[2000] flex flex-col items-center justify-center gap-3 bg-white/70 text-sm font-medium text-slate-700 dark:bg-slate-950/70 dark:text-slate-200">
+          <p role="status" aria-live="polite">
+            {pdfExporting ? pdfProgress ? formatPdfProgress(pdfProgress) : "Saving calendar for export…" : "Updating calendar…"}
+          </p>
+          {pdfExporting && pdfProgress ? (
+            <button
+              type="button"
+              onClick={() => pdfAbortRef.current?.abort()}
+              className={cx(
+                "rounded-full border border-slate-300 bg-white px-4 py-1.5 text-sm font-medium text-slate-900 shadow-sm",
+                "hover:bg-slate-50 active:bg-slate-100",
+                "dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700",
+              )}
+            >
+              Cancel
+            </button>
+          ) : null}
         </div>
       )}
       {saveError && (
