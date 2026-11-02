@@ -54,7 +54,7 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits). The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits); since v1.77 that card keeps the "Team | My plan" switch, so the way back to the team plan never waits for loading. The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
 - Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). Since v1.73 a cell whose section differs from its lane's names it in a small tag (before a differing time). See the v1.65, v1.66, v1.71 and v1.73 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
@@ -3037,3 +3037,19 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   columns (`repeat(N, minmax`), since the stacked grid starts with
   `repeat(3, auto)`.
 - Deploy notes: frontend only, no schema or data change. Version 1.76 (76).
+
+## v1.77 — Team switch while My plan is loading
+
+- `src/components/schedule/CalendarPlaceholder.tsx` (shown in scope "My plan"
+  until this user's calendar is loaded, see the core UI notes) used to be an
+  empty card: the page had no "Team | My plan" switch until loading finished,
+  so a slow load trapped the user in the empty My plan card. It now has the
+  same frame and header position as `MyPlanView` and shows `PlanScopeSwitch`
+  (scope "me", compact on phones) above a busy status "Loading calendar…"
+  with a small spinner (still for `prefers-reduced-motion`). The switch shows
+  no initials yet: the linked person is only known once the calendar is
+  loaded (until then the page holds the demo people). Props:
+  `onScopeChange` (the page's `setPlanScope`), `isMobile`.
+- Tests: `CalendarPlaceholder.test.tsx` (switch usable and reports "team",
+  busy status text, plain "My plan" label, compact on phones).
+- Deploy notes: frontend only, no schema or data change. Version 1.77 (77).

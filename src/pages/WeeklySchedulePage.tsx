@@ -3402,7 +3402,7 @@ export default function WeeklySchedulePage({
       {viewMode === "calendar" ? (
         <>
           {planScope === "me" && !myPlanDataReady ? (
-            <CalendarPlaceholder />
+            <CalendarPlaceholder onScopeChange={setPlanScope} isMobile={isMobile} />
           ) : planScope === "me" ? (
             <MyPlanView
               scheduleRows={scheduleRows}
