@@ -173,3 +173,26 @@ describe("IcalExportModal as a dialog (re-QA)", () => {
     expect(screen.getByRole("button", { name: "Download iCal file for Dr. B" })).toBeInTheDocument();
   });
 });
+
+describe("IcalExportModal inner popups (re-QA)", () => {
+  it("Escape in the start-week picker closes only the picker", () => {
+    const props = renderModal();
+    const dialog = screen.getByRole("dialog", { name: "Export" });
+    const trigger = within(dialog).getByRole("button", { name: "02.03.2026" });
+    fireEvent.click(trigger);
+    expect(screen.getByRole("button", { name: "Previous month" })).toBeInTheDocument();
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Previous month" })).toBeNull();
+    expect(props.onClose).not.toHaveBeenCalled();
+    // A second Escape (picker closed) closes the dialog.
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("keeps Export PDF focusable while exporting, so focus can come back to it", () => {
+    renderModal({ pdfExporting: true, pdfProgress: { mode: "combined", total: 2 } });
+    const button = screen.getByRole("button", { name: "Export PDF" });
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+  });
+});

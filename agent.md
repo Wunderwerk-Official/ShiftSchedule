@@ -3636,7 +3636,16 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
   "Copy: subscription link for <name>". The calendar transition overlay is
   now `src/components/schedule/CalendarTransitionOverlay.tsx`: a modal dialog
   on a card (its text no longer runs into the Export dialog's fields), focus
-  on Cancel, Escape cancels.
+  on Cancel, Escape cancels. `ConfirmDialog` is a nested modal too
+  (`ConfirmDialogView` with `useModalFocus`, focus on the confirm button
+  instead of `autoFocus`, Escape stops at it), so a confirmation over the
+  Export dialog keeps that dialog inert and returns focus to the opener.
+  `useModalFocus` returns focus to the topmost open modal when the element
+  that had focus is gone or was the page. "Export PDF" is no longer disabled
+  while an export runs (`aria-disabled`; the overlay blocks it), because a
+  disabled button loses focus. `CustomDatePicker` and `CustomNumberInput`
+  handle Escape themselves while open, so it closes only the popup, not the
+  dialog around it. The PDF error box is `role="alert"`.
 - **Calendar.** A hand-placed rest day is not moved onto a day the person is
   on vacation (it would vanish but stay stored); a notice says "… is on
   vacation on Tue 03.11. The rest day stays on Mon 02.11.". A Vacation pill

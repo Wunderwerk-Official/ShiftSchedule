@@ -522,7 +522,10 @@ export default function IcalExportModal({
                   </div>
                 ) : null}
                 {pdfError ? (
-                  <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/40 dark:bg-rose-900/30 dark:text-rose-200">
+                  <div
+                    role="alert"
+                    className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/40 dark:bg-rose-900/30 dark:text-rose-200"
+                  >
                     {pdfError}
                   </div>
                 ) : null}
@@ -535,7 +538,7 @@ export default function IcalExportModal({
                   <button
                     type="button"
                     onClick={() => {
-                      if (!pdfValidation.startISO) return;
+                      if (!pdfValidation.startISO || pdfExporting) return;
                       onExportPdf({
                         startISO: pdfValidation.startISO,
                         weeks: pdfValidation.weeks,
@@ -543,7 +546,11 @@ export default function IcalExportModal({
                         layout: offerPdfPortrait ? pdfLayout : "landscape",
                       });
                     }}
-                    disabled={pdfValidation.hasError || pdfExporting}
+                    // Not disabled while exporting: a disabled button loses
+                    // focus, which then could not return to it when the
+                    // export overlay (which blocks the dialog) closes.
+                    disabled={pdfValidation.hasError}
+                    aria-disabled={pdfExporting || undefined}
                     className={cx(
                       "inline-flex items-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900",
                       "hover:bg-slate-50 active:bg-slate-100",

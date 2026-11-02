@@ -32,7 +32,18 @@ export function useModalFocus(
     (initialFocusRef?.current ?? container).focus();
     return () => {
       for (const element of madeInert) element.removeAttribute("inert");
-      if (previous && previous.isConnected) previous.focus();
+      // Back to where focus was; if that element is gone (a confirm button)
+      // or was the page itself, to the topmost modal still open (e.g. the
+      // Export dialog under the export overlay).
+      if (previous && previous.isConnected && previous !== document.body && !container.contains(previous)) {
+        previous.focus();
+      }
+      if (document.activeElement === document.body || !document.activeElement) {
+        const open = Array.from(
+          document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]'),
+        ).filter((modal) => modal !== container && !container.contains(modal) && !modal.closest("[inert]"));
+        open[open.length - 1]?.focus();
+      }
     };
     // Runs when the modal opens or closes; the refs are stable.
     // eslint-disable-next-line react-hooks/exhaustive-deps

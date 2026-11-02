@@ -190,7 +190,17 @@ export default function CustomDatePicker({
   };
 
   return (
-    <div ref={containerRef} className={cx("relative", className)}>
+    <div
+      ref={containerRef}
+      className={cx("relative", className)}
+      onKeyDown={(e) => {
+        // Escape closes only this popup, not a dialog around it.
+        if (e.key === "Escape" && isOpen) {
+          e.stopPropagation();
+          setIsOpen(false);
+        }
+      }}
+    >
       <button
         type="button"
         onClick={handleToggle}
