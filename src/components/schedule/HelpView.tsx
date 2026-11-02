@@ -47,6 +47,11 @@ export default function HelpView() {
               current date.
             </li>
             <li>On phones the team plan shows one day at a time.</li>
+            <li>
+              A week you move to becomes part of the page address: a reload keeps it,
+              and the address opens that week for anyone you send it to. The plain
+              address, without a week, always opens the current week.
+            </li>
           </ul>
         </Section>
 
@@ -117,7 +122,16 @@ export default function HelpView() {
                 <li>
                   <span className="font-medium">Rest Day row</span>: people resting around
                   on-call duty (filled by the on-call rest rule). A name you drag in marks a
-                  day off: automatic planning leaves that person free that day.
+                  day off: automatic planning leaves that person free that day. Drag such a
+                  name to another day&rsquo;s Rest Day row to move the day off, or out of the
+                  calendar to remove it.
+                </li>
+                <li>
+                  Rest days from the on-call rule follow the on-call shift: change that shift
+                  or the rule to change them. If you place the person in a shift on such a
+                  day anyway, they leave the Rest Day row and the shift counts as a rule
+                  violation (the monthly sheet, which lists no violations, underlines the
+                  name in red).
                 </li>
                 <li>
                   <span className="font-medium">Vacation row</span>: people on vacation;
@@ -156,7 +170,7 @@ export default function HelpView() {
               move it. Dragging a
               person into the Vacation row marks that day as vacation (their shifts that
               day are removed); drag them from the Vacation row to another row on the same
-              day to end the vacation.
+              day, or out of the calendar, to end the vacation that day.
             </li>
             <li>
               Drag a shift assignment out of the calendar to remove it.
@@ -173,7 +187,10 @@ export default function HelpView() {
 
         <Section title="5. Highlighting While Dragging">
           <ul className="list-disc space-y-1 pl-5">
-            <li>While you drag a name, the other days are greyed out.</li>
+            <li>
+              While you drag a name, the other days are greyed out (a name from the Rest
+              Day row can still go to the Rest Day row of another day).
+            </li>
             <li>
               On the same day, shifts the person is qualified for and free for get a dark
               outline.

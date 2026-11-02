@@ -54,8 +54,9 @@ export function listWeekStartsOverlappingMonth(monthAnchor: Date): Date[] {
   return weeks;
 }
 
+// English like the rest of the UI ("December 2026").
 export function formatMonthLabel(date: Date) {
-  return new Intl.DateTimeFormat("de-DE", {
+  return new Intl.DateTimeFormat("en-US", {
     month: "long",
     year: "numeric",
   }).format(date);
@@ -71,14 +72,20 @@ export function formatDayHeader(date: Date) {
   return { weekday, dayOfMonth };
 }
 
-export function formatRangeLabel(start: Date, endInclusive: Date) {
-  const formatEuropeanDate = (date: Date) => {
-    const day = String(date.getDate()).padStart(2, "0");
-    const month = String(date.getMonth() + 1).padStart(2, "0");
-    const year = date.getFullYear();
-    return `${day}.${month}.${year}`;
-  };
+// "02.11.2026", or "02.11." without the year.
+function formatEuropeanDate(date: Date, withYear = true) {
+  const day = String(date.getDate()).padStart(2, "0");
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  return withYear ? `${day}.${month}.${date.getFullYear()}` : `${day}.${month}.`;
+}
 
+/** A day in the style of the week range label: "Mon 02.11.2026" ("Mon 02.11." without the year). */
+export function formatWeekdayDate(date: Date, { withYear = true }: { withYear?: boolean } = {}) {
+  const weekday = new Intl.DateTimeFormat("en-US", { weekday: "short" }).format(date);
+  return `${weekday} ${formatEuropeanDate(date, withYear)}`;
+}
+
+export function formatRangeLabel(start: Date, endInclusive: Date) {
   const sameDay =
     start.getFullYear() === endInclusive.getFullYear() &&
     start.getMonth() === endInclusive.getMonth() &&

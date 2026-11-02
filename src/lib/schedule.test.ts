@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { Assignment, Clinician } from "../api/client";
 import {
+  buildOnCallRestDays,
   buildRenderedAssignmentMap,
   buildShiftInterval,
   formatTimeRangeLabel,
@@ -544,5 +545,98 @@ describe("buildRenderedAssignmentMap", () => {
     const restDayAfter = result.get(`${REST_DAY_POOL_ID}__2026-01-06`);
     expect(restDayAfter).toBeDefined();
     expect(restDayAfter?.some((a) => a.clinicianId === "clin-1")).toBe(true);
+  });
+});
+
+describe("automatic rest days around on-call duty", () => {
+  // On call (section "oncall") on Tue 2026-11-03, one rest day after it.
+  const rows: ScheduleRow[] = [
+    { id: "oncall-tue", kind: "class", name: "On call", dotColorClass: "", sectionId: "oncall" },
+    { id: "ct-wed", kind: "class", name: "CT", dotColorClass: "", sectionId: "ct" },
+    { id: REST_DAY_POOL_ID, kind: "pool", name: "Rest Day", dotColorClass: "" },
+    { id: VACATION_POOL_ID, kind: "pool", name: "Vacation", dotColorClass: "" },
+  ];
+  const settings = {
+    enforceSameLocationPerDay: false,
+    onCallRestEnabled: true,
+    onCallRestClassId: "oncall",
+    onCallRestDaysBefore: 1,
+    onCallRestDaysAfter: 1,
+    preferContinuousShifts: true,
+  };
+  const person = (vacations: Clinician["vacations"] = []): Clinician => ({
+    id: "tom",
+    name: "Tom Finck",
+    qualifiedClassIds: [],
+    preferredClassIds: [],
+    vacations,
+  });
+  const entry = (id: string, rowId: string, dateISO: string): [string, Assignment[]] => [
+    `${rowId}__${dateISO}`,
+    [{ id, rowId, dateISO, clinicianId: "tom" }],
+  ];
+  const week = [2, 3, 4, 5].map((day) => new Date(2026, 10, day));
+  const restIn = (map: Map<string, Assignment[]>, dateISO: string) =>
+    (map.get(`${REST_DAY_POOL_ID}__${dateISO}`) ?? []).map((item) => item.clinicianId);
+
+  it("lists the days before and after each on-call shift with the shift's date", () => {
+    const restDays = buildOnCallRestDays(new Map([entry("o", "oncall-tue", "2026-11-03")]), [person()], {
+      scheduleRows: rows,
+      solverSettings: settings,
+    });
+    expect([...restDays.keys()].sort()).toEqual(["2026-11-02", "2026-11-04"]);
+    expect(restDays.get("2026-11-04")?.get("tom")).toBe("2026-11-03");
+  });
+
+  it("is empty while the rule is off and leaves vacation days out", () => {
+    const map = new Map([entry("o", "oncall-tue", "2026-11-03")]);
+    expect(
+      buildOnCallRestDays(map, [person()], {
+        scheduleRows: rows,
+        solverSettings: { ...settings, onCallRestEnabled: false },
+      }).size,
+    ).toBe(0);
+    const onHoliday = person([{ id: "v", startISO: "2026-11-04", endISO: "2026-11-06" }]);
+    const restDays = buildOnCallRestDays(map, [onHoliday], { scheduleRows: rows, solverSettings: settings });
+    expect([...restDays.keys()]).toEqual(["2026-11-02"]);
+    // An on-call shift on a vacation day causes no rest days at all.
+    const onCallOnHoliday = person([{ id: "v", startISO: "2026-11-03", endISO: "2026-11-03" }]);
+    expect(
+      buildOnCallRestDays(map, [onCallOnHoliday], { scheduleRows: rows, solverSettings: settings }).size,
+    ).toBe(0);
+  });
+
+  it("still lists a rest day on which the person holds a shift", () => {
+    const map = new Map([entry("o", "oncall-tue", "2026-11-03"), entry("s", "ct-wed", "2026-11-04")]);
+    const restDays = buildOnCallRestDays(map, [person()], { scheduleRows: rows, solverSettings: settings });
+    expect(restDays.get("2026-11-04")?.has("tom")).toBe(true);
+  });
+
+  it("shows the automatic Rest Day pill only while the person holds no shift that day", () => {
+    const onCallOnly = new Map([entry("o", "oncall-tue", "2026-11-03")]);
+    const options = { scheduleRows: rows, solverSettings: settings };
+    expect(restIn(buildRenderedAssignmentMap(onCallOnly, [person()], week, options), "2026-11-04")).toEqual(["tom"]);
+
+    // Placed in a shift on the rest day by hand: shown in the shift only, not twice.
+    const withShift = new Map([...onCallOnly, entry("s", "ct-wed", "2026-11-04")]);
+    const rendered = buildRenderedAssignmentMap(withShift, [person()], week, options);
+    expect(restIn(rendered, "2026-11-04")).toEqual([]);
+    expect(rendered.get("ct-wed__2026-11-04")?.map((item) => item.id)).toEqual(["s"]);
+    // The day before is still a rest day.
+    expect(restIn(rendered, "2026-11-02")).toEqual(["tom"]);
+  });
+
+  it("keeps a hand-placed Rest Day entry next to a shift that day", () => {
+    const map = new Map([
+      entry("o", "oncall-tue", "2026-11-03"),
+      entry("s", "ct-wed", "2026-11-04"),
+      entry("r", REST_DAY_POOL_ID, "2026-11-04"),
+    ]);
+    const rendered = buildRenderedAssignmentMap(map, [person()], week, {
+      scheduleRows: rows,
+      solverSettings: settings,
+    });
+    // The stored entry stays (it can be dragged out); no computed copy is added.
+    expect(rendered.get(`${REST_DAY_POOL_ID}__2026-11-04`)?.map((item) => item.id)).toEqual(["r"]);
   });
 });

@@ -3,7 +3,12 @@ import AssignmentLockButton from "./AssignmentLockButton";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import { cx } from "../../lib/classNames";
-import { sortAssignmentsBySurname, type RenderedAssignment } from "../../lib/schedule";
+import {
+  REST_DAY_POOL_ID,
+  sortAssignmentsBySurname,
+  VACATION_POOL_ID,
+  type RenderedAssignment,
+} from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getLuminance } from "../../lib/shiftRows";
 import {
@@ -15,6 +20,7 @@ import {
   DRAG_MIME,
   readDragPayload,
   type DragPayload,
+  type MoveRestDayArgs,
   type SlotOptionClinician,
 } from "../../lib/clinicianSlotOptions";
 import {
@@ -115,6 +121,8 @@ type ClinicSheetGridProps = {
     assignmentId: string;
     clinicianId: string;
   }) => void;
+  /** A Rest Day name dropped on the Rest Day row of another day (other drops on another day remove). */
+  onMoveRestDay?: (args: MoveRestDayArgs) => void;
   onClinicianClick?: (clinicianId: string) => void;
 };
 
@@ -133,6 +141,7 @@ export default function ClinicSheetGrid({
   onRemoveAssignment,
   onToggleAssignmentLock,
   onMoveWithinDay,
+  onMoveRestDay,
   onClinicianClick,
 }: ClinicSheetGridProps) {
   const { days, sections, poolRows } = model;
@@ -194,22 +203,37 @@ export default function ClinicSheetGrid({
     };
   }, [dragging, onRemoveAssignment]);
 
-  // Shared drop handling for slot areas and pool cells: drops from another
-  // day (or onto an incompatible slot) remove the assignment, drops on the
-  // source cell are a no-op, valid same-day drops move.
+  // Shared drop handling for slot areas and pool cells: a Rest Day name
+  // dropped on the Rest Day row of another day moves there, other drops from
+  // another day (or onto an incompatible slot) remove the assignment, drops
+  // on the source cell are a no-op, valid same-day drops move. A Vacation
+  // name stays on such drops: a vacation day ends only when its name leaves
+  // the sheet.
   const handleCellDrop = (event: ReactDragEvent, targetRowId: string, dateISO: string) => {
     event.preventDefault();
     event.stopPropagation();
     const payload = readDragPayload(event.dataTransfer);
     setDragging(null);
     if (!payload) return;
+    const removeOnMissedDrop = () => {
+      if (payload.rowId !== VACATION_POOL_ID) onRemoveAssignment?.(payload);
+    };
     if (payload.dateISO !== dateISO) {
-      onRemoveAssignment?.(payload);
+      if (payload.rowId === REST_DAY_POOL_ID && targetRowId === REST_DAY_POOL_ID && onMoveRestDay) {
+        onMoveRestDay({
+          fromDateISO: payload.dateISO,
+          toDateISO: dateISO,
+          assignmentId: payload.assignmentId,
+          clinicianId: payload.clinicianId,
+        });
+      } else {
+        removeOnMissedDrop();
+      }
       return;
     }
     if (payload.rowId === targetRowId) return;
     if (!canDropAssignment(payload, targetRowId, dateISO, dropIndex)) {
-      onRemoveAssignment?.(payload);
+      removeOnMissedDrop();
       return;
     }
     onMoveWithinDay?.({
@@ -281,6 +305,14 @@ export default function ClinicSheetGrid({
     const name = getClinicianName(assignment.clinicianId);
     const isUnqualified =
       !isPoolCell && !getIsQualified(assignment.clinicianId, slotRowId);
+    // A shift on the person's rest day (on-call rule or Rest Day row): the
+    // sheet has no violation list, so the name itself is marked.
+    const isOnRestDay =
+      !isPoolCell && (getIsOnRestDay?.(assignment.clinicianId, dateISO) ?? false);
+    const warnings = [
+      isUnqualified && "not qualified for this slot",
+      isOnRestDay && "scheduled on a rest day",
+    ].filter(Boolean);
     const isBeingDragged =
       dragging?.assignmentId === assignment.id &&
       dragging.rowId === slotRowId &&
@@ -292,7 +324,7 @@ export default function ClinicSheetGrid({
         key={assignment.id}
         data-sheet-name="true"
         draggable={!readOnly}
-        title={isUnqualified ? `${name} — not qualified for this slot` : name}
+        title={warnings.length > 0 ? `${name} — ${warnings.join("; ")}` : name}
         onDragStart={
           readOnly
             ? undefined
@@ -318,7 +350,8 @@ export default function ClinicSheetGrid({
           // Touch screens always show an unlocked name's lock: keep its room.
           hasLock && !isLocked && "[@media(hover:none)]:pr-5",
           textClass,
-          isUnqualified && "underline decoration-amber-500 decoration-wavy",
+          (isUnqualified || isOnRestDay) && "underline decoration-wavy",
+          isOnRestDay ? "decoration-red-600" : isUnqualified && "decoration-amber-500",
           !readOnly && "cursor-grab active:cursor-grabbing hover:bg-black/5",
           isBeingDragged && "opacity-40",
         )}

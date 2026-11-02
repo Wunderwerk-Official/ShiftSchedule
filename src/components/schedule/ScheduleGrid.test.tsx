@@ -72,6 +72,25 @@ describe("ScheduleGrid", () => {
     expect(container.querySelector('[style*="background-color"]')).toBeNull();
   });
 
+  it("names a clipped holiday in full in the day header's tooltip, in its own color in dark mode", () => {
+    const name = "Betriebsausflug, Teil 1; intern";
+    renderGrid({
+      weekDays: [new Date(2026, 10, 11), new Date(2026, 10, 14)],
+      holidayDates: new Set(["2026-11-11"]),
+      holidayNameByDate: { "2026-11-11": name },
+    });
+    const label = screen.getByText(name);
+    expect(label.className).toContain("truncate");
+    const header = label.closest<HTMLElement>("[title]")!;
+    expect(header.title).toBe(name);
+    // Light lavender as before; in dark mode no longer the weekend gray.
+    expect(header.className).toContain("bg-[#F3E8FF]");
+    expect(header.className).toContain("dark:bg-[#2E1F47]");
+    const weekend = screen.getByText("SAT").closest<HTMLElement>(".sticky")!;
+    expect(weekend.className).toContain("dark:bg-slate-800");
+    expect(weekend.hasAttribute("title")).toBe(false);
+  });
+
   it("gives an uncolored location its automatic color: band, label shade and ink", () => {
     renderGrid({
       rows: [locatedRow],
@@ -246,6 +265,7 @@ describe("ScheduleGrid drag and drop", () => {
     // Only active on Tuesdays: the Monday cell is inactive.
     slot("tue-only", "08:00", "09:00", { dayType: "tue", colBandOrder: 1 }),
     { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" },
+    { id: "pool-vacation", name: "Vacation", kind: "pool", dotColorClass: "bg-slate-200" },
   ];
   const entry = (rowId: string, dateISO: string, clinicianId: string): [string, RenderedAssignment[]] => [
     `${rowId}__${dateISO}`,
@@ -255,12 +275,15 @@ describe("ScheduleGrid drag and drop", () => {
     entry("early", MON, "x"),
     [`late__${MON}`, [{ id: `late-${MON}-y`, rowId: "late", dateISO: MON, clinicianId: "y" }]],
     entry("broken", MON, "z"),
+    entry("pool-rest-day", MON, "r"),
+    entry("pool-vacation", MON, "v"),
   ]);
   dndMap.get(`early__${MON}`)!.push({ id: `early-${MON}-y`, rowId: "early", dateISO: MON, clinicianId: "y" });
 
   const renderDnd = () => {
     const onMoveWithinDay = vi.fn();
     const onRemoveAssignment = vi.fn();
+    const onMoveRestDay = vi.fn();
     render(
       <ScheduleGrid
         leftHeaderTitle="Week"
@@ -273,10 +296,11 @@ describe("ScheduleGrid drag and drop", () => {
         onCellClick={vi.fn()}
         onMoveWithinDay={onMoveWithinDay}
         onRemoveAssignment={onRemoveAssignment}
+        onMoveRestDay={onMoveRestDay}
         onAddAssignment={vi.fn()}
       />,
     );
-    return { onMoveWithinDay, onRemoveAssignment };
+    return { onMoveWithinDay, onRemoveAssignment, onMoveRestDay };
   };
   // Scoped to the grid: the drag image clone of an earlier drag (removed on a
   // timer) carries the same data attributes.
@@ -348,6 +372,73 @@ describe("ScheduleGrid drag and drop", () => {
       clinicianId: "x",
     });
     expect(onMoveWithinDay).not.toHaveBeenCalled();
+  });
+
+  it("moves a Rest Day pill to the Rest Day row of another day", () => {
+    const { onMoveWithinDay, onRemoveAssignment, onMoveRestDay } = renderDnd();
+    dragTo(pill("pool-rest-day", MON, "r"), cell("pool-rest-day", TUE));
+    expect(onMoveRestDay).toHaveBeenCalledWith({
+      fromDateISO: MON,
+      toDateISO: TUE,
+      assignmentId: `pool-rest-day-${MON}-r`,
+      clinicianId: "r",
+    });
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+    expect(onMoveWithinDay).not.toHaveBeenCalled();
+  });
+
+  it("removes a Rest Day pill dropped outside the grid or on another day's slot", () => {
+    const { onRemoveAssignment, onMoveRestDay } = renderDnd();
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(pill("pool-rest-day", MON, "r"), { dataTransfer });
+    fireEvent.drop(document.body, { dataTransfer });
+    expect(onRemoveAssignment).toHaveBeenCalledWith({
+      rowId: "pool-rest-day",
+      dateISO: MON,
+      assignmentId: `pool-rest-day-${MON}-r`,
+      clinicianId: "r",
+    });
+    dragTo(pill("pool-rest-day", MON, "r"), cell("late", TUE));
+    expect(onRemoveAssignment).toHaveBeenCalledTimes(2);
+    expect(onMoveRestDay).not.toHaveBeenCalled();
+  });
+
+  it("keeps the other days' Rest Day cells bright while a Rest Day pill is dragged", () => {
+    renderDnd();
+    const grey = "opacity-60";
+    fireEvent.dragStart(pill("pool-rest-day", MON, "r"), { dataTransfer: makeDataTransfer() });
+    expect(cell("pool-rest-day", TUE).className).not.toContain(grey);
+    expect(cell("late", TUE).className).toContain(grey);
+    fireEvent.dragEnd(pill("pool-rest-day", MON, "r"), { dataTransfer: makeDataTransfer() });
+    // A shift pill greys every other day out, the Rest Day row too.
+    fireEvent.dragStart(pill("early", MON, "x"), { dataTransfer: makeDataTransfer() });
+    expect(cell("pool-rest-day", TUE).className).toContain(grey);
+  });
+
+  it("keeps a Vacation pill dropped on a cell that cannot take it; out of the grid it leaves", () => {
+    const { onMoveWithinDay, onRemoveAssignment, onMoveRestDay } = renderDnd();
+    const vacation = () => pill("pool-vacation", MON, "v");
+    // Another day's Vacation cell or slot, an inactive cell of the same day.
+    dragTo(vacation(), cell("pool-vacation", TUE));
+    dragTo(vacation(), cell("late", TUE));
+    dragTo(vacation(), cell("tue-only", MON));
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+    expect(onMoveRestDay).not.toHaveBeenCalled();
+    expect(onMoveWithinDay).not.toHaveBeenCalled();
+    // Into a slot of the same day it still moves.
+    dragTo(vacation(), cell("late", MON));
+    expect(onMoveWithinDay).toHaveBeenCalledWith(
+      expect.objectContaining({ fromRowId: "pool-vacation", toRowId: "late", clinicianId: "v" }),
+    );
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(vacation(), { dataTransfer });
+    fireEvent.drop(document.body, { dataTransfer });
+    expect(onRemoveAssignment).toHaveBeenCalledWith({
+      rowId: "pool-vacation",
+      dateISO: MON,
+      assignmentId: `pool-vacation-${MON}-v`,
+      clinicianId: "v",
+    });
   });
 
   it("removes the assignment when the target overlaps another shift of that person", () => {

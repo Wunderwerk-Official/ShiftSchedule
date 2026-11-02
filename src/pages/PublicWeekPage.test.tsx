@@ -295,13 +295,13 @@ describe("PublicWeekPage on a phone", () => {
     }));
     render(<PublicWeekPage token="tok" theme="light" />);
     await waitFor(() => expect(shownDates()).toEqual(["2026-01-11"]));
-    expect(screen.getByText("Sun, Jan 11")).toBeTruthy();
+    expect(screen.getByText("Sun 11.01.2026")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Previous week" })).toBeNull();
     expect(getPublicWebWeek).toHaveBeenLastCalledWith("tok", MON);
 
     fireEvent.click(screen.getByRole("button", { name: "Next day" }));
     await waitFor(() => expect(shownDates()).toEqual(["2026-01-12"]));
-    expect(screen.getByText("Mon, Jan 12")).toBeTruthy();
+    expect(screen.getByText("Mon 12.01.2026")).toBeTruthy();
     expect(getPublicWebWeek).toHaveBeenLastCalledWith("tok", "2026-01-12");
     expect(window.location.search).toBe("?start=2026-01-12");
 

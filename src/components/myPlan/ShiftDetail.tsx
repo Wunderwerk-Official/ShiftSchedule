@@ -246,6 +246,8 @@ function FloatingDetail(props: ShiftDetailViewProps & { headingId: string }) {
       aria-labelledby={props.headingId}
       tabIndex={-1}
       onKeyDown={onKeyDown}
+      // N / Shift+N keep stepping through the shifts from here (usePlanShortcuts).
+      data-shift-steps=""
       className={cx(
         "fixed z-[60] max-h-[calc(100vh-16px)] w-[360px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 shadow-lg",
         // The dialog itself only receives focus programmatically: keep its own shape.

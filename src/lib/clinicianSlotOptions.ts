@@ -98,6 +98,14 @@ export type DragPayload = {
   clinicianId: string;
 };
 
+/** A Rest Day entry dropped on the Rest Day row of another day (both grids move it there). */
+export type MoveRestDayArgs = {
+  fromDateISO: string;
+  toDateISO: string;
+  assignmentId: string;
+  clinicianId: string;
+};
+
 /** Drag data type the schedule grids use for a dragged assignment. */
 export const DRAG_MIME = "application/x-schedule-cell";
 

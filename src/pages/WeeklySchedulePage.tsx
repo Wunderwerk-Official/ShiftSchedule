@@ -27,10 +27,12 @@ import TeamPlanHeader from "../components/schedule/TeamPlanHeader";
 import CalendarPlaceholder from "../components/schedule/CalendarPlaceholder";
 import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
 import MyPlanView, { type TeamPlanTarget } from "../components/myPlan/MyPlanView";
+import Toast, { useToast } from "../components/myPlan/Toast";
 import { parseISODate } from "../lib/myPlan";
 import { useUserPreferences } from "../lib/userPreferences";
 import { scrollToTeamAssignment } from "./scrollToTeamAssignment";
 import { usePlanScope } from "./usePlanScope";
+import { readWeekParam, useWeekParam } from "./weekParam";
 import AdminUsersPanel from "../components/auth/AdminUsersPanel";
 import MobileDayNavigator from "../components/schedule/MobileDayNavigator";
 import { useMediaQuery } from "../lib/useMediaQuery";
@@ -100,13 +102,23 @@ import {
 import { cx } from "../lib/classNames";
 import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
-import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
+import {
+  addDays,
+  addMonths,
+  addWeeks,
+  formatRangeLabel,
+  formatWeekdayDate,
+  startOfMonth,
+  startOfWeek,
+  toISODate,
+} from "../lib/date";
 import { downloadTextFile } from "../lib/download";
 import {
   holidayRegionForCountry,
   mergeLoadedHolidays,
   type NagerPublicHoliday,
 } from "../lib/holidays";
+import type { MoveRestDayArgs } from "../lib/clinicianSlotOptions";
 import { computeOpenSlots } from "../lib/openSlots";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
@@ -227,6 +239,7 @@ function scrollToGridCell(rowId: string, dateISO: string, maxWaitMs: number = 10
 import { buildShiftCalendar, type ShiftCalendarOptions } from "../lib/ical";
 import { planTimeZone } from "../lib/planTimeZone";
 import {
+  buildOnCallRestDays,
   buildRenderedAssignmentMap,
   buildShiftInterval,
   intervalsOverlap,
@@ -318,7 +331,10 @@ export default function WeeklySchedulePage({
     null,
   );
   const [pdfError, setPdfError] = useState<string | null>(null);
-  const [anchorDate, setAnchorDate] = useState<Date>(new Date());
+  // A week opened by link or kept over a reload (?week=, see weekParam.ts).
+  const [anchorDate, setAnchorDate] = useState<Date>(
+    () => readWeekParam(window.location.search) ?? new Date(),
+  );
   const [assignmentMap, setAssignmentMap] = useState<Map<string, Assignment[]>>(() =>
     buildAssignmentMap(defaultAppState.assignments ?? []),
   );
@@ -344,6 +360,8 @@ export default function WeeklySchedulePage({
   const [vacationOverviewOpen, setVacationOverviewOpen] = useState(false);
   const [workingHoursOverviewOpen, setWorkingHoursOverviewOpen] = useState(false);
   const [hasLoaded, setHasLoaded] = useState(false);
+  // The loading card stops waiting when GET /v1/state fails (saveError explains).
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [calendarTransition, setCalendarTransition] = useState(false);
   const calendarTransitionRef = useRef(false);
@@ -477,11 +495,13 @@ export default function WeeklySchedulePage({
     flush: flushPrefs,
   } = useUserPreferences(currentUser.username);
   const { planScope, setPlanScope } = usePlanScope();
-  // My plan reads people and assignments from the calendar. Until this
-  // user's state has loaded they are the built-in demo data, and My plan
-  // would call the linked person "no longer in the plan" and offer the demo
-  // people instead: it waits behind the placeholder.
-  const myPlanDataReady = hasLoaded && loadedUserId === currentUser.username;
+  // Until this user's calendar has loaded the page holds the built-in demo
+  // data: both plans wait behind the loading card (edits made to the demo
+  // calendar would be lost, and My plan would call the linked person "no
+  // longer in the plan" and offer the demo people instead).
+  const calendarReady = hasLoaded && loadedUserId === currentUser.username;
+  // Short notices of the team plan (e.g. why an automatic rest day stays).
+  const { toast: teamToast, show: showTeamNotice, dismiss: dismissTeamNotice } = useToast();
   useEffect(() => {
     if (!ruleViolationsOpen) return;
     const handleClick = (event: MouseEvent) => {
@@ -1147,13 +1167,20 @@ export default function WeeklySchedulePage({
     );
   };
 
-  const isOnRestDay = (clinicianId: string, dateISO: string) => {
-    const restAssignments = renderAssignmentMap.get(
-      `${REST_DAY_POOL_ID}__${dateISO}`,
-    );
-    if (!restAssignments || restAssignments.length === 0) return false;
-    return restAssignments.some((assignment) => assignment.clinicianId === clinicianId);
-  };
+  // On-call rest days by date and person, with the on-call date behind each.
+  const onCallRestDays = useMemo(
+    () => buildOnCallRestDays(assignmentMap, clinicians, { scheduleRows, solverSettings }),
+    [assignmentMap, clinicians, scheduleRows, solverSettings],
+  );
+  // "Rest day" in the slot picker: the Rest Day row as shown, plus automatic
+  // rest days on which the person already holds a shift (the grid hides that
+  // pill and flags the rule violation, but the day stays a rest day).
+  const isRestDayIn =
+    (rendered: Map<string, RenderedAssignment[]>) => (clinicianId: string, dateISO: string) =>
+      (rendered.get(`${REST_DAY_POOL_ID}__${dateISO}`) ?? []).some(
+        (assignment) => assignment.clinicianId === clinicianId,
+      ) || (onCallRestDays.get(dateISO)?.has(clinicianId) ?? false);
+  const isOnRestDay = isRestDayIn(renderAssignmentMap);
 
   // Clinic sheet layout (Excel-style monthly view). Month-scoped derived
   // data — the weekly renderAssignmentMap only synthesizes vacation/rest
@@ -1161,6 +1188,22 @@ export default function WeeklySchedulePage({
   const isClinicSheet =
     (solverSettings.scheduleLayout ?? "classic") === "clinicSheet" && !isMobile;
   const monthStart = useMemo(() => startOfMonth(anchorDate), [anchorDate]);
+  // The viewed period in the address (?week=): the team week's Monday, the
+  // phone's day or the sheet's month; My plan's own day (its day, week and
+  // month views all start from it, and the team week follows from it). None
+  // for the period around today. Written once the calendar (and with it its
+  // layout) has loaded.
+  const periodStart = (date: Date) =>
+    planScope === "me" || isMobile
+      ? date
+      : isClinicSheet
+        ? startOfMonth(date)
+        : startOfWeek(date, 1);
+  const viewedPeriodISO = toISODate(periodStart(anchorDate));
+  useWeekParam(
+    viewedPeriodISO === toISODate(periodStart(new Date())) ? null : viewedPeriodISO,
+    calendarReady,
+  );
   const clinicSheetDays = useMemo(
     () =>
       isClinicSheet ? buildMonthDays(monthStart, holidayDates, holidayNameByDate) : [],
@@ -1199,13 +1242,7 @@ export default function WeeklySchedulePage({
         : null,
     [isClinicSheet, calendarRows, clinicSheetDays, slotOverridesByKey, minSlotsByRowId],
   );
-  const isOnRestDayInSheet = (clinicianId: string, dateISO: string) => {
-    const restAssignments = clinicSheetAssignmentMap.get(
-      `${REST_DAY_POOL_ID}__${dateISO}`,
-    );
-    if (!restAssignments || restAssignments.length === 0) return false;
-    return restAssignments.some((assignment) => assignment.clinicianId === clinicianId);
-  };
+  const isOnRestDayInSheet = isRestDayIn(clinicSheetAssignmentMap);
 
   const shiftDateISO = (dateISO: string, delta: number) =>
     toISODate(addDays(new Date(`${dateISO}T00:00:00`), delta));
@@ -1691,15 +1728,51 @@ export default function WeeklySchedulePage({
     });
   };
 
+  // A Rest Day pill without a stored entry comes from the on-call rest rule:
+  // dragging it changes nothing, a short notice says where it comes from.
+  const notifyAutomaticRestDay = (clinicianId: string, dateISO: string) => {
+    const onCallISO = onCallRestDays.get(dateISO)?.get(clinicianId);
+    // "… on Tue 03.11." – the short date ends the sentence.
+    const what = onCallISO
+      ? `Automatic rest day ${onCallISO < dateISO ? "after" : "before"} on-call duty on ${formatWeekdayDate(
+          new Date(`${onCallISO}T00:00:00`),
+          { withYear: false },
+        )}`
+      : "Automatic rest day.";
+    showTeamNotice(`${what} Change the on-call shift or the rest-day rule to change it.`);
+  };
+  const findStoredRestDay = (dateISO: string, assignmentId: string) =>
+    assignmentMap
+      .get(`${REST_DAY_POOL_ID}__${dateISO}`)
+      ?.find((assignment) => assignment.id === assignmentId);
+
+  // Dragged out of the calendar (or dropped on another day): a shift or a
+  // hand-placed rest day is removed, a vacation day ends (the grids send a
+  // Vacation pill only when it leaves the calendar).
   const handleRemoveAssignment = (args: {
     rowId: string;
     dateISO: string;
     assignmentId: string;
     clinicianId: string;
   }) => {
-    const { rowId, dateISO, assignmentId } = args;
+    const { rowId, dateISO, assignmentId, clinicianId } = args;
     const targetRow = rowById.get(rowId);
-    if (!targetRow || targetRow.kind !== "class") return;
+    if (!targetRow) return;
+    if (rowId === VACATION_POOL_ID) {
+      removeVacationDay(clinicianId, dateISO);
+      return;
+    }
+    if (rowId === REST_DAY_POOL_ID) {
+      const stored = findStoredRestDay(dateISO, assignmentId);
+      // An automatic rest day stays. So does the pill of a hand-placed one
+      // on an automatic rest day (the automatic one takes its place).
+      if (!stored || onCallRestDays.get(dateISO)?.has(clinicianId)) {
+        notifyAutomaticRestDay(clinicianId, dateISO);
+      }
+      if (!stored) return;
+    } else if (targetRow.kind !== "class") {
+      return;
+    }
     setAssignmentMap((prev) => {
       const key = `${rowId}__${dateISO}`;
       const existing = prev.get(key) ?? [];
@@ -1708,6 +1781,33 @@ export default function WeeklySchedulePage({
       const next = new Map(prev);
       if (filtered.length === 0) next.delete(key);
       else next.set(key, filtered);
+      return next;
+    });
+  };
+
+  // A hand-placed rest day dropped on the Rest Day row of another day moves
+  // there (an automatic one stays and explains itself, also when a
+  // hand-placed one leaves an automatic rest day).
+  const handleMoveRestDay = ({ fromDateISO, toDateISO, assignmentId, clinicianId }: MoveRestDayArgs) => {
+    const stored = findStoredRestDay(fromDateISO, assignmentId);
+    if (!stored || onCallRestDays.get(fromDateISO)?.has(clinicianId)) {
+      notifyAutomaticRestDay(clinicianId, fromDateISO);
+    }
+    if (!stored) return;
+    setAssignmentMap((prev) => {
+      const fromKey = `${REST_DAY_POOL_ID}__${fromDateISO}`;
+      const toKey = `${REST_DAY_POOL_ID}__${toDateISO}`;
+      const fromList = prev.get(fromKey) ?? [];
+      const moving = fromList.find((assignment) => assignment.id === assignmentId);
+      if (!moving) return prev;
+      const next = new Map(prev);
+      const remaining = fromList.filter((assignment) => assignment.id !== assignmentId);
+      if (remaining.length === 0) next.delete(fromKey);
+      else next.set(fromKey, remaining);
+      const toList = next.get(toKey) ?? [];
+      if (!toList.some((assignment) => assignment.clinicianId === clinicianId)) {
+        next.set(toKey, [...toList, { ...moving, dateISO: toDateISO }]);
+      }
       return next;
     });
   };
@@ -1901,20 +2001,29 @@ export default function WeeklySchedulePage({
     scrollToGridCell(target.rowId, target.dateISO);
   };
 
+  // The pill to show for a violation: one on screen if there is one (a
+  // violation across the week's edge, on call on Sunday and a shift on
+  // Monday, has one day on screen), else the first, whose day then opens.
+  const violationTarget = (assignmentKeys: string[]) => {
+    const displayedISOs = new Set(displayDays.map(toISODate));
+    const dated = assignmentKeys.flatMap((key) => {
+      const dateISO = extractDateFromAssignmentKey(key);
+      return dateISO ? [{ key, dateISO }] : [];
+    });
+    return dated.find(({ dateISO }) => displayedISOs.has(dateISO)) ?? dated[0];
+  };
+
   const handleCycleRuleViolations = () => {
     if (ruleViolations.length === 0) return;
     const violation = ruleViolations[violationCycleRef.current % ruleViolations.length];
     violationCycleRef.current += 1;
     setActiveRuleViolationId(violation.id);
-    const targetDateISO = violation.assignmentKeys
-      .map(extractDateFromAssignmentKey)
-      .find((d): d is string => d !== null);
-    if (targetDateISO) revealDate(targetDateISO);
+    const target = violationTarget(violation.assignmentKeys);
+    if (target) revealDate(target.dateISO);
     scrollToAssignmentKeys(violation.assignmentKeys);
-    const firstKey = violation.assignmentKeys[0];
-    if (firstKey && targetDateISO) {
-      const rowId = firstKey.slice(0, firstKey.indexOf(`__${targetDateISO}__`));
-      if (rowId) scrollToGridCell(rowId, targetDateISO);
+    if (target) {
+      const rowId = target.key.slice(0, target.key.indexOf(`__${target.dateISO}__`));
+      if (rowId) scrollToGridCell(rowId, target.dateISO);
     }
   };
 
@@ -2021,11 +2130,21 @@ export default function WeeklySchedulePage({
   const ruleAssignmentContext = useMemo(() => {
     const dateISOs = fullWeekDays.map(toISODate);
     const dateSet = new Set(dateISOs);
+    // Rest days around on-call duty reach across the week's edges (on call
+    // on Sunday, rest day on Monday): shifts that many days before and after
+    // the week are read too, for that rule only.
+    const reach = solverSettings.onCallRestEnabled
+      ? Math.max(0, solverSettings.onCallRestDaysBefore ?? 0, solverSettings.onCallRestDaysAfter ?? 0)
+      : 0;
+    const reachDateISOs = Array.from({ length: fullWeekDays.length + 2 * reach }, (_, index) =>
+      toISODate(addDays(fullWeekDays[0], index - reach)),
+    );
+    const reachDateSet = new Set(reachDateISOs);
     const rowKindById = new Map(scheduleRows.map((row) => [row.id, row.kind]));
     const assignmentsByClinicianDate = new Map<string, Map<string, Set<string>>>();
     for (const [key, list] of assignmentMap.entries()) {
       const { rowId, dateISO } = splitAssignmentKey(key);
-      if (!rowId || !dateISO || !dateSet.has(dateISO)) continue;
+      if (!rowId || !dateISO || !reachDateSet.has(dateISO)) continue;
       if (rowKindById.get(rowId) !== "class") continue;
       for (const assignment of list) {
         if (isOnVacation(assignment.clinicianId, dateISO)) continue;
@@ -2042,11 +2161,11 @@ export default function WeeklySchedulePage({
         rowSet.add(rowId);
       }
     }
-    return { dateISOs, dateSet, rowKindById, assignmentsByClinicianDate };
-  }, [fullWeekDays, scheduleRows, assignmentMap, clinicians]);
+    return { dateISOs, dateSet, reachDateISOs, rowKindById, assignmentsByClinicianDate };
+  }, [fullWeekDays, scheduleRows, assignmentMap, clinicians, solverSettings]);
 
   const ruleViolations = useMemo(() => {
-    const { dateISOs, dateSet, assignmentsByClinicianDate } = ruleAssignmentContext;
+    const { dateISOs, dateSet, reachDateISOs, assignmentsByClinicianDate } = ruleAssignmentContext;
     const classLabelById = new Map(classRows.map((row) => [row.id, row.name]));
     const violations: Array<{
       id: string;
@@ -2093,7 +2212,9 @@ export default function WeeklySchedulePage({
       for (const clinician of clinicians) {
         const clinicianDates = assignmentsByClinicianDate.get(clinician.id);
         if (!clinicianDates) continue;
-        for (const dateISO of dateISOs) {
+        // The on-call shift or the day it needs free lies in this week (the
+        // other one may lie just outside it).
+        for (const dateISO of reachDateISOs) {
           const assigned = clinicianDates.get(dateISO);
           if (!assigned) continue;
           const hasOnCall = Array.from(assigned).some((rowId) =>
@@ -2102,7 +2223,7 @@ export default function WeeklySchedulePage({
           if (!hasOnCall) continue;
           for (let offset = 1; offset <= restBefore; offset += 1) {
             const targetISO = shiftDateISO(dateISO, -offset);
-            if (!dateSet.has(targetISO)) continue;
+            if (!dateSet.has(dateISO) && !dateSet.has(targetISO)) continue;
             const targetAssigned = clinicianDates.get(targetISO);
             if (!targetAssigned || targetAssigned.size === 0) continue;
             const assignmentKeys = [
@@ -2120,7 +2241,7 @@ export default function WeeklySchedulePage({
           }
           for (let offset = 1; offset <= restAfter; offset += 1) {
             const targetISO = shiftDateISO(dateISO, offset);
-            if (!dateSet.has(targetISO)) continue;
+            if (!dateSet.has(dateISO) && !dateSet.has(targetISO)) continue;
             const targetAssigned = clinicianDates.get(targetISO);
             if (!targetAssigned || targetAssigned.size === 0) continue;
             const assignmentKeys = [
@@ -2140,6 +2261,25 @@ export default function WeeklySchedulePage({
       }
     }
 
+    // A hand-placed rest day (stored Rest Day row entry) is a day off for
+    // every planner (hard rule REST_DAY, v1.75): a shift that day is flagged,
+    // and the rest day pill turns red with it. Placing a shift through the
+    // picker or by dragging the rest day pill ends the rest day instead.
+    const restDayRowName = poolRows.find((row) => row.id === REST_DAY_POOL_ID)?.name || "Rest Day";
+    for (const dateISO of dateISOs) {
+      for (const entry of assignmentMap.get(`${REST_DAY_POOL_ID}__${dateISO}`) ?? []) {
+        const shiftKeys = buildAssignmentKeys(entry.clinicianId, dateISO);
+        if (shiftKeys.length === 0) continue;
+        violations.push({
+          id: `rest-day-${entry.clinicianId}-${dateISO}`,
+          clinicianId: entry.clinicianId,
+          clinicianName: clinicianNameById.get(entry.clinicianId) ?? entry.clinicianId,
+          summary: `Scheduled on ${formatEuropeanDate(dateISO)}, but that day is a rest day (${restDayRowName} row).`,
+          assignmentKeys: [...shiftKeys, `${REST_DAY_POOL_ID}__${dateISO}__${entry.clinicianId}`],
+        });
+      }
+    }
+
     // Note: The old "allowMultipleShiftsPerDay" check has been removed.
     // We now only flag actual time overlaps (handled below), not just having multiple shifts.
 
@@ -2148,7 +2288,7 @@ export default function WeeklySchedulePage({
         const clinicianDates = assignmentsByClinicianDate.get(clinician.id);
         if (!clinicianDates) continue;
         for (const [dateISO, rowSet] of clinicianDates.entries()) {
-          if (rowSet.size <= 1) continue;
+          if (rowSet.size <= 1 || !dateSet.has(dateISO)) continue;
           const locationIds = new Set<string>();
           for (const rowId of rowSet) {
             const row = rowById.get(rowId);
@@ -2177,7 +2317,7 @@ export default function WeeklySchedulePage({
       const clinicianDates = assignmentsByClinicianDate.get(clinician.id);
       if (!clinicianDates) continue;
       for (const [dateISO, rowSet] of clinicianDates.entries()) {
-        if (rowSet.size <= 1) continue;
+        if (rowSet.size <= 1 || !dateSet.has(dateISO)) continue;
         const rowIds = Array.from(rowSet);
         const overlapping = new Set<string>();
         for (let i = 0; i < rowIds.length; i += 1) {
@@ -2211,6 +2351,8 @@ export default function WeeklySchedulePage({
     solverSettings,
     scheduleRows,
     classRows,
+    poolRows,
+    assignmentMap,
     clinicians,
     clinicianNameById,
     rowById,
@@ -2368,6 +2510,7 @@ export default function WeeklySchedulePage({
   useEffect(() => {
     let alive = true;
     setHasLoaded(false);
+    setLoadFailed(false);
     setLoadedUserId("");
     getState()
       .then((state) => {
@@ -2379,7 +2522,9 @@ export default function WeeklySchedulePage({
         setHasLoaded(true);
       })
       .catch(() => {
-        if (alive) setSaveError("The calendar could not be loaded. Reload before editing.");
+        if (!alive) return;
+        setSaveError("The calendar could not be loaded. Reload before editing.");
+        setLoadFailed(true);
       });
     return () => {
       alive = false;
@@ -2476,7 +2621,14 @@ export default function WeeklySchedulePage({
     return buildStatePayload(assignments);
   };
 
+  // Until the calendar has loaded the screen holds the demo calendar: a
+  // snapshot of it, or a restore that first saves it, would be wrong.
+  const requireLoadedCalendar = (action: string) => {
+    if (!calendarReady) throw new Error(`Wait until the calendar has loaded before ${action}.`);
+  };
+
   const handleSaveSnapshot = async (name: string) => {
+    requireLoadedCalendar("saving a snapshot");
     const payload = buildCurrentStatePayload();
     if (!payload) {
       throw new Error(
@@ -2488,6 +2640,7 @@ export default function WeeklySchedulePage({
 
   // Flush pending edits and pause autosave while replacing calendar state.
   const handleRestoreSnapshot = async (snapshotId: string) => {
+    requireLoadedCalendar("restoring a snapshot");
     pauseCalendarSaving();
     try {
       let saved: AppState | null = null;
@@ -2959,7 +3112,7 @@ export default function WeeklySchedulePage({
         openSlotsCount > 0 && "cursor-pointer hover:bg-yellow-100 dark:hover:bg-yellow-900/60",
       )}
     >
-      {openSlotsCount} Open Slots
+      {openSlotsCount} open slot{openSlotsCount === 1 ? "" : "s"}
     </button>
   );
   const ruleViolationsCount = ruleViolations.length;
@@ -2993,7 +3146,7 @@ export default function WeeklySchedulePage({
               "bg-red-50 text-red-700 ring-red-200 hover:bg-red-100 dark:bg-red-900/40 dark:text-red-200 dark:ring-red-500/40",
             )}
           >
-            {ruleViolationsCount} Rule Violations
+            {ruleViolationsCount} rule violation{ruleViolationsCount === 1 ? "" : "s"}
             <span
               role="button"
               tabIndex={0}
@@ -3037,10 +3190,8 @@ export default function WeeklySchedulePage({
                         // On a phone, show the violation's day first;
                         // scrollToAssignmentKeys polls via rAF until the
                         // pill appears in the DOM (up to 1s).
-                        const targetDateISO = violation.assignmentKeys
-                          .map(extractDateFromAssignmentKey)
-                          .find((d): d is string => d !== null);
-                        if (targetDateISO) revealDate(targetDateISO);
+                        const target = violationTarget(violation.assignmentKeys);
+                        if (target) revealDate(target.dateISO);
                         scrollToAssignmentKeys(violation.assignmentKeys);
                       }}
                       onMouseEnter={() => setHoveredRuleViolationId(violation.id)}
@@ -3099,7 +3250,7 @@ export default function WeeklySchedulePage({
             )}
             aria-expanded={nonConsecutiveShiftsOpen}
           >
-            {nonConsecutiveShiftsCount} Split Shift{nonConsecutiveShiftsCount !== 1 ? "s" : ""}
+            {nonConsecutiveShiftsCount} split shift{nonConsecutiveShiftsCount === 1 ? "" : "s"}
           </button>
         </div>
         {nonConsecutiveShiftsOpen
@@ -3154,6 +3305,7 @@ export default function WeeklySchedulePage({
         type="button"
         role="switch"
         aria-checked={isWeekPublished}
+        aria-label={`Publish week ${formatRangeLabel(weekStart, weekEndInclusive)}`}
         onClick={() => handleSetWeekPublished(currentWeekStartISO, !isWeekPublished)}
         className={cx(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
@@ -3237,7 +3389,8 @@ export default function WeeklySchedulePage({
       {saveError && (
         <div role="alert" className="border-b border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
           <p>{saveError}</p>
-          <p>Your local changes remain on screen. Save a snapshot before reloading if you want to keep them.</p>
+          {/* After a failed load there are no local changes to keep. */}
+          {hasLoaded && <p>Your local changes remain on screen. Save a snapshot before reloading if you want to keep them.</p>}
           <div className="mt-2 flex gap-3">
             {hasLoaded && <button type="button" className="underline" onClick={() => { retryStateSaves(); setSaveError(null); }}>Retry saving</button>}
             <button type="button" className="underline" onClick={() => window.location.reload()}>Reload saved calendar</button>
@@ -3304,8 +3457,14 @@ export default function WeeklySchedulePage({
 
       {viewMode === "calendar" ? (
         <>
-          {planScope === "me" && !myPlanDataReady ? (
-            <CalendarPlaceholder onScopeChange={setPlanScope} isMobile={isMobile} />
+          {!calendarReady ? (
+            <CalendarPlaceholder
+              scope={planScope}
+              onScopeChange={setPlanScope}
+              isMobile={isMobile}
+              loadFailed={loadFailed}
+              onReload={() => window.location.reload()}
+            />
           ) : planScope === "me" ? (
             <MyPlanView
               scheduleRows={scheduleRows}
@@ -3381,6 +3540,7 @@ export default function WeeklySchedulePage({
               onRemoveAssignment={handleRemoveAssignment}
               onToggleAssignmentLock={handleToggleAssignmentLock}
               onMoveWithinDay={handleMoveWithinDay}
+              onMoveRestDay={handleMoveRestDay}
             />
           ) : (
           <ScheduleGrid
@@ -3462,6 +3622,7 @@ export default function WeeklySchedulePage({
             onRemoveAssignment={handleRemoveAssignment}
               onToggleAssignmentLock={handleToggleAssignmentLock}
             onMoveWithinDay={handleMoveWithinDay}
+            onMoveRestDay={handleMoveRestDay}
             onCellClick={() => {}}
             personPillStyles={personPillStyles}
             myClinicianId={outlinedClinicianId}
@@ -3469,11 +3630,12 @@ export default function WeeklySchedulePage({
           />
           )}
           {/* Planning panels belong to the team plan: hidden (but kept
-              mounted, so their inputs survive) while My plan is shown. */}
+              mounted, so their inputs survive) while My plan is shown or
+              the calendar is still loading. */}
           <div
             className={cx(
               "mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10",
-              planScope === "me" && "hidden",
+              (planScope === "me" || !calendarReady) && "hidden",
             )}
           >
             <div className="flex flex-col gap-6">
@@ -3600,6 +3762,17 @@ export default function WeeklySchedulePage({
               </div>
             </div>
           </div>
+        </>
+      ) : viewMode === "settings" && !calendarReady ? (
+        <>
+          {/* Settings edit the calendar: not the demo one shown until it loads. */}
+          <CalendarPlaceholder
+            scope="settings"
+            isMobile={isMobile}
+            loadFailed={loadFailed}
+            onReload={() => window.location.reload()}
+          />
+          <AdminUsersPanel isAdmin={currentUser.role === "admin"} />
         </>
       ) : viewMode === "settings" ? (
         <>
@@ -3927,6 +4100,8 @@ export default function WeeklySchedulePage({
           </div>
         </div>
       ) : null}
+
+      <Toast toast={teamToast} onDismiss={dismissTeamNotice} isMobile={isMobile} />
 
       <ViolationLinesOverlay
         violations={visibleViolationsForLines}

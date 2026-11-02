@@ -1,3 +1,4 @@
+import { formatWeekdayDate } from "../../lib/date";
 import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
 
 /** Phone day view (team calendar and public link): one day with Prev/Next. */
@@ -12,11 +13,8 @@ export default function MobileDayNavigator({
   onNextDay: () => void;
   onToday: () => void;
 }) {
-  const label = new Intl.DateTimeFormat("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  }).format(date);
+  // "Mon 02.11.2026", the date format used across the app.
+  const label = formatWeekdayDate(date);
 
   return (
     <div className="flex flex-wrap items-center gap-2">
@@ -28,7 +26,7 @@ export default function MobileDayNavigator({
       >
         <ChevronLeftIcon className="h-4 w-4" />
       </button>
-      <div className="min-w-[96px] text-center text-sm font-normal tracking-tight text-slate-700 dark:text-slate-200">
+      <div className="min-w-[112px] text-center text-sm font-normal tabular-nums tracking-tight text-slate-700 dark:text-slate-200">
         {label}
       </div>
       <button
