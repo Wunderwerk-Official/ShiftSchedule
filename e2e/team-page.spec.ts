@@ -77,6 +77,20 @@ async function openCalendar(page: Page, state: AppState, now: string) {
   });
   await page.goto("/");
   await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  // The team grid shows the built-in demo calendar (src/data/mockData.ts) at
+  // once and swaps in the mocked one only when GET /v1/state has answered, so
+  // a visible grid is not enough: wait for a cell of the mocked template, or
+  // a test may read or click the demo calendar.
+  const slotIds = state.weeklyTemplate!.locations.flatMap((location) => location.slots.map((slot) => slot.id));
+  await expect
+    .poll(
+      () =>
+        page
+          .locator('[data-schedule-cell="true"]')
+          .evaluateAll((cells, ids) => cells.some((cell) => ids.includes(cell.getAttribute("data-row-id") ?? "")), slotIds),
+      { message: "the mocked calendar replaces the built-in demo calendar" },
+    )
+    .toBe(true);
   return { state: () => current, statePosts, errors, dialogs };
 }
 
@@ -232,7 +246,7 @@ test("Times switches between side-by-side and stacked columns and stores the cho
 
   // Stacked by default: one column per day, the assignment in its slot.
   await expect(times.getByRole("button", { name: "Stacked" })).toHaveAttribute("aria-pressed", "true");
-  expect(await columnCount()).toBe(7);
+  await expect.poll(columnCount).toBe(7);
   await expect(pill).toBeVisible();
 
   await times.getByRole("button", { name: "Side by side" }).click();
@@ -263,9 +277,10 @@ test("Stacked gives every section of a row band its own lanes, named in the labe
   const labels = (kind: string) =>
     page.locator(`[data-stacked-label="${kind}"]`).evaluateAll((cells) => cells.map((cell) => cell.textContent));
 
-  expect(await labels("band")).toEqual(["MRI", "CT", "Sonography", "On call"]);
+  // evaluateAll reads once: poll, so the labels are those of the mocked calendar.
+  await expect.poll(() => labels("band")).toEqual(["MRI", "CT", "Sonography", "On call"]);
   // CT row: its own section (named by the row), then Sonography, then CT Neuro.
-  expect(await labels("section")).toEqual(["", "MRI Neuro", "", "Sonography", "CT Neuro", "", ""]);
+  await expect.poll(() => labels("section")).toEqual(["", "MRI Neuro", "", "Sonography", "CT Neuro", "", ""]);
   const ctGroup = `group-${template.locations[0].locationId}__${moved.rowBandId}`;
   // Wednesday in the CT lane is hatched; the Sonography slot sits in its own lane.
   await expect(
