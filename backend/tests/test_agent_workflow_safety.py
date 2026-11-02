@@ -199,7 +199,7 @@ def test_partial_result_requires_explicit_confirmation_and_creates_backup(client
 @pytest.mark.parametrize("stop", [
     {},
     {"stopReason": "completed"},
-    # Review of v1.79: the model skipped Monday after a provider failure, the
+    # Review of v1.80: the model skipped Monday after a provider failure, the
     # cross-day repair and the final checks completed it. No stop.
     {"stopReason": "partial", "modelDaysSkipped": [MON]},
 ])
@@ -342,7 +342,7 @@ def test_premature_day_end_is_repaired_and_verified_before_reporting_completion(
     assert meta["daysSkipped"] == meta["daysIncomplete"] == []
     assert meta["stopReason"] == "completed"
     # Monday, which the model ended without planning, is filled by the
-    # cross-day coverage repair before the review (v1.79); before that the
+    # cross-day coverage repair before the review (v1.80); before that the
     # final audit repaired it. Either way it is verified before completion.
     assert meta["cross_day_repair"]["status"] == "applied"
     assert meta["cross_day_repair"]["open_after"] == 0

@@ -1369,7 +1369,7 @@ def test_open_slot_reasons_are_bounded():
 
 
 def test_an_absent_person_counts_as_absent_for_the_main_reason():
-    """Review of the v1.79 merge: someone on a hand-placed rest day who is
+    """Review of the v1.80 merge: someone on a hand-placed rest day who is
     also near their weekly cap must not make the banner blame weekly hours;
     no tolerance or trade can bring them in that day."""
     from backend.agent.open_reasons import blocker_text, open_slot_blockers
@@ -1395,7 +1395,7 @@ def test_an_absent_person_counts_as_absent_for_the_main_reason():
 
 
 def test_main_reason_counts_every_rule_of_someone_who_is_not_absent():
-    """Review of v1.79: only an absence replaces a person's other rules. Two
+    """Review of v1.80: only an absence replaces a person's other rules. Two
     of three people are also near their weekly cap, but all three work at
     that time: the banner must name the overlap, not weekly hours."""
     from backend.agent.open_reasons import open_slot_blockers

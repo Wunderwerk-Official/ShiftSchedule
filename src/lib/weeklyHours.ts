@@ -4,7 +4,7 @@
 // duration (overnight "+1 day" included) on its start date, and the cap is
 // contract + max(0, tolerance ?? 5) hours. People without a positive
 // contract have no cap. The clinician picker uses it so a person the planner
-// cannot place no longer looks free (v1.79).
+// cannot place no longer looks free (v1.80).
 
 import { parseTimeToMinutes } from "./time";
 import type { ScheduleRow } from "./shiftRows";

@@ -39,12 +39,12 @@ self-hosted Qwen model on the real endpoint, or (since v1.68,
 `provider=anthropic`) a Claude model with the saved Anthropic key.
 
 
-## Evaluation round 9: cross-day repair and Opus without tools (v1.79, 2026-11-01)
+## Evaluation round 9: cross-day repair and Opus without tools (v1.80, 2026-11-01)
 
 Question: does Claude Opus 5.5 plan better or cheaper when it gets the
 instructions and the whole range in one message, without tools
 (`strategy: direct`), than with the tool-driven day-by-day procedure? And
-what does the v1.79 cross-day coverage repair add to each? Opus 5.5
+what does the v1.80 cross-day coverage repair add to each? Opus 5.5
 (`reasoning` empty = `medium`), `variant baseline`, `scenario base`,
 `timeout 0`, `implementation checkout` (its branch, then numbered v1.74), synthetic-v3. Every
 run below was `valid_for_comparison: true` with 0 hard and 0 new hard
@@ -251,7 +251,7 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | model | empty = the model saved for that provider; self-hosted: `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` (`Qwen/Qwen3.8-27B` is no longer served); Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, … |
 | variant | `baseline` (production prompts) / `focused` (prompt experiment) |
 | scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` / `fixed-patterns` |
-| strategy | `day_by_day` (production; LLM builds each day from scratch, then the v1.79 cross-day repair) / `repair` (benchmark reference: heuristic seed + LLM repair) / `direct` (v1.79 experiment: the whole range in one answer, no tools; needs `implementation: checkout` until v1.79 is deployed) |
+| strategy | `day_by_day` (production; LLM builds each day from scratch, then the v1.80 cross-day repair) / `repair` (benchmark reference: heuristic seed + LLM repair) / `direct` (v1.80 experiment: the whole range in one answer, no tools; needs `implementation: checkout` until v1.80 is deployed) |
 | reasoning | empty (endpoint / model default; Opus 5.5: `medium`) / `low` / `medium` / `high`; Claude also `xhigh` / `max` |
 | implementation | `deployed` (container's code and fixture; runs this checkout's `prompt_eval.py` against them, so from v1.68 on it needs v1.68 deployed — use `checkout` until then) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 

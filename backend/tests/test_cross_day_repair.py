@@ -81,7 +81,7 @@ def repair_with_solver(reference, seconds=20.0, state=None):
 def cor_first_state() -> AppState:
     """The same people and slots, but Thursday's COR is the TOP section of the
     list: trading it for the two Friday slots of lower sections fills one more
-    place, yet leaves the highest-ranked section open (v1.79: not allowed)."""
+    place, yet leaves the highest-ranked section open (v1.80: not allowed)."""
     state = trap_state()
     by_id = {block.id: block for block in state.weeklyTemplate.blocks}
     state.weeklyTemplate.blocks = [by_id[b] for b in ("block-cor", "block-seno", "block-echo", "block-hist")]
@@ -134,7 +134,7 @@ def two_block_cor_state(friday_block_first: bool) -> AppState:
 
 
 def test_solver_repair_moves_a_gap_between_blocks_of_one_section():
-    """Review of v1.79: the tier is the section's rank, not its block's
+    """Review of v1.80: the tier is the section's rank, not its block's
     position; Thursday's and Friday's block of one section never outrank
     each other, whichever comes first in the list."""
     for friday_block_first in (False, True):
@@ -180,7 +180,7 @@ EQUAL_ORDERED = {("slot-cor-thu", THU, "pat"), ("slot-x-fri", FRI, "rae"), ("slo
 
 
 def equal_coverage_state() -> AppState:
-    """Review of v1.79: sections COR (top), X, W (lowest), one 8 h slot each
+    """Review of v1.80: sections COR (top), X, W (lowest), one 8 h slot each
     on Mon (W), Tue (W), Thu (COR) and Fri (X); everyone may work one shift a
     week (8 h contract, no tolerance). Pat: COR or W; Rae: X or W; Sam: W
     only, away Monday. Day by day Pat takes Monday's W and Rae Tuesday's W,
@@ -221,7 +221,7 @@ def equal_coverage_state() -> AppState:
 
 
 def test_solver_repair_staffs_the_higher_section_when_coverage_ties():
-    """Review of v1.79: with as many positions filled either way, the section
+    """Review of v1.80: with as many positions filled either way, the section
     order decides before the change count (5 changes instead of 3)."""
     payload = SolveRangeRequest(startISO=MON_W45, endISO=FRI, only_fill_required=True, timeout_seconds=20)
     result = _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
@@ -586,7 +586,7 @@ def test_arena_flags_days_the_repair_completed_for_the_model():
 
 
 # ---------------------------------------------------------------------------
-# The repair model must accept every plan the gate accepts (review of v1.79):
+# The repair model must accept every plan the gate accepts (review of v1.80):
 # a stricter model makes the agent's legal plan an infeasible hint, and the
 # repair then breaks legal placements or is rejected.
 # ---------------------------------------------------------------------------
@@ -770,7 +770,7 @@ def test_parse_direct_reply_reads_every_plan_block_and_only_those():
 
 
 # ---------------------------------------------------------------------------
-# Rest Day row entries (main's v1.75 rule REST_DAY, merged in v1.79): CP-SAT
+# Rest Day row entries (main's v1.75 rule REST_DAY, merged in v1.80): CP-SAT
 # has no variable on such a date, the shared gate refuses it.
 # ---------------------------------------------------------------------------
 

@@ -89,7 +89,7 @@ Cells
 - Drag/drop does not block rule-violating placements (same-day location mix, multiple shifts); solver enforces rules but manual overrides are allowed and shown in red. Overlap within the same day is blocked by drag/drop (uses time intervals).
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
-- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.79: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`).
+- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.80: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`).
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -269,6 +269,7 @@ Testing
   - Default non-admin test user for local E2E: `testuser` / `sdjhfl34-wfsdfwsd2` (set `ENABLE_E2E_TEST_USER=0` to disable creation, do not use in production).
   - In sandboxed runs, Playwright may need escalated permissions to access `localhost:8000` and launch Chromium (otherwise EPERM/permission-denied errors).
   - Diagnostics on failure: console, page errors, failed requests, >=400 responses, screenshot, HTML snapshot, and trace (see `e2e/fixtures.ts`).
+  - Mocked-API specs: the team grid shows the built-in demo calendar (`src/data/mockData.ts`, row band "Row 1") at once and the mocked one only after `GET /v1/state` has answered, so a visible `[data-schedule-grid]` does not mean the mocked calendar is in. Wait for it before reading or clicking (`openCalendar` in `e2e/team-page.spec.ts` waits for a cell of the mocked template), and assert on lists with `expect.poll`: a single `evaluateAll` does not retry.
   - PDF export test calls `/v1/pdf/week` and asserts the generated PDF has exactly one page.
   - Print layout test opens `/print/week` in print media and asserts the scaled schedule fits within one A4 page (portrait or landscape) and fills at least 70% of one dimension.
   - ColBand explosion tests (`e2e/colband-explosion.spec.ts`): verify colBand counts stay stable through settings, Copy Day, column operations, and solver runs; checks for console explosion errors.
@@ -954,7 +955,7 @@ stays usable); a reload re-attaches to the running job.
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
 Strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
 (**day_by_day is the default since v1.38**; the UI no longer offers repair —
-it remains for the arena benchmarks and explicit API calls, like the v1.79
+it remains for the arena benchmarks and explicit API calls, like the v1.80
 experiment `direct`):
 
 **repair**: the classic improve-the-draft loop.
@@ -998,25 +999,25 @@ planner works, with four extra tools (`get_day_priorities`,
    single-handover batches that keep both days contiguous and never
    create a new over-long or mini-stint day; fixed/manual assignments
    are never touched.
-5. **Cross-day coverage repair** (v1.79, `backend/agent/cross_day.py`):
+5. **Cross-day coverage repair** (v1.80, `backend/agent/cross_day.py`):
    after the last day and before the final range review, when required
    places are still open and the model placed something, CP-SAT re-solves
    the whole range from the current plan (fewest open required places,
    then fewest changed assignments, at most 60) and applies the result
    only through the gate (valid batch preview that improves the best
    plan). It trades weekly hours between days of one ISO week, which no
-   per-day step can (see v1.79).
+   per-day step can (see v1.80).
 6. **Zero-progress guard**: an empty day-by-day result never reaches the
    client — it falls back to a fresh heuristic draft
    (`AGENT_FALLBACK_SEED`).
 
-**direct** (v1.79, arena only, `backend/agent/direct.py`): no tools; the
+**direct** (v1.80, arena only, `backend/agent/direct.py`): no tools; the
 model gets one digest of the whole range (rules, every person's weekly
 hours booked/cap per ISO week, vacations, fixed shifts, windows, every open
 place with the people the gate accepts) and answers with a plan block; the
 placements go through the gate one by one, one correction round sends the
 rejections and the remaining open places back. It measures whether a strong
-model plans better or cheaper without the tool procedure (v1.79 results).
+model plans better or cheaper without the tool procedure (v1.80 results).
 
 The iteration budget follows the admin rule **total slot instances × 10**
 (floor 10), computed per solve; `AGENT_MAX_ITERATIONS` is no longer read at
@@ -1248,7 +1249,7 @@ with a foreign objective scale, which shows up as a full-height "jump".
 - `backend/tests/test_agent_anthropic_provider.py`, `test_agent_retry.py` —
   Anthropic adapter (empty replies, thinking display per model, SDK errors)
   and provider exceptions inside a run (v1.64)
-- `backend/tests/test_cross_day_repair.py` — v1.79: CP-SAT repair mode,
+- `backend/tests/test_cross_day_repair.py` — v1.80: CP-SAT repair mode,
   `coverage_repair` through the gate, the day-by-day integration, the
   weekly-hours magnitudes and the direct strategy (parser, gate, digest)
 - `backend/tests/test_solver_monitor.py` — monitor end states (watchdog kill,
@@ -1540,7 +1541,7 @@ Frontend
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
-- `src/lib/weeklyHours.ts` (v1.79: weekly hours per ISO week as the backend gate counts them; the picker's "Over weekly limit")
+- `src/lib/weeklyHours.ts` (v1.80: weekly hours per ISO week as the backend gate counts them; the picker's "Over weekly limit")
 - `src/lib/templateLimits.ts` (v1.64: `MAX_TOTAL_COLBANDS` = 300, `countTemplateColBands`)
 - `src/lib/time.ts` (v1.64: the one strict `parseTimeToMinutes`)
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
@@ -1559,8 +1560,8 @@ Backend
 - `backend/pdf.py` (PDF export endpoints)
 - `backend/ical_routes.py` (iCal endpoints)
 - `backend/publication.py` (tokens + caching helpers)
-- `backend/solver.py` (CP-SAT solver endpoint + logic; v1.79 repair mode for the agent's cross-day repair)
-- `backend/agent/cross_day.py` (v1.79: cross-day coverage repair), `backend/agent/direct.py` (v1.79: arena-only direct strategy)
+- `backend/solver.py` (CP-SAT solver endpoint + logic; v1.80 repair mode for the agent's cross-day repair)
+- `backend/agent/cross_day.py` (v1.80: cross-day coverage repair), `backend/agent/direct.py` (v1.80: arena-only direct strategy)
 - `backend/heuristic/solver_v2.py` (heuristic solver v2 implementation)
 - `backend/state_routes.py` (health + state endpoints + database inspection)
 - `backend/preferences.py` (v1.64: `GET/PUT /v1/me/preferences`, 32 KB cap)
@@ -3104,13 +3105,40 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   totals, metric switch, week header, time zones, close).
 - Deploy notes: frontend only, no schema or data change. Version 1.78 (78).
 
-## v1.79 — Planning across days, weekly hours in the picker
+## v1.79 — Calendar snapshots wait for the calendar
 
-- **Merged onto main's v1.74–v1.78.** Built on its branch
+- Until this user's calendar has loaded (`GET /v1/state` answered), the page
+  holds the built-in demo calendar (`src/data/mockData.ts`). Saving a named
+  snapshot in that moment stored the demo calendar under the typed name (the
+  server does not check snapshots against the calendar's revision); a
+  restore first saved the demo calendar, which the server refused (409), so
+  it failed with a misleading "changed in another tab" message.
+- `SnapshotPopover` has a `calendarLoading` prop (the page passes
+  `!hasLoaded || loadedUserId !== currentUser.username`): Save, Enter in the
+  name field and both Restore buttons wait, with the hint "Saving and
+  restoring are available once the calendar has loaded." in the panel and as
+  the buttons' tooltip. Rename and Delete stay available (they do not use the
+  calendar on screen). `handleSaveSnapshot` and `handleRestoreSnapshot`
+  refuse before loading as well ("Wait until the calendar has loaded before
+  saving / restoring a snapshot."), like import, PDF export and planning.
+- Tests: `SnapshotPopover.test.tsx` (waits while loading, hint and tooltip,
+  Rename stays available, saves once loaded), e2e `team-page.spec.ts`
+  ("Calendar snapshots wait until the calendar has loaded": `openCalendar`
+  takes a `stateGate` that holds back `GET /v1/state`). The same release
+  makes `openCalendar` wait for the mocked calendar instead of the demo grid
+  (see the Testing notes), which fixed a timing-dependent failure of the
+  "Stacked gives every section…" test.
+- Deploy notes: frontend only, no schema or data change. Version 1.79 (79).
+
+## v1.80 — Planning across days, weekly hours in the picker
+
+- **Merged onto main's v1.74–v1.79.** Built on its branch
   (`claude/practical-cannon-9flogp`) as "v1.74": that word in the branch's
-  commit messages means this release, not main's v1.74 above (its docs,
-  comments, the arena README and the arena workflow's strategy help now say
-  v1.79). Main is the base; what the merge adapted:
+  commit messages means this release, not main's v1.74 above, and so does
+  "v1.79" in its last commits before the final merge (main's v1.79 is the
+  calendar-snapshot release above). Its docs, comments, the arena README and
+  the arena workflow's strategy help say v1.80. Main is the base; what the
+  merge adapted:
   - Run card: main's v1.74 card layout stays; its warning box shows
     `runReviewLine` (see "Run card" below) instead of the fixed "Incomplete
     draft: N day(s) need review before applying." line.
@@ -3164,13 +3192,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
      hours a scarce person needs on a later day of the same week
      (`reserved_for`). Needs the scarcity of later days, which the repair
      below already computes exactly; not worth a heuristic yet.
-  2. *Repair across days* (v1.79): once all days are built, an exact
+  2. *Repair across days* (v1.80): once all days are built, an exact
      search over the whole range trades assignments between days. CP-SAT
      already models every hard rule (weekly hours, rest days, overlaps,
      sites, windows), solves a week's repair in seconds and finds chains a
      model would need dozens of tool calls for; the agent's plan stays the
      starting point and the gate keeps the final say.
-  3. *Transparency* (v1.79): the picker and the tools say how far a person
+  3. *Transparency* (v1.80): the picker and the tools say how far a person
      is over the week, so neither the planner nor a human retries a blocked
      person.
 - **Cross-day coverage repair** (`backend/agent/cross_day.py`,
@@ -3380,8 +3408,10 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   - Help: the weekly-limit example reads "46/45 h in 2026-W45" for a 40 h
     contract with 5 h tolerance; section 3 explains the repair across days,
     the section order and why to plan whole weeks.
-  - `e2e/team-page.spec.ts` (main's v1.76 stacked labels): the label reads
-    poll instead of reading once (failed locally in 5 of 6 runs).
+  - `e2e/team-page.spec.ts` (main's v1.76 stacked labels): the branch's
+    fix (poll the label reads, which failed locally in 5 of 6 runs) is part
+    of main's v1.79, which also waits for the mocked calendar; the merge
+    takes main's file.
 - **Second review** (section order, open-slot reasons and stop texts; four
   lenses, one skeptic per finding; all confirmed findings fixed):
   - Tier per section, not per block (above). With per-block tiers a pre-v4
@@ -3418,7 +3448,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
     plans with 39, 64 and 95 open positions): 24/23, 48/48 and 37/39 open
     after the repair, against 24/25, 47/47 and 39/37 with the objective
     before (219 in both sums, run-to-run noise as in the review); no
-    trade-down in any run. The search cost of the bounds themselves stays
+    trade-down in any run. One week (90 s budget): both reach the optimum
+    (29 -> 0 and 23 -> 0 open, same changes); proving it takes 25 s and
+    31 s instead of 17 s and 29 s. The search cost of the bounds themselves stays
     (review: 0-3 positions at 2 workers on 4-week ranges, none at 4; the
     returned plan after the final audit was no worse).
 - Tests: `test_cross_day_repair.py` (solver repair mode, gate,
@@ -3438,9 +3470,15 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   down in the solver, a gap within one section moves, running-total check,
   the gate refuses a trade-down answer, a day-by-day run keeps the top
   section; the three trade-down tests fail without the bounds);
-  `test_agent_harness.py` (absence first for the main reason); frontend
-  `weeklyHours.test.ts`,
+  `test_agent_harness.py` (absence first for the main reason); second
+  review: `test_cross_day_repair.py` (a gap moves between two blocks of one
+  section in either order, one tier per section in a pre-v4 template, the
+  top section staffed at equal coverage despite more changes),
+  `test_agent_harness.py` (every rule of someone not absent),
+  `test_agent_workflow_safety.py` (a partial run whose skipped day the
+  repair completed is not called stopped); frontend `weeklyHours.test.ts`,
   `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`,
-  `solverOutcome.test.ts` (also the run-details state), `SolverInfoModal.test.tsx`
-  (run-card wording).
-- Deploy notes: no schema or data change. Version 1.79 (79).
+  `solverOutcome.test.ts` (also the run-details state, the toast and the
+  banner lead), `SolverInfoModal.test.tsx` (run-card wording, the rendered
+  "Run:" line), `HelpView.test.tsx` (the repair's promise).
+- Deploy notes: no schema or data change. Version 1.80 (80).
