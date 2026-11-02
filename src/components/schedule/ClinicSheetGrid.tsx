@@ -314,7 +314,10 @@ export default function ClinicSheetGrid({
               }
         }
         className={cx(
-          "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px]",
+          // Inline-size containment: a long name never widens the day
+          // columns (they would all grow to it, and the printed sheet shrink
+          // to fit); it is cut off instead, the full name in the title.
+          "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px] [contain:inline-size]",
           // Touch screens always show an unlocked name's lock: keep its room.
           hasLock && !isLocked && "[@media(hover:none)]:pr-5",
           textClass,
@@ -561,14 +564,15 @@ export default function ClinicSheetGrid({
                         <div className="text-[13px] font-bold leading-tight">
                           <span
                             className={cx(
-                              isToday && "rounded-sm px-1 ring-2 ring-inset ring-sky-600",
+                              // A printout does not mark the day it was printed.
+                              isToday && "rounded-sm px-1 ring-2 ring-inset ring-sky-600 print:ring-0",
                             )}
                           >
                             {formatSheetDate(day.date)}
                           </span>
                         </div>
                         {day.holidayName ? (
-                          <div className="truncate text-[9px] font-semibold leading-tight text-slate-700">
+                          <div className="print-wrap truncate text-[9px] font-semibold leading-tight text-slate-700 [contain:inline-size]">
                             {day.holidayName}
                           </div>
                         ) : null}
@@ -601,7 +605,7 @@ export default function ClinicSheetGrid({
                             >
                               <div
                                 className={cx(
-                                  "truncate text-[11px] font-bold leading-[22px]",
+                                  "print-wrap truncate text-[11px] font-bold leading-[22px]",
                                   labelText,
                                 )}
                                 title={row.label}
@@ -667,7 +671,7 @@ export default function ClinicSheetGrid({
                               )}
                             >
                               <div
-                                className="truncate text-[11px] font-bold leading-[22px] text-slate-900"
+                                className="print-wrap truncate text-[11px] font-bold leading-[22px] text-slate-900"
                                 title={poolRow.name}
                               >
                                 {poolRow.name}

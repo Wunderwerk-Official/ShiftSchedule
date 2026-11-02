@@ -1,5 +1,6 @@
-import { render, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { getState } from "../api/client";
 import { printTestState } from "./printPage.fixture";
 import PrintWeekPage from "./PrintWeekPage";
 
@@ -39,5 +40,24 @@ describe("PrintWeekPage layout", () => {
     expect(columnCount()).toBeGreaterThan(7);
     const page = container.querySelector(".print-page") as HTMLElement;
     expect(parseFloat(page.style.width)).toBeGreaterThan(parseFloat(page.style.height));
+    // Print: the narrower side-by-side columns (ScheduleGrid print).
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toContain("minmax(84px, 1fr)");
+    expect(page.style.contain).toBe("strict");
+  });
+
+  it("marks an unpublished week as a draft, also a week started mid-week", async () => {
+    await renderAt("?start=2026-01-07");
+    expect(screen.getByText("05.01.2026 – 11.01.2026")).toBeTruthy();
+    expect(screen.getByText("Draft – not published")).toBeTruthy();
+  });
+
+  it("prints a published week without the draft marker", async () => {
+    vi.mocked(getState).mockResolvedValueOnce({
+      ...printTestState(),
+      publishedWeekStartISOs: ["2026-01-05"],
+    });
+    await renderAt("?start=2026-01-07");
+    expect(screen.queryByText("Draft – not published")).toBeNull();
   });
 });

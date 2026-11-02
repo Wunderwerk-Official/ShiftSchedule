@@ -44,6 +44,10 @@ import { getContrastTextColor } from "../../lib/shiftRows";
 const STACKED_OWN_TIME =
   "mt-1 flex max-w-full items-center gap-1 text-[10px] font-medium leading-3 tabular-nums text-slate-500 dark:text-slate-400";
 
+// Print pages, times side by side: the minimum day column holds a slot's
+// time ("07:30 - 13:00") on one line next to the tighter print paddings.
+const PRINT_DAY_COLUMN_MIN = 84;
+
 type ScheduleGridProps = {
   leftHeaderTitle: string;
   weekDays: Date[];
@@ -115,6 +119,12 @@ type ScheduleGridProps = {
    * (compact week, see lib/stackedTeamLayout).
    */
   timeLayout?: TeamTimeLayout;
+  /**
+   * Print pages (PDF): times side by side get narrower columns and tighter
+   * paddings, so the week shrinks less to fit the A4 page and its text stays
+   * legible. Labels wrap in print anyway (index.css .print-wrap).
+   */
+  print?: boolean;
 };
 
 export default function ScheduleGrid({
@@ -154,6 +164,7 @@ export default function ScheduleGrid({
   myClinicianId,
   locationRowTints,
   timeLayout = "columns",
+  print = false,
 }: ScheduleGridProps) {
   type DayColumn = NonNullable<ScheduleGridProps["dayColumns"]>[number];
   const sourceColumns: DayColumn[] = useMemo(
@@ -271,7 +282,8 @@ export default function ScheduleGrid({
   const isSingleDay = uniqueDayCount === 1;
   // Stacked: day columns may shrink to 64 px (names abbreviate down to
   // initials), so the week fits next to the label, also on A4 portrait.
-  const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : 120;
+  // Print: just room for a slot's time, so the week shrinks less on A4.
+  const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : print ? PRINT_DAY_COLUMN_MIN : 120;
   // Stacked week: the label column is three columns (row band | section |
   // time), so names and times line up and a row band or section cell can span
   // its lanes. A single day (phone) keeps one label cell per lane. The three
@@ -402,7 +414,10 @@ export default function ScheduleGrid({
     : "";
 
   return (
-    <div className="schedule-grid mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10 print:max-w-none print:px-0 print:pb-0">
+    // Print: never narrower than the grid's columns (whole words in the
+    // wrapped labels need their room), so nothing is cut off at the right;
+    // the print page shrinks the wider week to fit instead.
+    <div className="schedule-grid mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10 print:min-w-min print:max-w-none print:px-0 print:pb-0">
       <div
         data-schedule-shell="true"
         className="relative mt-4 rounded-2xl border-2 border-slate-900/80 bg-white p-[2px] shadow-sm dark:border-slate-700 dark:bg-slate-900 sm:mt-6 sm:rounded-3xl"
@@ -508,7 +523,8 @@ export default function ScheduleGrid({
                           </div>
                           <div className="text-[11px] font-normal tracking-wide text-slate-900 dark:text-slate-100">
                             {isToday ? (
-                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-900 text-slate-900 dark:border-slate-100 dark:text-slate-100">
+                              // A printout does not mark the day it was printed.
+                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-900 text-slate-900 dark:border-slate-100 dark:text-slate-100 print:border-transparent">
                                 {dayOfMonth}
                               </span>
                             ) : (
@@ -517,7 +533,7 @@ export default function ScheduleGrid({
                           </div>
                         </div>
                         {holidayName ? (
-                          <div className="max-w-[12ch] truncate text-[8px] font-normal leading-tight text-purple-700 dark:text-purple-200">
+                          <div className="print-wrap max-w-[12ch] truncate text-[8px] font-normal leading-tight text-purple-700 dark:text-purple-200 print:max-w-none">
                             {holidayName}
                           </div>
                         ) : null}
@@ -609,6 +625,7 @@ export default function ScheduleGrid({
                         splitLabels={splitLabels}
                         groupDivider={splitLabels ? spanDivider(stackedMeta?.groupSpan) : undefined}
                         sectionDivider={splitLabels ? spanDivider(stackedMeta?.sectionSpan) : undefined}
+                        print={print}
                       />
                     </Fragment>
                   );
@@ -681,6 +698,7 @@ function RowSection({
   splitLabels = false,
   groupDivider,
   sectionDivider,
+  print,
 }: {
   row: ScheduleRow;
   dayColumns: {
@@ -750,6 +768,8 @@ function RowSection({
   /** Bottom borders of the row band and section cells that span lanes from here. */
   groupDivider?: string;
   sectionDivider?: string;
+  /** Print pages: tighter paddings (see ScheduleGrid). */
+  print: boolean;
 }) {
   const rowBg =
     row.id === "pool-vacation"
@@ -1012,7 +1032,8 @@ function RowSection({
                 data-row-kind={row.kind}
                 data-date-iso={dateISO}
                 className={cx(
-                  "row group relative border-r border-slate-200 p-0.5 text-left dark:border-slate-800 sm:p-1",
+                  "row group relative border-r border-slate-200 p-0.5 text-left dark:border-slate-800",
+                  !print && "sm:p-1",
                   borderBottomClass,
                   cellBgClass,
                   isDayDivider && "border-r-2 border-slate-300 dark:border-slate-700",
@@ -1198,7 +1219,7 @@ function RowSection({
             }
             className={cx(
               "row group relative border-r border-slate-200 text-left dark:border-slate-800",
-              stackedMeta ? "px-1 py-1" : "p-0.5 sm:p-1",
+              stackedMeta ? "px-1 py-1" : print ? "p-0.5" : "p-0.5 sm:p-1",
               borderBottomClass,
               stackedMeta ? stackedBgClass : cellBgClass,
               stackedMeta && showQualified && "ring-2 ring-inset ring-slate-900 dark:ring-slate-100",
@@ -1292,7 +1313,8 @@ function RowSection({
                   // the user hovered a drop-eligible cell during a drag.
                   // Only the color/dash style changes now.
                   className={cx(
-                    "h-full w-full min-h-[48px] rounded-lg border-2 bg-white/95 px-2 py-0.5 shadow-sm dark:bg-slate-950",
+                    "h-full w-full min-h-[48px] rounded-lg border-2 bg-white/95 py-0.5 shadow-sm dark:bg-slate-950",
+                    print ? "px-1" : "px-2",
                     showQualified
                       ? "border-slate-900 dark:border-slate-100"
                       : "border-slate-200 dark:border-slate-700",
@@ -1305,7 +1327,7 @@ function RowSection({
                     const textColors = getContrastTextColor(sectionFill);
                     return (
                       <div className={cx("flex flex-col gap-0.5 text-[10px] font-semibold", textColors.primary)}>
-                        <span className="truncate">
+                        <span className="print-wrap truncate">
                           {activeRow.sectionName ?? activeRow.name}
                         </span>
                         {effectiveRowTimeLabel ? (
@@ -1379,7 +1401,7 @@ function LocationSeparatorRow({
     tint && locationName ? (
       <span
         data-location-band="true"
-        className="block max-w-full truncate text-[10px] font-bold uppercase leading-4 tracking-[0.08em]"
+        className="print-wrap block max-w-full truncate text-[10px] font-bold uppercase leading-4 tracking-[0.08em]"
         style={{ color: tint.bandInk }}
         title={locationName}
       >
@@ -1399,7 +1421,7 @@ function LocationSeparatorRow({
       >
         {tintLabel ?? (
           <span
-            className="inline-block max-w-full truncate rounded-full bg-slate-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase leading-3 tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200"
+            className="print-wrap inline-block max-w-full truncate rounded-full bg-slate-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase leading-3 tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200"
             title={locationName}
           >
             {locationName}

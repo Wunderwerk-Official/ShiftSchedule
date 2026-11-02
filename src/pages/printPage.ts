@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { PdfLayout } from "../api/client";
 
 // Page geometry of the PDF print routes (/print/week, /print/weeks). The
@@ -41,5 +42,28 @@ export function printPagePx(layout: PdfLayout, marginMm: number) {
       height: (heightMm - marginMm * 2) * MM_TO_PX,
     },
     margin: marginMm * MM_TO_PX,
+  };
+}
+
+/**
+ * One printed page (`.print-page`): exactly one sheet, the margins as
+ * padding, a page break after it unless it is the last. Size containment
+ * makes the box monolithic, so Chromium never moves or splits its content
+ * at a page boundary. The week inside is shrunk with transform: scale(), and
+ * page breaking sees its unscaled height: without containment a week taller
+ * than the sheet was pushed to the next page and clipped there, so every
+ * page but the last came out blank. Rounded down, so the box never reaches
+ * into the next sheet.
+ */
+export function printPageStyle(layout: PdfLayout, marginMm: number, last: boolean): CSSProperties {
+  const { page, margin } = printPagePx(layout, marginMm);
+  return {
+    width: Math.floor(page.width),
+    height: Math.floor(page.height),
+    padding: margin,
+    boxSizing: "border-box",
+    overflow: "hidden",
+    contain: "strict",
+    breakAfter: last ? "auto" : "page",
   };
 }

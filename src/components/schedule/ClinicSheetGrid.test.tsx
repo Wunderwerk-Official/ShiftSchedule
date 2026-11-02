@@ -130,6 +130,16 @@ describe("ClinicSheetGrid", () => {
     expect(cell.className).toContain("[@media(hover:none)]:pr-5");
   });
 
+  it("never lets a long name widen the day columns: it is cut, the full name in the title", () => {
+    setup();
+    const name = screen.getAllByText("Bergmann")[0].closest("[data-sheet-name]") as HTMLElement;
+    // Inline-size containment: the name adds no width to the max-content
+    // sized sheet grid, so every column keeps its width (screen and PDF).
+    expect(name.className).toContain("[contain:inline-size]");
+    expect(name.querySelector(".truncate")).not.toBeNull();
+    expect(name.getAttribute("title")).toBe("Anna Bergmann");
+  });
+
   it("renders assignments as plain surname text, not pills", () => {
     setup();
     const name = screen.getAllByText("Bergmann")[0];

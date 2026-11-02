@@ -224,6 +224,48 @@ describe("ScheduleGrid", () => {
   });
 });
 
+describe("ScheduleGrid print pages", () => {
+  const week = Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 5 + i));
+  const gridColumns = () =>
+    (document.querySelector('[data-schedule-grid="true"]') as HTMLElement).style.gridTemplateColumns;
+  const firstCell = () =>
+    document.querySelector('[data-schedule-cell="true"][data-row-kind="class"]') as HTMLElement;
+
+  it("gives the side-by-side week narrower columns and tighter paddings in print", () => {
+    renderGrid({ weekDays: week, print: true });
+    expect(gridColumns()).toContain("minmax(84px, 1fr)");
+    expect(firstCell().className).not.toContain("sm:p-1");
+    expect(firstCell().querySelector(".rounded-lg.border-2")?.className).toContain("px-1");
+    cleanup();
+    renderGrid({ weekDays: week });
+    expect(gridColumns()).toContain("minmax(120px, 1fr)");
+    expect(firstCell().className).toContain("sm:p-1");
+  });
+
+  it("keeps the compact week's columns in print", () => {
+    renderGrid({ weekDays: week, print: true, timeLayout: "stacked" });
+    expect(gridColumns()).toContain("minmax(64px, 1fr)");
+  });
+
+  it("lets labels wrap in print instead of cutting them off", () => {
+    renderGrid({
+      weekDays: week,
+      print: true,
+      rows: [{ ...locatedRow, sectionName: "Interventionelle Radiologie Kardio" }],
+      holidayNameByDate: { "2026-01-06": "Heilige Drei Könige" },
+    });
+    for (const text of ["Interventionelle Radiologie Kardio", "Heilige Drei Könige", "MRI", "Berlin"]) {
+      expect(screen.getAllByText(text)[0].className).toContain("print-wrap");
+    }
+  });
+
+  it("does not mark today in print", () => {
+    renderGrid({ weekDays: [new Date()] });
+    const today = document.querySelector(".rounded-full.border-slate-900") as HTMLElement;
+    expect(today.className).toContain("print:border-transparent");
+  });
+});
+
 describe("ScheduleGrid drag and drop", () => {
   const MON = "2026-01-05";
   const TUE = "2026-01-06";
