@@ -57,15 +57,20 @@ def _rank(code: str) -> int:
     return order.index(code) if code in order else len(order)
 
 
-def _primary_reason(codes) -> str:
-    """The one rule a blocked person counts under for the main reason."""
+def _primary_reasons(codes) -> List[str]:
+    """The rules a blocked person counts under for the main reason: an
+    absent person only under the absence (vacation before rest day), anyone
+    else under every rule that blocks them."""
     absent = [code for code in codes if code in ABSENCES]
-    return min(absent or codes, key=lambda code: (_rank(code), code))
+    if absent:
+        return [min(absent, key=lambda code: (_rank(code), code))]
+    return sorted(set(codes))
 
 
 def _main_reason(qualified: int, addable: int, primary: Counter) -> Optional[str]:
-    """The rule most qualified people are blocked by (one rule per person,
-    see _primary_reason); ties in the RULE_LABELS order."""
+    """The rule most qualified people are blocked by (an absent person
+    counts only under the absence, see _primary_reasons); ties in the
+    RULE_LABELS order."""
     if addable:
         return None  # not a rule problem: someone can still be added
     if not qualified:
@@ -105,7 +110,7 @@ def open_slot_blockers(executor, gaps, *, max_slots: int = MAX_SLOTS,
                 addable += 1
                 continue
             blocked.update(codes)
-            primary[_primary_reason(codes)] += 1
+            primary.update(_primary_reasons(codes))
         out[gap.slot_key] = {
             "qualified": qualified,
             "on_slot": on_slot,

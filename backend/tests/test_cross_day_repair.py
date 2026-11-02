@@ -22,7 +22,7 @@ from backend.models import (AppState, Assignment, Clinician, Location, SolveRang
                             TemplateColBand, TemplateRowBand, TemplateSlot, WeeklyCalendarTemplate,
                             WeeklyTemplateLocation, WorkplaceRow)
 from backend.scoring import build_scoring_context
-from backend.solver import _solve_range_impl
+from backend.solver import _solve_range_impl, section_tier_by_slot_id
 
 THU, FRI = "2026-11-05", "2026-11-06"
 DAY_TYPES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday"]
@@ -118,6 +118,124 @@ def test_solver_repair_moves_a_gap_within_one_section():
             if template_slot.id in ("slot-seno-fri", "slot-echo-fri"):
                 template_slot.blockId = "block-cor"
     assert repair_with_solver({GREEDY_THURSDAY}, state=state) == FRIDAY_PLAN
+
+
+def two_block_cor_state(friday_block_first: bool) -> AppState:
+    """cor_first_state with the Friday slots on a second COR block, as a
+    pre-v4 template has one block per sub-shift and day type."""
+    state = cor_first_state()
+    for location in state.weeklyTemplate.locations:
+        for template_slot in location.slots:
+            if template_slot.id in ("slot-seno-fri", "slot-echo-fri"):
+                template_slot.blockId = "block-cor-fri"
+    state.weeklyTemplate.blocks.insert(0 if friday_block_first else 1,
+                                       TemplateBlock(id="block-cor-fri", sectionId="sec-cor", requiredSlots=0))
+    return state
+
+
+def test_solver_repair_moves_a_gap_between_blocks_of_one_section():
+    """Review of v1.79: the tier is the section's rank, not its block's
+    position; Thursday's and Friday's block of one section never outrank
+    each other, whichever comes first in the list."""
+    for friday_block_first in (False, True):
+        state = two_block_cor_state(friday_block_first)
+        tiers = section_tier_by_slot_id(state)
+        assert tiers["slot-cor-thu"] == tiers["slot-seno-fri"] == tiers["slot-echo-fri"] == 0
+        assert tiers["slot-hist-mon"] == 4
+        assert repair_with_solver({GREEDY_THURSDAY}, state=state) == FRIDAY_PLAN
+        executor = greedy_executor(state)
+        report = cross_day.coverage_repair(executor, cancel_event=threading.Event(), time_limit=20)
+        assert (report["status"], report["open_before"], report["open_after"]) == ("applied", 2, 1), report
+        assert identities(executor) == FRIDAY_PLAN
+
+
+def test_section_tier_of_a_pre_v4_template_is_the_sections_rank():
+    """backend/state.py turns a calendar without a v4 template into one block
+    per sub-shift and day type; every slot of a section keeps one tier."""
+    from backend.models import MinSlots, SubShift
+    from backend.state import _normalize_state
+
+    rows = [WorkplaceRow(id=s, name=s.upper(), kind="class", dotColorClass="bg-slate-200", locationId="loc-default",
+                         subShifts=[SubShift(id="s1", name="Early", order=1, startTime="07:30", endTime="11:30"),
+                                    SubShift(id="s2", name="Late", order=2, startTime="11:30", endTime="15:30")])
+            for s in ("cor", "seno")]
+    state = AppState(locations=[Location(id="loc-default", name="Site")], rows=rows, clinicians=[], assignments=[],
+                     minSlotsByRowId={f"{s}::{sub}": MinSlots(weekday=1, weekend=0)
+                                      for s in ("cor", "seno") for sub in ("s1", "s2")},
+                     weeklyTemplate=None)
+    state, _changed = _normalize_state(state)
+    assert len(state.weeklyTemplate.blocks) > 2  # one per sub-shift and day type
+    tiers = section_tier_by_slot_id(state)
+    by_section = {s: {tier for sid, tier in tiers.items() if sid.startswith(f"{s}::")} for s in ("cor", "seno")}
+    assert len(by_section["cor"]) == len(by_section["seno"]) == 1
+    assert min(by_section["cor"]) < min(by_section["seno"])
+
+
+MON_W45, TUE_W45 = "2026-11-02", "2026-11-03"
+EQUAL_REFERENCE = {("slot-w-mon", MON_W45, "pat"), ("slot-w-tue", TUE_W45, "rae")}
+# Fills Friday's X; Thursday's COR (the top section) stays open. 3 changes.
+EQUAL_CHEAP = {("slot-w-mon", MON_W45, "pat"), ("slot-x-fri", FRI, "rae"), ("slot-w-tue", TUE_W45, "sam")}
+# Staffs COR and X; Monday's W (the lowest section) stays open. 5 changes.
+EQUAL_ORDERED = {("slot-cor-thu", THU, "pat"), ("slot-x-fri", FRI, "rae"), ("slot-w-tue", TUE_W45, "sam")}
+
+
+def equal_coverage_state() -> AppState:
+    """Review of v1.79: sections COR (top), X, W (lowest), one 8 h slot each
+    on Mon (W), Tue (W), Thu (COR) and Fri (X); everyone may work one shift a
+    week (8 h contract, no tolerance). Pat: COR or W; Rae: X or W; Sam: W
+    only, away Monday. Day by day Pat takes Monday's W and Rae Tuesday's W,
+    so COR and X stay open. Three people for four slots: one stays open in
+    every plan, and the section order decides which."""
+    from backend.models import VacationRange
+
+    sections = ["sec-cor", "sec-x", "sec-w"]
+    rows = [WorkplaceRow(id=s, name=s[4:].upper(), kind="class", dotColorClass="bg-slate-200",
+                         locationId="loc-default") for s in sections]
+    rows += [WorkplaceRow(id="pool-rest-day", name="Rest Day", kind="pool", dotColorClass="bg-slate-200"),
+             WorkplaceRow(id="pool-vacation", name="Vacation", kind="pool", dotColorClass="bg-emerald-500")]
+    slot = lambda sid, band, col, block: TemplateSlot(  # noqa: E731
+        id=sid, locationId="loc-default", rowBandId=band, colBandId=col, blockId=block,
+        requiredSlots=1, startTime="08:00", endTime="16:00", endDayOffset=0)
+    template = WeeklyCalendarTemplate(
+        version=4,
+        blocks=[TemplateBlock(id=f"block-{s[4:]}", sectionId=s, requiredSlots=0) for s in sections],
+        locations=[WeeklyTemplateLocation(
+            locationId="loc-default",
+            rowBands=[TemplateRowBand(id=f"rb-{s[4:]}", label=s[4:], order=i + 1) for i, s in enumerate(sections)],
+            colBands=[TemplateColBand(id=f"col-{d}-1", label="", order=1, dayType=d) for d in DAY_TYPES],
+            slots=[slot("slot-w-mon", "rb-w", "col-mon-1", "block-w"),
+                   slot("slot-w-tue", "rb-w", "col-tue-1", "block-w"),
+                   slot("slot-cor-thu", "rb-cor", "col-thu-1", "block-cor"),
+                   slot("slot-x-fri", "rb-x", "col-fri-1", "block-x")])])
+    person = lambda cid, name, sections, vacations=(): Clinician(  # noqa: E731
+        id=cid, name=name, qualifiedClassIds=list(sections), vacations=list(vacations),
+        workingHoursPerWeek=8, workingHoursToleranceHours=0)
+    clinicians = [person("pat", "Pat Prior", ["sec-cor", "sec-w"]),
+                  person("rae", "Rae Rowe", ["sec-x", "sec-w"]),
+                  person("sam", "Sam Stone", ["sec-w"], [VacationRange(id="v1", startISO=MON_W45, endISO=MON_W45)])]
+    return AppState(locations=[Location(id="loc-default", name="Site")], locationsEnabled=True, rows=rows,
+                    clinicians=clinicians, assignments=[], minSlotsByRowId={}, slotOverridesByKey={},
+                    weeklyTemplate=template, holidays=[],
+                    solverSettings={"enforceSameLocationPerDay": False, "onCallRestEnabled": False},
+                    solverRules=[])
+
+
+def test_solver_repair_staffs_the_higher_section_when_coverage_ties():
+    """Review of v1.79: with as many positions filled either way, the section
+    order decides before the change count (5 changes instead of 3)."""
+    payload = SolveRangeRequest(startISO=MON_W45, endISO=FRI, only_fill_required=True, timeout_seconds=20)
+    result = _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
+                               start_time=time.time(), state_override=equal_coverage_state(),
+                               repair_reference=EQUAL_REFERENCE, repair_max_changes=cross_day.MAX_CHANGES)
+    assert {(a.rowId, a.dateISO, a.clinicianId) for a in result.assignments} == EQUAL_ORDERED
+    state = equal_coverage_state()
+    executor = PlanToolExecutor(state, build_scoring_context(state, MON_W45, FRI, only_fill_required=True), [])
+    assert executor._tool_apply_moves({"moves": [
+        {"action": "assign", "slot_key": f"{slot}__{day}", "clinicianId": cid}
+        for slot, day, cid in sorted(EQUAL_REFERENCE)]})["applied"]
+    report = cross_day.coverage_repair(executor, cancel_event=threading.Event(), time_limit=20)
+    assert (report["status"], report["open_before"], report["open_after"]) == ("applied", 2, 1), report
+    assert identities(executor) == EQUAL_ORDERED and EQUAL_ORDERED != EQUAL_CHEAP
 
 
 def test_priority_trade_down_compares_running_totals_from_the_top():

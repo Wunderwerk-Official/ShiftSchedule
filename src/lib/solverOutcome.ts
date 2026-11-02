@@ -1,4 +1,4 @@
-import type { SolverDebugInfo, SolverRunSummary, SolverUnsolvedOpenSlot } from "../api/client";
+import type { SolverAgentDebug, SolverDebugInfo, SolverRunSummary, SolverUnsolvedOpenSlot } from "../api/client";
 
 // Same wording and tie-break order as the backend's closing report
 // (RULE_LABELS in backend/agent/open_reasons.py), plus the two outcomes that
@@ -59,14 +59,54 @@ export function openSlotReasonSummary(slots: SolverUnsolvedOpenSlot[]): OpenSlot
   return { text, checked, total: slots.length };
 }
 
-/** The run ended before it finished: stopped, out of budget, a provider
- *  failure, or days it skipped or left incomplete. */
+/** The run itself stopped before its end: stopped by hand, or the agent
+ *  ended on a budget, a provider failure, an error or a refusal. "partial"
+ *  is no stop: the model skipped or left days, and daysSkipped,
+ *  daysIncomplete and the final checks say which are still unfinished
+ *  (the same rule as backend/run_apply.cut_short). */
+export function runStoppedEarly(status: string | undefined, debug?: SolverDebugInfo): boolean {
+  const reason = debug?.agent?.stopReason;
+  return status === "aborted" || (reason != null && reason !== "completed" && reason !== "partial");
+}
+
+/** The run ended before it finished: stopped early, or days it skipped or
+ *  left incomplete. */
 export function runEndedEarly(status: string, debug?: SolverDebugInfo): boolean {
   const agent = debug?.agent;
-  return status === "aborted"
-    || (agent?.stopReason != null && agent.stopReason !== "completed")
+  return runStoppedEarly(status, debug)
     || !!agent?.daysSkipped?.length
     || !!agent?.daysIncomplete?.length;
+}
+
+/** The coverage banner leads with "are still open" instead of "could not
+ *  be staffed" when nothing proves the positions unstaffable: the run ended
+ *  early, a slot's day is one the run did not finish (the server's
+ *  unfinished_dates, e.g. its final check ran out of time), or someone
+ *  could still take the slot. */
+export function openPositionsUnproven(
+  status: string,
+  debug: SolverDebugInfo | undefined,
+  slots: SolverUnsolvedOpenSlot[],
+  unfinishedDates?: string[],
+): boolean {
+  const unfinished = new Set(unfinishedDates ?? []);
+  return runEndedEarly(status, debug)
+    || slots.some((slot) => unfinished.has(slot.dateISO) || (slot.blockers?.addable ?? 0) > 0);
+}
+
+/** The toast after a run: only a run that really finished is offered for
+ *  applying as it is. */
+export function runFinishedNotice(status: string, debug?: SolverDebugInfo): string {
+  if (status === "aborted") return "Run stopped - review the best plan so far in the run inbox.";
+  if (runStoppedEarly(status, debug)) return "Run stopped early - review the best plan so far in the run inbox.";
+  return "Run finished - review the result in the run inbox and apply it.";
+}
+
+/** The model never ran: this account's AI budget was used up before the
+ *  first call (the harness then returns the basic plan with
+ *  stopReason "budget_exhausted" and no iterations). */
+function aiBudgetUsedUp(agent?: Pick<SolverAgentDebug, "stopReason" | "iterations">): boolean {
+  return agent?.stopReason === "budget_exhausted" && (agent.iterations ?? 0) === 0;
 }
 
 /** The coverage banner's explanation after a run left required positions
@@ -93,10 +133,23 @@ const STOP_REASON_LABELS: Record<string, string> = {
 };
 
 /** The run-details "Run:" line. The harness reports workflow_finished on
- *  every exit, so the stop reason decides whether it really finished. */
-export function runStateLabel(stopReason: string | undefined | null, workflowFinished: boolean): string {
-  if (stopReason && stopReason !== "completed") return STOP_REASON_LABELS[stopReason] ?? `stopped early (${stopReason})`;
-  return workflowFinished ? "finished" : "in progress";
+ *  every exit, so the run status and the stop reason decide whether it
+ *  really finished. A "partial" run whose skipped day the repair and the
+ *  final checks completed did finish. */
+export function runStateLabel(
+  agent: Pick<SolverAgentDebug, "stopReason" | "iterations" | "daysSkipped" | "daysIncomplete" | "completion">,
+  runStatus?: string,
+): string {
+  if (runStatus === "aborted") return STOP_REASON_LABELS.aborted;
+  const reason = agent.stopReason;
+  if (aiBudgetUsedUp(agent)) return "not started: this account's AI budget is used up";
+  if (reason === "partial") {
+    const unfinished = !!agent.daysSkipped?.length || !!agent.daysIncomplete?.length
+      || agent.completion?.required_checks_complete === false;
+    return unfinished ? STOP_REASON_LABELS.partial : "finished";
+  }
+  if (reason && reason !== "completed") return STOP_REASON_LABELS[reason] ?? `stopped early (${reason})`;
+  return agent.completion?.workflow_finished ? "finished" : "in progress";
 }
 
 /** Run-card line for a draft that needs a look before applying (applied or
@@ -119,11 +172,13 @@ export function heuristicFallbackNotice(debug?: SolverDebugInfo): string | null 
   const reason = agent?.fallback?.model_stop_reason ?? agent?.stopReason;
   const explanation = reason === "provider_error"
     ? "The model request failed."
-    : reason === "budget_exhausted"
-      ? "The model's planning budget was exhausted."
-      : reason === "aborted"
-        ? "The model run was stopped."
-        : "The model did not produce the returned draft.";
+    : aiBudgetUsedUp(agent)
+      ? "This account's AI budget is used up."
+      : reason === "budget_exhausted"
+        ? "The model's planning budget was exhausted."
+        : reason === "aborted"
+          ? "The model run was stopped."
+          : "The model did not produce the returned draft.";
   return `Basic plan (without AI): the returned draft was made without the AI. ${explanation} Review it in the run inbox.`;
 }
 

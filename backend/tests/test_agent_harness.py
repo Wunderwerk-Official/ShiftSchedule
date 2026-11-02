@@ -1394,6 +1394,34 @@ def test_an_absent_person_counts_as_absent_for_the_main_reason():
     assert open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]["main"] == "REST_DAY"
 
 
+def test_main_reason_counts_every_rule_of_someone_who_is_not_absent():
+    """Review of v1.79: only an absence replaces a person's other rules. Two
+    of three people are also near their weekly cap, but all three work at
+    that time: the banner must name the overlap, not weekly hours."""
+    from backend.agent.open_reasons import open_slot_blockers
+
+    class _Gap:
+        slot_key, slot_id, dateISO, section_id = f"s0__{MON}", "s0", MON, "section-a"
+
+    class _Executor:
+        state = make_app_state(clinicians=[make_clinician("clin-1"), make_clinician("clin-2", "Bob"),
+                                           make_clinician("clin-3", "Cyd")])
+        current, fixed_identity = {}, set()
+        codes = {"clin-1": ["OVERLAP", "WEEKLY_HOURS"], "clin-2": ["OVERLAP", "WEEKLY_HOURS"],
+                 "clin-3": ["OVERLAP"]}
+
+        def _direct_addition_codes(self, slot_id, date_iso, cid):
+            return self.codes[cid]
+
+    blockers = open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]
+    assert blockers["blocked_by"] == {"OVERLAP": 3, "WEEKLY_HOURS": 2}
+    assert blockers["main"] == "OVERLAP"
+    # An absent person still counts only once, under the absence.
+    _Executor.codes = {"clin-1": ["VACATION", "WEEKLY_HOURS"], "clin-2": ["VACATION", "OVERLAP"],
+                       "clin-3": ["WEEKLY_HOURS"]}
+    assert open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]["main"] == "VACATION"
+
+
 def test_frontend_rule_labels_follow_the_closing_report():
     """The banner (src/lib/solverOutcome.ts) uses the closing report's words
     and breaks ties in its rule order; a rule added to one table only (as

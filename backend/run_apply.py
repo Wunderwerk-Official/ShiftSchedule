@@ -66,9 +66,13 @@ def _agent_debug(run):
 def cut_short(run):
     """The run itself stopped early: aborted, or the agent ended on a time or
     iteration budget, a provider failure or a refusal (any stopReason but
-    'completed'). Results without an agent block have no stopReason."""
+    'completed' and 'partial'). 'partial' is no stop: the days it skipped or
+    left unchecked are listed per day (daysSkipped, daysIncomplete, pending
+    checks), and a day the model skipped that the repair and the final
+    checks completed is finished. Results without an agent block have no
+    stopReason. The frontend's runStoppedEarly uses the same rule."""
     agent = _agent_debug(run)
-    return run.get("status") == "aborted" or agent.get("stopReason") not in (None, "completed")
+    return run.get("status") == "aborted" or agent.get("stopReason") not in (None, "completed", "partial")
 
 
 def _reported_open_slots(agent):

@@ -7,7 +7,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { appendAgentEvent } from "../lib/agentActivity";
 import { abortableDelay } from "../lib/abortableDelay";
-import { agentReviewNotice, coverageExplanation, heuristicFallbackNotice, runEndedEarly } from "../lib/solverOutcome";
+import {
+  agentReviewNotice, coverageExplanation, heuristicFallbackNotice, openPositionsUnproven, runEndedEarly, runFinishedNotice,
+} from "../lib/solverOutcome";
 import ClinicianEditModal from "../components/schedule/ClinicianEditModal";
 import AutomatedPlanningPanel from "../components/schedule/AutomatedPlanningPanel";
 import SolverOverlay, { type LiveSolution, type StatsHistoryEntry } from "../components/schedule/SolverOverlay";
@@ -459,8 +461,9 @@ export default function WeeklySchedulePage({
     dates: string[];
     /** Why: the main blocking rule per checked slot, or that the run ended early. */
     explanation: string;
-    /** Stopped, out of budget or partial: the positions were not all checked. */
-    endedEarly: boolean;
+    /** Nothing proves them unstaffable (openPositionsUnproven): the run
+     *  ended early, their day is unfinished, or someone could still take one. */
+    stillOpen: boolean;
   } | null>(null);
   const [autoPlanRunning, setAutoPlanRunning] = useState(false);
   const [autoPlanElapsedMs, setAutoPlanElapsedMs] = useState(0);
@@ -1553,7 +1556,7 @@ export default function WeeklySchedulePage({
           count: openSlots.length,
           dates: [...new Set(openSlots.map((slot) => slot.dateISO))].sort(),
           explanation: coverageExplanation(openSlots, runEndedEarly(run.status, result?.debugInfo)),
-          endedEarly: runEndedEarly(run.status, result?.debugInfo),
+          stillOpen: openPositionsUnproven(run.status, result?.debugInfo, openSlots, run.unfinished_dates),
         });
       }
       const warningNotes = (result?.notes ?? []).filter(
@@ -1576,12 +1579,7 @@ export default function WeeklySchedulePage({
         await applyRunRef.current(runId);
       } else if (applicable) {
         setSolverInfoOpen(true);
-        showSolverNoticeBriefly(
-          run.status === "aborted"
-            ? "Run stopped - review the best plan so far in the run inbox."
-            : "Run finished - review the result in the run inbox and apply it.",
-          6000,
-        );
+        showSolverNoticeBriefly(runFinishedNotice(run.status, result?.debugInfo), 6000);
       }
       setAutoPlanProgress({ current: result?.debugInfo?.agent?.daysPlanned ?? dateRangeLength, total: dateRangeLength });
       setAutoPlanLastRunStats({
@@ -3609,7 +3607,7 @@ export default function WeeklySchedulePage({
                   <div className="min-w-0">
                     <span className="font-semibold">
                       {coverageWarning.count} required position(s){" "}
-                      {coverageWarning.endedEarly ? "are still open" : "could not be staffed"}
+                      {coverageWarning.stillOpen ? "are still open" : "could not be staffed"}
                     </span>{" "}
                     on{" "}
                     {coverageWarning.dates.slice(0, 8).join(", ")}

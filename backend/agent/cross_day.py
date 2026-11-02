@@ -19,6 +19,9 @@ The section order is binding (Settings: "If not every slot can be filled,
 sections higher in this list are staffed first"): a repair may move a gap
 to a lower-ranked section, never to a higher one. The CP-SAT model bounds
 this per tier, and the result is checked again here before it is applied.
+Among plans that fill as many positions, the model prefers the one whose
+open positions sit lower in the list. A section ranks by its first entry in
+that list, so its days and sub-shifts never outrank each other.
 """
 from __future__ import annotations
 
@@ -51,7 +54,7 @@ def open_positions(executor) -> int:
 def missing_by_tier(executor, working, tier_by_slot_id: Dict[str, int]) -> Dict[int, int]:
     """Missing required positions per section tier (0 = top of the list)."""
     counts = executor._counts_by_instance(working)
-    lowest = len(tier_by_slot_id) + 1
+    lowest = max(tier_by_slot_id.values(), default=-1) + 1
     out: Dict[int, int] = {}
     for inst in executor.ctx.instances.values():
         missing = inst.target - counts.get(inst.slot_key, 0)

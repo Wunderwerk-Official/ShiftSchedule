@@ -72,8 +72,10 @@ export default function HelpView() {
             The AI plans the selected timeframe day by day: on-call and priority slots
             first, every person with a contiguous block of work. It fills required
             slots only. If required slots stay open, it then moves shifts between the
-            days of the timeframe to fill more of them, without ever leaving a section
-            open that ranks higher in the section order. Plan whole weeks together:
+            days of the timeframe to fill more of them. It never opens a slot of a
+            section that ranks higher in the section order to fill lower-ranked ones,
+            and when several plans fill as many slots, it prefers to leave the
+            lower-ranked ones open. Plan whole weeks together:
             days outside the timeframe stay as they are and keep using weekly hours.
             Model and instructions are set in Settings → Planning rules &amp; AI.
           </p>

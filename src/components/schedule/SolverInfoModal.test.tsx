@@ -47,6 +47,31 @@ it("reports budget fallback and unverified days separately from coverage", () =>
   expect(agentReviewNotice(debug())).toBeNull();
 });
 
+it.each([
+  // test_agent_retry: Tuesday's model call failed; the repair and the final checks completed it.
+  ["finished", { stopReason: "partial", modelDaysSkipped: ["2026-01-06"] }, "Run: finished"],
+  // Stop clicked while the closing report ran: the harness still says completed.
+  ["aborted", { stopReason: "completed" }, "Run: stopped"],
+  ["finished", { stopReason: "budget_exhausted" }, "Run: stopped early: planning budget used up"],
+  ["finished", { stopReason: "budget_exhausted", iterations: 0 }, "Run: not started: this account's AI budget is used up"],
+] as const)("shows the Run line from the run's status and final state (%s, %j)", async (status, extra, line) => {
+  const debugInfo: SolverDebugInfo = { ...debug({
+    model: "test-model", iterations: 4, daysSkipped: [], daysIncomplete: [], daysPlanned: 3,
+    completion: { plan_revision: 2, workflow_finished: true, required_checks_complete: true,
+      coverage_complete: true, soft_wishes_fulfilled: true, free_text_wishes_verified: true },
+    ...extra,
+  }), solver_status: "AGENT_COMPLETE" };
+  const run: SolverRunDetail = { id: "run-line", status, has_result: true, start_iso: "2026-01-05", end_iso: "2026-01-07",
+    attempt: 1, created_at: "2026-01-05T10:00:00Z",
+    result: { startISO: "2026-01-05", endISO: "2026-01-07", assignments: [], notes: [], debugInfo } };
+  render(<SolverInfoModal isOpen onClose={vi.fn()} serverRuns={[run]}
+    onApplyRun={vi.fn()} onDiscardRun={vi.fn()} onRefreshRuns={vi.fn()}
+    onFetchRunDetail={vi.fn().mockResolvedValue(run)} onSendFeedback={vi.fn()} />);
+  fireEvent.click(screen.getByTitle("Show run details (stats, changes, log)."));
+  expect(await screen.findByText(line)).toBeVisible();
+  expect(screen.getByText("Required checks: complete")).toBeVisible();
+});
+
 it.each([true, false])("reports actual model selection and preserves every attempt in the log (available: %s)", async (available) => {
   const selected = available ? "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4" : null;
   const requested = "nvidia/Qwen3.8-Flash-Next-NVFP4";

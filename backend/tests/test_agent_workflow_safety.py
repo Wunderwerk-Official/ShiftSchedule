@@ -196,7 +196,14 @@ def test_partial_result_requires_explicit_confirmation_and_creates_backup(client
     assert len(restored.json()["assignments"]) == 2
 
 
-def test_finished_run_with_open_positions_is_not_called_stopped(client):
+@pytest.mark.parametrize("stop", [
+    {},
+    {"stopReason": "completed"},
+    # Review of v1.79: the model skipped Monday after a provider failure, the
+    # cross-day repair and the final checks completed it. No stop.
+    {"stopReason": "partial", "modelDaysSkipped": [MON]},
+])
+def test_finished_run_with_open_positions_is_not_called_stopped(client, stop):
     """Admin report 2026-11: a run that finished every check but left
     positions nobody may legally fill was announced as "incomplete or was
     stopped", suggesting the planner gave up early."""
@@ -205,6 +212,7 @@ def test_finished_run_with_open_positions_is_not_called_stopped(client):
         "daysSkipped": [], "daysIncomplete": [],
         "unsolved": {"open_slots": [{"dateISO": MON, "section": "Section A",
                                      "time": "08:00-16:00", "missing": 1}]},
+        **stop,
     }})
     listed = client.get("/v1/solve/runs").json()["runs"][0]
     assert listed["incomplete_dates"] == [MON]

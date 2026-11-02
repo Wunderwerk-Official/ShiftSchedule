@@ -3334,27 +3334,44 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   v1.74 help text "If not every slot can be filled, sections higher in this
   list are staffed first"). Before, the repair counted open positions only
   (slot priority broke ties), so it could unstaff a top section's slot to
-  fill two lower ones on another day. Now, per section tier (the block's
-  position in `weeklyTemplate.blocks`, 0 = top; all slots of a section share
-  it on every day, unlike the per-slot order weight), the missing positions
-  of that tier and all higher tiers may not exceed those of the agent's plan
-  (`solver._add_priority_dominance`, prefix bounds on the repair's slack
-  variables; only placements the model can represent count, so the plan
-  being repaired always satisfies them). A gap may move to a lower-ranked
-  section or between days of one section, never to a higher-ranked one; the
-  admin's W45 case (COR is the lowest section) is unchanged. `coverage_repair`
-  checks the same rule on the solver's answer (`missing_by_tier`,
-  `priority_trade_down`) and refuses a violation (`rejected`, reason
-  "higher-ranked section left open", `section`). Not done: a pure 1:1 trade
-  upwards (same number of open positions, the higher section staffed) — the
-  repair is only applied when the quality tuple improves, and that tuple
-  has no priority term. Arena round 9 ran before this rule.
+  fill two lower ones on another day. Now every section has a tier: the
+  position of its FIRST block in `weeklyTemplate.blocks` (0 = top, the order
+  Settings lists sections in; `solver._section_tier_by_slot_id`). All slots
+  of a section share it on every day and sub-shift, also in a pre-v4
+  template, which has one block per sub-shift and day type. Per tier, the
+  missing positions of that tier and all higher tiers may not exceed those
+  of the agent's plan (`solver._add_priority_dominance`, prefix bounds on
+  the repair's slack variables; only placements the model can represent
+  count, so the plan being repaired always satisfies them). A gap may move
+  to a lower-ranked section or between days of one section, never to a
+  higher-ranked one; the admin's W45 case (COR is the lowest section) is
+  unchanged. `coverage_repair` checks the same rule on the solver's answer
+  (`missing_by_tier`, `priority_trade_down`) and refuses a violation
+  (`rejected`, reason "higher-ranked section left open", `section`).
+  Objective, with weights derived from the model's own bounds: fewest
+  missing positions first; then the sum of the running totals per tier (a
+  gap counts once for its tier and once for every tier below it, so gaps
+  low in the list cost less); then fewest changes. The section term
+  outweighs every change count the cap allows, so with as many positions
+  filled the repair staffs the higher section even when that takes more
+  changes; the missing weight exceeds the section term's bound, so one more
+  filled position always wins. Not done: (a) a pure 1:1 trade upwards (same
+  number of open positions, the higher section staffed): the repair is
+  only applied when the quality tuple improves, and that tuple has no
+  priority term; (b) a strict order that leaves more positions open in
+  total to fill a higher-ranked one: when the agent's plan already left a
+  top slot and two lower ones open and the freed hours fit either the top
+  slot or both lower ones, the repair fills the two; (c) the preference
+  among equally full plans is a weighted sum, not strictly lexicographic
+  (two gaps one tier down can outweigh one gap at the top). Arena round 9
+  ran before this rule.
 - **Merge review fixes** (four checks of the merge with main v1.74–v1.78):
-  - Main reason per open slot: each blocked person counts under one rule,
-    absences first (vacation, then rest day), otherwise the rule order, so
-    a person on a Rest Day row date near their cap no longer makes the
-    banner say "weekly-hours limit"; `blocked_by` lists every rule, ties in
-    the rule order like the banner.
+  - Main reason per open slot: an absent person counts once, under the
+    absence (vacation, then rest day), so a person on a Rest Day row date
+    near their cap no longer makes the banner say "weekly-hours limit";
+    everyone else counts under every rule that blocks them (see the second
+    review below); `blocked_by` lists every rule, ties in the rule order
+    like the banner.
   - Stopped runs: the toast says "Run stopped - review the best plan so far
     in the run inbox."; the banner leads with "N required position(s) are
     still open" instead of "could not be staffed"; the run details say
@@ -3365,6 +3382,45 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
     the section order and why to plan whole weeks.
   - `e2e/team-page.spec.ts` (main's v1.76 stacked labels): the label reads
     poll instead of reading once (failed locally in 5 of 6 runs).
+- **Second review** (section order, open-slot reasons and stop texts; four
+  lenses, one skeptic per finding; all confirmed findings fixed):
+  - Tier per section, not per block (above). With per-block tiers a pre-v4
+    template ranked Monday above Friday of one section and the sub-shifts
+    among each other, so the repair refused to move a gap from Thursday to
+    Friday inside one section (2 -> 2 open instead of 2 -> 1).
+  - Equal coverage: the repair now staffs the higher section even when that
+    takes more changes (before, the plan with fewer changes won and the top
+    section stayed open).
+  - Main reason per open slot: only an absence replaces a person's other
+    rules. Counting everyone else under the first rule of the order made
+    the banner say "weekly-hours limit" where an overlap blocked everyone.
+  - "partial" is no stop: `run_apply.cut_short` and the frontend's
+    `runStoppedEarly` exclude it; skipped, incomplete and unchecked days are
+    reported per day. A day the model skipped that the repair and the final
+    checks completed reads "Run: finished" (it said "ended with days not
+    finished" next to "Required checks: complete").
+  - The "Run:" line follows the run's status: a Stop during the closing
+    report leaves `stopReason` "completed" on a run stored as aborted.
+  - Toast: "Run stopped early - review the best plan so far in the run
+    inbox." also for budget, provider, error and refusal stops, which are
+    stored as finished (`runFinishedNotice`).
+  - Banner lead: "are still open" also when the slot's day is in the
+    server's `unfinished_dates` (its final check ran out of time) or someone
+    could still take the slot (`openPositionsUnproven`).
+  - Account AI budget used up before the first call (0 iterations): "Run:
+    not started: this account's AI budget is used up", and the basic-plan
+    notice says the same instead of "planning budget".
+  - Help, section 3: the repair "never opens a slot of a section that ranks
+    higher in the section order to fill lower-ranked ones, and when several
+    plans fill as many slots, it prefers to leave the lower-ranked ones
+    open" (it promised it would never leave a higher-ranked section open).
+  - Measured (4-week arena repair, 120 s, 2 CP-SAT workers, two seeds on
+    plans with 39, 64 and 95 open positions): 24/23, 48/48 and 37/39 open
+    after the repair, against 24/25, 47/47 and 39/37 with the objective
+    before (219 in both sums, run-to-run noise as in the review); no
+    trade-down in any run. The search cost of the bounds themselves stays
+    (review: 0-3 positions at 2 workers on 4-week ranges, none at 4; the
+    returned plan after the final audit was no worse).
 - Tests: `test_cross_day_repair.py` (solver repair mode, gate,
   integration, magnitudes, direct strategy; merge: a Rest Day row entry is
   never filled by the repair, a reference placement without a variable is

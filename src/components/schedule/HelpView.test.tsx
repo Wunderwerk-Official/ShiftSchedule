@@ -27,6 +27,11 @@ it("describes the current planning panel and drop rules", () => {
     `open the arrow next to the switch in My plan: the last entry, “${footerLabel}”, lets you choose again;`,
   );
   expect(text).toContain("on a computer, pointing at the circle shows the name.");
+  // v1.79: the promise matches what the cross-day repair guarantees.
+  expect(text).toMatch(/It never opens a slot of a\s+section that ranks higher in the section order to fill lower-ranked ones/);
+  expect(text).toMatch(/it prefers to leave the\s+lower-ranked ones open/);
+  expect(text).not.toContain("without ever leaving a section");
+  expect(text).toContain("46/45 h in 2026-W45");
   expect(text).toContain("shows the initials of the person linked to your account");
   expect(text).not.toMatch(/start page|saved views/i);
 });

@@ -551,10 +551,6 @@ EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL = 1
 # allow SOLVER_GAP_GRACE_SECONDS for further improvement, then stop.
 SOLVER_GAP_THRESHOLD = 0.05  # 5% relative gap
 SOLVER_GAP_GRACE_SECONDS = 20.0  # seconds to wait for more improvements
-# Repair mode (_solve_range_impl repair_reference): weights of the
-# lexicographic objective, missing required positions >> changes.
-REPAIR_WEIGHT_MISSING = 1_000_000
-REPAIR_WEIGHT_CHANGE = 1_000
 
 
 def _get_day_type(date_iso: str, holidays: List[Holiday]) -> str:
@@ -696,26 +692,44 @@ def _collect_slot_contexts(state) -> List[Dict[str, Any]]:
     return contexts
 
 
+def _section_tier_by_slot_id(slot_contexts, blocks) -> Dict[str, int]:
+    """Priority tier per slot: the position of its section's FIRST block in
+    the template's block list, the order Settings shows ("If not every slot
+    can be filled, sections higher in this list are staffed first"; 0 =
+    top). Every slot of a section shares it, on every day and sub-shift: a
+    pre-v4 template has one block per sub-shift and day type, and those
+    blocks must not rank Monday above Friday of the same section."""
+    first: Dict[str, int] = {}
+    tier_by_block_id: Dict[str, int] = {}
+    for index, block in enumerate(blocks or []):
+        tier_by_block_id[block.id] = first.setdefault(block.sectionId or f"block:{block.id}", index)
+    return {ctx["slot_id"]: tier_by_block_id.get(ctx["block"].id, ctx["block_order"])
+            for ctx in slot_contexts}
+
+
 def section_tier_by_slot_id(state) -> Dict[str, int]:
-    """Priority tier of every template slot: its section block's position in
-    the template's block list (Settings: "If not every slot can be filled,
-    sections higher in this list are staffed first"; 0 = top). Slots of one
-    section share a tier on every day, unlike the per-slot order weight."""
-    return {ctx["slot_id"]: ctx["block_order"] for ctx in _collect_slot_contexts(state)}
+    """The section tier of every template slot (see _section_tier_by_slot_id)."""
+    template = state.weeklyTemplate
+    return _section_tier_by_slot_id(_collect_slot_contexts(state), template.blocks if template else [])
 
 
-def _add_priority_dominance(model, slack_by_instance, reference, var_map, tier_by_slot_id) -> int:
+def _add_priority_dominance(model, slack_by_instance, reference, var_map,
+                            tier_by_slot_id) -> Tuple[List[Any], int]:
     """Repair mode: never trade a position of a higher-ranked section for
     lower-ranked ones. For every tier, the missing positions of that tier
     and all higher tiers may not exceed those of the plan being repaired
     (counting only its placements the model can represent). A gap may move
     to a lower-ranked section, never to a higher one; the plan being
-    repaired always satisfies this. Returns the number of tiers bounded."""
+    repaired always satisfies this.
+
+    Returns the open positions weighted by rank (a gap counts once for its
+    own tier and once for every tier below it, so higher-ranked gaps weigh
+    more) and the largest value that sum can take under these bounds."""
     kept: Dict[Tuple[str, str], int] = {}
     for (cid, date_iso, sid) in var_map:
         if (sid, date_iso, cid) in reference:
             kept[(sid, date_iso)] = kept.get((sid, date_iso), 0) + 1
-    lowest = len(tier_by_slot_id) + 1
+    lowest = max(tier_by_slot_id.values(), default=-1) + 1
     slack_by_tier: Dict[int, List[Any]] = {}
     reference_missing_by_tier: Dict[int, int] = {}
     for (sid, date_iso), (slack, missing) in slack_by_instance.items():
@@ -723,13 +737,19 @@ def _add_priority_dominance(model, slack_by_instance, reference, var_map, tier_b
         slack_by_tier.setdefault(tier, []).append(slack)
         reference_missing_by_tier[tier] = (reference_missing_by_tier.get(tier, 0)
                                            + max(0, missing - kept.get((sid, date_iso), 0)))
+    tiers = sorted(slack_by_tier)
     running: List[Any] = []
     running_reference = 0
-    for tier in sorted(slack_by_tier):
+    weighted: List[Any] = []
+    weighted_max = 0
+    for index, tier in enumerate(tiers):
         running.extend(slack_by_tier[tier])
         running_reference += reference_missing_by_tier[tier]
         model.Add(sum(running) <= running_reference)
-    return len(slack_by_tier)
+        # The sum of all running totals: at most the plan's own.
+        weighted.extend(slack * (len(tiers) - index) for slack in slack_by_tier[tier])
+        weighted_max += running_reference
+    return weighted, weighted_max
 
 
 def _build_date_context(
@@ -2314,10 +2334,11 @@ def _solve_range_impl(
             identities, the plan to repair (cross-day coverage repair of the
             agent, backend/agent/cross_day.py). The plan is a solution hint and
             the objective becomes: fewest missing required positions first,
-            then fewest changes to that plan (slot priority only breaks ties),
-            and no section may end up with more missing positions in its tier
-            and above than in that plan (_add_priority_dominance: a gap may
-            move to a lower-ranked section, never to a higher one).
+            then open positions as low in the section order as possible,
+            then fewest changes to that plan; no section may end up with more
+            missing positions in its tier and above than in that plan
+            (_add_priority_dominance: a gap may move to a lower-ranked
+            section, never to a higher one).
             The state must hold only the fixed context, not the plan itself.
         repair_max_changes: Optional cap on changed assignments in repair mode.
 
@@ -2517,6 +2538,9 @@ def _solve_range_impl(
     timer.checkpoint("coverage_constraints")
 
     repair_change_terms: List[Any] = []
+    repair_rank_terms: List[Any] = []
+    repair_rank_max = 0
+    repair_change_cap = 0
     if repair_mode:
         # Stay close to the plan being repaired: it is the starting solution,
         # and every assignment that differs from it counts as one change.
@@ -2525,13 +2549,15 @@ def _solve_range_impl(
             kept = (sid, date_iso, cid) in reference
             model.AddHint(var, 1 if kept else 0)
             repair_change_terms.append(1 - var if kept else var)
+        repair_change_cap = len(repair_change_terms)
         if repair_max_changes is not None:
-            model.Add(sum(repair_change_terms) <= max(0, int(repair_max_changes)))
+            repair_change_cap = min(repair_change_cap, max(0, int(repair_max_changes)))
+            model.Add(sum(repair_change_terms) <= repair_change_cap)
         # Section order is binding: more filled positions never at the
         # expense of a higher-ranked section.
-        _add_priority_dominance(
+        repair_rank_terms, repair_rank_max = _add_priority_dominance(
             model, slack_by_instance, reference, var_map,
-            {ctx["slot_id"]: ctx["block_order"] for ctx in slot_contexts},
+            _section_tier_by_slot_id(slot_contexts, state.weeklyTemplate.blocks if state.weeklyTemplate else []),
         )
 
     on_progress("phase", {"phase": "on_call_rest_days", "label": "Preparation (6/10): Setting up on-call rest rules..."})
@@ -2622,14 +2648,18 @@ def _solve_range_impl(
     w_ytd_balance = solver_settings.weightYtdBalance
 
     if repair_mode:
-        # Lexicographic by weights: one missing required position outweighs
-        # any number of changes allowed by repair_max_changes; slot priority
-        # (<= 100 per position) only decides between equally long change
-        # lists. Soft goals stay with the plan being repaired.
+        # Lexicographic by weights, from the bounds the model itself sets:
+        # one more filled required position outweighs any section order and
+        # any change count; among plans that fill as many, open positions
+        # lower in the section order outweigh any change count (the change
+        # cap bounds that difference); then fewest changes. Soft goals stay
+        # with the plan being repaired.
+        rank_weight = repair_change_cap + 1
+        missing_weight = rank_weight * repair_rank_max + repair_change_cap + 1
         model.Minimize(
-            sum(raw_slack_vars) * REPAIR_WEIGHT_MISSING
-            + sum(repair_change_terms) * REPAIR_WEIGHT_CHANGE
-            + total_slack
+            sum(raw_slack_vars) * missing_weight
+            + sum(repair_rank_terms) * rank_weight
+            + sum(repair_change_terms)
         )
     elif payload.only_fill_required:
         model.Minimize(
