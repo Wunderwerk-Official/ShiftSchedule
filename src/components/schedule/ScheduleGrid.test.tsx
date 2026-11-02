@@ -243,6 +243,64 @@ describe("ScheduleGrid", () => {
   });
 });
 
+describe("ScheduleGrid print pages", () => {
+  const week = Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 5 + i));
+  const gridColumns = () =>
+    (document.querySelector('[data-schedule-grid="true"]') as HTMLElement).style.gridTemplateColumns;
+  const firstCell = () =>
+    document.querySelector('[data-schedule-cell="true"][data-row-kind="class"]') as HTMLElement;
+
+  it("sizes the side-by-side print columns by their widest word, with tighter paddings", () => {
+    renderGrid({ weekDays: week, print: true, rows: [{ ...baseRow, dayType: "mon" }] });
+    // No fixed 120 px minimum: a column is as wide as its slot time (kept on
+    // one line), its widest section or name word.
+    expect(gridColumns()).toContain("minmax(min-content, 1fr)");
+    expect(screen.getAllByText("08:00 - 16:00")[0].className).toContain("print:whitespace-nowrap");
+    expect(firstCell().className).not.toContain("sm:p-1");
+    expect(firstCell().querySelector(".rounded-lg.border-2")?.className).toContain("px-1");
+    cleanup();
+    renderGrid({ weekDays: week });
+    expect(gridColumns()).toContain("minmax(120px, 1fr)");
+    expect(firstCell().className).toContain("sm:p-1");
+  });
+
+  it("keeps the compact week's columns in print", () => {
+    renderGrid({ weekDays: week, print: true, timeLayout: "stacked" });
+    expect(gridColumns()).toContain("minmax(64px, 1fr)");
+  });
+
+  it("wraps names onto two lines in the side-by-side print week instead of shortening them", () => {
+    const pill = () => screen.getByText("Dr. Alice").closest('[data-assignment-pill="true"]') as HTMLElement;
+    renderGrid({ weekDays: week, print: true });
+    expect(pill().className).toContain("[&_span]:whitespace-normal");
+    cleanup();
+    // The compact week keeps its one-line names (they shorten to fit 64 px).
+    renderGrid({ weekDays: week, print: true, timeLayout: "stacked" });
+    expect(pill().className).not.toContain("whitespace-normal");
+    cleanup();
+    renderGrid({ weekDays: week });
+    expect(pill().className).not.toContain("whitespace-normal");
+  });
+
+  it("lets labels wrap in print instead of cutting them off", () => {
+    renderGrid({
+      weekDays: week,
+      print: true,
+      rows: [{ ...locatedRow, sectionName: "Interventionelle Radiologie Kardio" }],
+      holidayNameByDate: { "2026-01-06": "Heilige Drei Könige" },
+    });
+    for (const text of ["Interventionelle Radiologie Kardio", "Heilige Drei Könige", "MRI", "Berlin"]) {
+      expect(screen.getAllByText(text)[0].className).toContain("print-wrap");
+    }
+  });
+
+  it("does not mark today in print", () => {
+    renderGrid({ weekDays: [new Date()] });
+    const today = document.querySelector(".rounded-full.border-slate-900") as HTMLElement;
+    expect(today.className).toContain("print:border-transparent");
+  });
+});
+
 describe("ScheduleGrid drag and drop", () => {
   const MON = "2026-01-05";
   const TUE = "2026-01-06";
@@ -670,6 +728,18 @@ describe("ScheduleGrid stacked times", () => {
     expect(restLabel.textContent).toBe("Rest Day");
     expect(restLabel.style.gridColumn).toBe("span 3");
     expect(restMonday.nextElementSibling).toBe(cell("pool-rest-day", TUE));
+  });
+
+  it("keeps every word of the row band and section labels whole in print", () => {
+    renderStacked({ rows: [rotating, restDay] });
+    // Never narrower than the longest word ("COMPUTERTOMOGRAPHIE" used to
+    // break inside its 128 px cap); the print page scales the week instead.
+    const band = labelCells("band")[0].firstElementChild as HTMLElement;
+    const section = labelCells("section")[1].firstElementChild as HTMLElement;
+    for (const label of [band, section]) {
+      expect(label.className).toContain("print-wrap");
+      expect(label.className).toContain("print:min-w-min");
+    }
   });
 
   it("draws a hairline between the lanes of a section, a line between sections, a stronger one between rows", () => {

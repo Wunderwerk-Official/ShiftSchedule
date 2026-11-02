@@ -130,6 +130,71 @@ describe("ClinicSheetGrid", () => {
     expect(cell.className).toContain("[@media(hover:none)]:pr-5");
   });
 
+  it("never lets a long name widen the day columns: it is cut, the full name in the title", () => {
+    setup();
+    const name = screen.getAllByText("Bergmann")[0].closest("[data-sheet-name]") as HTMLElement;
+    // Inline-size containment: the name adds no width to the max-content
+    // sized sheet grid, so every column keeps its width (screen and PDF).
+    expect(name.className).toContain("[contain:inline-size]");
+    expect(name.querySelector(".truncate")).not.toBeNull();
+    expect(name.getAttribute("title")).toBe("Anna Bergmann");
+    // A PDF has no title: a double name may wrap at its hyphen there.
+    expect(name.className).toContain("print:[&>span]:whitespace-normal");
+  });
+
+  it("keeps day columns at a fixed width an ordinary surname fits", () => {
+    setup();
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    // 6 name columns of 52px; never minmax(0, …) or max-content.
+    expect(grid.style.gridTemplateColumns).toContain("minmax(312px, 1fr)");
+  });
+
+  it("gives names the free columns of their area instead of one column each", () => {
+    const { slotRow } = setup({ readOnly: true });
+    // One area spans all 6 columns of the day; its one name takes them all.
+    const names = sheetCell(slotRow.id, "2026-07-06").firstElementChild as HTMLElement;
+    expect(names.style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+  });
+
+  it("keeps a track for each open-slot mark while the sheet is editable", () => {
+    const { slotRow } = setup();
+    // 2 required: the name and one "+" share the area.
+    const names = sheetCell(slotRow.id, "2026-07-06").firstElementChild as HTMLElement;
+    expect(names.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
+  it("puts one name per column in a full area and wraps the rest", () => {
+    const slotRow = makeSlotRow({ requiredSlots: 1 });
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const days = buildMonthDays(new Date(2026, 6, 1), new Set());
+    const model = buildClinicSheetModel({ calendarRows: [groupedRow, poolRow], days });
+    const people = Array.from({ length: 8 }, (_, idx) => `clin-${idx}`);
+    const assignmentMap = new Map<string, RenderedAssignment[]>([
+      [
+        `${slotRow.id}__2026-07-06`,
+        people.map((id) => ({ id: `a-${id}`, rowId: slotRow.id, dateISO: "2026-07-06", clinicianId: id })),
+      ],
+      [
+        "pool-vacation__2026-07-06",
+        people.slice(0, 2).map((id) => ({ id: `v-${id}`, rowId: "pool-vacation", dateISO: "2026-07-06", clinicianId: id })),
+      ],
+    ]);
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={assignmentMap}
+        rows={[groupedRow, poolRow]}
+        readOnly
+        getClinicianName={(id) => `Person ${id}`}
+        getIsQualified={() => true}
+      />,
+    );
+    const area = sheetCell(slotRow.id, "2026-07-06").firstElementChild as HTMLElement;
+    expect(area.style.gridTemplateColumns).toBe("repeat(6, minmax(0, 1fr))");
+    const pool = sheetCell("pool-vacation", "2026-07-06").firstElementChild as HTMLElement;
+    expect(pool.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
   it("renders assignments as plain surname text, not pills", () => {
     setup();
     const name = screen.getAllByText("Bergmann")[0];

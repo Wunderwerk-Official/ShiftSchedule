@@ -23,6 +23,16 @@ describe("PDF export requests", () => {
     expect(requestedUrl(fetchMock).searchParams.has("layout")).toBe(false);
   });
 
+  it("hands the cancel signal to the request", async () => {
+    const fetchMock = stubFetch();
+    const abort = new AbortController();
+    await exportWeekPdf("2026-01-05", "r1", "landscape", abort.signal);
+    await exportWeeksPdf("2026-01-05", 2, "r1", "portrait", abort.signal);
+    for (const call of fetchMock.mock.calls as unknown[][]) {
+      expect((call[1] as RequestInit).signal).toBe(abort.signal);
+    }
+  });
+
   it("passes the layout for a multi-week export", async () => {
     const fetchMock = stubFetch();
     await exportWeeksPdf("2026-01-05", 3, "r2", "portrait");

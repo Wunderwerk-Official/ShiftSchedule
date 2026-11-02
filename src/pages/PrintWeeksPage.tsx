@@ -11,12 +11,19 @@ import {
   locations as defaultLocations,
   WorkplaceRow,
 } from "../data/mockData";
-import { addDays, addWeeks, formatRangeLabel, startOfWeek } from "../lib/date";
+import { addDays, addWeeks, formatRangeLabel, startOfWeek, toISODate } from "../lib/date";
 import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState, type ScheduleRow } from "../lib/shiftRows";
-import { PORTRAIT_PAGE_CSS, portraitContentWidth, printPagePx, readPrintLayout } from "./printPage";
+import {
+  PORTRAIT_PAGE_CSS,
+  portraitContentWidth,
+  printPagePx,
+  printPageStyle,
+  readPrintLayout,
+} from "./printPage";
+import PrintWeekHeader from "./PrintWeekHeader";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -52,6 +59,8 @@ type PrintableWeekProps = {
   slotOverridesByKey: Record<string, number>;
   columnTimeMetaByKey: ReturnType<typeof buildColumnTimeMetaByKey>;
   rangeLabel: string;
+  /** Not published: the page header marks the week as a draft. */
+  draft: boolean;
   /** Portrait: the compact week ("Times: Stacked") at the page width. */
   layout: PdfLayout;
   onReady?: (weekIndex: number) => void;
@@ -76,6 +85,7 @@ const PrintableWeek = ({
   slotOverridesByKey,
   columnTimeMetaByKey,
   rangeLabel,
+  draft,
   layout,
   onReady,
 }: PrintableWeekProps) => {
@@ -87,7 +97,7 @@ const PrintableWeek = ({
     offsetY: 0,
   });
   const printContentRef = useRef<HTMLDivElement | null>(null);
-  const { area: printArea, margin: marginPx } = useMemo(
+  const { area: printArea } = useMemo(
     () => printPagePx(layout, PRINT_PAGE_MARGIN_MM),
     [layout],
   );
@@ -162,19 +172,12 @@ const PrintableWeek = ({
     }
   }, [printLayout.height, printLayout.width, weekIndex, onReady]);
 
+  const header = <PrintWeekHeader rangeLabel={rangeLabel} draft={draft} />;
+
   return (
     <div
       className="print-page"
-      style={{
-        // Left/top page margin (the pages have none of their own); the block
-        // stays shorter than the page, so page breaks do not move.
-        paddingLeft: marginPx,
-        paddingTop: marginPx,
-        breakInside: "avoid",
-        pageBreakInside: "avoid",
-        breakAfter: weekIndex === totalWeeks - 1 ? "auto" : "page",
-        pageBreakAfter: weekIndex === totalWeeks - 1 ? "auto" : "always",
-      }}
+      style={printPageStyle(layout, PRINT_PAGE_MARGIN_MM, weekIndex === totalWeeks - 1)}
     >
       <div
         className="relative overflow-hidden"
@@ -211,13 +214,7 @@ const PrintableWeek = ({
                   assignmentMap={weekAssignments}
                   rows={calendarRows}
                   readOnly
-                  header={
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                        {rangeLabel}
-                      </div>
-                    </div>
-                  }
+                  header={header}
                   getClinicianName={(id) =>
                     clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                   }
@@ -244,13 +241,8 @@ const PrintableWeek = ({
               locationSeparatorRowIds={locationSeparatorRowIds}
               timeLayout={layout === "portrait" ? "stacked" : "columns"}
               readOnly
-              header={
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                    {rangeLabel}
-                  </div>
-                </div>
-              }
+              print
+              header={header}
               separatorBeforeRowIds={poolId ? [poolId] : []}
               minSlotsByRowId={minSlotsByRowId}
               getClinicianName={(id) =>
@@ -313,6 +305,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
   );
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [solverSettings, setSolverSettings] = useState(defaultSolverSettings);
+  const [publishedWeeks, setPublishedWeeks] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [printReadyWeeks, setPrintReadyWeeks] = useState<Set<number>>(new Set());
@@ -407,6 +400,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
           });
         }
         if (normalized.holidays) setHolidays(normalized.holidays);
+        setPublishedWeeks(new Set(normalized.publishedWeekStartISOs ?? []));
       })
       .catch(() => {
         if (!alive) return;
@@ -497,6 +491,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
               slotOverridesByKey={slotOverridesByKey}
               columnTimeMetaByKey={columnTimeMetaByKey}
               rangeLabel={formatRangeLabel(rangeStart, rangeEnd)}
+              draft={!publishedWeeks.has(toISODate(rangeStart))}
               layout={layout}
               onReady={handleWeekReady}
             />

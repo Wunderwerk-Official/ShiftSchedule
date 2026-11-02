@@ -11,12 +11,19 @@ import {
   WorkplaceRow,
   locations as defaultLocations,
 } from "../data/mockData";
-import { addDays, startOfWeek, formatRangeLabel } from "../lib/date";
+import { addDays, startOfWeek, formatRangeLabel, toISODate } from "../lib/date";
 import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState } from "../lib/shiftRows";
-import { PORTRAIT_PAGE_CSS, portraitContentWidth, printPagePx, readPrintLayout } from "./printPage";
+import {
+  PORTRAIT_PAGE_CSS,
+  portraitContentWidth,
+  printPagePx,
+  printPageStyle,
+  readPrintLayout,
+} from "./printPage";
+import PrintWeekHeader from "./PrintWeekHeader";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -54,6 +61,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
   );
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [solverSettings, setSolverSettings] = useState(defaultSolverSettings);
+  const [publishedWeeks, setPublishedWeeks] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [printLayout, setPrintLayout] = useState({
@@ -70,7 +78,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     () => readPrintLayout(typeof window !== "undefined" ? window.location.search : ""),
     [],
   );
-  const { page: fullPage, area: printArea, margin: marginPx } = useMemo(
+  const { area: printArea } = useMemo(
     () => printPagePx(layout, PRINT_PAGE_MARGIN_MM),
     [layout],
   );
@@ -196,6 +204,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
           });
         }
         if (normalized.holidays) setHolidays(normalized.holidays);
+        setPublishedWeeks(new Set(normalized.publishedWeekStartISOs ?? []));
       })
       .catch(() => {
         if (!alive) return;
@@ -276,24 +285,18 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     );
   }
 
+  const header = (
+    <PrintWeekHeader
+      rangeLabel={formatRangeLabel(weekStart, weekEndInclusive)}
+      draft={!publishedWeeks.has(toISODate(weekStart))}
+    />
+  );
+
   return (
     <div className={cx("bg-white", theme === "dark" && "dark")}>
       {layout === "portrait" ? <style>{PORTRAIT_PAGE_CSS}</style> : null}
       {/* Full A4 page container */}
-      <div
-        className="print-page"
-        style={{
-          width: fullPage.width,
-          height: fullPage.height,
-          padding: marginPx,
-          boxSizing: "border-box",
-          overflow: "hidden",
-          breakInside: "avoid",
-          pageBreakInside: "avoid",
-          breakAfter: "auto",
-          pageBreakAfter: "auto",
-        }}
-      >
+      <div className="print-page" style={printPageStyle(layout, PRINT_PAGE_MARGIN_MM, true)}>
         {/* Printable area within margins - use absolute positioning for centering */}
         <div
           style={{
@@ -332,13 +335,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                   assignmentMap={renderAssignmentMap}
                   rows={calendarRows}
                   readOnly
-                  header={
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                        {formatRangeLabel(weekStart, weekEndInclusive)}
-                      </div>
-                    </div>
-                  }
+                  header={header}
                   getClinicianName={(id) =>
                     clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                   }
@@ -365,13 +362,8 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                 locationSeparatorRowIds={locationSeparatorRowIds}
                 timeLayout={layout === "portrait" ? "stacked" : "columns"}
                 readOnly
-                header={
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                      {formatRangeLabel(weekStart, weekEndInclusive)}
-                    </div>
-                  </div>
-                }
+                print
+                header={header}
                 separatorBeforeRowIds={poolsSeparatorId ? [poolsSeparatorId] : []}
                 minSlotsByRowId={minSlotsByRowId}
                 getClinicianName={(id) =>

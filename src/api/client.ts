@@ -1388,11 +1388,13 @@ export async function exportWeekPdf(
   startISO: string,
   revision?: string,
   layout: PdfLayout = "landscape",
+  signal?: AbortSignal,
 ): Promise<Blob> {
   const res = await fetch(
     `${API_BASE}/v1/pdf/week?start=${encodeURIComponent(startISO)}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}${pdfLayoutQuery(layout)}`,
     {
       headers: buildHeaders(),
+      signal,
     },
   );
   if (res.status === 401) handleUnauthorized();
@@ -1473,6 +1475,7 @@ export async function exportWeeksPdf(
   weeks: number,
   revision?: string,
   layout: PdfLayout = "landscape",
+  signal?: AbortSignal,
 ): Promise<Blob> {
   const res = await fetch(
     `${API_BASE}/v1/pdf/weeks?start=${encodeURIComponent(startISO)}&weeks=${encodeURIComponent(
@@ -1480,6 +1483,7 @@ export async function exportWeeksPdf(
     )}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}${pdfLayoutQuery(layout)}`,
     {
       headers: buildHeaders(),
+      signal,
     },
   );
   if (res.status === 401) handleUnauthorized();
