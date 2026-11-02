@@ -217,7 +217,7 @@ def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
         )
         """
     )
-    # Swap assistant (v1.71): one row per swap with its exact patch for undo, an
+    # Swap assistant (v1.78): one row per swap with its exact patch for undo, an
     # append-only event log, and per-calendar swap rules. Columns that a later
     # request type leaves empty are nullable, so later stages only ADD COLUMN;
     # swaps/store.py checks on insert what stage 1 requires.

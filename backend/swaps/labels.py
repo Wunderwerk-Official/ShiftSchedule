@@ -181,6 +181,11 @@ def on_vacation(name: str, date_iso: str) -> str:
     return f"{name} is on vacation on {day_label(date_iso)}."
 
 
+def rest_day(name: str, date_iso: str) -> str:
+    """A shift on a day the person keeps in the Rest Day row."""
+    return f"Rest Day: {name} has a Rest Day on {day_label(date_iso)}."
+
+
 def already_assigned(name: str, section: str, date_iso: str) -> str:
     return f"{name} already works {section} on {day_label(date_iso)}."
 
@@ -285,6 +290,12 @@ def block_too_long(name: str, start_local: str, end_local: str, minutes: int,
 # --- Soft findings ----------------------------------------------------------
 
 
+def rest_day_removed(name: str, date_iso: str) -> Note:
+    """A person who takes a shift loses their Rest Day that day (a day off
+    placed by hand, which automatic planning respects since v1.75)."""
+    return Note(f"{name} has a Rest Day on {day_label(date_iso)}; it will be removed.", "Rest Day removed")
+
+
 def solver_rule(name: str, rule_name: str, date_iso: str) -> Note:
     return Note(f"{name}: breaks the rule “{rule_name}” on {day_label(date_iso)}.",
                 f"Rule: {rule_name}")
@@ -356,6 +367,7 @@ def check_list(settings: SolverSettings, rules: SwapRules, mode: str) -> List[Di
     checks = [
         ("qualification", "Qualified for both shifts" if mode == "swap" else "Qualified for the shift"),
         ("vacation", "No shift moved onto a vacation day"),
+        ("rest_day", "No new shift on a Rest Day"),
         ("overlap", "No new overlapping shifts"),
     ]
     if settings.enforceSameLocationPerDay:

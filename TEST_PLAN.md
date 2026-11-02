@@ -105,6 +105,7 @@ npx playwright show-report
 - [x] Day solver creates assignments only for template slots
 - [x] Solver respects clinician qualifications
 - [x] Solver blocks vacation days
+- [x] Solver blocks dates a person was placed in the Rest Day row by hand (v1.75, `TestSolverRestDayRow`)
 - [x] Solver blocks rest days (when on-call rest enabled)
 - [x] Solver enforces same-location-per-day (when enabled)
 - [x] Solver prevents time overlaps (overlapping intervals forbidden)
@@ -196,12 +197,17 @@ npx playwright show-report
 - [x] `src/lib/userPreferences.test.ts` — normalization, debounce, no PUT before a successful GET, flush on hide
 - [x] `src/pages/usePlanScope.test.ts`, `scrollToTeamAssignment.test.ts`
 - [x] `src/components/myPlan/*.test.tsx` — views, header chrome, shift detail, flows, keyboard shortcuts
-- [x] `TeamPlanHeader.test.tsx`, `LocationColorPicker.test.tsx`
+- [x] `TeamPlanHeader.test.tsx`, `LocationColorPicker.test.tsx` (Auto + presets, v1.71)
+- [x] `src/lib/locationColors.test.ts` — automatic location colors in location order, chosen colors never handed out twice (v1.71)
+- [x] `src/lib/myPlan/colors.test.ts` — person palette: fills ≥ 15 ΔE00 apart among the first 12, ≥ 9 among all 20, readable text in both themes; location presets: readable label shades, white-text band (v1.71)
+- [x] `ScheduleGrid.test.tsx` — label shades alternate per row band and restart per location; stacked lanes share their row band's shade; band in the location's strong color (v1.71)
 
 **E2E Tests** (`e2e/my-plan.spec.ts`, mocked API, in CI):
 - [x] Link yourself, change views, jump back into the team plan
-- [x] My plan as start page; the team pills carry person colors (no "Color by" switch since v1.69)
-- [x] A location color is saved with the calendar and tints the team rows
+- [x] The calendar always opens in Team, even with a stored My-plan start view (v1.74: start-page star and saved views removed; opening sends no preferences PUT); the team pills carry person colors (no "Color by" switch since v1.69)
+- [x] "Not <name>? Change who you are" (last entry of the person picker) unlinks the account (PUT `clinicianId: null`) and My plan asks "Who are you in the plan?" again (v1.74)
+- [x] My plan chosen by hand before the calendar has loaded shows "Loading calendar…" instead of calling the link stale, then the plan
+- [x] Without a color the first location is blue (Auto); a picked color is saved with the calendar and colors the label shades and the band; Auto clears it (v1.71)
 - [x] Phone: the scope switch leads to My plan and hides the planning panels
 
 ### 3.10 Team page regressions (v1.64)
@@ -215,10 +221,19 @@ npx playwright show-report
 - [x] Template above the column limit: banner and no save, snapshot import refused, snapshot restore backs up the last saved calendar, sign-out asks first
 - [x] Reset → Unlocked shifts and Unlocked shifts and rest days also remove planner entries on vacation days; both keep locked shifts, hand-placed ones included (v1.69)
 - [x] Times switches between side-by-side and stacked columns and stores the choice (v1.65)
+- [x] Stacked: a section that takes over a row band's slot on one day gets its own lane, named in the label (row band / section / time cells); the other lane is hatched that day; no in-cell section tag (v1.76)
 - [x] Moving a planner shift by hand locks it (v1.69)
 - [x] A locked shift moved into the Rest Day row becomes a plain rest day entry that Reset → Unlocked shifts and rest days removes (v1.69)
+- [x] A shifts file import saves the calendar as shown as an auto-backup first; when the backup fails nothing is imported (v1.74)
+- [x] Loading public holidays keeps the holidays added by hand (v1.74; the state filter is in `holiday-region.spec.ts`)
 
-**Frontend Tests (v1.66 compact cells and portrait PDF)**: `ScheduleGrid.test.tsx` (no section block or name in stacked cells, tooltip, +N badge, corner mark, hatched days without a slot, section tints, hover-only fix button, fixed pill keeps it, "Open"), `AssignmentPill.test.tsx` (full name in the pill's tooltip), `IcalExportModal.test.tsx` (page layout choice), `src/pages/printPage.test.ts` (A4 portrait geometry), `PrintWeekPage.test.tsx` / `PrintWeeksPage.test.tsx` (portrait page rule, seven columns, margins), `src/api/client.pdf.test.ts` (layout reaches the request); backend `test_pdf_revision.py` (layout → orientation, viewport and print route).
+**Frontend Tests (v1.66 compact cells and portrait PDF)**: `ScheduleGrid.test.tsx` (no section block or name in stacked cells, tooltip, corner mark (replaced by a tag in v1.73, gone since v1.76) and +N badge (gone since v1.76), hatched days without a slot, section tints, hover-only fix button, fixed pill keeps it, "Open"), `AssignmentPill.test.tsx` (full name in the pill's tooltip), `IcalExportModal.test.tsx` (page layout choice), `src/pages/printPage.test.ts` (A4 portrait geometry), `PrintWeekPage.test.tsx` / `PrintWeeksPage.test.tsx` (portrait page rule, seven columns, margins), `src/api/client.pdf.test.ts` (layout reaches the request); backend `test_pdf_revision.py` (layout → orientation, viewport and print route).
+
+**Frontend Tests (v1.73 named sections in stacked cells)**: superseded in v1.76 — lanes never mix sections, so there is no section tag; replaced by the v1.76 tests below.
+
+**Frontend Tests (v1.76 stacked week: one row per section)**: `src/lib/stackedTeamLayout.test.ts` (`buildTimeLanes`: a slot that overlaps no free lane opens its own, however near its start; `buildSectionLanes`: lanes never mix sections — the user's rotating "IRM HK" row; a section's separate time blocks on different days (the user's IRM cardio HK: Mon/Thu 07:30, Wed 13:00 and 16:00) get a lane each with no differing time; sections by earliest start, then first slot in template column order, then name; a section's lanes by start even when a later day opened them; a weekend variant with another time stays in its section's lane; two slots of one section on a day get two lanes; sections by id, by name without one; `buildStackedTeamLayout`: a day of another section gets its own lane and color, a section named like its row band is titled when another section comes first, lane ids and order are the same whatever days are on screen, also when a hidden day or a holiday decides the order, row/section spans and first/last-in-section flags), `ScheduleGrid.test.tsx` (three label columns with spanning row band and section cells, header and pool row labels span them; divider levels lane / section / row on cells and label cells; single day keeps one label cell and names the section on every lane; no section tag in cells, own time as a quiet clock note under the people (no chip) and tooltip kept, no "+N"; section tints per lane label and cell; a later lane's section for screen readers and in its tooltip; location shade on every label cell), `HelpView.test.tsx` (stacked text), e2e `team-page.spec.ts` (see above).
+
+**Frontend Tests (v1.77 team switch while loading)**: `CalendarPlaceholder.test.tsx` (the "Team | My plan" switch is usable while My plan waits for the calendar and reports "team"; busy status "Loading calendar…"; plain "My plan" label without initials; compact switch on phones).
 
 **Frontend Tests (v1.65 stacked times)**: `src/lib/stackedTeamLayout.test.ts` (time lanes: weekend columns by time, shorter shifts by nearest start, same-time columns by section), `ScheduleGrid.test.tsx` ("stacked times": one column per day, labels, own-time captions, drag between lanes), `TeamPlanHeader.test.tsx` (Times switch).
 
@@ -230,7 +245,30 @@ npx playwright show-report
 - [x] Discard after apply / of a failed run → 409; discarding an open run twice → 200
 - [x] A vacation-hidden unlocked solver row is replaced on apply (`is_replaced_by_draft`)
 
-### 3.12 Swap assistant (v1.71)
+### 3.12 Holidays by state (v1.72)
+
+**Frontend Tests**: `src/lib/holidays.test.ts` (region filter with date.nager.at's Germany 2026 answer: nationwide entries, matching and other states' counties, no region; region normalizer; region tables), `src/lib/shiftRows.test.ts` (`normalizeAppState` keeps an uppercased code, drops anything else), `SettingsView.test.tsx` (state select, "all states" hint, reload note, load arguments, region of another country, unknown code).
+
+**Backend Tests**: `test_state_normalization.py` (normalizer, non-strings, a pre-v1.72 calendar keeps its bytes and revision through load and save, round trip, clearing restores the old revision), `test_state_routes.py` (GET/POST `/v1/state` round trip, 409 for a stale tab), `test_fixed_planning_tasks.py` (the region is not a planning input).
+
+**E2E Tests** (`e2e/holiday-region.spec.ts`, mocked API and mocked date.nager.at, in CI):
+- [x] A chosen state filters the loaded holidays (NRW: Fronleichnam and Allerheiligen, no Buß- und Bettag) and is saved with the calendar; choosing it alone keeps the stored list
+- [x] A stored state is shown; another country starts without one
+
+**Holidays added by hand (v1.74)**: `src/lib/holidays.test.ts` (`mergeLoadedHolidays`: state filter, all states without one, hand-added holidays and other years kept, untagged entries the service lists replaced, no duplicates), `SettingsView.test.tsx` (load count, "added by hand"); backend `test_state_normalization.py` (untagged holidays dump without `source`, a pre-v1.74 calendar keeps its bytes and revision, round trip, unknown tags dropped instead of a 422), `test_state_routes.py` (GET/POST `/v1/state`), `test_agent_workflow_safety.py` (`source` is not a planning input); e2e `team-page.spec.ts` (with a stored state, holidays added by hand, in the UI or before v1.74, survive a load; older loaded ones are replaced).
+
+### 3.13 Hand-placed rest days and on-call fairness (v1.75)
+
+**Backend Tests**:
+- [x] `REST_DAY` flags a shift on a stored `pool-rest-day` date (manual, solver or untagged entry), read from the calendar and from the checked list; not other dates or people, not pool rows; a night shift starting the evening before stays allowed (as for vacation); stored Vacation row entries stay ignored (`test_validation.py`)
+- [x] CP-SAT and heuristic v2 give the shift to someone else, leave it open when only the person on the rest day qualifies (solved, no infeasibility), and keep an existing shift on that day (`test_solver.py`, `test_heuristic_v2.py`); the basic plan (without AI) and the repair seed too (`test_agent_harness.py`)
+- [x] Agent: the person is ineligible with `REST_DAY` in candidate lists, day priorities and day blocks, `apply_moves` refuses, a fixed conflict blocks no unrelated move, `get_clinician_summary` lists `rest_days` (`test_agent_tools.py`); `repair_neighborhood` never previews them (`test_agent_planning_workflow.py`)
+- [x] A stored draft is refused (also with force) when a rest day was added after the run; a fixed conflict does not block an unrelated draft; fingerprints of stored runs are unchanged (`test_agent_workflow_safety.py`)
+- [x] Balanced counts on-call burden only while "Rest days around on-call duty" is on; rest days reduce duty opportunity weights; `QUALITY_VERSION` 3 (`test_agent_quality_profile.py`); the duty-pass follow-up reports `duty_complete` with the rule off (`test_agent_planning_workflow.py`)
+
+**Frontend Tests**: `SettingsView.test.tsx` (Rest Day row helper, Planning goals on-call note), `HelpView.test.tsx` (Rest Day row day off).
+
+### 3.14 Swap assistant (v1.78)
 
 **Backend Tests** (`backend/tests/`; fixtures `make_swap_state`, `asg` and `rich_swap_state` in `swap_fixtures.py`):
 - [x] `test_validation_context.py` — `validate_assignments` and every single validator give the same violations with a precomputed `ValidationContext` (arena fixture and 50 seeded subsets of a chained plan, with and without `skip_references` / `only_fill_required`); a context built for another state raises
@@ -262,6 +300,18 @@ npx playwright show-report
 - [x] Phone: hand over in the sheet; after an Undo in the history (focus on the row, after the sheet's last control) Tab and Shift+Tab stay in the sheet
 - [x] Touch screen (`hover: none`): on pills and clinic sheet names the ⇄ button sits left of the lock and right of the name; tapping ⇄ opens the drawer, tapping the lock only toggles it
 
+**Merged with v1.72–v1.77** (main's `REST_DAY` rule, the stacked team week, My plan):
+- [x] `test_validation_context.py` — the context holds the calendar's Rest Days; results are identical with and without a context also for lists that add or drop Rest Day entries, in both `own_rest_days` modes (which differ on some list); `test_rest_days_come_from_the_calendar_and_the_checked_list`
+- [x] `test_swap_matching.py` — a Rest Day the plan moves or removes no longer counts (slice, full gate and search; four shapes); every duplicate of the taker's Rest Day is removed, and a moved Rest Day takes every duplicate of the giver's; no Rest Day follows a night onto a shift the taker holds (hidden by a vacation, untimed); a shift on a Rest Day the plan keeps is blocked with "Rest Day: Ben Ott has a Rest Day on Thu 8 Jan."; a pair that existed before is carried over (pre-existing `rest_day`, its check line right after vacation); a cover's slice sees a co-holder's Rest Day; a search reads the calendar's Rest Days once; a partner whose Rest Day the option removes comes after free partners, as a possible match with the note "Ben Ott has a Rest Day on Thu 8 Jan; it will be removed." (one per person and day, in a swap one for each person who loses one)
+- [x] `test_swap_endpoints.py` — a swap that frees the partner's Rest Day applies and undoes (moved, or unticked and so removed); a hand-over removes every duplicate of the taker's Rest Day, or moves every duplicate of the giver's, and undo restores them right away (`canUndo` true in History); undo brings back a Rest Day the swap took from a day its holder worked, but refuses a new pair (also onto a vacation-hidden shift) with "Undo would give …", in History and at the endpoint alike; a shift on a Rest Day the swap keeps is a readable `swap_invalid`; History and undo follow a restored snapshot
+- [x] `test_swap_property.py` — fifth dataset `rest_swap_state` (pairs that already exist, duplicate Rest Days, a vacation-hidden shift on the day after a night, a cover co-holder who rests that day): the search's plans never break `REST_DAY`, also with their moves unticked; with removals withheld, slice and calendar agree; a moved Rest Day leaves its giver none, duplicates included; a counter for each shape
+- [x] `test_swap_policy.py` — the check list has "No new shift on a Rest Day"
+- [x] `SwapAssistantDrawer.test.tsx` — partner avatars use the team grid's person colors (light and dark); once the first answer is in, the target's pill (a cover's cell) is revealed, only once, and an option's shift revealed first takes over; `format.test.ts` — `targetRevealKey`; `HelpView.test.tsx` — the "Rest Day removed" note
+- [x] E2E: Find swap on a My plan shift (linked account) opens the drawer over the team week at that date, searches that assignment and outlines its pill; Escape focuses the pill's ⇄
+- [x] E2E: an edit inside the autosave window is saved once (its own autosave does not save it again) and searched once
+- [x] E2E: drawer beside a narrow stacked week (1100 px): the grid ends left of the drawer, the row band and section labels keep whole words, the target and the hovered option's shift are outlined, and Reveal scrolls the week sideways to a Sunday shift; the Sunday shift whose ⇄, or the open Sunday cell whose "Find cover…", opened the drawer is revealed beside it
+- [x] E2E: drawer over a narrow week (700 px, below lg): the stacked labels keep their widths, and Reveal brings a Sunday shift fully out from under the drawer
+
 ---
 
 ## 4. Intentionally Not Covered
@@ -270,7 +320,7 @@ The following areas are explicitly excluded from automated testing:
 
 1. **Visual styling** - Covered by manual review; snapshot tests avoided for maintainability
 2. **PDF visual accuracy** - Only validates PDF generation, not pixel-perfect layout
-3. **Real external API calls** - Holiday API (date.nager.at) is neither mocked nor referenced by any test
+3. **Real external API calls** - date.nager.at is never called; `e2e/holiday-region.spec.ts` mocks it and `src/lib/holidays.test.ts` uses its response shape
 4. **Browser compatibility** - Playwright runs Chromium only; cross-browser testing is manual
 5. **Performance benchmarks** - Not part of functional test suite
 6. **Mobile touch interactions** - HTML5 drag-and-drop doesn't support mobile
@@ -328,11 +378,12 @@ backend `python -m pytest tests -q --ignore=tests/test_solver_benchmark.py`
 (Python 3.11, from `backend/`); frontend on Node 22 with `npm run typecheck`,
 `npm test`, `npm run build`, then the critical Playwright specs
 (`e2e/agent-apply.spec.ts`, `e2e/agent-activity.spec.ts`,
-`e2e/fixed-assignments.spec.ts`, `e2e/model-settings.spec.ts`,
-`e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`, `e2e/swap-assistant.spec.ts`)
-against a local Vite dev server with a mocked API (`page.route`; no backend
-needed). Run the same set locally with `npx playwright test
-e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts
+`e2e/fixed-assignments.spec.ts`, `e2e/holiday-region.spec.ts`,
+`e2e/model-settings.spec.ts`, `e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`,
+`e2e/swap-assistant.spec.ts`) against a local Vite dev server with a mocked
+API (`page.route`; no backend needed). Run the same set locally with
+`npx playwright test e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts
+e2e/fixed-assignments.spec.ts e2e/holiday-region.spec.ts
 e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts
 e2e/swap-assistant.spec.ts` while
 `npm run dev -- --host 127.0.0.1 --port 5173` is running. The full E2E suite is not part of CI. Note that
@@ -360,4 +411,9 @@ Areas identified for future test expansion:
 | 2026-01-03 | Claude | Added pool removal regression tests |
 | 2026-01-03 | Claude | Added iCal and web API tests |
 | 2026-10-15 | Claude | v1.64: My plan / preferences, team page and background-run coverage; CI spec list |
-| 2026-11-01 | Claude | v1.71: swap assistant |
+| 2026-11-01 | Claude | v1.72 holidays by state (incl. `holiday-region` in the CI spec list); v1.73 named sections in stacked cells |
+| 2026-11-01 | Claude | v1.74 (merge of the feature-branch "v1.71" work): My plan always opens in Team and relinks, import backup, holidays added by hand |
+| 2026-11-01 | Claude | v1.75: hand-placed rest days block automatic planning (`REST_DAY`); Balanced on-call fairness follows the rest rule |
+| 2026-11-02 | Claude | v1.76: stacked team week with one lane per section (no "+N", no in-cell section tag), three-column label with spanning row band / section cells; review round: overlap rule for time lanes, auto label tracks, own time as a note, phone labels name every lane |
+| 2026-11-02 | Claude | v1.77: the My-plan loading card keeps the "Team | My plan" switch |
+| 2026-11-02 | Claude | v1.78: swap assistant (incl. `swap-assistant` in the CI spec list), merged with v1.72–v1.77: `REST_DAY` in the swap gates and undo, the "Rest Day removed" note, stacked week and My plan wiring |

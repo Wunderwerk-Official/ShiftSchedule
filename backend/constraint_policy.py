@@ -63,13 +63,18 @@ def classify_violations(
     skip_references: bool = False,
     context: Optional[ValidationContext] = None,
     baseline_violations: Optional[Iterable[Violation]] = None,
+    own_rest_days: bool = False,
 ) -> Tuple[List[Violation], List[Violation]]:
     """(new_or_worse, carried_over): the violations of ``candidate``, split by
     the apply gate's rule. ``baseline_violations`` (already computed for
-    ``baseline`` with the same flags) skips validating the baseline again."""
+    ``baseline`` with the same flags) skips validating the baseline again.
+    ``own_rest_days``: both lists are whole plans (or slices that hold the Rest
+    Day entries of every person-day they check), so each counts only its own
+    Rest Days and one the candidate moved away or removed no longer counts."""
     def check(plan: List[Assignment]) -> List[Violation]:
         return validate_assignments(state, plan, only_fill_required=only_fill_required,
-                                    skip_references=skip_references, context=context).violations
+                                    skip_references=skip_references, context=context,
+                                    own_rest_days=own_rest_days).violations
 
     before = list(baseline_violations) if baseline_violations is not None else check(baseline)
     index = baseline_index(before)
@@ -89,10 +94,12 @@ def new_violations(
     skip_references: bool = False,
     context: Optional[ValidationContext] = None,
     baseline_violations: Optional[Iterable[Violation]] = None,
+    own_rest_days: bool = False,
 ) -> List[Violation]:
     """Violations of ``candidate`` that are new or worse than in ``baseline``
     (the gate of run apply and swaps)."""
     return classify_violations(
         state, baseline, candidate, only_fill_required=only_fill_required,
         skip_references=skip_references, context=context, baseline_violations=baseline_violations,
+        own_rest_days=own_rest_days,
     )[0]

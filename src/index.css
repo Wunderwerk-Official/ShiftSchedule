@@ -198,6 +198,19 @@
     pointer-events: none;
   }
 }
+/* From lg on the page gives the open drawer its width, which leaves the
+   stacked week about 600 px at 1024–1200 px. Its row band and section labels
+   then wrap between words only: their last resort for a week that must fit
+   the page (breaking inside a word, RowLabel) would cut them into single
+   letters. The grid scrolls sideways instead, as Reveal on hover expects.
+   Below lg the drawer only overlays the grid: the labels keep the last
+   resort, so the week keeps its layout and still fits its box, where the
+   run-out above starts. Print keeps the last resort too. */
+@media screen and (min-width: 1024px) {
+  [data-swap-drawer-open="true"] [data-stacked-label] span {
+    overflow-wrap: break-word;
+  }
+}
 
 @media print {
   @page {

@@ -38,7 +38,8 @@ function setup(overrides: Partial<ComponentProps<typeof SettingsView>> = {}) {
     solverSettings: defaultSolverSettings, isAdmin: true,
     onRenamePool: vi.fn(), onAddLocation: vi.fn(), onRenameLocation: vi.fn(), onRemoveLocation: vi.fn(),
     onReorderLocations: vi.fn(), onAddClinician: vi.fn(), onEditClinician: vi.fn(), onRemoveClinician: vi.fn(),
-    onChangeHolidayCountry: vi.fn(), onChangeHolidayYear: vi.fn(), onFetchHolidays: vi.fn(), onAddHoliday: vi.fn(),
+    onChangeHolidayCountry: vi.fn(), onChangeHolidayRegion: vi.fn(), onChangeHolidayYear: vi.fn(),
+    onFetchHolidays: vi.fn(), onAddHoliday: vi.fn(),
     onRemoveHoliday: vi.fn(), onChangeSolverSettings: vi.fn(), onChangeWeeklyTemplate: vi.fn(),
     onCreateSection: vi.fn().mockReturnValue("section"), onUpdateSectionColor: vi.fn(), onExportScheduleSnapshot: vi.fn(),
     onImportScheduleSnapshot: vi.fn().mockResolvedValue({ imported: 0, droppedClinicians: 0, droppedSlots: 0 }),
@@ -112,7 +113,7 @@ describe("AI budget field", () => {
   });
 
   async function budgetInput() {
-    const input = await screen.findByLabelText("AI budget per user (USD)");
+    const input = await screen.findByLabelText("AI budget per account (USD)");
     await waitFor(() => expect(input).toHaveValue(5));
     return input;
   }
@@ -285,4 +286,149 @@ it("adds a holiday picked in the date picker", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   const month = String(now.getMonth() + 1).padStart(2, "0");
   expect(props.onAddHoliday).toHaveBeenCalledWith({ dateISO: `${now.getFullYear()}-${month}-15`, name: "Clinic day" });
+});
+
+
+it("says that names dragged into the Rest Day row keep automatic planning away (v1.75)", () => {
+  setup({ poolRows: [
+    { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" },
+    { id: "pool-vacation", name: "Vacation", kind: "pool", dotColorClass: "bg-slate-200" },
+  ] });
+  expect(screen.getByText(
+    "Filled by the on-call rest rule. Names you drag in mark a day off: automatic planning leaves that person free that day.",
+  )).toBeVisible();
+  expect(document.body.textContent).not.toMatch(/only a marker|planner ignores them/);
+});
+
+it("says that Balanced counts on-call shares only while the on-call rest rule is on (v1.75)", () => {
+  setup();
+  const text = (document.body.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain(
+    "On-call shares count only while “Rest days around on-call duty” is on (that is where the on-call section is chosen).",
+  );
+});
+
+it("keeps the database health check under a collapsed Advanced section", () => {
+  setup();
+  expect(screen.queryByText("Database Health Check")).toBeNull();
+  const toggle = screen.getByRole("button", { name: /Advanced/ });
+  expect(toggle).toHaveAttribute("aria-expanded", "false");
+  fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute("aria-expanded", "true");
+  expect(screen.getByText("Database Health Check")).toBeVisible();
+});
+
+it("warns before replacing all shifts from a file and reports skipped shifts and the backup", async () => {
+  const props = setup({
+    onImportScheduleSnapshot: vi.fn().mockResolvedValue({
+      imported: 3, droppedClinicians: 2, droppedSlots: 1, backupName: "Auto-backup before shifts file import",
+    }),
+  });
+  expect(screen.getByText(/the current calendar is saved in Calendar snapshots first/)).toBeVisible();
+  expect(screen.getByText("Shifts file")).toBeVisible();
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  // jsdom's File has no text(); the import only reads the file through it.
+  const file = { name: "shifts.json", text: async () => JSON.stringify({ assignments: [] }) };
+  fireEvent.change(input, { target: { files: [file] } });
+
+  const dialog = await screen.findByRole("dialog");
+  expect(dialog).toHaveTextContent("Replace all shifts with this file?");
+  expect(dialog).toHaveTextContent("locked ones too");
+  expect(dialog).toHaveTextContent("The current calendar is saved in Calendar snapshots first.");
+  expect(dialog).not.toHaveTextContent(/no automatic backup/i);
+  expect(props.onImportScheduleSnapshot).not.toHaveBeenCalled();
+  fireEvent.click(within(dialog).getByRole("button", { name: "Replace shifts" }));
+
+  expect(
+    await screen.findByText(
+      "Imported 3 shifts. Skipped 2 shift(s) of people no longer listed and 1 in slots that no longer exist. " +
+        "A backup of the previous calendar is in Calendar snapshots: “Auto-backup before shifts file import”.",
+    ),
+  ).toBeVisible();
+  expect(props.onImportScheduleSnapshot).toHaveBeenCalledWith({ assignments: [] });
+});
+
+it("shows why nothing was imported when the backup fails", async () => {
+  setup({
+    onImportScheduleSnapshot: vi.fn().mockRejectedValue(
+      new Error("The backup could not be saved, so nothing was imported."),
+    ),
+  });
+  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+  const file = { name: "shifts.json", text: async () => JSON.stringify({ assignments: [] }) };
+  fireEvent.change(input, { target: { files: [file] } });
+  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Replace shifts" }));
+  expect(await screen.findByText("The backup could not be saved, so nothing was imported.")).toBeVisible();
+  expect(screen.queryByText(/^Imported/)).toBeNull();
+});
+
+describe("holidays: state and holidays added by hand", () => {
+  const allStatesHint = "Without a state, the regional holidays of all states are included.";
+
+  it("offers the German states and says that all states are included without one", async () => {
+    const props = setup();
+    expect(screen.getByText(allStatesHint)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "State: All states" }));
+    expect(screen.getByRole("button", { name: "Bayern" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "Thüringen" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Nordrhein-Westfalen" }));
+    expect(props.onChangeHolidayRegion).toHaveBeenCalledWith("DE-NW");
+    // The stored list stays as it is until the user loads again.
+    expect(props.onFetchHolidays).not.toHaveBeenCalled();
+    expect(screen.getByText(/unchanged until you load holidays again/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(screen.queryByText(/unchanged until you load holidays again/)).toBeNull());
+  });
+
+  it("loads with the chosen state and can go back to all states", async () => {
+    const props = setup({ holidayRegion: "DE-NW" });
+    expect(screen.queryByText(allStatesHint)).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, "DE-NW"));
+
+    fireEvent.click(screen.getByRole("button", { name: "State: Nordrhein-Westfalen" }));
+    fireEvent.click(screen.getByRole("button", { name: "All states" }));
+    expect(props.onChangeHolidayRegion).toHaveBeenCalledWith(undefined);
+  });
+
+  it("has no region select for a country without regional holidays", async () => {
+    const props = setup({ holidayCountry: "FR", holidayRegion: "FR-75" });
+    expect(screen.queryByText(/regional holidays of all/)).toBeNull();
+    expect(screen.queryByRole("button", { name: /All (states|cantons|regions)/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("FR", 2026, undefined));
+  });
+
+  it("ignores a region of another country", async () => {
+    const props = setup({ holidayCountry: "CH", holidayRegion: "DE-NW" });
+    expect(screen.getByRole("button", { name: "Canton: All cantons" })).toBeVisible();
+    expect(screen.getByText("Without a canton, the regional holidays of all cantons are included.")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("CH", 2026, undefined));
+  });
+
+  it("keeps showing a stored code it has no name for", () => {
+    setup({ holidayRegion: "DE-XX" });
+    expect(screen.getByRole("button", { name: "State: DE-XX" })).toBeVisible();
+    expect(screen.queryByText(allStatesHint)).toBeNull();
+  });
+
+  it("loads with the chosen state, says how many were added and marks holidays added by hand", async () => {
+    const props = setup({
+      holidayRegion: "DE-NW",
+      holidays: [
+        { dateISO: "2026-01-01", name: "Neujahr", source: "public" },
+        { dateISO: "2026-03-02", name: "Clinic day", source: "manual" },
+      ],
+      onFetchHolidays: vi.fn().mockResolvedValue(10),
+    });
+    expect(screen.getByText(/holidays you added by hand stay/)).toBeVisible();
+    expect(screen.getByText("Clinic day")).toHaveTextContent("Clinic dayadded by hand");
+    expect(screen.getByText("Neujahr")).not.toHaveTextContent("added by hand");
+
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    expect(await screen.findByText("Loaded 10 public holidays for 2026.")).toBeVisible();
+    expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, "DE-NW");
+  });
 });

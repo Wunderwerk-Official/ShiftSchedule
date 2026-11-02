@@ -19,7 +19,8 @@ const renderAt = async (search: string) => {
 
 const columnCounts = () =>
   Array.from(document.querySelectorAll<HTMLElement>('[data-schedule-grid="true"]')).map((grid) =>
-    Number(/repeat\((\d+),/.exec(grid.style.gridTemplateColumns)?.[1]),
+    // Day columns (the compact week repeats three label columns first).
+    Number(/repeat\((\d+), minmax/.exec(grid.style.gridTemplateColumns)?.[1]),
   );
 
 describe("PrintWeeksPage layout", () => {

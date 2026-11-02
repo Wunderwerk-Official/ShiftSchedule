@@ -20,7 +20,7 @@ from backend.main import app
 from backend.models import AppState, Assignment, Clinician, VacationRange
 from backend.run_apply import planning_fingerprint
 from backend.state import _load_state, _normalize_state, _save_state
-from backend.swaps import policy, store
+from backend.swaps import matching, policy, store
 from backend.swaps.blocks import slot_fingerprint
 from backend.validation import build_validation_context
 
@@ -254,11 +254,14 @@ def test_handover_moves_and_removes_rest_days_and_undo_restores_them(client):
     assert option["restDayMoves"] == [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben",
                                        "dateISO": FRI}]
     assert option["restDayRemovals"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
-    # Anna's lost hours are one note on the target, so the option stays a best match.
+    # Anna's lost hours are one note on the target, never the option's; Ben's
+    # lost day off is the option's own note, so it is no best match.
     assert result["targetFindings"] == [{"code": "giver_below_contract", "clinicianId": "clin-anna",
                                          "message": "Anna Weber: week 2 drops to 0.0 h (contract 40 h).",
                                          "short": "−40 h under contract"}]
-    assert (option["group"], option["findings"]) == ("best", [])
+    assert (option["group"], option["findings"]) == ("possible", [
+        {"code": "rest_day_removed", "clinicianId": "clin-ben",
+         "message": "Ben Ott has a Rest Day on Thu 8 Jan; it will be removed.", "short": "Rest Day removed"}])
 
     swap = _apply(client, _apply_body(result, option))["swap"]
     state = _load_state(USER)
@@ -762,14 +765,130 @@ def test_undo_after_a_cover_by_the_freed_giver_is_refused(client):
     _undo_refused(client, first, revision, reason, f"{reason} Edit them in the plan.")
 
 
+def _rest_day_pairs(swap_id: str) -> List[tuple]:
+    """The Rest Day and shift pairs the swap resolved: undo may bring them back."""
+    return [(v["clinician_id"], v["date_iso"], v["slot_id"]) for v in _resolved(swap_id) if v["code"] == "REST_DAY"]
+
+
 def test_undo_may_bring_back_a_rest_day_and_shift_that_were_there_before_the_swap(client):
     _seed([asg("anna-ct", "ct-thu", THU, "clin-anna"), _rest("anna-rest", THU, "clin-anna")])
     before = _load_state(USER).assignments
     applied = _hand_over(client, asg("anna-ct", "ct-thu", THU, "clin-anna"))
-    assert json.loads(_rows("swap_requests")[0]["applied_patch"])["restWorkPairs"] == [["clin-anna", THU]]
+    assert _rest_day_pairs(applied["swap"]["id"]) == [("clin-anna", THU, "ct-thu")]
     assert applied["swap"]["canUndo"] is True
     _undo(client, applied["swap"]["id"], applied["state"]["revision"])
     assert _multiset(_load_state(USER).assignments) == _multiset(before)
+
+
+def _ben_rests_on_a_thursday_he_works(client: TestClient) -> Dict[str, Any]:
+    """Ben rests on Thursday but works its night, which already breaks
+    REST_DAY; Anna hands him Thursday's early shift, which removes the Rest Day."""
+    early = asg("anna-early", "early-thu", THU, "clin-anna")
+    _seed([early, _rest("ben-rest", THU, "clin-ben"), asg("ben-night", "night-thu", THU, "clin-ben")],
+          solver_settings={"preferContinuousShifts": False})
+    return _hand_over(client, early)
+
+
+def test_undo_brings_back_a_rest_day_the_swap_took_from_a_day_its_holder_worked(client):
+    applied = _ben_rests_on_a_thursday_he_works(client)
+    assert _rest_day_pairs(applied["swap"]["id"]) == [("clin-ben", THU, "night-thu")]
+    (record,) = client.get("/v1/swaps/history").json()["swaps"]
+    assert (record["canUndo"], record["undoBlockedReason"]) == (True, None)
+    _undo(client, applied["swap"]["id"], applied["state"]["revision"])
+    assert _held({"assignments": [a.model_dump() for a in _load_state(USER).assignments]}) == {
+        ("early-thu", THU, "clin-anna"), ("pool-rest-day", THU, "clin-ben"), ("night-thu", THU, "clin-ben")}
+
+
+def test_undo_refuses_a_new_rest_day_pair_on_a_day_that_had_one_before_the_swap(client):
+    # Only the night was paired with Ben's Rest Day before the swap; the late
+    # shift he got afterwards would be a new pair.
+    applied = _ben_rests_on_a_thursday_he_works(client)
+    revision = _edit(lambda state: state.assignments.append(asg("ben-late", "late-thu", THU, "clin-ben")))
+    reason = "Undo would give Ben Ott a Rest Day and a shift on Thu 8 Jan."
+    _undo_refused(client, applied["swap"]["id"], revision, reason, f"{reason} Edit them in the plan.")
+
+
+def test_undo_refuses_a_rest_day_back_onto_a_shift_a_vacation_hides(client):
+    # The hand-over removed Ben's Thursday Rest Day; then Ben got Thursday's
+    # night and a vacation that day. The vacation hides the night on the grid,
+    # but REST_DAY still counts it.
+    ct = asg("anna-ct", "ct-thu", THU, "clin-anna")
+    _seed([ct, _rest("ben-rest", THU, "clin-ben")])
+    swap_id = _hand_over(client, ct)["swap"]["id"]
+
+    def night_and_vacation(state: AppState) -> None:
+        state.assignments.append(asg("ben-night", "night-thu", THU, "clin-ben"))
+        next(c for c in state.clinicians if c.id == "clin-ben").vacations.append(
+            VacationRange(id="v", startISO=THU, endISO=THU))
+
+    revision = _edit(night_and_vacation)
+    reason = "Undo would give Ben Ott a Rest Day and a shift on Thu 8 Jan."
+    _undo_refused(client, swap_id, revision, reason, f"{reason} Edit them in the plan.")
+
+
+ANNA_REST_TO_BEN = {"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben", "dateISO": FRI}
+
+
+@pytest.mark.parametrize("ticked", [True, False], ids=["moved", "unticked-so-removed"])
+def test_a_swap_that_frees_the_partners_rest_day_applies_and_undoes(client, ticked: bool):
+    # Anna's Friday Rest Day follows her night to Ben, who gives her his late
+    # Friday shift. Unticked, the Rest Day is removed instead: Anna now works that Friday.
+    _seed([NIGHT, _rest("anna-rest", FRI, "clin-anna"), asg("ben-late", "late-fri", FRI, "clin-ben")])
+    before = _load_state(USER).assignments
+    result = _find(client, NIGHT, partnerId="clin-ben")
+    option = _option(result, "clin-ben|late-fri@2026-01-09")
+    assert (option["group"], option["restDayMoves"], option["restDayRemovals"]) == ("best", [ANNA_REST_TO_BEN], [])
+    applied = _apply(client, _apply_body(result, option, restDayMoves=[ANNA_REST_TO_BEN] if ticked else []))
+    held = {("night-thu", THU, "clin-ben"), ("late-fri", FRI, "clin-anna")}
+    assert _held(applied["state"]) == (held | {("pool-rest-day", FRI, "clin-ben")} if ticked else held)
+    assert applied["swap"]["restDaysRemoved"] == ([] if ticked else [
+        {"clinicianId": "clin-anna", "name": "Anna Weber", "dateISO": FRI}])
+    _undo(client, applied["swap"]["id"], applied["state"]["revision"])
+    assert _multiset(_load_state(USER).assignments) == _multiset(before)
+
+
+def test_a_handover_removes_every_duplicate_of_the_takers_rest_day_and_undo_restores_them(client):
+    ct = asg("anna-ct", "ct-thu", THU, "clin-anna")
+    _seed([ct, _rest("ben-rest", THU, "clin-ben"), _rest("ben-rest-twice", THU, "clin-ben")])
+    before = _load_state(USER).assignments
+    applied = _hand_over(client, ct)
+    assert applied["swap"]["restDaysRemoved"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
+    assert _held(applied["state"]) == {("ct-thu", THU, "clin-ben")}
+    _undo(client, applied["swap"]["id"], applied["state"]["revision"])
+    assert _multiset(_load_state(USER).assignments) == _multiset(before)
+
+
+def test_a_handover_moves_every_duplicate_of_the_givers_rest_day_and_undo_restores_them(client):
+    # Anna's Friday Rest Day is stored twice. It follows her night to Ben as
+    # one Rest Day: Anna keeps none (the preview said it moves), and undo,
+    # which refuses when a removed entry is back, works right away.
+    _seed([NIGHT, _rest("anna-rest", FRI, "clin-anna"), _rest("anna-rest-twice", FRI, "clin-anna")])
+    before = _load_state(USER).assignments
+    applied = _hand_over(client, NIGHT)
+    swap = applied["swap"]
+    assert swap["restDayMoves"] == [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben", "dateISO": FRI}]
+    assert _held(applied["state"]) == {("night-thu", THU, "clin-ben"), ("pool-rest-day", FRI, "clin-ben")}
+    assert len(applied["state"]["assignments"]) == 2
+    assert (swap["canUndo"], swap["undoBlockedReason"]) == (True, None)
+    (record,) = client.get("/v1/swaps/history").json()["swaps"]
+    assert (record["canUndo"], record["undoBlockedReason"]) == (True, None)
+    _undo(client, swap["id"], applied["state"]["revision"])
+    assert _multiset(_load_state(USER).assignments) == _multiset(before)
+
+
+def test_a_shift_on_a_rest_day_the_swap_keeps_is_refused_with_a_readable_reason(client, monkeypatch):
+    # The search and apply always remove the taker's Rest Day; without that
+    # removal Ben would rest and work on Thursday.
+    monkeypatch.setattr(matching, "rest_day_removals", lambda ctx, plan: [])
+    ct = asg("anna-ct", "ct-thu", THU, "clin-anna")
+    revision = _seed([ct, _rest("ben-rest", THU, "clin-ben")])
+    result = _find(client, ct, "handover", partnerId="clin-ben")
+    reason = "Rest Day: Ben Ott has a Rest Day on Thu 8 Jan."
+    assert _option(result, "clin-ben|-")["reason"] == {"code": "rest_day", "message": reason}
+    body = _crafted("handover", revision, give=_item_refs(result["target"]["unit"]))
+    detail = _refused(client, body, 409, "swap_invalid", f"This swap breaks a planning rule: {reason}")
+    assert detail["reasons"] == [reason]
+    assert [v["code"] for v in detail["violations"]] == ["REST_DAY"]
 
 
 def _remove_person(clinician_id: str) -> Callable[[AppState], None]:
@@ -797,6 +916,35 @@ def test_a_swap_whose_person_was_deleted_cannot_be_undone(client, cover: bool, d
     revision = _edit(_remove_person(deleted))
     _undo_refused(client, swap_id, revision, f"{name} is no longer in the plan.",
                   f"{name} is no longer in the plan. This swap can't be undone.")
+
+
+def test_history_and_undo_follow_a_restored_snapshot(client):
+    # Snapshots keep whole calendars; swap rows stay. Restoring the calendar
+    # from before the swap leaves nothing to undo; restoring the one after it
+    # brings the swap's shifts back, ids and all, and undo works again. The
+    # backup before a shifts file import changes nothing here.
+    def snapshot(name: str) -> str:
+        response = client.post("/v1/state/snapshots", json={"name": name, "state": _load_state(USER).model_dump()})
+        return response.json()["id"]
+
+    def restore(snapshot_id: str) -> str:
+        return client.post(f"/v1/state/snapshots/{snapshot_id}/restore", json={}).json()["revision"]
+
+    _seed([NIGHT, BEN_CT])
+    before = _load_state(USER).assignments
+    pre_swap = snapshot("Before the swap")
+    swap_id = _apply(client, _apply_body(*_swap_option(client)))["swap"]["id"]
+    post_swap = snapshot("After the swap")
+    assert client.post("/v1/state/snapshots/import-backup",
+                       json={"state": _load_state(USER).model_dump()}).status_code == 201
+    revision = restore(pre_swap)
+    _undo_refused(client, swap_id, revision, "Not in the current plan.",
+                  "The shifts changed after the swap. Edit them in the plan.")
+    revision = restore(post_swap)
+    (record,) = client.get("/v1/swaps/history").json()["swaps"]
+    assert (record["canUndo"], record["undoBlockedReason"]) == (True, None)
+    _undo(client, swap_id, revision)
+    assert _multiset(_load_state(USER).assignments) == _multiset(before)
 
 
 def test_history_is_newest_first_and_pages_by_keyset(client):

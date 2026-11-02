@@ -1,23 +1,28 @@
 """Property: the search's two-person slice gives the full calendar's verdict.
 
-For random swaps, handovers and covers on four datasets, the scoped gate
+For random swaps, handovers and covers on five datasets, the scoped gate
 (slice, context, references skipped) must report exactly the new or worse
 violations of the apply gate (whole calendar, references checked), and the
 solver-rule hits must agree. For valid cases the working-time warnings (ids
 and texts) and the pre-existing checks must agree between slice and calendar
-too.
+too. The Rest Day moves and removals the search proposes, all of them or
+without the moves (unticked in the preview), never break the REST_DAY rule;
+with a removal withheld, slice and calendar both see the Rest Day it leaves.
 
 Datasets: the arena fixture; a dense plan generated from its template where
 people often hold touching shifts; rich_swap_state, which adds Rest Days, a
-vacation-hidden holder, a two-block day and a solver rule; and
-wide_swap_state, whose rules reach far beyond the moved weeks (on-call rest
-of 3 and 7 days, a duty ending two days later, two locations) and whose
-stretch of ward duties is longer than any margin. Counters make sure the
-cases a narrow or careless slice would get wrong really occur.
+vacation-hidden holder, a two-block day and a solver rule; wide_swap_state,
+whose rules reach far beyond the moved weeks (on-call rest of 3 and 7 days, a
+duty ending two days later, two locations) and whose stretch of ward duties
+is longer than any margin; and rest_swap_state, which adds Rest Days the
+calendar already pairs with a shift, duplicate Rest Days, a hidden shift on
+the day after a night and a cover co-holder who rests that day. Counters make
+sure the cases a narrow or careless slice would get wrong really occur.
 """
 
 import random
 from collections import Counter
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from typing import Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
@@ -31,6 +36,7 @@ from backend.swaps.matching import (
     MovePlan,
     SwapContext,
     apply_plan,
+    build_move_plan,
     full_gate,
     plan_kept_warnings,
     plan_option,
@@ -44,13 +50,16 @@ from backend.swaps.matching import (
 )
 from backend.swaps.policy import SwapRules, open_slot
 from backend.swaps.worktime import WorkWarning, iso_week
-from backend.validation import VIOLATION_CAPACITY, VIOLATION_ON_CALL_REST
+from backend.validation import VIOLATION_CAPACITY, VIOLATION_ON_CALL_REST, VIOLATION_REST_DAY
 
 from .swap_fixtures import (
     BEFORE_STRETCH_DAY,
     BEN_VACATION_DAY,
     CAPACITY_DAY,
+    CO_HOLDER_DAY,
     CROSSING_STRETCH_DAY,
+    FOLLOW_NIGHT_DAY,
+    FOLLOW_REST_DAY,
     REST_CLASH_DAY,
     STRETCH_HOLDER,
     TOUCHING_STRETCH_DAY,
@@ -58,6 +67,7 @@ from .swap_fixtures import (
     WIDE_WHOLE_DAY,
     arena_state,
     chained_plan,
+    rest_swap_state,
     rich_swap_state,
     wide_swap_state,
 )
@@ -74,6 +84,7 @@ DATASETS: Dict[str, Callable[[], AppState]] = {
     "chained": lambda: chained_plan(arena_state(), date(2026, 2, 2), 21, 3),
     "rich": rich_swap_state,
     "wide": wide_swap_state,
+    "rest": rest_swap_state,
 }
 
 
@@ -197,6 +208,47 @@ def _wide_extras(ctx: SwapContext, stats: Counter) -> Iterator[MovePlan]:
     yield plan_option(ctx, "handover", eva_five(REST_CLASH_DAY), "clin-ben")
 
 
+def _rest_extras(ctx: SwapContext, stats: Counter) -> Iterator[MovePlan]:
+    """The cases rest_swap_state is built for: Eva One's night to Eva Two,
+    whose vacation hides a shift on the day after, so the Rest Day stays with
+    Eva One; covers of the instance whose co-holder Anna rests that day; and
+    the shifts on the day of a duplicate Rest Day handed to its holder."""
+    night = SwapUnit("clin-e1", tuple(blocks_on_date(ctx.blocks("clin-e1"), FOLLOW_NIGHT_DAY)))
+    plan = plan_option(ctx, "handover", night, "clin-e2")
+    (rest,) = ctx.rest_days[("clin-e1", FOLLOW_REST_DAY)]
+    assert plan.rest_day_moves == [] and all(a is not rest for a in plan.removed)
+    stats["hidden work keeps the rest day"] += 1
+    yield plan
+    info = open_slot(ctx.vctx, ctx.by_instance, "ct-thu", CO_HOLDER_DAY)
+    unit = instance_unit(ctx.vctx, "ct-thu", CO_HOLDER_DAY)
+    holders = {a.clinicianId for a in info.stored}
+    for partner in (c.id for c in ctx.state.clinicians if c.id not in holders):
+        yield plan_option(ctx, "cover", unit, partner, cover=info, hidden_removal=info.hidden[0])
+    twice = [day for day, entries in sorted(ctx.rest_days.items()) if len(entries) > 1]
+    for clinician_id, date_iso in twice:
+        for giver in (c.id for c in ctx.state.clinicians if c.id != clinician_id):
+            for block in blocks_on_date(ctx.blocks(giver), date_iso):
+                yield plan_option(ctx, "handover", SwapUnit(giver, (block,)), clinician_id)
+
+
+def _rest_day_variants(ctx: SwapContext, plan: MovePlan, stats: Counter) -> Iterator[MovePlan]:
+    """The plan without its Rest Day moves, as when the preview's moves are
+    unticked (still valid for REST_DAY), and with its removals withheld (a
+    received shift then lies on a Rest Day that stays)."""
+    if plan.rest_day_moves:
+        stats["unticked move"] += 1
+        unticked = build_move_plan(ctx, plan.mode, plan.give, plan.partner_id, take=plan.take, cover=plan.cover,
+                                   hidden_removal=plan.hidden_removal)
+        assert not any(v.code == VIOLATION_REST_DAY for v in full_gate(ctx.state, unticked)[0])
+        yield unticked
+    if plan.rest_day_removals:
+        kept = {id(a) for a in plan.rest_day_removals}
+        withheld = replace(plan, removed=[a for a in plan.removed if id(a) not in kept], rest_day_removals=[])
+        stats["withheld removal breaks the rule"] += any(
+            v.code == VIOLATION_REST_DAY for v in full_gate(ctx.state, withheld)[0])
+        yield withheld
+
+
 def _days_outside(date_iso: str, weeks: Set[Tuple[int, int]]) -> int:
     """Days between a date and the nearest of the ISO weeks (0 inside one)."""
     day = date.fromisoformat(date_iso)
@@ -212,12 +264,28 @@ def _texts(warnings: Iterable[WorkWarning]) -> Set[Tuple[str, str, str]]:
     return {(w.id, w.message, w.short) for w in warnings}
 
 
+def _rest_day_keys(violations: Iterable) -> Set[Tuple]:
+    return {violation_key(v) for v in violations if v.code == VIOLATION_REST_DAY}
+
+
 def _check(ctx: SwapContext, plan: MovePlan, cache: BaselineCache, stats: Counter) -> None:
     state = ctx.state
-    full = full_gate(state, plan)[0]
+    full, resolved = full_gate(state, plan)
     weeks = {iso_week(d) for d in plan.moved_dates}
+    # The search's own Rest Day moves and removals never break REST_DAY.
+    assert not _rest_day_keys(full), f"{plan.mode} {plan.moved_dates} breaks REST_DAY"
     stats["rest-day move"] += bool(plan.rest_day_moves)
     stats["rest-day removal"] += bool(plan.rest_day_removals)
+    stats["duplicate rest-day removal"] += (
+        len({(a.clinicianId, a.dateISO) for a in plan.rest_day_removals}) < len(plan.rest_day_removals))
+    # A moved Rest Day leaves its giver none that day, duplicates included:
+    # the preview says it moves, and undo refuses when a removed entry is back.
+    removed = {id(a) for a in plan.removed}
+    for move in plan.rest_day_moves:
+        entries = ctx.rest_days[(move.from_id, move.date_iso)]
+        assert all(id(a) in removed for a in entries), f"{move.from_id} keeps a Rest Day on {move.date_iso}"
+        stats["duplicate rest-day move"] += len(entries) > 1
+    stats["rest-day pair resolved"] += bool(_rest_day_keys(resolved))
     stats["whole-day unit"] += len(plan.give.blocks) > 1
     stats["on-call rest outside the moved weeks"] += any(
         v.code == VIOLATION_ON_CALL_REST and _days_outside(v.context["on_call_date"], weeks) >= 2 for v in full)
@@ -229,6 +297,9 @@ def _check(ctx: SwapContext, plan: MovePlan, cache: BaselineCache, stats: Counte
     keys = {violation_key(v) for v in full}
     assert {violation_key(v) for v in scoped_new_violations(ctx, plan)} == keys
     assert {violation_key(v) for v in scoped_new_violations(ctx, plan, cache)} == keys
+    for variant in _rest_day_variants(ctx, plan, stats):
+        assert ({violation_key(v) for v in scoped_new_violations(ctx, variant, cache)}
+                == {violation_key(v) for v in full_gate(state, variant)[0]})
     hits = {violation_key(v) for v in solver_rule_hits(ctx, plan, scope="full")}
     assert {violation_key(v) for v in solver_rule_hits(ctx, plan, scope="slice")} == hits
     stats["solver rule hit"] += bool(hits)
@@ -251,11 +322,19 @@ def _check(ctx: SwapContext, plan: MovePlan, cache: BaselineCache, stats: Counte
     stats["night after a stretch"] += any(
         w.code == "night_no_free_day" and w.id.rsplit(":", 1)[1] > hi and iso_week(w.date_iso) in weeks
         for w in kept)
-    scoped = preexisting_checks(ctx, plan, scoped_gate(ctx, plan)[1], kept)
+    scoped_carried = scoped_gate(ctx, plan)[1]
+    scoped = preexisting_checks(ctx, plan, scoped_carried, kept)
     carried = classify_violations(state, state.assignments, apply_plan(state.assignments, plan),
-                                  only_fill_required=True)[1]
+                                  only_fill_required=True, own_rest_days=True)[1]
     assert scoped == preexisting_checks(ctx, plan, carried, kept_full)
     stats["preexisting"] += bool(scoped)
+    stats["rest-day pair carried"] += "rest_day" in scoped
+    # The Rest Days of a cover's co-holders, outside their windows, still count.
+    holders = {violation_key(v) for v in carried
+               if v.code == VIOLATION_REST_DAY and (v.slot_id, v.date_iso) in plan.touched_instances
+               and v.clinician_id not in plan.persons}
+    assert holders <= _rest_day_keys(scoped_carried)
+    stats["co-holder rests"] += bool(holders)
 
 
 INGREDIENTS = {
@@ -265,6 +344,13 @@ INGREDIENTS = {
     # the co-holders of a covered instance or cuts a long block.
     "wide": ("on-call rest outside the moved weeks", "cover capacity", "whole-day valid", "long stretch new",
              "long stretch kept", "night after a stretch", "preexisting"),
+    # The Rest Day shapes a gate gets wrong when it counts a moved or removed
+    # Rest Day, keeps a duplicate, moves one onto a hidden shift or misses a
+    # cover co-holder's.
+    "rest": ("rest-day move", "rest-day removal", "duplicate rest-day removal", "duplicate rest-day move",
+             "rest-day pair resolved",
+             "rest-day pair carried", "co-holder rests", "hidden work keeps the rest day", "unticked move",
+             "withheld removal breaks the rule"),
 }
 
 
@@ -295,7 +381,7 @@ def test_scoped_verdict_equals_the_full_calendar_verdict(name: str):
         case_cache: BaselineCache = {}
         for plan in plans:
             _check(cover_ctx, plan, case_cache, stats)
-    extras = {"rich": _rich_extras, "wide": _wide_extras}.get(name)
+    extras = {"rich": _rich_extras, "wide": _wide_extras, "rest": _rest_extras}.get(name)
     if extras is not None:
         for plan in extras(ctx, stats):
             _check(ctx, plan, shared, stats)

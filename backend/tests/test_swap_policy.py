@@ -300,6 +300,7 @@ def test_check_list_for_the_swap_template():
     assert labels.check_list(settings, SwapRules(), "swap") == [
         {"code": "qualification", "label": "Qualified for both shifts"},
         {"code": "vacation", "label": "No shift moved onto a vacation day"},
+        {"code": "rest_day", "label": "No new shift on a Rest Day"},
         {"code": "overlap", "label": "No new overlapping shifts"},
         {"code": "on_call_rest", "label": "No new on-call rest conflict (1 day before, 1 after)"},
         {"code": "mandatory_window", "label": "No new shift outside mandatory working times"},
@@ -317,7 +318,7 @@ def test_check_list_follows_settings_rules_and_mode():
                               preferContinuousShifts=False)
     checks = labels.check_list(settings, SwapRules(min_rest_hours=10, max_block_hours=30.5), "cover")
     assert [c["code"] for c in checks] == [
-        "qualification", "vacation", "overlap", "same_location", "on_call_rest", "mandatory_window",
+        "qualification", "vacation", "rest_day", "overlap", "same_location", "on_call_rest", "mandatory_window",
         "weekly_hours", "capacity", "rest", "night_free_day", "block_length",
     ]
     by_code = {c["code"]: c["label"] for c in checks}

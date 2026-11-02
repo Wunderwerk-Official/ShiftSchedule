@@ -81,7 +81,7 @@ const WEIGHT_LABELS: Record<
   weightYtdBalance: {
     label: "YTD Balance",
     description: "Fair year-to-date distribution",
-    tooltip: "Gives priority to clinicians who are behind on their year-to-date hours target. Helps balance workload across the year.",
+    tooltip: "Gives priority to people who are behind on their year-to-date hours target. Helps balance workload across the year.",
   },
 };
 
@@ -177,6 +177,161 @@ function BackIcon({ className }: { className?: string }) {
 }
 
 // Compact stats chart - for displaying completed run stats in a smaller form
+const iconProps = {
+  fill: "none",
+  viewBox: "0 0 24 24",
+  stroke: "currentColor",
+  strokeWidth: 2,
+  strokeLinecap: "round" as const,
+  strokeLinejoin: "round" as const,
+  "aria-hidden": true,
+};
+
+function SparkIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} {...iconProps}>
+      <path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9L12 3z" />
+      <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8L19 15z" />
+    </svg>
+  );
+}
+
+function ClockIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} {...iconProps}>
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3 2" />
+    </svg>
+  );
+}
+
+function ChevronRightIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} {...iconProps}>
+      <path d="M9 6l6 6-6 6" />
+    </svg>
+  );
+}
+
+function DownloadIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} {...iconProps}>
+      <path d="M12 4v11m0 0l-4-4m4 4l4-4M5 20h14" />
+    </svg>
+  );
+}
+
+function ChatIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} {...iconProps}>
+      <path d="M21 12a8 8 0 01-11.6 7.1L4 20l1.1-4.6A8 8 0 1121 12z" />
+    </svg>
+  );
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} {...iconProps}>
+      <path d="M5 12.5l4.5 4.5L19 7.5" />
+    </svg>
+  );
+}
+
+function AlertIcon({ className }: { className?: string }) {
+  return (
+    <svg className={className} {...iconProps}>
+      <path d="M12 9v4m0 4h.01M10.3 3.9L2.4 17.5A2 2 0 004.1 20.5h15.8a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
+    </svg>
+  );
+}
+
+export type RunIssue = { count: number; label: string; severe: boolean };
+
+// "Unresolved after this run: 11 open slot(s), 3 short day(s), 7 over-long
+// day(s), 4 placement(s) outside preferred working times." → chips. Returns
+// null when the note has another shape (the card then shows it as text).
+const ISSUE_LABELS: Array<{ pattern: RegExp; one: string; many: string; severe: boolean }> = [
+  { pattern: /^open slot\(s\)$/, one: "open slot", many: "open slots", severe: true },
+  { pattern: /^short day\(s\)$/, one: "short day", many: "short days", severe: false },
+  { pattern: /^over-long day\(s\)$/, one: "over-long day", many: "over-long days", severe: false },
+  {
+    pattern: /^placement\(s\) outside preferred working times$/,
+    one: "outside preferred times",
+    many: "outside preferred times",
+    severe: false,
+  },
+];
+
+export function parseUnresolvedNote(note: string): RunIssue[] | null {
+  const prefix = "Unresolved after this run:";
+  if (!note.startsWith(prefix)) return null;
+  const parts = note.slice(prefix.length).trim().replace(/\.$/, "").split(/,\s*/);
+  const issues: RunIssue[] = [];
+  for (const part of parts) {
+    const match = /^(\d+)\s+(.+)$/.exec(part.trim());
+    if (!match) return null;
+    const count = Number(match[1]);
+    const known = ISSUE_LABELS.find((item) => item.pattern.test(match[2]));
+    if (!known) return null;
+    if (count > 0) issues.push({ count, label: count === 1 ? known.one : known.many, severe: known.severe });
+  }
+  return issues;
+}
+
+/** "2026-11-01T16:56:12" → "01.11.2026, 16:56" (the stored time, unchanged). */
+const formatRunStarted = (createdAt: string) => {
+  const [datePart, timePart = ""] = createdAt.split("T");
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(datePart) ? formatEuropeanDate(datePart) : datePart;
+  return timePart ? `${date}, ${timePart.slice(0, 5)}` : date;
+};
+
+const RUN_STATUS_STYLE: Record<string, { pill: string; dot: string }> = {
+  finished: {
+    pill: "bg-indigo-50 text-indigo-700 ring-indigo-200 dark:bg-indigo-900/30 dark:text-indigo-300 dark:ring-indigo-800",
+    dot: "bg-indigo-500",
+  },
+  applied: {
+    pill: "bg-emerald-50 text-emerald-700 ring-emerald-200 dark:bg-emerald-900/30 dark:text-emerald-300 dark:ring-emerald-800",
+    dot: "bg-emerald-500",
+  },
+  running: {
+    pill: "bg-sky-50 text-sky-700 ring-sky-200 dark:bg-sky-900/30 dark:text-sky-300 dark:ring-sky-800",
+    dot: "bg-sky-500 animate-pulse",
+  },
+  aborted: {
+    pill: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-800",
+    dot: "bg-amber-500",
+  },
+  crashed: {
+    pill: "bg-amber-50 text-amber-700 ring-amber-200 dark:bg-amber-900/30 dark:text-amber-300 dark:ring-amber-800",
+    dot: "bg-amber-500",
+  },
+  failed: {
+    pill: "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/30 dark:text-rose-300 dark:ring-rose-800",
+    dot: "bg-rose-500",
+  },
+  discarded: {
+    pill: "bg-slate-100 text-slate-600 ring-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:ring-slate-700",
+    dot: "bg-slate-400",
+  },
+};
+
+const PLANNER_CONSIDERS = [
+  "Qualifications and working hours",
+  "Vacations and rest days",
+  "Minimum staffing of every slot",
+  "Preferred times and continuous shifts",
+  "Fair workload across the team",
+  "Your free-text instructions",
+];
+
+const ghostButtonClass =
+  "inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-medium text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-800 disabled:opacity-50 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100";
+const secondaryButtonClass =
+  "rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 shadow-sm transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-slate-700";
+const primaryButtonClass =
+  "rounded-lg bg-indigo-600 px-3.5 py-1.5 text-xs font-semibold text-white shadow-sm transition-colors hover:bg-indigo-500 disabled:cursor-not-allowed disabled:opacity-50 dark:bg-indigo-500 dark:hover:bg-indigo-400";
+
 function CompactStatsChart({
   data,
   dataKey,
@@ -280,6 +435,8 @@ export default function SolverInfoModal({
   const [view, setView] = useState<View>("info");
   const [selectedEntry, setSelectedEntry] = useState<SolverHistoryEntry | null>(null);
   const [weightsExpanded, setWeightsExpanded] = useState(false);
+  // "How the agent plans": collapsed while there are runs to look at.
+  const [explainOpen, setExplainOpen] = useState(serverRuns.length === 0);
   const [debugExpanded, setDebugExpanded] = useState(false);
   const [logCopied, setLogCopied] = useState(false);
   const [feedbackFor, setFeedbackFor] = useState<string | null>(null);
@@ -431,6 +588,11 @@ export default function SolverInfoModal({
                   <BackIcon className="h-5 w-5" />
                 </button>
               )}
+              {view === "info" && (
+                <span className="grid h-7 w-7 place-items-center rounded-lg bg-indigo-50 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
+                  <SparkIcon className="h-4 w-4" />
+                </span>
+              )}
               <h2 className="text-base font-semibold text-slate-800 dark:text-slate-100">
                 {view === "info" && "About Automated Planning"}
                 {view === "detail" && "Run Details"}
@@ -449,44 +611,23 @@ export default function SolverInfoModal({
           {/* Content */}
           <div className="max-h-[70vh] overflow-auto p-4">
             {view === "info" && (
-              <div className="flex flex-col gap-4">
-                {/* Layman description */}
-                <div className="flex flex-col gap-3 text-sm text-slate-600 dark:text-slate-300">
-                  <p>
-                    The automated planner is an AI agent that searches for the best
-                    possible shift assignments for your team. It considers:
-                  </p>
-                  <ul className="ml-4 list-disc space-y-1.5 text-slate-500 dark:text-slate-400">
-                    <li>Each clinician's qualifications and working hours</li>
-                    <li>Vacation days and rest day requirements</li>
-                    <li>Slot coverage requirements (minimum staffing)</li>
-                    <li>Preferred time windows and continuous shift preferences</li>
-                    <li>Fair distribution of workload across the team</li>
-                  </ul>
-                  <p>
-                    The agent builds each day the way an experienced human
-                    planner does: on-call duties and scarce slots
-                    are staffed first, every clinician is placed with a contiguous
-                    block of work (no short stints, no 24-hour double duties), hours
-                    are balanced towards people behind on their yearly target, and
-                    the free-text instructions from Settings → Solver are followed.
-                    The AI works with the plan data including names, and the
-                    hard rules above can never be broken.
-                  </p>
-                  <p className="text-xs text-slate-400 dark:text-slate-500">
-                    Longer date ranges or more clinicians will require more time to solve.
-                    You can abort at any time and keep the best solution found so far.
-                  </p>
-                </div>
-
+              <div className="flex flex-col gap-5">
                 {/* Runs: the server-side inbox is the single run list.
                     Results wait here until applied; clicking a run opens
                     its detail view (stats, cost, changes, log). */}
                 {serverRuns.length > 0 && (
-                  <div className="flex flex-col gap-2">
-                    <div className="flex items-center justify-between">
-                      <div className="text-xs font-medium uppercase tracking-wide text-slate-400 dark:text-slate-500">
-                        Runs
+                  <section aria-label="Runs" className="flex flex-col gap-3">
+                    <div className="flex items-end justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">
+                          Runs
+                          <span className="ml-1.5 rounded-full bg-slate-100 px-1.5 py-0.5 text-[11px] font-semibold text-slate-500 dark:bg-slate-800 dark:text-slate-400">
+                            {serverRuns.length}
+                          </span>
+                        </h3>
+                        <p className="text-xs text-slate-500 dark:text-slate-400">
+                          Results wait here until you apply or discard them.
+                        </p>
                       </div>
                       {(() => {
                         // Cost is estimated from token counts and known API
@@ -498,11 +639,13 @@ export default function SolverInfoModal({
                           .filter((c): c is number => c !== null);
                         if (costs.length === 0) return null;
                         return (
-                          <div className="text-xs text-slate-500 dark:text-slate-400">
-                            AI cost (runs shown):{" "}
-                            <span className="font-semibold text-violet-600 dark:text-violet-400">
+                          <div className="shrink-0 rounded-xl bg-violet-50 px-3 py-1.5 text-right ring-1 ring-inset ring-violet-100 dark:bg-violet-900/20 dark:ring-violet-900/50">
+                            <div className="text-[10px] font-medium uppercase tracking-wide text-violet-500 dark:text-violet-300">
+                              AI cost (runs shown)
+                            </div>
+                            <div className="text-sm font-semibold tabular-nums text-violet-700 dark:text-violet-200">
                               {formatCostUSD(costs.reduce((sum, c) => sum + c, 0))}
-                            </span>
+                            </div>
                           </div>
                         );
                       })()}
@@ -513,146 +656,187 @@ export default function SolverInfoModal({
                         run.finished_at && Date.parse(run.finished_at) && Date.parse(run.created_at)
                           ? Date.parse(run.finished_at) - Date.parse(run.created_at)
                           : null;
+                      const noteLines = run.notes?.split("\n") ?? [];
+                      const unresolvedNote = noteLines.find((n) => n.startsWith("Unresolved after this run:"));
+                      const issues = unresolvedNote ? parseUnresolvedNote(unresolvedNote) : null;
+                      const allClear = noteLines.some((n) => n.startsWith("No unresolved issues"));
+                      const canDecide = (run.status === "finished" || run.status === "aborted") && run.has_result;
+                      const statusStyle = RUN_STATUS_STYLE[run.status] ?? RUN_STATUS_STYLE.discarded;
                       return (
                       <div
                         key={run.id}
                         data-testid={`run-card-${run.id}`}
-                        className="flex flex-col rounded-xl border border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-800"
+                        className={cx(
+                          "flex flex-col overflow-hidden rounded-2xl border bg-white shadow-sm dark:bg-slate-800/60",
+                          run.status === "finished"
+                            ? "border-indigo-200 dark:border-indigo-900/70"
+                            : "border-slate-200 dark:border-slate-700",
+                        )}
                       >
-                        <div className="flex items-center justify-between gap-3 px-3 py-2.5">
                         <button
                           type="button"
                           disabled={!run.has_result}
                           onClick={() => void handleOpenRunDetail(run.id)}
                           title={run.has_result ? "Show run details (stats, changes, log)." : undefined}
                           className={cx(
-                            "flex min-w-0 flex-1 flex-col gap-0.5 text-left",
-                            run.has_result && "cursor-pointer",
+                            "group flex w-full items-start gap-3 px-4 pb-3 pt-3.5 text-left",
+                            run.has_result && "cursor-pointer hover:bg-slate-50/80 dark:hover:bg-slate-800",
                           )}
                         >
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
-                              {formatEuropeanDate(run.start_iso)} – {formatEuropeanDate(run.end_iso)}
-                            </span>
-                            <span
-                              className={cx(
-                                "rounded-full px-2 py-0.5 text-xs font-medium",
-                                run.status === "finished" &&
-                                  "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300",
-                                run.status === "applied" &&
-                                  "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400",
-                                run.status === "running" &&
-                                  "bg-sky-100 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
-                                (run.status === "aborted" || run.status === "crashed") &&
-                                  "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
-                                (run.status === "failed" || run.status === "discarded") &&
-                                  "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-400",
-                              )}
-                            >
-                              {RUN_STATUS_LABEL[run.status] ?? run.status}
-                            </span>
-                          </div>
-                          <div className="text-xs text-slate-500 dark:text-slate-400">
-                            {run.created_at.replace("T", " ").slice(0, 16)}
-                            {durationMs !== null && durationMs > 0
-                              ? ` · ${formatRunDuration(durationMs)}`
-                              : ""}
-                            {run.attempt > 1 ? " · restarted after interruption" : ""}
-                            {run.error ? ` · ${run.error.slice(0, 80)}` : ""}
-                            {runCost !== null && (
-                              <span className="font-medium text-violet-600 dark:text-violet-400">
-                                {" "}· AI {formatCostUSD(runCost)}
+                          <div className="flex min-w-0 flex-1 flex-col gap-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-[15px] font-semibold tabular-nums text-slate-900 dark:text-slate-100">
+                                {formatEuropeanDate(run.start_iso)} – {formatEuropeanDate(run.end_iso)}
                               </span>
+                              <span
+                                className={cx(
+                                  "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ring-inset",
+                                  statusStyle.pill,
+                                )}
+                              >
+                                <span aria-hidden="true" className={cx("h-1.5 w-1.5 rounded-full", statusStyle.dot)} />
+                                {RUN_STATUS_LABEL[run.status] ?? run.status}
+                              </span>
+                            </div>
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500 dark:text-slate-400">
+                              <span>{formatRunStarted(run.created_at)}</span>
+                              {durationMs !== null && durationMs > 0 && (
+                                <span className="inline-flex items-center gap-1">
+                                  <ClockIcon className="h-3.5 w-3.5" />
+                                  {formatRunDuration(durationMs)}
+                                </span>
+                              )}
+                              {runCost !== null && (
+                                <span className="inline-flex items-center gap-1 font-medium text-violet-600 dark:text-violet-300">
+                                  <SparkIcon className="h-3.5 w-3.5" />
+                                  AI {formatCostUSD(runCost)}
+                                </span>
+                              )}
+                              {run.attempt > 1 && <span>restarted after interruption</span>}
+                              {run.error && (
+                                <span className="text-rose-600 dark:text-rose-300">{run.error.slice(0, 80)}</span>
+                              )}
+                            </div>
+                            {issues && issues.length > 0 && (
+                              <ul aria-label="Unresolved after this run" className="flex flex-wrap gap-1.5">
+                                {issues.map((issue) => (
+                                  <li
+                                    key={issue.label}
+                                    className={cx(
+                                      "rounded-lg px-2 py-1 text-xs ring-1 ring-inset",
+                                      issue.severe
+                                        ? "bg-rose-50 text-rose-700 ring-rose-200 dark:bg-rose-900/20 dark:text-rose-300 dark:ring-rose-900/60"
+                                        : "bg-amber-50 text-amber-800 ring-amber-200 dark:bg-amber-900/20 dark:text-amber-300 dark:ring-amber-900/60",
+                                    )}
+                                  >
+                                    <span className="font-semibold tabular-nums">{issue.count}</span> {issue.label}
+                                  </li>
+                                ))}
+                              </ul>
+                            )}
+                            {unresolvedNote && !issues && (
+                              <div className="text-xs font-medium text-amber-700 dark:text-amber-400">{unresolvedNote}</div>
+                            )}
+                            {(allClear || (issues && issues.length === 0)) && (
+                              <div className="inline-flex w-fit items-center gap-1.5 rounded-lg bg-emerald-50 px-2 py-1 text-xs font-medium text-emerald-700 ring-1 ring-inset ring-emerald-200 dark:bg-emerald-900/20 dark:text-emerald-300 dark:ring-emerald-900/60">
+                                <CheckIcon className="h-3.5 w-3.5" />
+                                No unresolved issues
+                              </div>
+                            )}
+                            {(run.apply_blocked_reason || !!run.incomplete_dates?.length) && (
+                              <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
+                                <AlertIcon className="mt-px h-4 w-4 shrink-0" />
+                                <div className="flex flex-col gap-0.5">
+                                  {run.apply_blocked_reason && <span>{run.apply_blocked_reason}</span>}
+                                  {!!run.incomplete_dates?.length && (
+                                    <span>
+                                      Incomplete draft: {run.incomplete_dates.length} day(s) need review before applying.
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
                             )}
                           </div>
-                          {run.notes?.split("\n").find((n) => n.startsWith("Unresolved after this run:")) && (
-                            <div className="text-xs font-medium text-amber-600 dark:text-amber-400">
-                              {run.notes.split("\n").find((n) => n.startsWith("Unresolved after this run:"))}
-                            </div>
-                          )}
-                          {run.notes?.split("\n").find((n) => n.startsWith("No unresolved issues")) && (
-                            <div className="text-xs text-emerald-600 dark:text-emerald-400">
-                              No unresolved issues
-                            </div>
-                          )}
-                          {run.apply_blocked_reason && (
-                            <div className="text-xs font-medium text-amber-600 dark:text-amber-400">{run.apply_blocked_reason}</div>
-                          )}
-                          {!!run.incomplete_dates?.length && (
-                            <div className="text-xs font-medium text-amber-600 dark:text-amber-400">
-                              Incomplete draft: {run.incomplete_dates.length} day(s) need review before applying.
-                            </div>
+                          {run.has_result && (
+                            <ChevronRightIcon className="mt-1 h-4 w-4 shrink-0 text-slate-300 transition-transform group-hover:translate-x-0.5 group-hover:text-slate-500 dark:text-slate-600" />
                           )}
                         </button>
-                        <div className="flex shrink-0 items-center gap-2">
-                          {run.has_result && (
-                            <button
-                              type="button"
-                              onClick={() => void handleDownloadServerRunLog(run.id)}
-                              title="Download the full run log (notes, unresolved issues, every change, the agent's thoughts)."
-                              className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                            >
-                              Log
-                            </button>
-                          )}
-                          {run.status !== "running" && (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setFeedbackFor(feedbackFor === run.id ? null : run.id);
-                                setFeedbackText("");
-                                setActionError(null);
-                              }}
-                              title="Write a comment about this run - it is sent to the admin together with a reference to the run's log."
-                              className={cx(
-                                "rounded-lg border px-3 py-1 text-xs font-medium transition-colors",
-                                feedbackSentFor === run.id
-                                  ? "border-emerald-300 bg-emerald-50 text-emerald-700 dark:border-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                                  : "border-slate-200 bg-white text-slate-500 hover:border-slate-300 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300",
+                        {(run.has_result || run.status !== "running") && (
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 bg-slate-50/70 px-3 py-2 dark:border-slate-700/70 dark:bg-slate-900/40">
+                            <div className="flex items-center gap-1">
+                              {run.has_result && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDownloadServerRunLog(run.id)}
+                                  title="Download the full run log (notes, unresolved issues, every change, the agent's thoughts)."
+                                  className={ghostButtonClass}
+                                >
+                                  <DownloadIcon className="h-3.5 w-3.5" />
+                                  Log
+                                </button>
                               )}
-                            >
-                              {feedbackSentFor === run.id ? "Sent ✓" : "Comment"}
-                            </button>
-                          )}
-                        {(run.status === "finished" || run.status === "aborted") &&
-                          run.has_result && (
-                            <div className="flex shrink-0 items-center gap-2">
-                              <button
-                                type="button"
-                                disabled={busyRunId === run.id || !!run.apply_blocked_reason}
-                                onClick={async () => {
-                                  setBusyRunId(run.id);
-                                  try {
-                                    await onApplyRun(run.id);
-                                  } finally {
-                                    setBusyRunId(null);
-                                  }
-                                }}
-                                title={run.apply_blocked_reason ?? "Write this plan into the calendar (manual entries always stay)."}
-                                className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-600 transition-colors hover:border-indigo-300 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300"
-                              >
-                                {busyRunId === run.id ? "Applying..." : "Apply"}
-                              </button>
-                              <button
-                                type="button"
-                                disabled={busyRunId === run.id}
-                                onClick={async () => {
-                                  setBusyRunId(run.id);
-                                  try {
-                                    await onDiscardRun(run.id);
-                                  } finally {
-                                    setBusyRunId(null);
-                                  }
-                                }}
-                                title="Reject this result - the calendar stays as it is."
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
-                              >
-                                Discard
-                              </button>
+                              {run.status !== "running" && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setFeedbackFor(feedbackFor === run.id ? null : run.id);
+                                    setFeedbackText("");
+                                    setActionError(null);
+                                  }}
+                                  title="Write a comment about this run - it is sent to the admin together with a reference to the run's log."
+                                  className={cx(
+                                    ghostButtonClass,
+                                    feedbackSentFor === run.id &&
+                                      "text-emerald-700 hover:text-emerald-800 dark:text-emerald-300",
+                                  )}
+                                >
+                                  {feedbackSentFor === run.id ? (
+                                    <CheckIcon className="h-3.5 w-3.5" />
+                                  ) : (
+                                    <ChatIcon className="h-3.5 w-3.5" />
+                                  )}
+                                  {feedbackSentFor === run.id ? "Sent ✓" : "Comment"}
+                                </button>
+                              )}
                             </div>
-                          )}
-                        </div>
-                        </div>
+                            {canDecide && (
+                              <div className="ml-auto flex items-center gap-2">
+                                <button
+                                  type="button"
+                                  disabled={busyRunId === run.id}
+                                  onClick={async () => {
+                                    setBusyRunId(run.id);
+                                    try {
+                                      await onDiscardRun(run.id);
+                                    } finally {
+                                      setBusyRunId(null);
+                                    }
+                                  }}
+                                  title="Reject this result - the calendar stays as it is."
+                                  className={secondaryButtonClass}
+                                >
+                                  Discard
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busyRunId === run.id || !!run.apply_blocked_reason}
+                                  onClick={async () => {
+                                    setBusyRunId(run.id);
+                                    try {
+                                      await onApplyRun(run.id);
+                                    } finally {
+                                      setBusyRunId(null);
+                                    }
+                                  }}
+                                  title={run.apply_blocked_reason ?? "Write this plan into the calendar (manual entries always stay)."}
+                                  className={primaryButtonClass}
+                                >
+                                  {busyRunId === run.id ? "Applying..." : "Apply"}
+                                </button>
+                              </div>
+                            )}
+                          </div>
+                        )}
                         {feedbackFor === run.id && (
                           <div className="flex flex-col gap-2 border-t border-slate-200 px-3 py-2.5 dark:border-slate-700">
                             <textarea
@@ -671,7 +855,7 @@ export default function SolverInfoModal({
                                   setFeedbackText("");
                                   setActionError(null);
                                 }}
-                                className="rounded-lg border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-500 transition-colors hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300"
+                                className={secondaryButtonClass}
                               >
                                 Cancel
                               </button>
@@ -679,7 +863,7 @@ export default function SolverInfoModal({
                                 type="button"
                                 disabled={feedbackBusy || !feedbackText.trim()}
                                 onClick={() => void handleSendFeedback(run.id)}
-                                className="rounded-lg border border-indigo-200 bg-indigo-50 px-3 py-1 text-xs font-medium text-indigo-600 transition-colors hover:border-indigo-300 hover:bg-indigo-100 disabled:opacity-50 dark:border-indigo-800 dark:bg-indigo-950 dark:text-indigo-300"
+                                className={primaryButtonClass}
                               >
                                 {feedbackBusy ? "Sending..." : "Send to admin"}
                               </button>
@@ -697,8 +881,60 @@ export default function SolverInfoModal({
                       </div>
                       );
                     })}
-                  </div>
+                  </section>
                 )}
+
+                {/* How it works: a compact overview; the details fold away
+                    while there are runs to look at. */}
+                <section
+                  aria-label="How automated planning works"
+                  className="rounded-2xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white p-4 dark:border-slate-700 dark:from-slate-800/60 dark:to-slate-900"
+                >
+                  <div className="flex items-start gap-3">
+                    <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-100 text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-300">
+                      <SparkIcon className="h-5 w-5" />
+                    </span>
+                    <div className="min-w-0">
+                      <h3 className="text-sm font-semibold text-slate-800 dark:text-slate-100">How it works</h3>
+                      <p className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">
+                        An AI agent searches for the best possible shift assignments for your team. It considers:
+                      </p>
+                    </div>
+                  </div>
+                  <ul className="mt-3 grid grid-cols-1 gap-x-4 gap-y-1.5 sm:grid-cols-2">
+                    {PLANNER_CONSIDERS.map((item) => (
+                      <li key={item} className="flex items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+                        <CheckIcon className="h-4 w-4 shrink-0 text-emerald-500" />
+                        {item}
+                      </li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    aria-expanded={explainOpen}
+                    onClick={() => setExplainOpen((value) => !value)}
+                    className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-indigo-600 hover:text-indigo-500 dark:text-indigo-300 dark:hover:text-indigo-200"
+                  >
+                    <ChevronRightIcon className={cx("h-3.5 w-3.5 transition-transform", explainOpen && "rotate-90")} />
+                    How the agent plans
+                  </button>
+                  {explainOpen && (
+                    <div className="mt-2 flex flex-col gap-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                      <p>
+                        The agent builds each day the way an experienced human planner does: on-call duties
+                        and scarce slots are staffed first, every person is placed with a contiguous block
+                        of work (no short stints, no 24-hour double duties), hours are balanced towards people
+                        behind on their yearly target, and the free-text instructions from Settings → Planning rules &amp; AI
+                        are followed. The AI works with the plan data including names, and the hard rules
+                        can never be broken.
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        Longer date ranges or more people take more time. You can abort at any time and
+                        keep the best solution found so far.
+                      </p>
+                    </div>
+                  )}
+                </section>
 
                 {/* Optimization Weights */}
                 <div className="flex flex-col gap-2">
@@ -835,7 +1071,7 @@ export default function SolverInfoModal({
 
                 {!selectedEntry.debugInfo?.agent && heuristicFallbackNotice(selectedEntry.debugInfo) && (
                   <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs dark:border-amber-900 dark:bg-amber-950/20">
-                    <div className="mb-2 font-medium">Heuristic fallback</div>
+                    <div className="mb-2 font-medium">Basic plan (without AI)</div>
                     {heuristicFallbackNotice(selectedEntry.debugInfo)}
                   </div>
                 )}
@@ -900,7 +1136,7 @@ export default function SolverInfoModal({
                   return (
                     <div className="rounded-xl border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900/50 dark:bg-violet-950/20">
                       <div className="mb-2 text-xs font-medium uppercase tracking-wide text-violet-500 dark:text-violet-400">
-                        {fallbackNotice ? "Heuristic fallback" : "AI Agent"}
+                        {fallbackNotice ? "Basic plan (without AI)" : "AI Agent"}
                       </div>
                       {fallbackNotice && <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">{fallbackNotice} Tokens and costs below belong to the model attempts.</p>}
                       {selectionNotice && <p className="mb-3 text-xs text-slate-600 dark:text-slate-300">{selectionNotice}</p>}
@@ -1173,7 +1409,7 @@ export function SolverInfoButton({ onClick }: { onClick: () => void }) {
       type="button"
       onClick={onClick}
       className="rounded p-0.5 text-slate-400 transition-colors hover:text-slate-600 dark:text-slate-500 dark:hover:text-slate-300"
-      title="Solver history, weights & timeout"
+      title="Run inbox, weights & timeout"
     >
       <GearIcon className="h-4 w-4" />
     </button>

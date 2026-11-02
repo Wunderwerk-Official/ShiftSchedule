@@ -1,5 +1,6 @@
 """A ValidationContext only saves lookup work: every validator returns exactly the
-same violations, in the same order, with and without it."""
+same violations, in the same order, with and without it, also for checked lists
+that add or drop Rest Day entries of the calendar."""
 
 import random
 from datetime import date
@@ -22,6 +23,7 @@ from backend.validation import (
     VIOLATION_ON_CALL_REST,
     VIOLATION_OVERLAP,
     VIOLATION_QUALIFICATION,
+    VIOLATION_REST_DAY,
     VIOLATION_SAME_LOCATION,
     VIOLATION_SPLIT_SHIFT,
     VIOLATION_UNKNOWN_CLINICIAN,
@@ -40,6 +42,7 @@ from backend.validation import (
     validate_overlaps,
     validate_qualifications,
     validate_references,
+    validate_rest_days,
     validate_same_location_per_day,
     validate_solver_rules,
     validate_split_shifts,
@@ -48,7 +51,7 @@ from backend.validation import (
 )
 
 from .conftest import make_template_slot
-from .swap_fixtures import arena_state, asg, chained_plan, make_swap_state, rich_swap_state
+from .swap_fixtures import THU, arena_state, asg, chained_plan, make_swap_state, rest_swap_state, rich_swap_state
 
 Plan = List[Assignment]
 ValidatorCall = Callable[[AppState, Plan, Optional[ValidationContext]], List[Violation]]
@@ -57,6 +60,8 @@ VALIDATORS: Dict[str, ValidatorCall] = {
     "references": lambda s, p, c: validate_references(s, p, context=c),
     "qualifications": lambda s, p, c: validate_qualifications(s, p, context=c),
     "vacations": lambda s, p, c: validate_vacations(s, p, context=c),
+    "rest_days": lambda s, p, c: validate_rest_days(s, p, context=c),
+    "own_rest_days": lambda s, p, c: validate_rest_days(s, p, context=c, own_rest_days=True),
     "overlaps": lambda s, p, c: validate_overlaps(s, p, context=c),
     "same_location": lambda s, p, c: validate_same_location_per_day(s, p, context=c),
     "on_call_rest": lambda s, p, c: validate_on_call_rest(s, p, context=c),
@@ -136,40 +141,82 @@ def _random_subsets(plan: Plan, count: int, seed: int) -> List[Plan]:
     return [rng.sample(plan, rng.randint(1, len(plan))) for _ in range(count)]
 
 
+def _rest_day_plans(state: AppState, seed: int) -> List[Plan]:
+    """Checked lists that differ from the calendar in Rest Days: without its
+    Rest Day entries, with new ones on days people work (stored first and
+    last), and random mixes of both."""
+    rng = random.Random(seed)
+    work = [a for a in state.assignments if not a.rowId.startswith("pool-")]
+    without = [a for a in state.assignments if a.rowId != "pool-rest-day"]
+    added = [asg(f"x-rest-{k}", "pool-rest-day", a.dateISO, a.clinicianId, locked=False)
+             for k, a in enumerate(rng.sample(work, 8))]
+    plans = [without, state.assignments + added, added + without, added[:4] + work[::3]]
+    plans += [rng.sample(state.assignments + added, rng.randint(1, len(state.assignments))) for _ in range(10)]
+    return plans
+
+
 @pytest.fixture(scope="module")
 def datasets() -> List[Tuple[AppState, List[Plan]]]:
     arena = arena_state()
     chained = chained_plan(arena, start=date(2026, 2, 2), days=21, seed=3)
     two_locations = _arena_with_two_locations_in_one_day()
     rich = _rich_with_edge_cases()
+    rest = rest_swap_state()
     return [
-        (arena, [arena.assignments]),
+        (arena, [arena.assignments] + _rest_day_plans(arena, seed=19)),
         (chained, _random_subsets(chained.assignments, 50, seed=13)),
         (two_locations, [two_locations.assignments]),
         (rich, [rich.assignments] + _random_subsets(rich.assignments, 10, seed=17)),
+        (rest, [rest.assignments] + _rest_day_plans(rest, seed=23)),
     ]
 
 
 def test_validate_assignments_is_identical_with_context(datasets):
     codes = set()
     reasons = set()
+    differs = 0  # checked lists whose own Rest Days give another verdict than the calendar's with them
     for state, plans in datasets:
         context = build_validation_context(state)
         for plan in plans:
             for skip_references, only_fill_required in FLAG_COMBINATIONS:
-                flags = {"skip_references": skip_references, "only_fill_required": only_fill_required}
-                expected = validate_assignments(state, plan, **flags).violations
-                assert validate_assignments(state, plan, context=context, **flags).violations == expected
-                codes.update(v.code for v in expected)
-                reasons.update(v.context["reason"] for v in expected if v.code == VIOLATION_UNKNOWN_SLOT)
+                found = []
+                for own_rest_days in (False, True):
+                    flags = {"skip_references": skip_references, "only_fill_required": only_fill_required,
+                             "own_rest_days": own_rest_days}
+                    expected = validate_assignments(state, plan, **flags).violations
+                    assert validate_assignments(state, plan, context=context, **flags).violations == expected
+                    codes.update(v.code for v in expected)
+                    reasons.update(v.context["reason"] for v in expected if v.code == VIOLATION_UNKNOWN_SLOT)
+                    found.append([v for v in expected if v.code == VIOLATION_REST_DAY])
+                differs += found[0] != found[1]
     assert codes == {
-        VIOLATION_QUALIFICATION, VIOLATION_VACATION, VIOLATION_OVERLAP, VIOLATION_SAME_LOCATION,
-        VIOLATION_ON_CALL_REST, VIOLATION_MANDATORY_WINDOW, VIOLATION_WEEKLY_HOURS,
+        VIOLATION_QUALIFICATION, VIOLATION_VACATION, VIOLATION_REST_DAY, VIOLATION_OVERLAP,
+        VIOLATION_SAME_LOCATION, VIOLATION_ON_CALL_REST, VIOLATION_MANDATORY_WINDOW, VIOLATION_WEEKLY_HOURS,
         VIOLATION_SPLIT_SHIFT, VIOLATION_CAPACITY, VIOLATION_UNKNOWN_CLINICIAN, VIOLATION_UNKNOWN_SLOT,
     }
     assert reasons == {
         "unknown_or_invalid_slot", "unresolved_section", "unresolved_column", "inactive_day_type",
     }
+    assert differs > 0
+
+
+def test_rest_days_come_from_the_calendar_and_the_checked_list():
+    rest = asg("rest", "pool-rest-day", THU, "clin-anna", locked=False)
+    shift = asg("ct", "ct-thu", THU, "clin-anna")
+    stored = make_swap_state([rest, shift])
+    listed = make_swap_state([shift])
+    for state, plan, union, own in [
+        (stored, [shift], 1, 0),  # the calendar rests, the list does not
+        (listed, [rest, shift], 1, 1),  # the list rests, the calendar does not
+        (stored, [rest, shift], 1, 1),
+        (listed, [shift], 0, 0),
+    ]:
+        context = build_validation_context(state)
+        for own_rest_days, count in ((False, union), (True, own)):
+            for c in (None, context):
+                violations = validate_rest_days(state, plan, context=c, own_rest_days=own_rest_days)
+                assert [(v.code, v.clinician_id, v.date_iso, v.slot_id) for v in violations] == [
+                    (VIOLATION_REST_DAY, "clin-anna", THU, "ct-thu")] * count
 
 
 @pytest.mark.parametrize("name", sorted(VALIDATORS) + sorted(SETTINGS_OVERRIDES))

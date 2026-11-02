@@ -17,7 +17,7 @@ Where to look first
 - Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
 - **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 6.5.
 - Solver live stats: `src/lib/solverStats.ts`
-- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `model-settings`, `my-plan`, `team-page`
+- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `holiday-region`, `model-settings`, `my-plan`, `team-page`
 - My plan (v1.64): `src/components/myPlan/MyPlanView.tsx`, pure model `src/lib/myPlan/`, preferences `src/lib/userPreferences.ts` + `backend/preferences.py`
 - API client: `src/api/client.ts`
 - Settings UI: `src/components/schedule/SettingsView.tsx`
@@ -54,8 +54,8 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch, "Times" (classic grid only, since v1.65), start-page star and Views menu. The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). See the v1.64 section at the end.
-- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. See the v1.65 and v1.66 sections at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits); since v1.77 that card keeps the "Team | My plan" switch, so the way back to the team plan never waits for loading. The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
+- Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). Since v1.73 a cell whose section differs from its lane's names it in a small tag (before a differing time). See the v1.65, v1.66, v1.71 and v1.73 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
 - **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
 - On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
@@ -90,7 +90,7 @@ Cells
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
 - Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
-- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.71) that opens the swap drawer in cover mode for that slot instance (both grids).
+- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.78) that opens the swap drawer in cover mode for that slot instance (both grids).
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -105,9 +105,9 @@ Clinic sheet layout (Klinik-Monatslayout)
 - Month-scoped `buildRenderedAssignmentMap` (do NOT reuse the week-scoped map — pool synthesis is day-bound). Desktop only (mobile keeps the daily view); week-scoped badges and the Publish toggle are hidden in sheet mode; print/PDF/public pages always use the classic grid. The sheet stays paper-light in dark mode by design.
 
 Pills
-- Team grid (since v1.69 always): person colors — light fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Print/public pages keep the section look (blue pill).
+- Team grid (since v1.69 always): person colors — fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Since v1.71 the palette has 20 colors in two tones (light fill + dark text, or saturated fill + white text), ordered so the first 12 fills differ by ≥ 15 ΔE00 (all 20 by ≥ 9). Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
-- Find swap (⇄, v1.71, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
+- Find swap (⇄, v1.78, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
 - Warning icons are small circular badges at top-right of the pill.
@@ -121,19 +121,24 @@ Pills
 ---
 
 ## 3) Settings
-Section Blocks (Weekly Calendar Template)
-- Section blocks are just section names; time, end-day offset, and required slots are set per placed slot in the grid.
-- Add block by name; delete via the small x in the block list (no clone/gear).
-- Drag blocks into the grid or click an empty cell to add; placed blocks can be dragged to move.
-- Empty grid cells show "Drop a block or click to add a block."
+Wording (v1.74): the UI says location (not site), section (not block), shift (not assignment), people/person (not clinician/user), locked shift (not fixed assignment), Rest Day row / Vacation row (not pool), "Planning rules & AI" (not Solver Settings), run inbox (not solver history) and basic planner without AI (not draft plan). Setting keys, data keys, ids and `data-*` attributes keep their old names (e.g. `enforceSameLocationPerDay`, `preferContinuousShifts`, `pool-rest-day`, requirement `"mandatory"`).
+
+Sections (Weekly Calendar Template; `weeklyTemplate.blocks` in data)
+- Sections are just section names; time, end-day offset, and required slots are set per placed slot in the grid.
+- The "Sections" panel: "+ Add section" by name; delete via the small x ("Delete section"; no clone/gear). Deleting the last block of a section warns that its slots leave the grid and the section leaves everyone's Eligible Sections; the color swatch is labelled "Section color".
+- Drag sections into the grid or click an empty cell to add ("Add section" popover); placed slots can be dragged to move.
+- Empty grid cells show "Drop a section here or click to add one."
 - Multiple shifts are represented by multiple blocks (no sub-shift editor).
+- Slot editor: the count badge ("People required: n. Click to change.") opens "People required" (field "Required", 0 = not planned automatically); the time ("Set time" when empty) opens "Shift time" with Start/End and an "Ends" select (Same day / Next day / +2 days / +3 days = `endDayOffset`).
+- The section priority helper text is `SECTION_PRIORITY_HELP` (exported from `WeeklyTemplateBuilder.tsx`, used by the Settings card and its dialog).
 
 Weekly Calendar Template
 - Single calendar with locations stacked; day-type columns are shared across locations (Mon..Sun + Holiday).
 - Per-day columns: add columns for a specific day; delete via a hover-only "Delete Column" button at the top of the first row (confirm only if the column has slots).
 - Delete button highlighting: hovering Delete Location/Row/Column buttons shows a thick red outline around the entire group (not per-cell rings). The outline uses edge borders only—top/left/right/bottom borders on the outer cells of the highlighted region.
 - Row bands are simple rows with an editable row label in the left header cell; Add row is a full-width dashed button below each location; row delete confirms only if the row has slots.
-- Section blocks sidebar stays visible while scrolling the template grid (sticky at all sizes; scrolls with the template grid container).
+- The Sections sidebar stays visible while scrolling the template grid (sticky at all sizes; scrolls with the template grid container).
+- The Holiday day chip and column header have the tooltip "Used instead of the weekday on every date in the Holidays list."; "Add column" says it adds a shift-time column to that day for all locations.
 - Blocks live in `weeklyTemplate.blocks` and slots reference `blockId`.
 - Slots define time range, end-day offset, and required slots (single value); blocks carry only the section reference.
 - Holiday day type always overrides weekdays at runtime (no fallback).
@@ -141,13 +146,15 @@ Weekly Calendar Template
 - Copy Day: button in template builder copies all columns and slots from one day type to another; requires confirmation checkbox if target has existing content.
 
 Locations
-- Manage locations inside the calendar template (top-left "+ Location" button).
-- Location order uses a dropdown; names are edited inline.
+- Manage locations inside the calendar template (top-left "+ Location" button; it adds "New Location" at the top).
+- Location order uses a dropdown ("Location position", 1 = top); names are edited inline ("Location name").
+- The location color popover explains: "Tints this location in My plan and its row labels in the weekly grid. All planners see it."
 - Delete location (confirm) is allowed even for the default location; the next location becomes the new default (`loc-default`) and slot locationIds are updated.
-- Location color (v1.64, optional): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: slate, sand, sage, lilac, or none). Stored as `Location.color` (`#RRGGBB`); presentation only — tints the location's rows in the team grid and the days in My plan, and is excluded from the planning fingerprint.
+- Location color (v1.64; Auto since v1.71): a swatch next to the location name in the template builder (`LOCATION_COLOR_OPTIONS` in `src/lib/colorPalette.ts`: blue, green, amber, violet, rose, teal, orange and the muted slate, sand, sage, lilac; or Auto). Stored as `Location.color` (`#RRGGBB`; Auto stores nothing); presentation only and excluded from the planning fingerprint. The team grid colors every location: its own color, or with Auto the next free automatic color in location order (`src/lib/locationColors.ts`); its row bands' labels alternate between two shades and its separator row is a band in its strong color. My plan tints days by picked colors only.
 
-Pools
-- Rename pool rows (Rest Day, Vacation). No deletion.
+Rest Day & Vacation rows (the pools; Settings card "Rest Day & Vacation rows")
+- Rename the two built-in rows (Rest Day, Vacation); only the displayed name changes. No deletion. The inputs are labelled "Rest Day row name" / "Vacation row name".
+- Names dragged into the Rest Day row by hand mark a day off (since v1.75): every automatic planner leaves that person free that day (stored `pool-rest-day` entries, hard rule `REST_DAY`). The Vacation row follows each person's vacation periods (drag in = vacation day, drag out = end it); stored `pool-vacation` entries are legacy and ignored.
 - **Deprecated pools (removed)**: Distribution Pool (`pool-not-allocated`) and Reserve Pool (`pool-manual`) were removed from the UI. State normalization automatically removes these rows and any assignments to them on load.
 - Rest Day pool is used to park clinicians before/after on-call duty when the setting is enabled.
 - Pool visibility is a UI filter only: class assignments are never hidden by rest-day/vacation logic.
@@ -160,7 +167,7 @@ Slots / Template integrity
 - ColBand explosion safeguard: max 20 colBands per day type (`MAX_COLBANDS_PER_DAY`, duplicated in the two files below and in `backend/state_routes.py`, which only uses it for the health check — keep them in sync). Extra colBands are dropped (truncated) and logged. Safeguard is enforced in:
   - `src/lib/shiftRows.ts` (normalizeTemplateColBands)
   - `src/pages/WeeklySchedulePage.tsx` (the setWeeklyTemplate wrapper truncates per day; every builder change goes through it — the builder's own copy of the sanitizer was removed in v1.64)
-- Total limit: above `MAX_TOTAL_COLBANDS` = 300 colBands summed over all locations (`src/lib/templateLimits.ts`), `buildCurrentStatePayload` refuses to save (console.error). Since v1.64 the page shows an amber banner instead of failing silently; sign-out asks before discarding unsaved changes, importing a schedule snapshot is refused, and restoring a calendar snapshot stays possible (it backs up the last saved calendar, not the screen).
+- Total limit: above `MAX_TOTAL_COLBANDS` = 300 colBands summed over all locations (`src/lib/templateLimits.ts`), `buildCurrentStatePayload` refuses to save (console.error). Since v1.64 the page shows an amber banner instead of failing silently; sign-out asks before discarding unsaved changes, importing a shifts file (Settings → Shifts file) is refused, and restoring a calendar snapshot stays possible (it backs up the last saved calendar, not the screen).
 - **Slot collision detection**: Multiple sections sharing the same `rowBandId + dayType + colBandOrder` causes only one section to be visible in the calendar UI while others are hidden but still exist in the database. This is a critical configuration error.
   - Detection: `slotCollisions` useMemo in `WeeklySchedulePage.tsx` identifies collisions by grouping classShiftRows by `locationId__rowBandId__dayType__colBandOrder` and flagging groups with multiple different `sectionId` values.
   - Warning banner: A prominent red banner appears below the top bar when collisions are detected, showing:
@@ -170,13 +177,13 @@ Slots / Template integrity
     - "Open Settings" button to navigate to template builder for fixing
   - Fix: Ensure each section has its own row band in the Weekly Template Builder.
 
-Clinicians
-- List with Add Clinician, Edit and Remove buttons (Add uses a dashed, full-width button below the list). Remove asks for confirmation since v1.64: it deletes the person's assignments in all weeks, vacations and preferences, without undo.
+People (`clinicians` in data)
+- List with Add Person, Edit and Remove buttons (Add uses a dashed, full-width button below the list). Remove asks for confirmation since v1.64: it deletes the person's shifts in all weeks, vacations and preferences, without undo.
 - Editing uses the same modal as clicking a pill in the calendar.
-- Optional working hours per week field (contract hours).
+- Optional contract hours in the new-person form ("Hours/week"; the helper below says it is optional: empty = no hours target or weekly limit).
 
 Clinician Editor (modal)
-- Panel order: Eligible Sections → Vacations → Preferred Working Times.
+- Panel order: Eligible Sections → Vacations → Working Hours & Times (contract hours, "Weekly hours tolerance (±)", work pattern, per-weekday windows) → Planning Wishes.
 - Eligible sections list is ordered. Drag to set priority (this order is also the preference list).
 - Add eligible sections via dropdown + Add button; remove via per-row Remove button.
 - Vacation management uses custom date pickers (DD.MM.YYYY format) with calendar dropdown; setting a start date after the current end date auto-adjusts end to start + 1 day.
@@ -184,7 +191,7 @@ Clinician Editor (modal)
 - Past vacations collapsed in a <details>.
 - Modal body is scrollable for long vacation lists.
 - Preferred working times persist per clinician as `preferredWorkingTimes` (mon..sun with startTime/endTime + requirement none/preference/mandatory).
-- Mandatory windows are hard solver constraints; preference windows add a small solver reward.
+- Mandatory windows (UI label "Only these hours"; stored as `"mandatory"`) are hard solver constraints; preference windows ("Preferred") add a small solver reward.
 - Week solver nudges total assigned minutes toward `workingHoursPerWeek` within the tolerance (manual assignments count toward totals).
 - Per-clinician working hours tolerance: stored as `clinician.workingHoursToleranceHours` (default 5 hours). Each clinician can have a different tolerance for how much their assigned hours can deviate from their contract hours.
 
@@ -203,40 +210,47 @@ Working Hours Overview
 Holidays
 - Year selector with stepper buttons.
 - Country picker with flag emoji (top EU countries + CH, LU), alphabetical.
-- "Load Holidays" fetches from https://date.nager.at/api/v3/PublicHolidays.
-- Add holidays manually; list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form).
+- Region select next to it (v1.72) for countries whose date.nager.at data has regional holidays (`HOLIDAY_REGIONS` in `src/lib/holidays.ts`: DE states, CH cantons, ES, GB and IT regions), stored as `AppState.holidayRegion` (ISO 3166-2, e.g. `DE-NW`). Without a region the select shows "All states" plus the hint that the regional holidays of all states are included. Changing the country resets the region; a stored region of another country is ignored. Since v1.74 the select has an accessible name like the country picker ("State: Nordrhein-Westfalen", "Canton: All cantons").
+- "Load holidays for {year}" (under "Load public holidays"; "Load Holidays" before v1.74) fetches from https://date.nager.at/api/v3/PublicHolidays and keeps an entry when `global === true`, when no region is set, or when its `counties` contain the region (`filterHolidaysByRegion`). Since v1.74 `mergeLoadedHolidays` (`src/lib/holidays.ts`) merges the result: it replaces only that year's loaded holidays (`Holiday.source: "public"`, and older untagged entries the service lists for any region) and keeps holidays added by hand (`source: "manual"`); afterwards "Loaded N public holidays for {year}." The helper says "Replaces this year's loaded public holidays; holidays you added by hand stay." Choosing a region never rewrites stored holidays: an amber note says the list is unchanged until the user loads again. The list header reads "Holidays in {year}".
+- Add holidays manually (since v1.74 saved with `source: "manual"`, shown with a small "added by hand" marker); list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form). `Holiday.source` is omitted from the stored JSON when unset (wrap `model_serializer`, like `holidayRegion` and `Location.color`) and is not a planning input.
 - Add Holiday button is a dashed, full-width button below the list and opens an inline add panel.
 - Holidays behave like weekends in solver + min slot logic and show in the calendar header.
 
+Shifts file (formerly "Schedule snapshot")
+- "Download shifts file" exports every week's shifts as JSON (file name still `schedule-snapshot-*.json`); "Import shifts file…" asks "Replace all shifts with this file?" (confirm "Replace shifts") and replaces all shifts, locked ones too. Before saving, the calendar as shown is saved via `POST /v1/state/snapshots/import-backup` as "Auto-backup before shifts file import" (`saveShiftsFileImport` in `src/lib/shiftsFileImport.ts`); if that fails, nothing is imported ("The backup could not be saved, so nothing was imported."). The auto-backup slot is shared with the backups before a restore and before applying a plan: the newest wins.
+- Result line: "Imported N shifts. Skipped X shift(s) of people no longer listed and Y in slots that no longer exist. A backup of the previous calendar is in Calendar snapshots: “Auto-backup before shifts file import”." (both skipped numbers count shifts).
+
 Database Health Check
-- Located at the bottom of the Settings page.
-- "Run Check" button performs integrity checks on the database:
-  - Orphaned assignments (assignments referencing non-existent slots)
-  - Slot collisions (multiple sections at same position causing hidden sections)
-  - Duplicate assignments (same clinician assigned multiple times to same slot/date)
-  - ColBand explosion (excessive colBands per day type, limit 20)
-  - Pool assignments info (count of persisted pool assignments)
-- Stats are clickable with explanations for each metric.
+- Lives in the collapsed "Advanced" section at the very bottom of Settings (v1.74, helper "Read-only troubleshooting: …"); the check only mounts, and so only loads, when the section is opened.
+- "Run check" button performs read-only integrity checks on the database (labels as shown in the UI):
+  - Shifts in deleted slots (`orphaned_assignment`)
+  - Two sections in one cell (`slot_collision`, causes hidden sections)
+  - Double entries (`duplicate_assignment`, same person, slot and date)
+  - Too many columns (`colband_explosion`, more than 20 per day type in one location)
+  - Rest Day & Vacation entries (`pool_assignment_info`, entries placed by hand)
+- Stats (Shifts, Slots, People, Locations, Sections, Rest & vacation) are clickable with explanations for each metric.
 - "Open Database Inspector" link opens a separate full-page view.
 
 Database Inspector
 - Route: `/db-inspector` (requires authentication).
 - Full-page view showing all slots and assignments directly from the database.
 - Week selector with navigation arrows and "Today" button.
-- Stats overview: Total Slots, Assigned, Open, Pool Assignments.
+- Stats overview: Total Slots, Assigned, Open, Rest & vacation.
 - Filter toggle: "Show only open slots".
 - Expandable day sections with tables showing:
   - Time, Row, Column, Status (open/assigned), Assigned To, Source (manual/solver).
-- Pool assignments table at the bottom showing persisted pool entries.
+- "Rest Day & Vacation entries (placed by hand)" table at the bottom (columns Date, Row, Person, Source).
 - Data comes directly from the database, not from the UI view.
 - Backend endpoint: `GET /v1/state/inspect/week?week_start=YYYY-MM-DD`.
 
-Solver Settings
-- Toggle: Enforce same location per day (default: enabled).
-- Toggle: Enforce continuous shifts (default: enabled). When enabled, the solver enforces at most one continuous work block per clinician/day (or the number of manual blocks already present), using same-location time adjacency (end == start).
+Planning rules & AI (formerly "Solver Settings")
+- Toggle: "One location per person per day" (`enforceSameLocationPerDay`, default: enabled).
+- Toggle: "No gaps within a working day" (`preferContinuousShifts`, default: enabled). When enabled, the solver enforces at most one continuous work block per clinician/day (or the number of manual blocks already present), using same-location time adjacency (end == start).
 - Multiple shifts per day are always allowed (removed setting); only actual time overlaps are blocked.
-- On-call rest days: toggle + section selector + days before/after. When enabled, solver enforces rest days and the UI places clinicians into the Rest Day pool.
-- On-call rest days dropdown only shows sections that exist as current template section blocks.
+- AI block (`AgentSettingsPanel`): "AI service", "AI model", "AI server address", "Check server certificate (TLS)", "Claude API key" / "AI server API key (optional)", "Test the AI connection", "AI budget per account" (total, never reset) and "AI cost so far, per account". Then "Planning goals (AI)" (Classic / Balanced (preview), `agentQualityProfile`), "Extra search across neighbouring days (experimental)" (`agentNeighborhoodSearch`) and "Instructions for the AI planner" (`agentInstructions`).
+- "Section priority when short-staffed" with a "Change order" dialog (order of `weeklyTemplate.blocks`).
+- "Rest days around on-call duty": toggle + "On-call section" + "Rest days before" / "Rest days after" (calendar days, 0–7). When enabled, solver enforces rest days and the UI places people into the Rest Day row.
+- The on-call section dropdown only shows sections that exist as current template blocks.
 - Working hours tolerance is now per-clinician (see Clinician Editor); removed from global solver settings.
 - Rule violations are evaluated for the current week and surfaced in the header badge; affected pills are shown in red.
 - Violations include: rest-day conflicts, same-day location mismatches (when enforced), and overlapping shift times.
@@ -591,15 +605,15 @@ type ViewStartAt = "today" | "nextShift" | "weekStart";  // relative anchor, nev
 type SavedView = ViewConfig & { id: string /* 1-64 */; name: string /* 1-60 */; startAt: ViewStartAt /* default "today" */ };
 type UserPreferences = {
   version: number;                          // 1
-  clinicianId: string | null;               // "I am …" link (max 200 chars, blank = null)
+  clinicianId: string | null;               // "I am …" link (max 200 chars, blank = null); "Not <name>? Change who you are" sets null (v1.74)
   orientationByRange: Record<PlanRange, Orientation>;        // computers; default all "top"
   orientationByRangeMobile: Record<PlanRange, Orientation>;  // phones; default week "left" (agenda)
   myPlanRange: PlanRange;                   // computers; default "week"
   myPlanRangeMobile: PlanRange;             // phones; default "week"
   teamTimeLayout: "columns" | "stacked";    // v1.65; default "stacked" (teamColorBy retired in v1.69, ignored when stored)
-  savedViews: SavedView[];                  // max 12, unique ids
-  startViewDesktop: ViewConfig | null;      // start page on computers (no startAt)
-  startViewMobile: ViewConfig | null;       // start page on phones (no startAt)
+  savedViews: SavedView[];                  // max 12, unique ids; stored but unused by the UI since v1.74
+  startViewDesktop: ViewConfig | null;      // was the start page on computers; stored but unused by the UI since v1.74
+  startViewMobile: ViewConfig | null;       // was the start page on phones; stored but unused by the UI since v1.74
 };
 ```
 - Saving preferences never changes the calendar revision or a planning fingerprint; the row is deleted together with the account. An unreadable stored row is ignored (defaults returned) instead of locking the user out.
@@ -646,6 +660,7 @@ Behavior
 - Hard constraints:
   - Qualification required.
   - Vacation overrides assignment.
+  - A Rest Day row entry (stored `pool-rest-day`, placed by hand) overrides assignment that day, like vacation (v1.75).
   - Manual assignments remain in place; solver adds additional assignments as needed.
   - Overlap checks use time intervals (start/end + endDayOffset), not shift order.
   - Multiple shifts per day are allowed as long as they don't overlap in time and remain continuous.
@@ -792,17 +807,27 @@ pass/fail check — LLM-generated schedules, external imports, UI conflict
 badges, debug tooling.
 
 Every validator and `validate_assignments` take an optional keyword
-`context=` (v1.71): `build_validation_context(state)` precomputes the template
+`context=` (v1.78): `build_validation_context(state)` precomputes the template
 and roster lookups of ONE state object for callers that validate many
-assignment lists of it (the swap search). The result is identical with or
-without it; a context of another state object raises `ValueError`. Every
-other caller (solvers, agent, run apply, the swap apply gate) passes none.
+assignment lists of it (the swap search), the calendar's Rest Days included.
+The result is identical with or without it; a context of another state object
+raises `ValueError`. Every other caller (solvers, agent, run apply, the swap
+apply gate) passes none. `validate_rest_days`, `validate_assignments` and
+`constraint_policy.classify_violations` / `new_violations` also take
+`own_rest_days=` (v1.78, default False): with it only the checked list's own
+Rest Day entries count, so for a list that is a whole plan after a change, a
+Rest Day the change moved away or removed no longer counts. Only the swap
+gates set it; every other caller keeps the union of `state.assignments` and
+the list described below.
 
 ### What it checks
 All return `list[Violation]`; `validate_assignments()` aggregates them into a
 `ValidationReport`:
 - `validate_qualifications` — section must be in clinician's `qualifiedClassIds`
 - `validate_vacations` — no slot assignments during vacations (pool rows exempt)
+- `validate_rest_days` — `REST_DAY` (v1.75): no slot assignments on a date the
+  person has a stored `pool-rest-day` entry (from `state.assignments` and the
+  checked list, built once per call; pool rows exempt)
 - `validate_overlaps` — same-clinician time overlap, handles overnight slots
   (`endDayOffset > 0`) by placing intervals on an absolute minute axis
 - `validate_same_location_per_day` — only when `enforceSameLocationPerDay`
@@ -1045,7 +1070,7 @@ Inspection tools (both strategies):
 | `get_violations` | Current violations of fixed context + working copy, filterable by severity/code | code, message, clinicianId, dateISO, `new` (blocks acceptance), `repairable`, `over_by_hours` (weekly) |
 | `list_open_slots` | Slot instances below required staffing | slot_key, section, date, time, missing (paginated) |
 | `list_candidates_for_slot` | Per-clinician legality for 1–8 slots against the CURRENT plan (exact apply gate) | eligible, reasons (violation codes), `week_over_cap_hours`, day_hours, adjacent_to_existing, week_hours, contract_hours, ytd_worked_pct, prefers_section, window_fit |
-| `get_clinician_summary` | One clinician's whole situation | contract+tolerance, week_hours per ISO week, ytd_worked_pct, sections, preferred times, in-range assignments (fixed vs own) |
+| `get_clinician_summary` | One clinician's whole situation | contract+tolerance, week_hours per ISO week, ytd_worked_pct, sections, preferred times, vacations, in-range `rest_days` (Rest Day row, v1.75), in-range assignments (fixed vs own) |
 | `list_short_days` | Days below the daily minimum, with pre-validated fix options (repair strategy's short-day pass) | clinician, date, hours, fixable, fix_options with blocked_by |
 | `get_ytd_progress` | Year-to-date fairness across the roster | ytd_worked_pct per clinician (100 = on target), sorted most-behind first |
 | `get_hours_overview` | Weekly hours vs contract for everyone | per clinician per ISO week: hours, contract, delta |
@@ -1112,7 +1137,7 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   crashing the run. An unexpected exception from any adapter is turned into
   an error response by the harness (type name in the note, traceback in the
   server log), so the best plan so far is kept. Key resolution:
-  admin-stored key (Settings → Solver) wins over `ANTHROPIC_API_KEY` env.
+  admin-stored key (Settings → Planning rules & AI) wins over `ANTHROPIC_API_KEY` env.
   Since v1.67 Claude Opus 5.5 (`claude-opus-5-5`) requests go through the
   beta namespace with three additions (`_request_extras`, named
   `_opus55_request_extras` until v1.68): explicit
@@ -1165,7 +1190,7 @@ The harness talks through a minimal protocol (`ChatMessage`/`ToolCall`/
   or across the subprocess boundary via `AGENT_PROVIDER=mock` +
   `AGENT_MOCK_SCRIPT=<json path>`.
 Provider selection and credentials are admin-configurable at runtime
-(Settings → Solver → `agent_settings` table): provider, Anthropic key,
+(Settings → Planning rules & AI → `agent_settings` table): provider, Anthropic key,
 endpoint base URL + key + model name for the OpenAI-compatible path. The
 solver WORKER overlays these onto the env config in-process
 (`agent_budget.resolve_agent_runtime_config`) so secrets never travel through
@@ -1175,7 +1200,8 @@ Anthropic provider only — self-hosted runs are free and never blocked by it.
 Config is read from env at solve time (`AGENT_PROVIDER`, `AGENT_MODEL`,
 `AGENT_MAX_TOKENS`; `AGENT_MAX_ITERATIONS` is ignored, the budget is the
 slot-instances × 10 rule) — the spawn subprocess inherits it.
-The model is an ADMIN-ONLY global setting (default `claude-sonnet-5`) stored
+The model is an ADMIN-ONLY global setting (default `claude-opus-5-5` since
+v1.74, `claude-sonnet-5` before) stored
 in the `agent_settings` table and managed via `GET/PUT /v1/agent/settings`
 (`backend/agent_budget.py`); the solve endpoint injects it into the payload
 (`SolveRangeRequest.agent_model`, server-overwritten so clients can't spoof
@@ -1279,11 +1305,17 @@ Backend stores one JSON blob per user in SQLite:
   "solverRules": [],
   "publishedWeekStartISOs": ["2025-12-22"],
   "holidayCountry": "DE",
+  "holidayRegion": "DE-NW",
   "holidayYear": 2025,
-  "holidays": [{ "dateISO": "2025-12-25", "name": "Christmas Day" }]
+  "holidays": [
+    { "dateISO": "2025-12-25", "name": "Christmas Day", "source": "public" },
+    { "dateISO": "2025-12-31", "name": "Clinic closed", "source": "manual" }
+  ]
 }
 ```
 Note: `solverRules` is legacy and not used by the current UI/solver, but remains in state for compatibility.
+`holidayRegion` (v1.72) is optional: absent when unset (a wrap `model_serializer` on `AppState` omits it, like `Location.color`), so calendars without a region keep their bytes and revision. Like `holidayCountry`/`holidayYear` it is not part of the planning fingerprint; only `holidays` is.
+`Holiday.source` (v1.74: `"public"` = loaded, reloading replaces it; `"manual"` = added by hand, kept) is optional the same way: absent when unset (wrap `model_serializer` on `Holiday`; an unknown value becomes unset instead of a 422), so calendars stored before v1.74 keep their bytes and revision. `planning_fingerprint` drops it: only the holidays' dates and names are planning input.
 `weeklyTemplate` (v4) is stored alongside the state and is the source of truth for schedule rows; `slotOverridesByKey` keys are `slotId__dateISO`.
 State normalization on load
 - Ensures `locations` exists (adds loc-default).
@@ -1324,7 +1356,7 @@ Endpoints
 - `GET /v1/solve/progress` (SSE stream for live solver updates; `Authorization: Bearer` header, no query token)
 - `GET /v1/state/health` (database health check)
 - `GET /v1/state/inspect/week` (database inspector)
-- `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots)
+- `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots), `POST /v1/state/snapshots/import-backup` (auto-backup before a shifts file import)
 - `GET /v1/me/preferences`, `PUT /v1/me/preferences` (per-user UI preferences for My plan; outside AppState, 32 KB body cap → 413)
 - `GET /v1/solve/runs`, `GET /v1/solve/runs/{id}`, `POST /v1/solve/runs/{id}/apply|discard|feedback` (run inbox)
 - `GET|PUT /v1/agent/settings`, `POST /v1/agent/chat-test`, `POST /v1/agent/model-check` (AI planning settings; `PUT /v1/agent/settings`, `chat-test` and `model-check` are admin only)
@@ -1488,23 +1520,24 @@ Frontend
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
 - `src/components/schedule/AutomatedPlanningPanel.tsx` (planning panel: date range, Run, Reset → Unlocked shifts / Unlocked shifts and rest days)
 - `src/components/schedule/AgentSettingsPanel.tsx` (v1.64, extracted from SettingsView: AI provider/model, endpoint, API keys, model check, chat test, budget)
-- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan, Times, start-page star, Views)
-- `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints)
+- `src/components/schedule/TeamPlanHeader.tsx` (v1.64: header row of the team calendars — Team | My plan switch, Times; star and Views removed in v1.74)
+- `src/components/schedule/teamColors.ts` (v1.64: person pill styles — always on in the classic grid since v1.69 — and location row tints; v1.71: every location, two label shades + band, `labelShade`)
 - `src/components/schedule/AssignmentLockButton.tsx` (v1.69: the one lock of a shift, `LockGlyph`)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment` = locked; v1.69 `toggleAssignmentLock`)
-- `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — time lanes per class row, one grid column per day, label meta)
-- `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder)
-- `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while the start view is resolved)
+- `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — lanes per class row, one grid column per day, label meta; v1.76: lanes by section, then by time — `buildSectionLanes`)
+- `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder; v1.71: Auto + 11 presets)
+- `src/lib/locationColors.ts` (v1.71: `resolveLocationColors` — picked color or the next free automatic one in location order; `autoLocationColor` for the picker)
+- `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while My plan waits for this user's calendar)
 - `src/components/ui/ConfirmDialog.tsx` (confirm dialog; Enter acts on the focused button)
 - `src/api/client.ts`
 - `src/lib/shiftRows.ts` (weeklyTemplate normalization, colBand safeguards, legacy shiftRowId helpers)
 - `src/lib/schedule.ts` (rendered assignment map, time intervals, Rest Day pool logic)
 - `src/lib/solverStats.ts` (live solver stats calculation: coverage, preferences, time windows, on-call rest, working hours)
 - `src/lib/myPlan/` (v1.64, pure and tested: one person's plan — shifts split at midnight, previous-day nights, start-day hours, overlap lanes, rest/vacation bands, location tint, coworkers, next shift, rest before, month sheet, colors, labels; public API in `index.ts`)
-- `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker`, `LinkClinicianCard`, `SavedViewsMenu`, `StartPageStar`, `NextUpChip`)
+- `src/components/myPlan/` (v1.64 My plan UI: `MyPlanView.tsx`, week/day/month views for both orientations, `ShiftDetail`, `PlanScopeSwitch`, `RangeSwitch`, `OrientationSwitch`, `PeriodNavigator`, `PersonPicker` (incl. "Not <name>? Change who you are", v1.74), `LinkClinicianCard`, `NextUpChip`; `SavedViewsMenu` / `StartPageStar` removed in v1.74)
 - `src/lib/userPreferences.ts` (`useUserPreferences`: loads `/v1/me/preferences`, optimistic updates, debounced save, never PUTs before a successful GET, flushes on pagehide)
-- `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS`, person palette `PERSON_COLORS`)
-- `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan, start view applied once, `scopeReady`)
+- `src/lib/colorPalette.ts` (section block colors, `LOCATION_COLOR_OPTIONS` with `band`, `AUTO_LOCATION_COLOR_IDS`, person palette `PERSON_COLORS` with `tone`)
+- `src/pages/usePlanScope.ts` (v1.64: page scope Team | My plan; since v1.74 plain page state that always starts in "team", stored start views ignored)
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
@@ -1513,9 +1546,9 @@ Frontend
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
 - `src/lib/clipboard.ts` (v1.64: `copyTextToClipboard`, reports success)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
-- `src/components/swaps/*` (v1.71 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
-- `src/lib/swaps/*` (v1.71: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
-- `src/pages/swapFlow.ts` (v1.71: search, apply and undo order — save only unsaved edits, send, hydrate)
+- `src/components/swaps/*` (v1.78 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
+- `src/lib/swaps/*` (v1.78: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
+- `src/pages/swapFlow.ts` (v1.78: search, apply and undo order — save only unsaved edits, send, hydrate)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
@@ -1539,7 +1572,7 @@ Backend
 - `backend/snapshots.py` (calendar snapshots)
 - `backend/agent_budget.py` (agent settings, chat test, model check, spend)
 - `backend/schedule_changes.py` (schedule change log, admin endpoint)
-- `backend/swaps/*` (v1.71 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
+- `backend/swaps/*` (v1.78 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
 - `backend/account_lifecycle.py` (account generation/identity checks)
 - `backend/request_logging.py` (redacted access logging)
 - `backend/ical.py` (ICS generation for subscription feeds)
@@ -1596,7 +1629,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   hours; it is not an exact quota. Explicit daily hours override that derivation.
   Legacy optimization objectives are unchanged; agent/statistics use the new pattern.
 - Duty distribution uses known recent night/weekend/on-call minutes, scaled by
-  contracted hours and eligible days. It is a proxy, not a legal or comprehensive
+  contracted hours and eligible days (on-call only while the on-call rest rule
+  is on, since v1.75). It is a proxy, not a legal or comprehensive
   fairness certification. Free-text wishes remain model-interpreted and are reported
   as not mechanically verified.
 - The optional neighborhood tool explores at most three dates, 120 slots, 1,800
@@ -2142,7 +2176,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   that gets 409 shows the generic "try again" notice instead of the server's
   reason; CP-SAT still fills zero-duration slots; the legacy v<4 template
   migration in `_normalize_state` still carries dead code.
-- After deploy, run the admin "Model connection test" (Settings → Solver)
+- After deploy, run the admin "Model connection test" (since v1.74 "Test the AI connection", Settings → Planning rules & AI)
   once on Sonnet 5: the new `thinking.display` request field has only been
   checked against the installed SDK, not the live API.
 
@@ -2172,18 +2206,23 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `normalizePreferences`). It is not part of saved views or start pages.
   Side by side is the unchanged pre-v1.65 grid (one column per col band of a
   day). Stacked has one column per day: each class row (location × row band)
-  splits into one sub-row per time lane, the label column shows the row band
+  splits into one sub-row per time lane (superseded in v1.76: per section,
+  then per time — a lane never mixes sections), the label column shows the row band
   name (on its first lane), the lane's section when it is not the row band
   name (e.g. a second column with another section) and the lane's time
   right-aligned; the location separator names the location (neutral band when
   uncolored) and the per-column time headings disappear. Cells are compact
   section blocks (open slots 24 px high, "nobody needed" blocks faint); a cell
-  shows its own section or time only where it differs from its lane's.
-- **Time lanes** (`src/lib/stackedTeamLayout.ts::buildTimeLanes`, pure):
+  shows its own section or time only where it differs from its lane's (since
+  v1.76 only a time: a lane holds one section).
+- **Time lanes** (`src/lib/stackedTeamLayout.ts::buildTimeLanes`, pure;
+  since v1.76 called once per section by `buildSectionLanes`, so the
+  "same time and section" step only matters within one section):
   at most one slot per day type per lane. The day type with the most slots
   opens the lanes in column order; the other days join them by the same time
   and section, then the same time, then the nearest start on the clock
-  (00:00 is next to 22:00). Matching on time,
+  (00:00 is next to 22:00; since v1.76 only among lanes whose shift overlaps
+  the slot's, else it opens a lane of its own). Matching on time,
   not on the col band order, matters because the template numbers each day's
   columns on its own (a weekend with "Day | Night" puts its night shift into
   the weekday night lane). Lanes without a slot on the visible days are left
@@ -2221,9 +2260,11 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   (`.stacked-off-cell`, so it never reads as an empty slot, also in print); a
   qualified drop target gets an inset ring. A cell writes only a time other
   than its lane's (compact "08:00–20:00", wrapping after the dash in narrow
-  columns); a cell of another section than the
-  lane's gets a small corner mark (no text); its section and time are in its
-  tooltip.
+  columns; since v1.76 a quiet clock + time note under the people, no chip);
+  a cell of another section than the
+  lane's gets a small corner mark (no text; replaced by a tag in v1.73, and
+  impossible since v1.76, where a lane holds one section); its section and
+  time are in its tooltip.
 - **Lane labels like shift colors.** The label cell is tinted with the lane's
   section color (`.stacked-label-tint`; it replaces the location tint there,
   the location band above the rows keeps it). It shows the row band name
@@ -2231,9 +2272,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   not the row band name and the compact time. When some visible days belong to another section, a "+N"
   badge lists them in its tooltip and for screen readers ("Other days: Tue: X
   · Wed: Y"); `StackedRowMeta` gains `sectionColor` and `otherSections`
-  (`src/lib/stackedTeamLayout.ts`).
+  (`src/lib/stackedTeamLayout.ts`). Superseded in v1.76: the badge and
+  `otherSections` are gone (a lane holds one section) and the label is three
+  cells (row band | section | time).
 - **Narrower columns.** Stacked day columns may shrink to 64 px, so seven
-  days fit next to even the widest label (about 290 px) on A4 portrait; names
+  days fit next to even the widest label (about 290 px; since v1.76 the
+  three label columns are `auto` tracks that wrap narrower instead) on A4
+  portrait; names
   abbreviate (down to initials). `AssignmentPill` `compact`: an unfixed solver
   pill shows its fix button only on hover or keyboard focus (always on touch
   screens) and keeps no room for it; a fixed pill keeps the button. Compact
@@ -2269,7 +2314,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 
 ## v1.67 — Claude Opus 5.5 as planning model
 
-- Settings → Solver offers **Opus 5.5** (`claude-opus-5-5`, "Best quality",
+- Settings → Planning rules & AI offers **Opus 5.5** (`claude-opus-5-5`, "Best quality",
   $4 / $20 per MTok, cache reads $0.20 = 0.05x, cache writes 1.25x) next to
   Sonnet 5 (default, unchanged), Opus 4.8 (now "Previous Opus") and Haiku 4.5.
   Pricing in `agent_budget.MODEL_PRICES` + `CACHE_READ_MULTIPLIERS` and
@@ -2282,7 +2327,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   either). History compaction strips the thinking blocks it invalidated
   (conversation-bound models only); refusal notes name the category.
 - Using it needs an Anthropic API key (console.anthropic.com → API keys) in
-  Settings → Solver → "Anthropic API key" (admin; stored server-side, the API
+  Settings → Planning rules & AI → "Anthropic API key" (admin; "Claude API key" since v1.74; stored server-side, the API
   only reports whether one is set) or `ANTHROPIC_API_KEY` in the server
   `.env`, plus API credit on that Console organization. Claude.ai
   subscriptions and the API are billed separately.
@@ -2294,7 +2339,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Not verified against the live API in development (no key there): the
   request and response shapes follow Anthropic's published docs and were
   checked against the installed SDK's wire format. After the deploy, run
-  Settings → Solver → "Model connection test" once with Opus 5.5.
+  Settings → Planning rules & AI → "Model connection test" (since v1.74 "Test the AI connection") once with Opus 5.5.
 
 ## v1.68 — Claude tuning and Claude comparisons in the arena
 
@@ -2485,13 +2530,551 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   Opus 5.5 low, Sonnet 5.5 and Qwen Flash NVFP4, 3 runs each on a 3-day and
   an understaffed 5-day case, all valid. Opus 5.5 medium ranks first on the
   decision tiers; Opus 5.5 stays the recommended model.
-- Settings → Solver cost hints are per planned day (`approxRunCost` in
+- Settings → Planning rules & AI cost hints are per planned day (`approxRunCost` in
   `src/lib/llmPricing.ts`): Opus 5.5 about $0.80 and Sonnet about $0.50
   (measured), Opus 4.8 and Haiku 4.5 estimated from their prices. The old
   "per run" ranges understated week runs (Opus 5.5: about $5–6 per week).
 - No code path changed; version 1.70 (70).
 
-## v1.71 — Swap assistant
+## v1.71 — Location-colored labels and distinct person colors
+
+- **The label column says where.** In the team grid (both time layouts) the
+  label cells are colored by location, like a "plan for all": every
+  location has a color, its row bands (modalities: MR, CT, Echo, …)
+  alternate between a light and a stronger shade of it (`ground` / `chip`,
+  counted per location in row order; the time lanes of one row band share
+  their shade, `labelShade` in `teamColors.ts`, `bandIndexByRowId` in
+  `ScheduleGrid`), and the location separator becomes a band in its strong
+  color (`band`) with the name in white capitals. Label text takes the
+  location's `ink` (≥ 5.5:1 on both shades, ≥ 7:1 in dark mode). This
+  replaces the v1.66 section tint of the stacked labels in the team grid;
+  print, PDF and public pages (no `locationRowTints`) keep the section
+  colors, cells and pills are unchanged.
+- **Every location has a color.** `Location.color` stays optional; without
+  one ("Auto", the default and what "None" was) the team grid takes the next
+  automatic color in location order — blue, green, amber, violet, rose,
+  teal, orange, slate — skipping colors other locations picked
+  (`resolveLocationColors`, `src/lib/locationColors.ts`). Nothing is stored
+  for Auto, so calendars keep their revision. With locations switched off
+  every row belongs to the default location and takes its color. The
+  template picker offers Auto (showing the color it currently means, dashed
+  ring) plus seven vivid presets and the four muted ones of v1.64. Each
+  preset carries a `band`; `locationTint` derives one for other colors
+  (white text ≥ 5:1). My plan still tints only picked colors.
+- **Person colors that stay apart.** The 16-color palette had near-twins
+  (violet/purple ΔE00 ≈ 3, emerald/green fills ≈ 2.4, three oranges). The new
+  `PERSON_COLORS` has 20 entries in two tones: "light" (200/300 fill, dark
+  text, 700 circle) and "dark" (600–800 fill, white text, darker circle),
+  chosen by a search over the Tailwind palette and ordered so any two of the
+  first 12 fills differ by ≥ 15 ΔE00 and all 20 by ≥ 9 (also checked under
+  simulated red-green color blindness while choosing). In dark mode the
+  tones swap (light people: deep fill, light text; dark people: bright fill,
+  dark text). Red/rose stay out (rule violations). Colors repeat after 20
+  people, still by clinician list order; My plan avatars use the same
+  palette.
+- Tests: `src/lib/locationColors.test.ts` (new), `src/lib/myPlan/colors.test.ts`
+  (CIEDE2000 helper checked against the Sharma et al. reference pairs;
+  palette distance, tones and contrast; preset shades and bands),
+  `ScheduleGrid.test.tsx` (automatic color, own color, alternation per row
+  band restarting per location, stacked lanes share a shade, band),
+  `LocationColorPicker.test.tsx` (Auto), `e2e/my-plan.spec.ts` (Auto blue →
+  Sand → Auto).
+- Deploy notes: no schema or data change. After the deploy every team grid
+  shows location colors (uncolored locations get automatic ones) and every
+  person a new color.
+
+## v1.72 — Holidays by state
+
+- **The bug.** "Load Holidays" kept every entry of the date.nager.at answer
+  and ignored its `global` and `counties` fields, so Germany got the regional
+  holidays of all 16 states (19 days for 2026, see `default_state.json`:
+  Heilige Drei Könige, Buß- und Bettag and others). The holiday day type
+  overrides the weekday, so a team in NRW got holiday staffing on Tue
+  06.01. and Wed 18.11.2026, and the solvers planned with it. The same held
+  for the other picker countries with regional holidays (CH, ES, GB, IT).
+- **Region select.** Settings → Holidays shows a second select next to the
+  country for countries listed in `HOLIDAY_REGIONS` (`src/lib/holidays.ts`:
+  16 German states, 26 Swiss cantons, 19 Spanish, 4 British and 20 Italian
+  regions, ISO 3166-2 codes as date.nager.at uses them in `counties`,
+  checked against its 2025–2027 data). The first option is "All states"
+  ("All cantons", "All regions"); without a region a hint says that the
+  regional holidays of all states are included. A stored code without a
+  name stays visible as its code. Changing the country resets the region
+  (`handleChangeHolidayCountry`); a region of another country is ignored by
+  the select and by the load (`holidayRegionForCountry`).
+- **Filter.** `filterHolidaysByRegion` (pure) keeps an entry when
+  `global === true`, when no region is set, or when `counties` contains the
+  region; `handleFetchHolidays` applies it before the existing dedupe.
+- **No automatic rewrite.** Picking a region only saves the region; the
+  stored list stays as it is (an amber note says so until the next load).
+  Load Holidays replaces the year's list as before, manual entries of that
+  year included.
+- **Persistence.** `AppState.holidayRegion: Optional[str]` (declared, or
+  pydantic would drop it on every save). Normalized identically in
+  `backend/state.py` (`_normalize_holiday_region`) and `normalizeAppState`
+  (`normalizeHolidayRegion`): uppercased, must match
+  `[A-Z]{2}-[A-Z0-9]{1,3}` (Nager uses numeric codes such as `IT-32`), no
+  trimming, anything else is unset; non-strings become unset before
+  validation, so a bad value never fails a save with 422. A wrap
+  `model_serializer` on `AppState` omits the key when unset (as
+  `Location.color` does), so a calendar without a region dumps
+  byte-identical to before: same stored blob, same revision, no spurious
+  `409 state_changed` for open tabs after the deploy. A region is calendar
+  content (it changes the revision), but not a planning input:
+  `planning_fingerprint` excludes it like `holidayCountry`/`holidayYear`.
+  The OpenAPI schemas only gain the optional property.
+- Help → Holidays explains the state choice.
+- Tests: `src/lib/holidays.test.ts` (filter with the real DE 2026 answer,
+  normalizer, region table), `shiftRows.test.ts` (normalizeAppState),
+  `SettingsView.test.tsx` (select, hints, load arguments, foreign region,
+  unknown code); backend `test_state_normalization.py` (normalizer,
+  non-strings, a pre-v1.72 blob keeps bytes and revision through load and
+  save, round trip, clearing restores the old revision),
+  `test_state_routes.py` (GET/POST `/v1/state` round trip, 409 for a stale
+  tab), `test_fixed_planning_tasks.py` (fingerprint); e2e
+  `holiday-region.spec.ts` (mocked API, runs in CI).
+- Deploy notes: no migration; stored calendars stay byte-identical until a
+  user picks a region. Existing holiday lists are not corrected
+  automatically: users pick their state and load again.
+  `backend/default_state.json` is unchanged (holidays of all states, no
+  region), so new accounts see the hint. Version 1.72 (72).
+
+## v1.73 — Stacked cells name a different section
+
+> Superseded in v1.76: lanes never mix sections, so a cell never belongs to
+> another section than its lane; the tag, `data-other-section` and the "+N"
+> badge are gone. Kept here for history.
+
+- **The confusion.** In "Times: Stacked" a lane is named after the section
+  it holds on most days ("IRM tout ZK +2"). A day whose slot belongs to
+  another section ("IRM prostate ZK" on Thursday) only got a small corner
+  mark (v1.66), so its open slot read as "IRM tout ZK": the picker's
+  correct "Not qualified" for people who only have IRM tout ZK looked like
+  a bug.
+- **Now** such a cell names its section in a quiet tag at its top, in the
+  style of the own-time tag (`STACKED_CELL_TAG` in `ScheduleGrid.tsx`; since
+  v1.76 `STACKED_OWN_TIME`, a plain note under the people,
+  `data-other-section`), before a differing time; the corner mark is gone.
+  Cells of the lane's own section are unchanged; the label's "+N" and the
+  cell tooltip stay. Print and the portrait PDF use the same grid, so the
+  name is on paper too, where a tooltip never helped. A single-day view
+  never shows it (a lane's section is that day's).
+- Help → Settings text updated.
+- Tests: `ScheduleGrid.test.tsx` (other section named, lane section not,
+  section and time tags in that order on an open slot).
+- Version 1.73 (73). Deployed together with v1.72 (holidays by state).
+
+## v1.74 — Opus 5.5 is the default planning model
+
+- Merges the work started as "v1.71" on the feature branch
+  (`claude/tender-wright-6w4lcy`) with main's v1.71–v1.73. Where both sides
+  changed the same feature, main's v1.72 holidays by state is the base and
+  this release adds hand-added holidays on top (see the holidays bullet).
+- `AgentConfig.DEFAULT_MODEL` (and with it `agent_budget.DEFAULT_AGENT_MODEL`)
+  is `claude-opus-5-5` instead of `claude-sonnet-5`, after arena round 8
+  (`backend/arena/README.md`). It applies wherever no model is saved in
+  Settings → Planning rules & AI; a saved global choice still wins (the setting is
+  global, so it applies to every user). The compose files and `.env.example`
+  default `AGENT_MODEL` to it too; an explicit `AGENT_MODEL` in the server
+  `.env` keeps working for paths without the injected model.
+- The Settings picker lists Opus 5.5 first, marked "(default)"; Sonnet 5 is
+  "Balanced quality & cost". `test_frontend_default_model_matches_the_backend_default`
+  keeps the picker's first option and the backend default in step.
+- Cost: Opus 5.5 is about $0.80 per planned day (Sonnet 5 about $0.50). The
+  per-user AI budget default stays $5 (admin-settable in Settings → Planning rules & AI);
+  one planned week costs about $5–6, so raise it for regular planners.
+- Version 1.74 (74).
+- Team and My-plan headers: the start-page star and the saved "Views" menu
+  are gone (`StartPageStar.tsx`, `SavedViewsMenu.tsx`, `SaveViewForm.tsx`
+  deleted with the helpers, chrome classes and icons only they used;
+  `onApplyView` / `applySavedView` removed). `TeamPlanHeader` row 1: scope
+  switch left, "Times" right (wraps below it on narrow phones);
+  `PlanHeader` keeps only the optional extras on the right.
+- `usePlanScope()` is plain page state: the calendar always opens in "Team".
+  Stored `startViewDesktop` / `startViewMobile` are ignored (nothing could
+  unset them any more), so the team plan no longer waits for the
+  preferences (`scopeReady`, `START_VIEW_WAIT_MS` removed; `CalendarPlaceholder`
+  only covers My plan waiting for the calendar). `savedViews` and both start
+  views stay in `UserPreferences`, `normalizePreferences` and the backend,
+  unused, so stored data stays compatible.
+- Linked person: the "My plan" circle shows the initials of the person linked
+  via "That's me". `PlanScopeSwitch` takes `meName`, so the own plan's segment
+  has the tooltip "My plan · <name>" and the accessible name "My plan (<name>)"
+  (team header and My plan). While linked, `PersonPicker` ends with
+  "Not <name>? Change who you are" (`onChangeLink`, `changeLinkLabel`: the
+  linked person's name without titles, visible because phones have no
+  hover tooltip; "Not you? …" without a name); `MyPlanView` then saves
+  `clinicianId: null` and drops the viewed person, so "Who are you in the
+  plan?" asks again. HelpView §12 explains both and quotes the label with
+  "<your name>" (`HelpView.test.tsx` checks it against `changeLinkLabel`).
+- `e2e/my-plan.spec.ts`: the star test became "the calendar always opens in
+  Team, even with a stored My-plan start view" (no PUT on open, no My-plan
+  flash, person colors on the team pills); the start-page wait test became
+  "My plan waits for the calendar" (switching by hand while GET /v1/state is
+  held); new: the person-picker footer unlinks (PUT `clinicianId: null`).
+- Settings wording pass (text, aria-labels and titles only; setting keys,
+  data keys, ids, `data-*` attributes, API fields and behaviour unchanged).
+  Key renames: "Solver Settings" → **Planning rules & AI** (also in HelpView,
+  the planning panel, the planning window and the backend notes that point
+  there: `harness.py` budget note, `anthropic_provider.py`,
+  `openai_provider.py`); "Pools" → **Rest Day & Vacation rows**; "Schedule
+  snapshot" → **Shifts file** (avoids the clash with "Calendar snapshots";
+  the import dialog said that all shifts, locked ones too, are replaced
+  without a backup (superseded below: a backup is now saved first), and the
+  result line counts skipped *shifts*); "Enforce
+  same location per day" → **One location per person per day**; "Enforce
+  continuous shifts" → **No gaps within a working day**; "Section priority
+  order" → **Section priority when short-staffed** (shared
+  `SECTION_PRIORITY_HELP`, button "Change order"); "On-call rest days" →
+  **Rest days around on-call duty** ("On-call section", "Rest days
+  before/after"); "Planning quality profile" → **Planning goals (AI)**;
+  "AI agent instructions" → **Instructions for the AI planner**; "Preload
+  holidays" / "Load Holidays" → **Load public holidays** / **Load holidays
+  for {year}** (the first helper warned that it replaced the year's list;
+  superseded below by the region choice and kept hand-added holidays); "List of holidays that will be
+  added…" → "Holidays in {year}". AI block: AI service, AI model, AI server
+  address, Check server certificate (TLS), Claude API key, Test the AI
+  connection, AI budget per account ("total, no monthly reset"; aria-label
+  "AI budget per account (USD)"). Template builder: "Sections" panel ("+ Add
+  section", "Delete section" with an Eligible Sections warning on the last
+  block of a section), "People required" and "Shift time" popovers (Start /
+  End / Ends: Same day, Next day, +2 days, +3 days), "+ Location" adds "New
+  Location" (what `e2e/full-workflow.spec.ts` already expected), location
+  position/name get accessible names (`CustomSelect` takes optional
+  `ariaLabel` / `title`). Person editor: "Working Hours & Times" (was
+  "Preferred Working Times"), "Contract hours per week", "Weekly hours
+  tolerance (±)", requirement "Only these hours" (stored `"mandatory"`);
+  WorkPatternEditor field helpers sit outside the `<label>`s. Health check:
+  issue labels "Shifts in deleted slots", "Two sections in one cell",
+  "Double entries", "Too many columns", "Rest Day & Vacation entries" and the
+  matching `backend/state_routes.py` messages. The planning-window gear
+  button's title is "Run inbox, weights & timeout"
+  (`e2e/agent-apply.spec.ts` follows). Backend fallback notes say "The basic
+  plan (without AI) was returned instead."; the "Agent LLM unavailable" and
+  "could not" phrasing the frontend matches on stays.
+- Advanced section: the Database Health Check and the inspector link moved
+  into a collapsed "Advanced" section at the very bottom of Settings; the
+  check only mounts, and so only loads, when the section is opened
+  (`SettingsView.test.tsx` covers the fold).
+- "About Automated Planning" window (`SolverInfoModal.tsx`) redesigned: the
+  runs come first, each as a card with date range, status pill, start time,
+  duration and AI cost in one line; the unresolved note becomes colored
+  issue chips via `parseUnresolvedNote` (open slots red; short days,
+  over-long days and preferred times amber; "No unresolved issues" green;
+  unknown note shapes stay plain text); warnings get their own box; a footer
+  holds Log/Comment on the left and Discard/Apply (primary) on the right. The
+  total AI cost is a small panel, and "How it works" is a compact card whose
+  long text folds away while runs exist.
+- Tests: `SettingsView.test.tsx` (import result sentence and the confirm
+  dialog), `WeeklyTemplateBuilder.test.tsx` (the
+  delete-section dialog names Eligible Sections and the deleted shifts),
+  `HelpView.test.tsx` (Planning rules & AI, gear button, no "Solver
+  Settings"), `ClinicianEditor.test.tsx` follows the renamed box;
+  `e2e/full-workflow.spec.ts` ("+ Add section", the eligibility dialog
+  scope, location inputs found by their "Location name" accessible name) and
+  `e2e/team-page.spec.ts` ("Replace shifts") follow the labels. The gear
+  button's title starts with "Run", so `app.spec.ts` and
+  `colband-explosion.spec.ts` look up the Run button with `exact: true`.
+- Holidays added by hand stay when loading (built on v1.72's state select).
+  The branch had its own "Region" picker (German states only, unset meaning
+  "Nationwide only", regions the service listed this session); on merging,
+  main's `holidayRegion`, `HOLIDAY_REGIONS`, `filterHolidaysByRegion` and
+  "All states" semantics (unset = the regional holidays of all states) won,
+  and the duplicate picker, `holidayRegionOptions` and the seen-regions list
+  were dropped. Added on top:
+  - `Holiday.source` (`"public"` = loaded, `"manual"` = added by hand;
+    optional in `src/api/client.ts`). Backend `Holiday` declares it with a
+    before-validator that unsets unknown values (never a 422) and a wrap
+    `model_serializer` that omits it when unset, like `holidayRegion` and
+    `Location.color`, so calendars stored before keep their bytes and
+    revision. `planning_fingerprint` drops it.
+  - `mergeLoadedHolidays(previous, entries, year, region?)`
+    (`src/lib/holidays.ts`) filters with `filterHolidaysByRegion`, replaces
+    only that year's loaded holidays (source `"public"`, and older untagged
+    entries the service lists for any region), keeps hand-added ones and
+    adds each date and name once. `handleFetchHolidays(country, year,
+    region?)` uses it and resolves to the count ("Loaded N public holidays
+    for {year}."); it no longer replaces the year's whole list.
+  - Manual adds carry `source: "manual"` and show a small "added by hand".
+    The load helper says "Replaces this year's loaded public holidays;
+    holidays you added by hand stay."; the state select has an accessible
+    name like the country picker ("State: …", "Canton: …"). HelpView §8
+    explains both.
+- Shifts file import with backup: `createImportBackup(state)` (client,
+  `POST /v1/state/snapshots/import-backup`, 401 handling like
+  `createSnapshot`). `handleImportScheduleSnapshot` builds the on-screen
+  payload (`buildCurrentStatePayload()`), then `saveShiftsFileImport`
+  (`src/lib/shiftsFileImport.ts`) saves the backup first and the imported
+  calendar second; a failed backup throws "The backup could not be saved, so
+  nothing was imported." without saving. The result carries `backupName`;
+  Settings adds "A backup of the previous calendar is in Calendar snapshots:
+  “Auto-backup before shifts file import”." The confirm dialog and the card
+  helper say the current calendar is saved in Calendar snapshots first;
+  HelpView §10 calls it the latest automatic backup (one slot shared with
+  restore and apply).
+- Review fixes of the wording pass: the slot editor's "Ends" select is
+  `w-32` (labels no longer clipped; fits the 260px popover); new-person
+  placeholder "Hours/week" (the helper explains it is optional); the
+  fallback is called **Basic plan (without AI)** everywhere
+  (`heuristicFallbackNotice`, the SolverInfoModal headings, the harness
+  notes "Agent solver: basic plan (without AI), …" and "The returned draft is
+  the basic plan (without AI)."); People Remove confirm says "Their shifts in
+  all weeks…"; Reset title "Remove shifts in the selected timeframe. Locked
+  shifts stay."; planning texts say people instead of clinicians; Database
+  Inspector: "Rest & vacation", "Rest Day & Vacation entries (placed by
+  hand)", columns Row / Person; README "Rest Day and Vacation rows"; Sections
+  panel helper "Drag into a cell to add a slot. Top = staffed first when
+  short-staffed."; WorkPatternEditor tolerance helper "A day counts as short
+  or long outside target ± this. Empty: short below half the target, long
+  above target + 1 h."
+- Tests: `src/lib/shiftsFileImport.test.ts` (backup before save, no save when
+  the backup fails, a failing save is passed on); `src/lib/holidays.test.ts`
+  (v1.72's suite plus `mergeLoadedHolidays`: state filter, all states without
+  one, hand-added and other years kept, untagged entries the service lists
+  replaced, no duplicates); `SettingsView.test.tsx` (v1.72's state tests on
+  the merged labels, load count and "added by hand", import result names the
+  backup, backup failure message); `HelpView.test.tsx` (import backup and
+  the state hint); `DatabaseInspectorPage.test.tsx` (new labels);
+  `SolverInfoModal.test.tsx` follows "Basic plan (without AI)"; backend
+  `test_state_normalization.py` (untagged holidays dump without `source`, a
+  pre-v1.74 calendar keeps its bytes and revision, round trip, unknown tags
+  dropped), `test_state_routes.py` (GET/POST `/v1/state`),
+  `test_agent_workflow_safety.py` (fingerprint); e2e `team-page.spec.ts`
+  (stored state, a holiday added by hand in the UI and older ones survive a
+  load; the state filter itself stays in `holiday-region.spec.ts`, whose
+  heading lookup follows "Load public holidays").
+
+## v1.75 — Hand-placed rest days block automatic planning; on-call fairness follows the rest rule
+
+- **The bug (rest days).** A name dragged into the Rest Day row is stored as a
+  `pool-rest-day` assignment, and the calendar and the person picker show that
+  person as off that day. Every planner skipped `pool-` rows, though: CP-SAT,
+  heuristic v2 and the AI agent could still give them a shift that day, and the
+  apply gate never noticed. The Settings helper even said so ("only a marker").
+- **Now** a stored `pool-rest-day` entry for person X on date D (any source)
+  means X is off on D, handled like vacation in every planner:
+  - `assignment_policy.manual_rest_days(*lists)` returns
+    `{(clinicianId, dateISO)}` in one pass per list (`REST_DAY_ROW_ID`); all
+    planners and the validator use it.
+  - Validation: hard rule `REST_DAY` (`validate_rest_days`, part of
+    `validate_assignments` and `__all__`), message "<name> has a rest day on
+    <date> but is assigned to slot <row>". Rest days come from
+    `state.assignments` and the checked list together, built once per call (it
+    runs in the agent's hot loops). Pool rows are exempt. The default
+    `violation_key` applies: a pre-existing conflict is baseline, so the agent,
+    the heuristic's optional fill and `run_apply` only refuse new ones.
+  - CP-SAT: `is_unavailable` (vacation or rest day) replaces `is_on_vac` in
+    `_build_assignment_vars`, so there is no decision variable on that date.
+    Existing shifts on such a day stay occupied (the vacation precedent in
+    `_collect_manual_assignments`), so the model never becomes infeasible; a
+    slot only that person could fill stays open. The "no variables"
+    diagnostic counts people "fully on vacation or rest days".
+  - Heuristic v2: `ClinicianState.rest_days` / `has_rest_day`, checked next
+    to vacation in `_is_doctor_eligible_for_slot`, which covers bottleneck
+    pre-assignment, day fill and retries, consecutive chaining and optional
+    capacity, and with them the agent's basic plan (without AI) and the repair
+    seed.
+  - Agent: candidate lists, day priorities, `suggest_day_blocks`, rescue and
+    balance swaps, `apply_moves` / `apply_proposal` and the final audit all use
+    the shared gate, so a person on a rest day is ineligible with reason
+    `REST_DAY`. `repair_neighborhood` drops them from its candidate model, like
+    vacation; `get_clinician_summary` lists their in-range `rest_days`; the
+    hard-rule lists of the repair and day prompts name the rule.
+  - `run_apply`: a stored draft that puts someone on a rest day added after the
+    run is refused as `plan_invalid` by the existing new-violation gate, with
+    force too (the rule check runs before the "calendar changed" question).
+- **Date semantics** follow vacation: a shift counts on its start date. A
+  night shift starting the evening before a rest day stays possible; one
+  starting on the rest day does not.
+- **Not vacation.** A rest day credits no contract, YTD, weekly or workday
+  target (vacation does). Stored `pool-vacation` entries stay legacy and
+  unread: vacation comes from each person's vacation periods.
+- **Fingerprint.** `planning_fingerprint` is unchanged, so stored runs keep
+  their fingerprints (`test_agent_workflow_safety.py` pins a value computed
+  with the v1.74 code). A rest day added after a run changes the fingerprint,
+  as any calendar entry does.
+- **On-call fairness (Balanced).** `quality.extra_metrics` counted the on-call
+  category from `onCallRestClassId` even with "Rest days around on-call duty"
+  off, where the section select is disabled. It now uses
+  `executor.on_call_class` (the section only while the rule is on), the
+  source the duty pre-pass and the `on_call` flags in tool results already
+  used; weekend and night are unchanged. The duty-pass follow-up in
+  `PlanningWorkflow.apply` uses the same property, so with the rule off it
+  reports `duty_complete` instead of chasing the stored section, and
+  `arena/workflow_eval.py` does too (falling back to the raw setting for older
+  checkouts). Left alone: the scenario builders in `arena/run.py` and
+  `arena/generate_fixture.py` (fixture plumbing; the fixture has the rule on)
+  and the solvers' rest-rule code, which already checks the toggle. In the
+  frontend, `solverStats.ts`, `schedule.ts` and `myPlan/shifts.ts` already
+  gate on the toggle.
+- **`QUALITY_VERSION` 2 → 3.** The number is a label stamped into each run's
+  `debugInfo.agent` and into arena reports, so metric values are compared only
+  within one definition; no code branches on it (the frontend only types it).
+  Duty burden changes meaning when the rule is off, and Rest Day row dates now
+  count as unavailable for duty opportunity weights, like vacation, so the
+  version moves. Stored runs keep their old number and nothing re-reads it.
+- Settings: the Rest Day row helper says "Filled by the on-call rest rule.
+  Names you drag in mark a day off: automatic planning leaves that person free
+  that day."; Planning goals (AI) adds "On-call shares count only while “Rest
+  days around on-call duty” is on (that is where the on-call section is
+  chosen)." Help → Rest Day/Vacation rows explains the day off. README,
+  `HEURISTIC_SOLVER_V2_README.md`, `human-heuristic-solver.md` and
+  `backend/tests/TEST.md` follow.
+- Tests: `test_validation.py` (`REST_DAY` for manual/solver/legacy sources,
+  read from state and from the checked list, only its own date and person,
+  overnight semantics as for vacation, pool rows and stored Vacation row
+  entries ignored), `test_solver.py` (`TestSolverRestDayRow`: the other person
+  is chosen, the only qualified person leaves the slot open with a solved
+  status, an existing shift on the rest day stays), `test_heuristic_v2.py`
+  (same, required and distribute-all), `test_agent_tools.py` (candidates,
+  batched candidates, day priorities, day blocks and the clinician summary
+  show `REST_DAY`; `apply_moves` refuses; a fixed conflict blocks nothing
+  else), `test_agent_planning_workflow.py` (neighborhood never previews the
+  person; duty-pass follow-up with the rule off and on),
+  `test_agent_harness.py` (basic plan fallback and repair seed),
+  `test_agent_workflow_safety.py` (draft refused after a new rest day, also
+  with force; a fixed conflict does not block an unrelated draft; pinned
+  fingerprint), `test_agent_quality_profile.py` (on-call burden only with the
+  rule on, rest days reduce opportunity weights, version 3);
+  `SettingsView.test.tsx` and `HelpView.test.tsx` (texts).
+- Deploy notes: no migration. Rest days placed by hand before v1.75 count from
+  the next planning run on; stored drafts that conflict with them are refused
+  on apply. Version 1.75 (75).
+
+## v1.76 — Stacked team week: one row per section
+
+- **The confusion.** v1.65's lanes were time lanes: the busiest day opened
+  them and the other days joined by time, so one lane could hold "IRM neuro
+  HK" on Monday and "IRM prostate HK" on Tuesday. The label named the most
+  common section plus a "+N" badge, and v1.73 added a grey tag in cells of
+  another section. Users read the lane as one workplace, or took the in-cell
+  tag for the row label and thought nobody was planned. "STAFF GYN" (one
+  Monday slot) had a lane of its own, hatched on the other days; that is now
+  the look everywhere.
+- **Lanes by section** (`src/lib/stackedTeamLayout.ts::buildSectionLanes`,
+  pure): a class row's slots are grouped by section (`sectionId`, else
+  `sectionName` / `name`) and each section is split by `buildTimeLanes`
+  (same time first, then the nearest start among the lanes whose shift
+  overlaps the slot's — on the clock, so a 00:00 Saturday night overlaps a
+  22:00 weekday night; touching ends like 07:30–13:00 / 13:00–16:00 do not
+  overlap). Two slots of one section on the same day get two lanes; a
+  variant of the section with another time that overlaps it (e.g. Saturday
+  08:00–13:00 next to weekday 07:30–13:00, a shorter Friday) stays in the
+  section's lane and its cell shows its own time. A section's separate time
+  blocks on different days get a lane each, hatched on the other days: the
+  user's IRM cardio HK (Mon and Thu 07:30–13:00, Wed 13:00–16:00 and
+  16:00–19:00) has three lanes. Without the overlap rule Wednesday (the
+  busiest day) opened the 13:00 and 16:00 lanes and Monday's 07:30 joined the
+  13:00 lane by the nearest start, so the row read "07:30–13:00" while its
+  Wednesday cell held the afternoon shift under an in-cell time tag — the
+  same misreading as the old section tag.
+- **Lane order** is computed from all of the row's slots, not only the
+  visible days, so it and the lane ids (`${row.id}__t${n}`, or `row.id` when
+  one lane is on screen) are the same in every week: sections by their
+  earliest start (minutes from midnight; slots without a valid time count as
+  never), then by the position of their first slot in template column order
+  (day Mon…Sun, Holiday, then the day's col band order), then by name; within
+  a section, lanes by the start of their most common time (the first day's on
+  a tie; lanes without a time last), then by creation order. Lanes without a
+  slot on the visible days stay hidden; a row without any keeps its first.
+- **Meta.** `StackedRowMeta.otherSections` is removed; new `groupSpan`
+  (visible lanes of the row, on its first lane), `sectionSpan` (visible lanes
+  of the section, on its first lane), `isFirstInSection`, `isLastInSection`.
+  `title` is the lane's section unless it equals the row band name on the
+  row's first section; a later section named like the row band is titled (an
+  untitled lane would read as the section above), and so is a later lane
+  without a time. `sectionName` / `sectionColor` are now exact for the lane.
+- **Label design** (`RowLabel.tsx::StackedLabelCells`). In the stacked week
+  the label column is three grid columns (`repeat(3, auto)` in
+  `ScheduleGrid`, `splitLabels`): row band | section | time. The row band
+  cell spans all visible lanes of its row (`grid-row: span groupSpan`), the
+  section cell all lanes of its section (`span sectionSpan`), the time cell is
+  per lane — merged cells, so the label reads location band → row band →
+  section → its times. Grid auto-placement puts later lanes' cells next to
+  the spans (no explicit rows; separators only come before a row's first
+  lane). Row band: bold capitals, at most 128 px wide (room for one long word
+  such as HINTERGRUNDDIENST), up to three lines or one per lane; section: at
+  most 112 px (160 px from `lg`), up to four lines or two per lane plus one
+  (`WebkitLineClamp` from `groupSpan` / `sectionSpan`, so a spanning cell
+  uses its height instead of an ellipsis); time: tabular digits,
+  right-aligned, one column. The three label columns are `repeat(3, auto)`
+  tracks: as wide as their text when there is room; when seven 64 px days
+  leave less (A4 portrait with long names) the row band and section columns
+  wrap narrower — `overflow-wrap: anywhere`, so a word breaks only as a last
+  resort and the week never overflows the page. Team
+  grid: every label cell takes its row band's location shade (v1.71 colors
+  and alternation unchanged); a faint line separates the row band column.
+  Print, PDF and public pages (no location tints): row band cells neutral
+  (slate-50), section and time cells in the section's color
+  (`.stacked-label-tint`). A later lane of a section shows only its time; its
+  section is in an sr-only span and in the time cell's tooltip ("IRM neuro
+  HK · 16:00–19:00"). The top-left header and the pool row labels span the
+  three columns. A single-day view (phone) keeps one label cell per lane
+  (`StackedRowLabel`: row band on the row's first lane, then section and
+  time on every lane — a later lane of one section in a quieter
+  `opacity-75` — since there is no spanning section cell; only a section
+  named like its row band stays unnamed on its first section, as in the
+  week).
+- **Dividers** (`STACKED_DIVIDER` in `RowLabel.tsx`, bottom borders in
+  see-through ink so a line looks the same on white, hatched, section-tinted
+  and location-colored cells): a hairline between the lanes of a section, a
+  line between sections, a stronger line between rows (row bands). Spanning
+  label cells end with their last lane's level, and with none before the
+  pools separator.
+- **Cells.** The in-cell section tag (`data-other-section`) is gone. A time
+  other than the lane's (only an overlapping variant now, e.g. Saturday
+  08:00–13:00 in the 07:30–13:00 lane) is no longer a grey chip at the top
+  of the cell, the look users took for a row label: it is a quiet note under
+  the people — clock glyph (`PlanIcon` "clock") and the compact time in
+  10 px slate-500 tabular digits, no background or ring
+  (`STACKED_OWN_TIME`, `data-own-time`). The tooltip (section · time) and
+  the hatched days without a slot stay.
+- **Width.** At most about 405 px on wide screens (row band 17 + 128,
+  section 14 + 160, time 86). On A4 portrait (764 px in print media) seven
+  64 px days leave 316 px; the auto tracks fit the label into that (the
+  user's demo plan: row band 130, section 99, time 86 px; days 64 px), and
+  with very long names (HINTERGRUNDDIENST and "interventionnelle" in one
+  plan) the row band and section columns share the room and wrap.
+- **More rows.** Mon–Sun lanes: arena `fixture_complex.json` 33 → 40 (14
+  class rows), `default_state.json` 7 → 7, the user's demo plan 13 → 27.
+- Unchanged: side by side, the clinic sheet, the v1.71 colors, person pills,
+  slot ids, assignment keys and cell `data-*` attributes, so drag & drop, the
+  picker, highlights and "Show in team plan" work as before.
+- Help → "Times: Stacked" rewritten (one workplace and time block per row,
+  line weights, the clock note for a day's own time, no "+N"). README
+  feature line updated.
+- Tests: `src/lib/stackedTeamLayout.test.ts` (`buildTimeLanes`: a slot
+  that overlaps no free lane opens its own; `buildSectionLanes`: the
+  rotating cardio pattern gives three lanes without a differing time; layout
+  meta, spans, stable ids and order — also when a hidden day or a holiday
+  decides the order), `ScheduleGrid.test.tsx` (three label columns and
+  spans, the pool row label spans all three, divider levels, single-day
+  label names every lane, no section tag, own time as a note under the
+  people, tints, screen-reader section, location shades), `HelpView.test.tsx`,
+  `e2e/team-page.spec.ts` ("Stacked gives every section of a row band its
+  own lanes"); the column counts in `team-page.spec.ts`,
+  `PrintWeekPage.test.tsx` and `PrintWeeksPage.test.tsx` now read the day
+  columns (`repeat(N, minmax`), since the stacked grid starts with
+  `repeat(3, auto)`.
+- Deploy notes: frontend only, no schema or data change. Version 1.76 (76).
+
+## v1.77 — Team switch while My plan is loading
+
+- `src/components/schedule/CalendarPlaceholder.tsx` (shown in scope "My plan"
+  until this user's calendar is loaded, see the core UI notes) used to be an
+  empty card: the page had no "Team | My plan" switch until loading finished,
+  so a slow load trapped the user in the empty My plan card. It now has the
+  same frame and header position as `MyPlanView` and shows `PlanScopeSwitch`
+  (scope "me", compact on phones) above a busy status "Loading calendar…"
+  with a small spinner (still for `prefers-reduced-motion`). The switch shows
+  no initials yet: the linked person is only known once the calendar is
+  loaded (until then the page holds the demo people). Props:
+  `onScopeChange` (the page's `setPlanScope`), `isMobile`.
+- Tests: `CalendarPlaceholder.test.tsx` (switch usable and reports "team",
+  busy status text, plain "My plan" label, compact on phones).
+- Deploy notes: frontend only, no schema or data change. Version 1.77 (77).
+
+## v1.78 — Swap assistant
 
 "Find swap" for the rota planner: swap a shift for one of a colleague's
 (swap), give it away (handover) or fill an open position (cover), with the
@@ -2510,13 +3093,16 @@ server checking every option against all planning rules.
   people's stored assignments in the whole ISO weeks of the moved dates plus
   at least 7 days; cover adds the instance's co-holders) with references
   skipped and a `ValidationContext`; one baseline per partner and window is
-  cached. Apply and undo re-check the whole calendar without a context.
+  cached. Apply and undo re-check the whole calendar without a context. All
+  three gates pass `own_rest_days=True` (see the Rest Days below).
   `backend/tests/test_swap_property.py` asserts that both verdicts (and the
   warnings, pre-existing checks and solver-rule hits) agree on the arena
-  fixture, a dense plan, `rich_swap_state` and `wide_swap_state` (on-call
+  fixture, a dense plan, `rich_swap_state`, `wide_swap_state` (on-call
   rest of 3 and 7 days, a duty ending two days later, two locations, a
-  336 h stretch), with counters that the cases a margin under 7 days, a
-  cover slice without co-holders or a cut block would get wrong really occur.
+  336 h stretch) and `rest_swap_state` (Rest Days in every shape the
+  `REST_DAY` rule meets), with counters that the cases a margin under 7 days,
+  a cover slice without co-holders or a cut block would get wrong really
+  occur.
 - **ValidationContext** (`backend/validation.py`): see 6.5; built once per
   search request, never cached across requests.
 - **Tables** (`backend/db.py`): `swap_requests` (one row per applied swap with
@@ -2569,7 +3155,9 @@ server checking every option against all planning rules.
   it worse is listed in `SwapOption.preexisting` and shown amber, never as a
   green tick. Vacation-hidden shifts never count as a vacation problem.
 - **Findings and ranking.** Amber findings belong to an option and make it
-  "possible" instead of "best". A note that holds for every option is a
+  "possible" instead of "best"; the first is `rest_day_removed` ("Ben Ott
+  has a Rest Day on Thu 8 Jan; it will be removed.", one per person and day).
+  A note that holds for every option is a
   target note in `targetFindings`, shown once (`matching.target_findings`):
   in a handover, each touched week in which a giver with contract hours
   drops below min(contract, before), with the numbers of the giver's hours
@@ -2582,13 +3170,17 @@ server checking every option against all planning rules.
   (`test_swap_matching.py` checks this in a fresh process).
 - **Rest Days.** A giver's Rest Day after a moved night or on-call follows the
   shift when the taker neither rests nor works that day (ticked by default,
-  apply accepts any detected subset). The taker's own Rest Day on the date of
-  a shift they receive is always removed, as when a shift is added by hand;
-  the patch records it, so undo restores it.
+  apply accepts any detected subset); any stored shift of the taker counts as
+  work, one hidden by a vacation or without valid times too. The taker's own
+  Rest Day on the date of a shift they receive is always removed, as when a
+  shift is added by hand, and the option gets the `rest_day_removed` note.
+  A move or removal takes every entry of that person and day (duplicates
+  included); the JSON names each person and day once. The patch records the
+  removed entries, so undo restores them.
 - **Apply** writes the swapped shifts as locked manual entries (ids start
   with the swap id), logs a `swap_applied` row in `schedule_changes` (never
   merged with manual edits) and writes no auto-backup: the one reserved slot
-  belongs to run apply and restore.
+  belongs to run apply, restore and the shifts file import (v1.74).
 - **Undo** (toast and History) needs no acknowledgement or notice override,
   but every added assignment must still be stored (same id, row, date,
   person; a lock toggle is fine), no removed one may exist again, nothing may
@@ -2597,12 +3189,14 @@ server checking every option against all planning rules.
   vacation-hidden shift a cover removed or a week it brought under the
   limit), no worse than it was, because that existed before. History
   computes `canUndo` and the reason live. Undo is also refused
-  (`undo_conflict`, with the person and day) when it would leave someone with
-  a Rest Day and a visible shift on one day and it restores one of the two
-  (a person-day that held both before the swap, recorded in
-  `applied_patch.restWorkPairs`, may come back), and when a person of the
-  swap was deleted ("Anna Weber is no longer in the plan."). A refusal of
-  the gate reads "Undoing this swap would break a planning rule: …".
+  (`undo_conflict`, "Undo would give Ben Ott a Rest Day and a shift on Thu
+  8 Jan.") when it would pair a Rest Day with a shift (any non-pool entry,
+  one hidden by a vacation too) that is neither in the calendar now nor
+  among the `REST_DAY` violations the swap resolved: exactly the undo gate's
+  verdict, so History and the endpoint always agree. It is also refused when
+  a person of the swap was deleted ("Anna Weber is no longer in the plan.").
+  A refusal of the gate reads "Undoing this swap would break a planning
+  rule: …".
 - **Dates.** Requests name dates from 1900-01-01 to 2999-12-31 (else 422).
   Shifts saved by hand near 9999-12-31 never make a search, apply or undo
   fail: the minute axis reads a minute past that day as that day, the slice
@@ -2620,7 +3214,9 @@ server checking every option against all planning rules.
   (a full save only for unsaved edits or an unknown revision), so a calendar
   another tab saved meanwhile is refused with `state_changed`, reloaded and
   searched again instead of failing a save; then they hydrate the returned
-  state. `targetFindings` show once, as amber notes under the target summary
+  state. A search's own save (`ensureSavedForSwap`) cancels the pending
+  autosave, which would only save the same screen again and move the
+  revision under the search. `targetFindings` show once, as amber notes under the target summary
   and beside the hand-over preview's checks. Toasts and the Rest Day move
   label use full names, since first names repeat in a team.
 - **Drawer focus and refusals.** Focus stays in the drawer when the drawer
@@ -2640,8 +3236,50 @@ server checking every option against all planning rules.
   and Export close the drawer first. Reveal on hover finds clinic sheet
   names and keeps them right of the sticky row labels; below lg the grid
   gets a 440 px run-out (`data-swap-drawer-open`, index.css) so its
-  right-hand days can scroll out from under the drawer.
+  right-hand days can scroll out from under the drawer. Once the first
+  answer is in, the drawer also reveals the target's pill (a cover's cell),
+  once, unless an option's shift was revealed first: from lg on, opening
+  it narrows the page and can push a weekend target out of view.
+- **Merged with v1.72–v1.77.**
+  - `REST_DAY` (v1.75): the swap gates count only the Rest Days of the plan
+    they check (`own_rest_days`), so a Rest Day the plan moves away or
+    removes no longer counts and one it adds does; a pair (Rest Day and a
+    shift on one day) that existed before is carried over and shown as the
+    pre-existing check "No new shift on a Rest Day" (`rest_day`, after the
+    vacation line). The search's own plans never break the rule: they
+    remove the takers' Rest Days on received dates and never move one onto
+    a stored shift, so the pre-filter has no Rest Day check; the gate stays
+    the safety net, with the reason "Rest Day: Ben Ott has a Rest Day on
+    Thu 8 Jan." (search, and apply's `swap_invalid`). A cover's slice also
+    holds the Rest Days of the slot's other holders that day. An option
+    that removes a taker's Rest Day, a day off placed by hand, is a
+    possible match with the note "Rest Day removed", as main's person
+    picker lists such a person after those without a warning. Undo follows
+    the same rule (see Undo above); main's callers (run apply, the agent,
+    state routes) keep the union of calendar and list.
+  - Stacked team week (v1.76): ⇄, the S key and "Find cover…" reach main's
+    one-lane-per-section grid through `RowSection` (`onFindSwap`, the
+    slot's open count for the picker); pill keys are unchanged, so outline
+    and Reveal work on lanes, side by side and in the clinic sheet. From lg
+    on, while the drawer is open, the row band and section labels wrap
+    between words only (`@media screen and (min-width: 1024px)` in
+    index.css); below lg they keep RowLabel's last resort, so the overlaid
+    week keeps its layout and the run-out stays the drawer's full width.
+  - My plan: "Find swap" is the shift detail's first action on every detail
+    surface; it switches to Team at that date and opens the drawer (focus
+    later returns to the pill's ⇄). The TopBar history button shows only in
+    the team plan, so the My plan loading card (v1.77) keeps it hidden.
+  - Help: "13. Find a swap" follows main's twelve sections and says that an
+    option removing a Rest Day is listed under Also possible with that note.
+  - `planChrome.outlineButtonClass`, which main removed with the saved
+    Views, is back: the swap drawer's Preview, Refresh, Search again, Retry,
+    Undo and Back buttons use it.
 - Tests: backend `test_validation_context.py`, `test_constraint_policy.py`,
   `test_swap_blocks.py`, `test_swap_worktime.py`, `test_swap_policy.py`,
-  `test_swap_matching.py`, `test_swap_property.py` (about 8 s) and
+  `test_swap_matching.py`, `test_swap_property.py` (about 15 s) and
   `test_swap_endpoints.py`; fixtures in `backend/tests/swap_fixtures.py`.
+  Frontend `src/lib/swaps/format.test.ts`, `src/api/client.swaps.test.ts`,
+  `src/pages/swapFlow.test.ts`, `SwapAssistantDrawer.test.tsx`; e2e
+  `e2e/swap-assistant.spec.ts` (mocked API, in CI).
+- Deploy notes: three new tables, created on startup (`db.py`); stored
+  calendars are not changed. Version 1.78 (78).

@@ -16,6 +16,8 @@ Only **hard** constraints are checked here:
 
 - Qualification       — assigned clinician must be qualified for the slot's section
 - Vacation            — no assignments on days the clinician is on vacation
+- Rest Day row        — no assignments on days the clinician was placed in the
+                        Rest Day row (stored ``pool-rest-day`` entries)
 - Overlap             — a clinician cannot have overlapping time intervals
                         (correctly handling midnight-spanning overnight slots)
 - Same location/day   — if ``enforceSameLocationPerDay`` is enabled
@@ -71,8 +73,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from functools import lru_cache
-from typing import Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
+from typing import AbstractSet, Any, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 
+from .assignment_policy import manual_rest_days
 from .constants import (
     DEFAULT_LOCATION_ID,
     DEFAULT_SUB_SHIFT_MINUTES,
@@ -87,6 +90,7 @@ from .models import AppState, Assignment, Clinician, SolverRule, SolverSettings
 
 VIOLATION_QUALIFICATION = "QUALIFICATION"
 VIOLATION_VACATION = "VACATION"
+VIOLATION_REST_DAY = "REST_DAY"
 VIOLATION_OVERLAP = "OVERLAP"
 VIOLATION_SAME_LOCATION = "SAME_LOCATION_PER_DAY"
 VIOLATION_ON_CALL_REST = "ON_CALL_REST"
@@ -320,9 +324,10 @@ def _resolve_settings(
 
 @dataclass(frozen=True, eq=False)
 class ValidationContext:
-    """Template and roster lookups of ONE AppState object, built once per request
-    and passed to many validate_* calls on assignment lists of that same state.
-    Never cached across requests or states."""
+    """Template, roster and stored Rest Day lookups of ONE AppState object, built
+    once per request and passed to many validate_* calls on assignment lists of
+    that same state. Never cached across requests or states, and never kept
+    across a change of the state's assignments."""
 
     state: AppState
     settings: SolverSettings
@@ -334,6 +339,8 @@ class ValidationContext:
     clinicians_by_id: Dict[str, Clinician]
     holiday_dates: FrozenSet[str]
     solver_rules: Tuple[SolverRule, ...]
+    # manual_rest_days(state.assignments): the calendar's Rest Day row entries.
+    rest_days: FrozenSet[Tuple[str, str]]
 
 
 def _build_slot_by_id(state: AppState) -> Dict[str, Any]:
@@ -359,6 +366,7 @@ def build_validation_context(state: AppState) -> ValidationContext:
         clinicians_by_id={c.id: c for c in state.clinicians},
         holiday_dates=frozenset(h.dateISO for h in state.holidays or []),
         solver_rules=tuple(_parse_solver_rules(state)),
+        rest_days=frozenset(manual_rest_days(state.assignments)),
     )
 
 
@@ -530,6 +538,57 @@ def validate_vacations(
                     slot_id=a.rowId,
                 )
             )
+    return out
+
+
+def validate_rest_days(
+    state: AppState,
+    assignments: List[Assignment],
+    *,
+    context: Optional[ValidationContext] = None,
+    own_rest_days: bool = False,
+) -> List[Violation]:
+    """People in the Rest Day row on a date cannot hold slot assignments then.
+
+    Rest days are the stored ``pool-rest-day`` entries of ``state.assignments``
+    and of ``assignments`` together (any source), read once per call (the
+    context holds those of ``state.assignments``). With ``own_rest_days`` only
+    the entries of ``assignments`` count: for a list that is a whole plan, such
+    as the calendar after a change, a Rest Day the change moved away or removed
+    no longer counts. Same date semantics as vacation: an assignment counts on
+    its ``dateISO``. Pool rows are exempt; stored ``pool-vacation`` entries are
+    legacy and never read.
+    """
+    context = _checked(state, context)
+    listed = manual_rest_days(assignments)
+    stored: AbstractSet[Tuple[str, str]] = frozenset()
+    if not own_rest_days:
+        stored = context.rest_days if context is not None else manual_rest_days(state.assignments)
+    if not listed and not stored:
+        return []
+    clinicians_by_id = (
+        context.clinicians_by_id if context is not None else {c.id: c for c in state.clinicians}
+    )
+    out: List[Violation] = []
+    for a in assignments:
+        day = (a.clinicianId, a.dateISO)
+        if (day not in listed and day not in stored) or a.rowId.startswith("pool-"):
+            continue
+        clinician = clinicians_by_id.get(a.clinicianId)
+        if clinician is None:
+            continue
+        out.append(
+            Violation(
+                code=VIOLATION_REST_DAY,
+                message=(
+                    f"{clinician.name} has a rest day on {a.dateISO} "
+                    f"but is assigned to slot {a.rowId}"
+                ),
+                clinician_id=a.clinicianId,
+                date_iso=a.dateISO,
+                slot_id=a.rowId,
+            )
+        )
     return out
 
 
@@ -1077,6 +1136,7 @@ def validate_assignments(
     skip_references: bool = False,
     only_fill_required: bool = False,
     context: Optional[ValidationContext] = None,
+    own_rest_days: bool = False,
 ) -> ValidationReport:
     """Run every hard-constraint validator and collect results.
 
@@ -1088,7 +1148,8 @@ def validate_assignments(
         Candidate assignments to check — can be a complete schedule or any
         subset. Pool-row assignments (``rowId.startswith("pool-")``) are
         intentionally ignored for most checks since they are virtual rows
-        (Rest Day / Vacation), not schedulable slots.
+        (Rest Day / Vacation), not schedulable slots. Rest Day row entries
+        (here or in ``state.assignments``) mark the days ``REST_DAY`` checks.
     solver_settings:
         Override for the settings embedded in ``state``. Pass this when the
         caller wants to try alternate enforcement flags without mutating
@@ -1105,6 +1166,11 @@ def validate_assignments(
         Precomputed lookups of ``state`` (:func:`build_validation_context`) for
         callers that validate many assignment lists of the same state. The
         result is identical with or without it.
+    own_rest_days:
+        Count only the Rest Day entries of ``assignments``, not those stored in
+        ``state.assignments`` (see :func:`validate_rest_days`). For a list that
+        is a whole plan, or a slice of one that holds the Rest Day entries of
+        every person-day it checks.
 
     Returns
     -------
@@ -1118,6 +1184,9 @@ def validate_assignments(
         report.extend(validate_references(state, assignments, context=context))
     report.extend(validate_qualifications(state, assignments, context=context))
     report.extend(validate_vacations(state, assignments, context=context))
+    report.extend(
+        validate_rest_days(state, assignments, context=context, own_rest_days=own_rest_days)
+    )
     report.extend(validate_overlaps(state, assignments, context=context))
     report.extend(
         validate_same_location_per_day(state, assignments, solver_settings, context=context)
@@ -1141,6 +1210,7 @@ __all__ = [
     "build_validation_context",
     "VIOLATION_QUALIFICATION",
     "VIOLATION_VACATION",
+    "VIOLATION_REST_DAY",
     "VIOLATION_OVERLAP",
     "VIOLATION_SAME_LOCATION",
     "VIOLATION_ON_CALL_REST",
@@ -1155,6 +1225,7 @@ __all__ = [
     "validate_references",
     "validate_qualifications",
     "validate_vacations",
+    "validate_rest_days",
     "validate_overlaps",
     "validate_same_location_per_day",
     "validate_on_call_rest",

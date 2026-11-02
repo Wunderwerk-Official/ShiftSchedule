@@ -12,13 +12,18 @@ import {
   type ViewStartAt,
 } from "../api/client";
 
-// Per-user UI preferences (My plan, saved views, start pages), stored via
+// Per-user UI preferences (My plan, Times), stored via
 // GET/PUT /v1/me/preferences — never in AppState. The hook applies changes
 // optimistically and saves them debounced; a failed load or save never blocks
 // the UI (defaults / local state stay usable, the next change retries). It
 // never PUTs before one GET succeeded, so a failed load cannot overwrite the
-// stored views with defaults. The PUT stores only the top-level keys it
+// stored preferences with defaults. The PUT stores only the top-level keys it
 // names, so each save sends just the keys changed since the last one.
+//
+// `savedViews`, `startViewDesktop` and `startViewMobile` are no longer used
+// by the UI since v1.74 (the start-page star and the "Views" menu are gone;
+// the calendar always opens in the team plan). They stay in the model and
+// are still normalized, so stored data and the backend stay compatible.
 
 export const MAX_SAVED_VIEWS = 12;
 const SAVE_DEBOUNCE_MS = 600;
@@ -67,12 +72,6 @@ export function normalizeViewConfig(raw: unknown): ViewConfig | null {
   };
 }
 
-/** Same scope/range/orientation; ids and names are ignored. */
-export function sameViewConfig(a: ViewConfig | null, b: ViewConfig | null): boolean {
-  if (!a || !b) return a === b;
-  return a.scope === b.scope && a.range === b.range && a.orientation === b.orientation;
-}
-
 /** Coerces anything (server JSON, old shapes) into valid preferences; pure. */
 export function normalizePreferences(raw: unknown): UserPreferences {
   const source = isRecord(raw) ? raw : {};
@@ -104,6 +103,7 @@ export function normalizePreferences(raw: unknown): UserPreferences {
     myPlanRange: pick(source.myPlanRange, PLAN_RANGES, "week"),
     myPlanRangeMobile: pick(source.myPlanRangeMobile, PLAN_RANGES, "week"),
     teamTimeLayout: pick(source.teamTimeLayout, TIME_LAYOUTS, "stacked"),
+    // Unused by the UI since v1.74; kept normalized for compatibility.
     savedViews,
     startViewDesktop: normalizeViewConfig(source.startViewDesktop),
     startViewMobile: normalizeViewConfig(source.startViewMobile),
@@ -139,7 +139,7 @@ const pickKeys = (prefs: UserPreferences, keys: Iterable<PreferenceKey>) =>
  * (changes made while a GET runs are sent once it answered).
  * When the tab comes back to the foreground with nothing pending, the
  * preferences are re-read, so a stale tab picks up other devices' changes
- * before it edits (`loaded` stays true, so the start view is not re-applied).
+ * before it edits (`loaded` stays true).
  * Changes made while a GET runs are replayed on top of the server data;
  * after a failed load the next change retries it, nothing is saved until then.
  * Switching the username drops a pending save instead of writing it under
@@ -295,8 +295,8 @@ export function useUserPreferences(username: string | null | undefined): {
   }, [applyServerPreferences, trackReading]);
 
   // A tab left open for hours shows what it loaded back then; an edit based
-  // on that (e.g. adding a view) would save the old list over one another
-  // device saved meanwhile. Re-read when the tab comes back (visible /
+  // on that (e.g. an orientation change) would save the old record over one
+  // another device saved meanwhile. Re-read when the tab comes back (visible /
   // focus), only while idle: synced, nothing dirty, waiting or in flight.
   // Changes made during the GET are replayed on the fresh data, as on load.
   const refresh = useCallback(() => {

@@ -212,44 +212,86 @@ test("My plan: link yourself, change views and jump back into the team plan", as
   expect(api.errors).toEqual([]);
 });
 
-test("My plan as start page opens directly; the team pills carry person colors", async ({ page }) => {
-  const api = await openCalendar(page);
-  // Link + make My plan the start page on computers via the star.
-  await page.getByRole("group", { name: "Choose plan" }).getByRole("button", { name: "My plan" }).click();
+test("the calendar always opens in Team, even with a stored My-plan start view; the team pills carry person colors", async ({ page }) => {
+  // A start view saved before v1.74 (the star is gone) is stored but ignored.
+  const api = await openCalendar(page, {
+    initialPrefs: { startViewDesktop: { scope: "me", range: "week", orientation: "top" } },
+  });
+  const scope = page.getByRole("group", { name: "Choose plan" });
+  await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("button", { name: "Start page on computers" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Views", exact: true })).toHaveCount(0);
+
+  // Link via "That's me".
+  await scope.getByRole("button", { name: "My plan" }).click();
   await page.getByLabel("I am", { exact: true }).selectOption({ label: "Galileo Galilei" });
   await page.getByRole("button", { name: "That's me" }).click();
-  await page.getByRole("button", { name: "Start page on computers" }).click();
-  await expect.poll(() => api.prefs().startViewDesktop?.scope).toBe("me");
+  await expect.poll(() => api.prefs().clinicianId).toBe(ME);
+  await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
+  // The circle's initials are named in the tooltip and the accessible name.
+  const myPlan = scope.getByRole("button", { name: "My plan (Galileo Galilei)" });
+  await expect(myPlan).toHaveAttribute("title", "My plan · Galileo Galilei");
+  await expect(myPlan).toContainText("GG");
+  const putsBeforeReload = api.prefsPuts.length;
 
-  // Reload: the start view is applied once the preferences have loaded, and
-  // the team grid is never painted first (the calendar waits for them).
+  // Reload: still Team (no My-plan flash once the preferences arrive), and
+  // opening the app writes nothing.
   await page.addInitScript(() => {
     new MutationObserver(() => {
-      if (document.querySelector('[data-schedule-grid="true"]')) {
-        (window as unknown as { teamGridSeen?: boolean }).teamGridSeen = true;
+      if (document.querySelector('[aria-label="Week, days side by side"]')) {
+        (window as unknown as { myPlanSeen?: boolean }).myPlanSeen = true;
       }
     }).observe(document, { childList: true, subtree: true });
   });
+  const prefsLoaded = page.waitForResponse(
+    (response) => response.url().endsWith("/v1/me/preferences") && response.request().method() === "GET",
+  );
   await page.reload();
-  await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
-  const teamGridSeen = await page.evaluate(() => (window as unknown as { teamGridSeen?: boolean }).teamGridSeen);
-  expect(teamGridSeen ?? false).toBe(false);
+  await prefsLoaded;
+  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  // Longer than the 600 ms save delay: a start view applied late would show
+  // up here (scope switch or a PUT).
+  await page.waitForTimeout(900);
+  await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  const myPlanSeen = await page.evaluate(() => (window as unknown as { myPlanSeen?: boolean }).myPlanSeen);
+  expect(myPlanSeen ?? false).toBe(false);
+  expect(api.prefsPuts.slice(putsBeforeReload)).toEqual([]);
+  expect(api.prefs().startViewDesktop?.scope).toBe("me");
 
   // Team plan: people always have their own color (no "Color by" switch
   // since v1.69); my pills get my person color and the outline.
-  const scope = page.getByRole("group", { name: "Choose plan" });
-  await scope.getByRole("button", { name: "Team" }).click();
   await expect(page.getByRole("group", { name: "Color by" })).toHaveCount(0);
   const myPill = page.locator(`[data-assignment-key$="__2026-01-07__${ME}"]`).first();
-  // Person palette p01 (first clinician): strong #1D4ED8, light #DBEAFE.
-  await expect(myPill).toHaveCSS("border-top-color", "rgb(29, 78, 216)");
-  await expect(myPill).toHaveCSS("background-color", "rgb(219, 234, 254)");
+  // Person palette p01 (first clinician): strong #4338CA, light #A5B4FC.
+  await expect(myPill).toHaveCSS("border-top-color", "rgb(67, 56, 202)");
+  await expect(myPill).toHaveCSS("background-color", "rgb(165, 180, 252)");
   await expect(myPill).toHaveCSS("outline-style", "solid");
   expectNoPreferencesInState(api.statePosts);
   expect(api.errors).toEqual([]);
 });
 
-test("My plan as start page waits for the calendar instead of calling the link stale", async ({ page }) => {
+test("'Not <name>? Change who you are' unlinks the account, so My plan asks again", async ({ page }) => {
+  const api = await openCalendar(page, { initialPrefs: { clinicianId: ME } });
+  const scope = page.getByRole("group", { name: "Choose plan" });
+  await scope.getByRole("button", { name: "My plan (Galileo Galilei)" }).click();
+  await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
+
+  // The arrow next to the switch: its last entry names the linked person.
+  await page.getByRole("button", { name: "Open the plan of another person" }).click();
+  const picker = page.getByRole("dialog", { name: "Choose person" });
+  await picker.getByRole("button", { name: "Not Galileo Galilei? Change who you are" }).click();
+  await expect(picker).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toBeVisible();
+  await expect.poll(() => api.prefsPuts).toEqual([{ clinicianId: null }]);
+  expect(api.prefs().clinicianId).toBeNull();
+  // The circle is gone with the link.
+  await expect(scope.getByRole("button", { name: "My plan", exact: true })).toBeVisible();
+  expectNoPreferencesInState(api.statePosts);
+  expect(api.errors).toEqual([]);
+});
+
+test("My plan waits for the calendar instead of calling the link stale", async ({ page }) => {
   // Real ids are not among the built-in demo people the page holds until
   // GET /v1/state answers (the e2e default state reuses the demo ids).
   const REAL = "clinician-real-1";
@@ -266,24 +308,34 @@ test("My plan as start page waits for the calendar instead of calling the link s
   const api = await openCalendar(page, {
     waitForGrid: false,
     initialState: state,
-    initialPrefs: {
-      clinicianId: REAL,
-      startViewDesktop: { scope: "me", range: "week", orientation: "top" },
-    },
+    initialPrefs: { clinicianId: REAL },
     stateGate,
   });
 
-  // Preferences are in (start page: My plan), the calendar is not: only the
-  // placeholder, no "Who are you" card listing the demo people.
+  // Preferences are in (linked to REAL), the calendar is not. The team plan
+  // never waits; switching to My plan by hand shows only the placeholder, no
+  // "Who are you" card listing the demo people.
   await prefsAnswered;
+  const scope = page.getByRole("group", { name: "Choose plan" });
+  await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await scope.getByRole("button", { name: "My plan" }).click();
   await page.waitForTimeout(300);
   await expect(page.getByText("Loading calendar…")).toBeAttached();
   await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toHaveCount(0);
   await expect(page.locator('[data-schedule-grid="true"]')).toHaveCount(0);
 
+  // The loading card keeps the switch (v1.77): back to Team and again to My plan.
+  await expect(scope.getByRole("button", { name: "My plan" })).toHaveAttribute("aria-pressed", "true");
+  await scope.getByRole("button", { name: "Team" }).click();
+  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  await expect(page.getByText("Loading calendar…")).toHaveCount(0);
+  await scope.getByRole("button", { name: "My plan" }).click();
+  await expect(page.getByText("Loading calendar…")).toBeVisible();
+
   releaseState();
   await expect(page.getByRole("group", { name: "Week, days side by side" })).toBeVisible();
   await expect(page.getByRole("button", { name: /^CT, / })).toHaveCount(1);
+  await expect(page.getByText("Loading calendar…")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toHaveCount(0);
   expect(api.prefsPuts).toEqual([]);
   expect(api.errors).toEqual([]);
@@ -301,35 +353,45 @@ test("signing out first sends a preference change still waiting to be saved, wit
   expect(api.errors).toEqual([]);
 });
 
-test("a location color is saved with the calendar and tints the team rows", async ({ page }) => {
+test("a location color is saved with the calendar and colors the team rows", async ({ page }) => {
   const api = await openCalendar(page);
-  const sand = 'background-color: rgb(238, 223, 196)'; // #EEDFC4
   const grid = page.locator('[data-schedule-grid="true"]');
-  await expect(grid.locator(`[style*="${sand}"]`)).toHaveCount(0);
+  const firstLabel = grid.locator("[data-label-shade]").first();
+  const band = grid.locator('[data-location-band="true"]').first();
+  // Without a color of its own the first location is blue (Auto): label
+  // ground #DBEAFE, band #1D4ED8 with the name in white.
+  await expect(firstLabel).toHaveCSS("background-color", "rgb(219, 234, 254)");
+  await expect(band).toHaveText("Berlin");
+  await expect(band).toHaveCSS("color", "rgb(255, 255, 255)");
+  await expect(grid.locator('div.row:has([data-location-band="true"])').first()).toHaveCSS(
+    "background-color",
+    "rgb(29, 78, 216)",
+  );
 
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Location color for Berlin" }).click();
+  await page.getByRole("button", { name: "Location color for Berlin: Auto (Blue)" }).click();
   await page.getByRole("dialog", { name: "Location color for Berlin" }).getByRole("button", { name: "Sand" }).click();
   await expect.poll(() => api.state().locations?.[0]?.color).toBe("#EEDFC4");
 
   await page.getByRole("button", { name: "Back", exact: true }).click();
   await expect(grid).toBeVisible();
-  await expect(grid.locator(`[style*="${sand}"]`).first()).toBeVisible();
-  // A row label cell gets the ground, its location line the ink (#5A3E0E).
-  const locationLine = grid.locator('span[title="Berlin"]').first();
-  await expect(locationLine).toHaveCSS("color", "rgb(90, 62, 14)");
-  await expect(grid.locator('div.row:has(span[title="Berlin"])').first()).toHaveCSS(
+  // Sand: the first row band's labels get the ground #EEDFC4 and the ink
+  // #5A3E0E, the band #7A5E2E; the next row band the stronger #E2C99E.
+  await expect(firstLabel).toHaveCSS("background-color", "rgb(238, 223, 196)");
+  await expect(firstLabel.locator("span").first()).toHaveCSS("color", "rgb(90, 62, 14)");
+  await expect(grid.locator('[data-label-shade="#E2C99E"]').first()).toBeVisible();
+  await expect(grid.locator('div.row:has([data-location-band="true"])').first()).toHaveCSS(
     "background-color",
-    "rgb(238, 223, 196)",
+    "rgb(122, 94, 46)",
   );
 
   const colored = api.statePosts.at(-1)!;
   expect(colored.locations).toEqual([{ id: "loc-default", name: "Berlin", color: "#EEDFC4" }]);
 
-  // "None" removes the color again; both saves differ in nothing but the color.
+  // "Auto" removes the color again; both saves differ in nothing but the color.
   await page.getByRole("button", { name: "Settings", exact: true }).click();
-  await page.getByRole("button", { name: "Location color for Berlin" }).click();
-  await page.getByRole("dialog", { name: "Location color for Berlin" }).getByRole("button", { name: "None" }).click();
+  await page.getByRole("button", { name: "Location color for Berlin: Sand" }).click();
+  await page.getByRole("dialog", { name: "Location color for Berlin" }).getByRole("button", { name: "Auto" }).click();
   await expect.poll(() => api.state().locations?.[0]?.color ?? null).toBeNull();
   const cleared = api.statePosts.at(-1)!;
   expect(cleared.locations?.map(({ id, name }) => ({ id, name }))).toEqual([{ id: "loc-default", name: "Berlin" }]);

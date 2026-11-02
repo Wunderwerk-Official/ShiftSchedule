@@ -149,6 +149,18 @@ export function targetHighlightKeys(target: SwapTargetInfo): string[] {
   return unit.items.map((item) => assignmentKey(item.rowId, item.dateISO, holderId));
 }
 
+/**
+ * What the page reveals once the drawer has opened: the target's first pill,
+ * or for cover the open slot's cell, as a key without a person (the page
+ * falls back to the cell of a key whose pill it does not find).
+ */
+export function targetRevealKey(target: SwapTargetInfo): string | null {
+  const [pill] = targetHighlightKeys(target);
+  if (pill) return pill;
+  const item = target.mode === "cover" ? target.unit?.items[0] : undefined;
+  return item ? assignmentKey(item.rowId, item.dateISO, "") : null;
+}
+
 /** Pill keys of an option's unit Y (the partner's pills); none for hand-over and cover. */
 export function optionHighlightKeys(option: SwapOption): string[] {
   if (!option.take) return [];

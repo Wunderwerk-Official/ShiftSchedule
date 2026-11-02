@@ -154,8 +154,11 @@ class PlanningWorkflow:
         if next_args.get("duty_pass"):
             ex = self.executor
             counts = ex._counts_by_instance(ex._working_list())
+            # No on-call section while the on-call rest rule is off: the
+            # duty pass has nothing to staff (the harness never starts one).
+            on_call_class = ex.on_call_class
             duties = sorted((inst for inst in ex.ctx.instances.values()
-                             if inst.section_id == ex.ctx.settings.onCallRestClassId
+                             if on_call_class and inst.section_id == on_call_class
                              and counts.get(inst.slot_key, 0) < inst.target),
                             key=lambda inst: (inst.date_iso, inst.start, inst.slot_key))
             if not duties:

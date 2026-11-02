@@ -28,10 +28,9 @@ import CalendarPlaceholder from "../components/schedule/CalendarPlaceholder";
 import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
 import MyPlanView, { type TeamPlanTarget } from "../components/myPlan/MyPlanView";
 import Toast, { useToast } from "../components/myPlan/Toast";
-import { viewStartDate } from "../components/myPlan/viewConfig";
 import SwapAssistantDrawer from "../components/swaps/SwapAssistantDrawer";
 import SwapHistoryButton from "../components/swaps/SwapHistoryButton";
-import { findNextShiftFor, parseISODate } from "../lib/myPlan";
+import { parseISODate } from "../lib/myPlan";
 import { assignmentKey, swapTargetKey, swapToastMessage, undoToastMessage } from "../lib/swaps/format";
 import type {
   SwapApplyRequest,
@@ -78,6 +77,7 @@ import {
   unpublishWeb,
   subscribeSolverProgress,
   createSnapshot,
+  createImportBackup,
   restoreSnapshot,
   type AppState,
   type AuthUser,
@@ -94,7 +94,6 @@ import {
   type WebPublishStatus,
   type SolverRule,
   type PdfLayout,
-  type ViewConfig,
 } from "../api/client";
 import SnapshotPopover from "../components/schedule/SnapshotPopover";
 import SolverDebugPanel from "../components/schedule/SolverDebugPanel";
@@ -118,10 +117,16 @@ import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
 import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
 import { downloadTextFile } from "../lib/download";
+import {
+  holidayRegionForCountry,
+  mergeLoadedHolidays,
+  type NagerPublicHoliday,
+} from "../lib/holidays";
 import { computeOpenSlots } from "../lib/openSlots";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
+import { saveShiftsFileImport } from "../lib/shiftsFileImport";
 import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
 import { resetSolverAssignments, resetUnfixedAssignments } from "./resetSolverAssignments";
 import {
@@ -289,12 +294,14 @@ function stickyLabelWidth(element: HTMLElement): number {
 }
 
 /**
- * Scroll a pill or clinic sheet name (else its cell) into view beside the
- * open desktop drawer (Reveal on hover); never changes the week.
+ * Scroll a pill or clinic sheet name (else its cell; a key without a person
+ * names a cover's cell) into view beside the open desktop drawer (Reveal on
+ * hover, and the target once the drawer has opened); never changes the week.
  * The visible part of the grid ends left of the drawer and, in the clinic
  * sheet, starts right of the sticky row labels. From lg on the page keeps
- * the drawer's width free; below lg the drawer overlays the grid, whose
- * run-out (index.css) lets its right-hand days scroll out from under it.
+ * the drawer's width free (the narrowed stacked week keeps whole-word labels
+ * and scrolls sideways, index.css); below lg the drawer overlays the grid,
+ * whose run-out (index.css) lets its right-hand days scroll out from under it.
  */
 function revealBesideSwapDrawer(key: string): void {
   // The key's cell part; rowIds may contain "__" (see extractDateFromAssignmentKey).
@@ -345,6 +352,8 @@ type ScheduleSnapshotImportResult = {
   imported: number;
   droppedClinicians: number;
   droppedSlots: number;
+  /** Name of the auto-backup of the calendar shown before the import. */
+  backupName?: string;
 };
 
 const defaultAppState = normalizeAppState({
@@ -627,6 +636,8 @@ export default function WeeklySchedulePage({
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
   );
+  // ISO 3166-2 code ("DE-NW") the next "Load Holidays" filters by.
+  const [holidayRegion, setHolidayRegion] = useState<string | undefined>(undefined);
   const [holidayYear, setHolidayYear] = useState(currentYear);
   const [publishedWeekStartISOs, setPublishedWeekStartISOs] = useState<string[]>([]);
   const [solverSettings, setSolverSettings] = useState<SolverSettings>(
@@ -660,13 +671,7 @@ export default function WeeklySchedulePage({
     update: updatePrefs,
     flush: flushPrefs,
   } = useUserPreferences(currentUser.username);
-  const { planScope, setPlanScope, applyView, scopeReady } = usePlanScope({
-    username: currentUser.username,
-    prefs,
-    loaded: prefsLoaded,
-    onUpdatePrefs: updatePrefs,
-    isMobile,
-  });
+  const { planScope, setPlanScope } = usePlanScope();
   // My plan reads people and assignments from the calendar. Until this
   // user's state has loaded they are the built-in demo data, and My plan
   // would call the linked person "no longer in the plan" and offer the demo
@@ -917,9 +922,10 @@ export default function WeeklySchedulePage({
     [clinicians],
   );
   // Team grid colors (plan §2.9): every person has their own color and the
-  // linked person ("That's me") gets an outline. With "Times: Stacked" the
-  // section colors stay in the lane labels; side by side shows neutral
-  // section blocks. Print/public pages keep the section look.
+  // linked person ("That's me") gets an outline. Since v1.71 the label column
+  // is colored by location (its own color or an automatic one, alternating
+  // shades per row band); side by side shows neutral section blocks.
+  // Print/public pages keep the section look.
   const linkedClinicianIndex = prefs.clinicianId
     ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
     : -1;
@@ -929,9 +935,10 @@ export default function WeeklySchedulePage({
     [clinicians, isDark],
   );
   const outlinedClinicianId = linkedClinician?.id ?? null;
+  // Without locations every row belongs to the default location: its color.
   const locationRowTints = useMemo(
-    () => (locationsEnabled ? buildLocationRowTints(locations, isDark) : undefined),
-    [locations, locationsEnabled, isDark],
+    () => buildLocationRowTints(locations, isDark),
+    [locations, isDark],
   );
   // My plan reads the raw assignments; a stable array keeps its plans memoized.
   const planAssignments = useMemo(
@@ -1051,7 +1058,7 @@ export default function WeeklySchedulePage({
   ): Promise<ScheduleSnapshotImportResult> => {
     const assignments = extractAssignmentsFromSnapshot(payload);
     if (!assignments) {
-      throw new Error("No assignments found in the snapshot file.");
+      throw new Error("No shifts found in this file.");
     }
 
     const clinicianIds = new Set(clinicians.map((clinician) => clinician.id));
@@ -1068,22 +1075,35 @@ export default function WeeklySchedulePage({
     const normalizedAssignments = normalized.assignments ?? [];
     const droppedSlots = filteredByClinician.length - normalizedAssignments.length;
 
-    if (hasLoaded && loadedUserId === currentUser.username) {
-      pauseCalendarSaving();
-      try {
-        await saveState(normalized);
-        setAssignmentMap(buildAssignmentMap(normalizedAssignments));
-      } finally {
-        resumeCalendarSaving();
-      }
-    } else {
-      throw new Error("Wait until the calendar has loaded before importing.");
+    if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
+      // A pending save failure would reject the import's save right after the
+      // backup replaced the only auto-backup: refuse before writing anything.
+      throw new Error(saveError ?? "Wait until the calendar has loaded before importing.");
+    }
+    // The calendar as shown (the stored row can lag by the save debounce)
+    // is saved as an auto-backup first; without it nothing is imported.
+    const current = buildCurrentStatePayload();
+    if (!current) {
+      throw new Error("The current calendar cannot be saved. Fix its template first.");
+    }
+
+    let backupName: string;
+    pauseCalendarSaving();
+    try {
+      ({ backupName } = await saveShiftsFileImport(current, normalized, {
+        createBackup: createImportBackup,
+        saveState,
+      }));
+      setAssignmentMap(buildAssignmentMap(normalizedAssignments));
+    } finally {
+      resumeCalendarSaving();
     }
 
     return {
       imported: normalizedAssignments.length,
       droppedClinicians,
       droppedSlots,
+      backupName,
     };
   };
 
@@ -2656,6 +2676,9 @@ export default function WeeklySchedulePage({
     solverRulesRef.current = normalized.solverRules ?? [];
     if (normalized.holidays) setHolidays(normalized.holidays);
     if (normalized.holidayCountry) setHolidayCountry(normalized.holidayCountry);
+    // Unconditional: a restored calendar without a region must not keep the
+    // region of the screen it replaces.
+    setHolidayRegion(normalized.holidayRegion);
     if (normalized.holidayYear) setHolidayYear(normalized.holidayYear);
     setPublishedWeekStartISOs(normalized.publishedWeekStartISOs ?? []);
   };
@@ -2748,6 +2771,7 @@ export default function WeeklySchedulePage({
       slotOverridesByKey,
       holidays,
       holidayCountry,
+      holidayRegion,
       holidayYear,
       publishedWeekStartISOs,
       solverSettings,
@@ -2824,6 +2848,7 @@ export default function WeeklySchedulePage({
       slotOverridesByKey,
       holidays,
       holidayCountry,
+      holidayRegion,
       holidayYear,
       publishedWeekStartISOs,
       solverSettings,
@@ -2869,6 +2894,11 @@ export default function WeeklySchedulePage({
     const gen = editGenRef.current;
     const current = buildCurrentStatePayloadRef.current();
     if (!current) throw new Error("The current calendar cannot be saved. Fix its template first.");
+    // This save holds the screen as it is now, so the pending autosave (the
+    // load's, or an edit's within its 500 ms) would only save it again: a new
+    // revision that refuses the search this save is for (state_changed, a
+    // reload and a second search).
+    if (saveTimerRef.current !== null) window.clearTimeout(saveTimerRef.current);
     try {
       // Flushes queued edits and returns the saved revision.
       const saved = await saveState(current);
@@ -3302,7 +3332,7 @@ export default function WeeklySchedulePage({
         (item) => item.dateISO === holiday.dateISO && item.name === trimmedName,
       );
       if (exists) return prev;
-      return [...prev, { dateISO: holiday.dateISO, name: trimmedName }];
+      return [...prev, { dateISO: holiday.dateISO, name: trimmedName, source: "manual" }];
     });
   };
   const handleRemoveHoliday = (holiday: Holiday) => {
@@ -3312,7 +3342,17 @@ export default function WeeklySchedulePage({
       ),
     );
   };
-  const handleFetchHolidays = async (countryCode: string, year: number) => {
+  const handleChangeHolidayCountry = (countryCode: string) => {
+    setHolidayCountry(countryCode);
+    // A region belongs to one country ("DE-NW"): another country starts without.
+    setHolidayRegion((prev) => holidayRegionForCountry(countryCode, prev));
+  };
+  // Loads the year's public holidays (nationwide plus the region's own ones;
+  // without a region those of every region) and replaces this year's
+  // previously loaded ones; holidays added by hand stay. Already loaded
+  // lists are never rewritten when only the region changes; the user loads
+  // again. Resolves to how many holidays were added.
+  const handleFetchHolidays = async (countryCode: string, year: number, region?: string) => {
     const normalizedCountry = countryCode.trim().toUpperCase();
     const response = await fetch(
       `https://date.nager.at/api/v3/PublicHolidays/${year}/${normalizedCountry}`,
@@ -3320,26 +3360,16 @@ export default function WeeklySchedulePage({
     if (!response.ok) {
       throw new Error(`Failed to fetch holidays (${response.status}).`);
     }
-    const data = (await response.json()) as Array<{
-      date: string;
-      localName?: string;
-      name?: string;
-    }>;
-    const fetched = data.map((item) => ({
-      dateISO: item.date,
-      name: item.localName ?? item.name ?? "Holiday",
-    }));
-    const unique = new Map<string, Holiday>();
-    for (const item of fetched) {
-      unique.set(`${item.dateISO}__${item.name}`, item);
-    }
-    setHolidays((prev) => {
-      const yearPrefix = `${year}-`;
-      const keep = prev.filter((holiday) => !holiday.dateISO.startsWith(yearPrefix));
-      return [...keep, ...Array.from(unique.values())];
-    });
+    const data = (await response.json()) as NagerPublicHoliday[];
+    const entries = Array.isArray(data) ? data : [];
+    const regionForCountry = holidayRegionForCountry(normalizedCountry, region);
+    // The count comes from the list as shown; the update applies to the
+    // latest list (a holiday added while loading is kept).
+    const { added } = mergeLoadedHolidays(holidays, entries, year, regionForCountry);
+    setHolidays((prev) => mergeLoadedHolidays(prev, entries, year, regionForCountry).holidays);
     setHolidayCountry(normalizedCountry);
     setHolidayYear(year);
+    return added;
   };
   const openSlotsBadge = (
     <button
@@ -3607,23 +3637,11 @@ export default function WeeklySchedulePage({
     setPlanScope("team");
     setSwapTarget({ kind: "assignment", assignment: ref });
   };
-  // Saved views from the team header open at their relative start (SPEC R17).
-  const applySavedView = (view: ViewConfig) => {
-    applyView(view);
-    const start = viewStartDate(view, new Date(), () => {
-      if (!linkedClinician) return null;
-      const assignments = Array.from(assignmentMap.values()).flat();
-      const source = { scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings };
-      return findNextShiftFor(source, linkedClinician.id, new Date())?.shift.dateISO ?? null;
-    });
-    if (start) setAnchorDate(start);
-  };
   const teamHeaderProps = {
     isMobile,
     prefs,
     onUpdatePrefs: updatePrefs,
     onScopeChange: setPlanScope,
-    onApplyView: applySavedView,
     me: linkedClinician ? { name: linkedClinician.name, index: linkedClinicianIndex } : null,
   };
 
@@ -3740,8 +3758,8 @@ export default function WeeklySchedulePage({
 
       {viewMode === "calendar" ? (
         <>
-          {!scopeReady || (planScope === "me" && !myPlanDataReady) ? (
-            <CalendarPlaceholder />
+          {planScope === "me" && !myPlanDataReady ? (
+            <CalendarPlaceholder onScopeChange={setPlanScope} isMobile={isMobile} />
           ) : planScope === "me" ? (
             <MyPlanView
               scheduleRows={scheduleRows}
@@ -3909,12 +3927,11 @@ export default function WeeklySchedulePage({
           />
           )}
           {/* Planning panels belong to the team plan: hidden (but kept
-              mounted, so their inputs survive) while My plan is shown or
-              the start view is not known yet. */}
+              mounted, so their inputs survive) while My plan is shown. */}
           <div
             className={cx(
               "mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10",
-              (planScope === "me" || !scopeReady) && "hidden",
+              planScope === "me" && "hidden",
             )}
           >
             <div className="flex flex-col gap-6">
@@ -4052,6 +4069,7 @@ export default function WeeklySchedulePage({
             clinicians={clinicians}
             holidays={holidays}
             holidayCountry={holidayCountry}
+            holidayRegion={holidayRegion}
             holidayYear={holidayYear}
             weeklyTemplate={weeklyTemplate}
             onRenamePool={(rowId, nextName) => {
@@ -4109,11 +4127,10 @@ export default function WeeklySchedulePage({
                 return next;
               });
             }}
-            onChangeHolidayCountry={setHolidayCountry}
+            onChangeHolidayCountry={handleChangeHolidayCountry}
+            onChangeHolidayRegion={setHolidayRegion}
             onChangeHolidayYear={setHolidayYear}
-            onFetchHolidays={async (countryCode, year) => {
-              await handleFetchHolidays(countryCode, year);
-            }}
+            onFetchHolidays={handleFetchHolidays}
             onAddHoliday={handleAddHoliday}
             onRemoveHoliday={handleRemoveHoliday}
             onCreateSection={(name) => {

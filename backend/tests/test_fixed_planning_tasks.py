@@ -69,6 +69,17 @@ def test_location_color_is_presentation_only_for_the_fingerprint():
     assert planning_fingerprint(state) != before
 
 
+def test_holiday_region_is_not_a_planning_input():
+    # Only the holidays list steers planning; the region just filters the
+    # next "Load Holidays", so choosing one never stales a run.
+    state = make_app_state()
+    before = planning_fingerprint(state)
+    state.holidayRegion = 'DE-NW'
+    assert planning_fingerprint(state) == before
+    state.holidays = [Holiday(dateISO=MON, name='Heilige Drei Könige')]
+    assert planning_fingerprint(state) != before
+
+
 def test_harness_keeps_locked_solver_duty_as_context():
     fixed = make_assignment('fixed', 'slot-a__mon', MON, 'clin-1', 'solver').model_copy(update={'locked': True})
     state = make_app_state(assignments=[fixed])

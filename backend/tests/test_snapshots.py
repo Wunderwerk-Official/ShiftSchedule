@@ -257,3 +257,31 @@ def test_restore_rolls_back_backup_when_state_write_fails(temp_db, monkeypatch):
         client.post(f"/v1/state/snapshots/{meta['id']}/restore", json={})
     assert client.get("/v1/state").json()["clinicians"][0]["name"] == "Bob"
     assert not any(s["kind"] == "auto_backup" for s in client.get("/v1/state/snapshots").json())
+
+
+def test_import_backup_saves_the_shown_calendar_outside_the_named_limit(temp_db):
+    from backend.snapshots import IMPORT_BACKUP_NAME
+
+    client = _client_as()
+    shown = _state_with_assignment("clin-1")
+    res = client.post("/v1/state/snapshots/import-backup", json={"state": shown.model_dump()})
+    assert res.status_code == 201, res.text
+    assert res.json()["kind"] == "auto_backup"
+    assert res.json()["name"] == IMPORT_BACKUP_NAME
+    listed = client.get("/v1/state/snapshots").json()
+    assert [(s["kind"], s["name"]) for s in listed] == [("auto_backup", IMPORT_BACKUP_NAME)]
+
+    # The backup restores the calendar as it was shown before the import.
+    _save_state(make_app_state(clinicians=[make_clinician("clin-2", "Bob")]), USER)
+    restored = client.post(f"/v1/state/snapshots/{res.json()['id']}/restore", json={})
+    assert restored.status_code == 200
+    assert [c["name"] for c in restored.json()["clinicians"]] == ["Alice"]
+
+
+def test_import_backup_works_at_the_named_snapshot_limit(temp_db):
+    client = _client_as()
+    state = _state_with_assignment()
+    for index in range(MAX_NAMED_SNAPSHOTS_PER_USER):
+        _create(client, f"named {index}", state)
+    res = client.post("/v1/state/snapshots/import-backup", json={"state": state.model_dump()})
+    assert res.status_code == 201, res.text

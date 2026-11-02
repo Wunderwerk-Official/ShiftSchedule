@@ -47,6 +47,7 @@ The solver uses two types of constraints:
 | **Qualifications** | Clinicians can only be assigned to sections they are qualified for | `test_solver.py`, `test_solver_coverage.py` |
 | **No Overlaps** | A clinician cannot be assigned to overlapping time slots | `test_solver.py` |
 | **Vacations** | Clinicians on vacation cannot be assigned | `test_solver.py` |
+| **Rest Day row** | Clinicians placed in the Rest Day row by hand cannot be assigned that day (v1.75); swaps count the Rest Days of the changed plan, so one they move or remove no longer counts (v1.78) | `test_solver.py`, `test_heuristic_v2.py`, `test_validation.py`, `test_validation_context.py`, `test_swap_matching.py`, `test_swap_endpoints.py`, `test_swap_property.py` |
 | **Location per Day** | When enabled, clinician stays at one location per day | `test_solver.py` |
 
 ### SOFT Constraints (Best effort)

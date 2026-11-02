@@ -297,8 +297,8 @@ export default function AutomatedPlanningPanel({
               (only_fill_required=false) for when it returns. */}
           <div className="text-xs text-slate-400 dark:text-slate-500">
             The AI plans each day like a human: on-call and priority slots
-            first, every clinician placed with a contiguous block of work.
-            Model &amp; instructions: Settings → Solver.
+            first, every person placed with a contiguous block of work.
+            Model &amp; instructions: Settings → Planning rules &amp; AI.
           </div>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -324,7 +324,7 @@ export default function AutomatedPlanningPanel({
               type="button"
               onClick={handleResetButtonClick}
               disabled={isRunning}
-              title="Remove assignments in the selected timeframe. Locked shifts stay."
+              title="Remove shifts in the selected timeframe. Locked shifts stay."
               className={buttonSecondary.base}
             >
               Reset

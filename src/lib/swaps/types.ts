@@ -35,12 +35,14 @@ export type SwapTargetInfo = {
   excludedPartnerIds: string[];
 };
 export type SwapWarningCode = "rest_short" | "night_no_free_day" | "block_too_long";
-export type SwapCheckCode = "qualification" | "vacation" | "overlap" | "same_location" | "on_call_rest" |
+// "rest_day": the REST_DAY rule (v1.75), a shift on a day the person keeps in the Rest Day row.
+export type SwapCheckCode = "qualification" | "vacation" | "rest_day" | "overlap" | "same_location" | "on_call_rest" |
   "mandatory_window" | "weekly_hours" | "split_shift" | "capacity" | "rest" | "night_free_day" | "block_length";
 export type SwapWarning = { id: string; code: SwapWarningCode; check: "rest" | "night_free_day" | "block_length";
   clinicianId: string; message: string; short: string };
-export type SwapFindingCode = "solver_rule" | "preference_window" | "preferred_day_off" | "section_preference" |
-  "hours_above_contract" | "giver_below_contract" | "partner_notice";
+// "rest_day_removed": a person who takes a shift loses their Rest Day that day (removed as by hand).
+export type SwapFindingCode = "rest_day_removed" | "solver_rule" | "preference_window" | "preferred_day_off" |
+  "section_preference" | "hours_above_contract" | "giver_below_contract" | "partner_notice";
 export type SwapFinding = { code: SwapFindingCode; clinicianId: string | null; message: string; short: string };
 export type SwapChip = { code: "same_section" | "same_type" | "same_week" | "hours_even" | "no_contract" | "prefers" |
   "behind_on_hours"; label: string; tone: "positive" | "neutral" };

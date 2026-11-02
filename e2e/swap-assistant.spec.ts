@@ -1,6 +1,6 @@
 import { test, expect, type Locator, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
-import type { AppState, Assignment } from "../src/api/client";
+import type { AppState, Assignment, UserPreferences } from "../src/api/client";
 import type {
   SwapApplyRequest,
   SwapCandidatesRequest,
@@ -14,14 +14,17 @@ import type {
 } from "../src/lib/swaps/types";
 
 // The swap assistant on the real UI with a mocked API (SPEC §6.5): find a
-// swap from a pill, apply it and undo it from the toast; the S key; a refused
-// apply (also far down the list: its message is shown where focus went); an
-// apply that another tab's save refuses; what the page saves before a search
-// or an apply; the modals that close the drawer; Reveal on hover; the phone
-// sheet and its Tab trap; cover from the person list; the TopBar history and
-// its Undo (focus stays in the drawer, as after a refused apply); and the
-// touch layout of the ⇄ button next to the lock. The mocked server keeps one
-// calendar and checks revisions like the real one.
+// swap from a pill, apply it and undo it from the toast; the S key; Find swap
+// from a My plan shift; a refused apply (also far down the list: its message
+// is shown where focus went); an apply that another tab's save refuses; what
+// the page saves before a search or an apply; the modals that close the
+// drawer; Reveal on hover, also beside a narrow stacked week whose labels keep
+// whole words and over one (below lg) whose labels keep their widths; the
+// target (a cover's cell) revealed once the drawer has opened beside a narrow
+// week; the phone sheet and its Tab trap; cover from the person list;
+// the TopBar history and its Undo (focus stays in the drawer, as after a
+// refused apply); and the touch layout of the ⇄ button next to the lock. The
+// mocked server keeps one calendar and checks revisions like the real one.
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -49,6 +52,7 @@ const THU_CT = slotId("thu", "CT");
 const FRI_MRI = slotId("fri", "MRI");
 const WED_CT = slotId("wed", "CT");
 const WED_MRI = slotId("wed", "MRI");
+const SUN_ON_CALL = slotId("sun", "On Call");
 // Monday 07:00 in Berlin: the page opens on 5–11 Jan, every shift starts > 48 h later.
 const NOW = "2026-01-05T06:00:00Z";
 
@@ -291,9 +295,14 @@ type StatePost = { body: AppState; revision: string | null };
  * Opens the team plan on a mocked server that keeps one calendar. As on the
  * real one, a save names the revision it replaces and is refused when the
  * calendar was saved since. `clock: "manual"` installs fake page timers
- * (page.clock) instead of only fixing the date.
+ * (page.clock) instead of only fixing the date; `prefs` are the account's
+ * stored preferences (none by default).
  */
-async function openCalendar(page: Page, state: AppState, options: { clock?: "manual" } = {}) {
+async function openCalendar(
+  page: Page,
+  state: AppState,
+  options: { clock?: "manual"; prefs?: Partial<UserPreferences> } = {},
+) {
   let current = { ...state, revision: "r0" } as AppState;
   let saves = 0;
   const statePosts: StatePost[] = [];
@@ -322,7 +331,7 @@ async function openCalendar(page: Page, state: AppState, options: { clock?: "man
       }
       return route.fulfill({ json: current });
     }
-    if (path.endsWith("/v1/me/preferences")) return route.fulfill({ json: {} });
+    if (path.endsWith("/v1/me/preferences")) return route.fulfill({ json: options.prefs ?? {} });
     if (path.endsWith("/solve/runs")) return route.fulfill({ json: { runs: [] } });
     if (path.endsWith("/agent/settings")) {
       return route.fulfill({ json: { effective_model: "mock", budget_usd: 5, remaining_usd: 5 } });
@@ -510,6 +519,33 @@ test("S on a pill's lock opens the drawer; Escape closes it and focus returns", 
   expect(api.errors).toEqual([]);
 });
 
+test("Find swap on a My plan shift opens the drawer over the team week; Escape focuses the shift's pill", async ({ page }) => {
+  const api = await openCalendar(page, calendarState(), { prefs: { clinicianId: FIRST } });
+  const calls = await mockSwapApi(page, api);
+  const scope = page.getByRole("group", { name: "Choose plan" });
+
+  await scope.getByRole("button", { name: /^My plan/ }).click();
+  await page.getByRole("button", { name: /^CT, Thursday 8 January/ }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Find swap" }).click();
+  await expect(page.getByRole("heading", { name: "Find a swap" })).toBeFocused();
+  await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await expect.poll(() => calls.candidates.length).toBe(1);
+  expect(calls.candidates[0].body.assignment).toEqual({
+    assignmentId: "galileo-thu",
+    rowId: THU_CT,
+    dateISO: "2026-01-08",
+    clinicianId: FIRST,
+  });
+  // The team week shows the shift, outlined as the swap's target.
+  await expect(galileoPill(page)).toHaveCSS("outline-color", "rgb(13, 148, 136)");
+
+  // The detail's button went away with My plan: focus goes to the shift's pill.
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toBeHidden();
+  await expect(findSwapIn(galileoPill(page))).toBeFocused();
+  expect(api.errors).toEqual([]);
+});
+
 test("a refused apply shows the reasons and searches again", async ({ page }) => {
   const api = await openCalendar(page, calendarState());
   const reason = `${NAME[SECOND]}: week 2 would reach 48.0 h (limit 45.0 h).`;
@@ -616,7 +652,7 @@ test.describe("saving before a search or an apply", () => {
     expect(api.errors).toEqual([]);
   });
 
-  test("an edit inside the autosave window is saved before the search, which names that save", async ({ page }) => {
+  test("an edit inside the autosave window is saved once, before the search, which names that save", async ({ page }) => {
     const { api, calls } = await openPaused(page, calendarState());
     const saved = api.statePosts.length;
     const leonardoFri = pillOf(page, FRI_MRI, "2026-01-09", SECOND);
@@ -631,6 +667,19 @@ test.describe("saving before a search or an apply", () => {
     expect(saves.map((post) => lockedIn(post.body, LEONARDO_FRI_SHIFT))).toEqual([false]);
     expect(saves[0].revision).not.toBeNull();
     expect(search.body.expectedRevision).toBe(saves[0].revision);
+    // The edit's own autosave does not save it again: a new revision would
+    // refuse a search still running on that save (a reload, a second search).
+    await page.clock.runFor(1_000);
+    // A save fired meanwhile has reached the server once none came for 500 ms.
+    let posts = -1;
+    const settled = () => {
+      const quiet = api.statePosts.length === posts;
+      posts = api.statePosts.length;
+      return quiet;
+    };
+    await expect.poll(settled, { intervals: [500] }).toBe(true);
+    expect(api.statePosts).toHaveLength(search.statePosts);
+    expect(calls.candidates).toHaveLength(1);
     expect(api.errors).toEqual([]);
   });
 
@@ -766,6 +815,176 @@ test.describe("drawer over the grid", () => {
 
     await hoverFirstOption(page);
     await expect.poll(() => fullyShown(leonardoFri)).toBe(true);
+    expect(api.errors).toEqual([]);
+  });
+});
+
+type SwapCalls = Awaited<ReturnType<typeof mockSwapApi>>;
+
+/** Leonardo's Sunday On Call, at the stacked week's right-hand end. */
+const LEONARDO_SUN = { ...shiftItem(SUN_ON_CALL, "2026-01-11", "On Call", SECOND), assignmentId: "leonardo-sun" };
+const leonardoSunPill = (page: Page) => pillOf(page, SUN_ON_CALL, "2026-01-11", SECOND);
+
+function calendarWithLeonardoSun(): AppState {
+  const state = calendarState();
+  state.assignments.push(assignment("leonardo-sun", SUN_ON_CALL, "2026-01-11", SECOND));
+  return state;
+}
+
+/** Every search finds one option: Leonardo's Sunday. */
+async function offerLeonardoSun(page: Page, api: Calendar, calls: SwapCalls) {
+  await page.route(/\/v1\/swaps\/candidates$/, (route) => {
+    const body = route.request().postDataJSON() as SwapCandidatesRequest;
+    calls.candidates.push({ body, statePosts: api.statePosts.length });
+    const answer = candidates(body, api.state().revision ?? "r0");
+    const option = { ...answer.best[0], key: `${SECOND}|sunday`, take: unitOf(LEONARDO_SUN) };
+    return route.fulfill({ json: { ...answer, best: [option] } });
+  });
+}
+
+/** Widths of the stacked week's label cells. */
+const stackedLabelWidths = (page: Page) =>
+  page
+    .locator("[data-stacked-label]")
+    .evaluateAll((labels) => labels.map((label) => Math.round(label.getBoundingClientRect().width)));
+
+test.describe("drawer over a narrow week", () => {
+  // Below lg the drawer overlays the grid. At 700 px the stacked week fits
+  // only because its labels may break inside words (RowLabel's last resort).
+  test.use({ viewport: { width: 700, height: 800 } });
+
+  test("the week keeps its layout and Reveal brings a Sunday shift out from under the drawer", async ({ page }) => {
+    const api = await openCalendar(page, calendarWithLeonardoSun());
+    await offerLeonardoSun(page, api, await mockSwapApi(page, api));
+    await expect(galileoPill(page)).toBeVisible();
+    const labels = await stackedLabelWidths(page);
+    expect(labels.length).toBeGreaterThan(0);
+
+    await findSwapForGalileo(page);
+    await expect(page.getByText("Best matches (1)")).toBeVisible();
+    // The labels keep their widths, so the week still fits its box and the
+    // run-out after it is the drawer's full width.
+    expect(await stackedLabelWidths(page)).toEqual(labels);
+    await drawer(page).getByRole("heading", { name: "Find a swap" }).hover();
+    const leonardoSun = leonardoSunPill(page);
+    await leonardoSun.evaluate((element) =>
+      element.closest(".calendar-scroll")!.scrollTo({ left: 0, behavior: "instant" }),
+    );
+    expect(await fullyShown(leonardoSun)).toBe(false);
+    await hoverFirstOption(page);
+    await expect(leonardoSun).toHaveCSS("outline-color", "rgb(13, 148, 136)");
+    await expect.poll(() => fullyShown(leonardoSun)).toBe(true);
+    expect(api.errors).toEqual([]);
+  });
+});
+
+/** Whether the stacked week's label texts show every word whole: none is broken across lines. */
+function stackedLabelsKeepWholeWords(page: Page): Promise<boolean> {
+  return page.locator("[data-stacked-label] span:not(.sr-only)").evaluateAll((spans) =>
+    spans.every((span) => {
+      const text = span.firstChild;
+      if (!(text instanceof Text)) return true;
+      return [...text.data.matchAll(/\S+/g)].every((word) => {
+        const range = document.createRange();
+        range.setStart(text, word.index ?? 0);
+        range.setEnd(text, (word.index ?? 0) + word[0].length);
+        return range.getClientRects().length === 1;
+      });
+    }),
+  );
+}
+
+test.describe("drawer beside a narrow week", () => {
+  // From lg on the page gives the drawer its width: about 600 px are left for the stacked week.
+  test.use({ viewport: { width: 1100, height: 800 } });
+
+  test("the labels keep whole words, both shifts are outlined and Reveal scrolls the week sideways", async ({ page }) => {
+    const api = await openCalendar(page, calendarWithLeonardoSun());
+    // The only option takes Leonardo's Sunday, the week's right-hand end.
+    await offerLeonardoSun(page, api, await mockSwapApi(page, api));
+    expect(await stackedLabelsKeepWholeWords(page)).toBe(true);
+
+    await findSwapForGalileo(page);
+    await expect(page.getByText("Best matches (1)")).toBeVisible();
+    // The grid ends left of the drawer; its labels still wrap between words only.
+    const drawerLeft = (await drawer(page).boundingBox())!.x;
+    const gridRight = async () => {
+      const box = (await page.locator(".calendar-scroll").first().boundingBox())!;
+      return box.x + box.width;
+    };
+    await expect.poll(gridRight).toBeLessThanOrEqual(drawerLeft);
+    expect(await stackedLabelsKeepWholeWords(page)).toBe(true);
+    await expect(galileoPill(page)).toHaveCSS("outline-color", "rgb(13, 148, 136)");
+
+    // The click on ⇄ left the pointer where the drawer's list now is: off it,
+    // and the week back at its start, where Leonardo's Sunday lies out of view.
+    await drawer(page).getByRole("heading", { name: "Find a swap" }).hover();
+    const leonardoSun = leonardoSunPill(page);
+    await leonardoSun.evaluate((element) =>
+      element.closest(".calendar-scroll")!.scrollTo({ left: 0, behavior: "instant" }),
+    );
+    expect(await fullyShown(leonardoSun)).toBe(false);
+    await hoverFirstOption(page);
+    await expect(leonardoSun).toHaveCSS("outline-color", "rgb(13, 148, 136)");
+    await expect.poll(() => fullyShown(leonardoSun)).toBe(true);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("the Sunday shift whose ⇄ opened the drawer stays in view beside it", async ({ page }) => {
+    const api = await openCalendar(page, calendarWithLeonardoSun());
+    const calls = await mockSwapApi(page, api);
+    // The search's target is the clicked Sunday shift.
+    await page.route(/\/v1\/swaps\/candidates$/, (route) => {
+      const body = route.request().postDataJSON() as SwapCandidatesRequest;
+      calls.candidates.push({ body, statePosts: api.statePosts.length });
+      const answer = candidates(body, api.state().revision ?? "r0");
+      const target = {
+        ...answer.target,
+        holderId: SECOND,
+        holderName: NAME[SECOND],
+        dateISO: LEONARDO_SUN.dateISO,
+        sectionName: LEONARDO_SUN.sectionName,
+        unit: unitOf(LEONARDO_SUN),
+        excludedPartnerIds: [SECOND],
+      };
+      return route.fulfill({ json: { ...answer, target, best: [], totals: { best: 0, possible: 0, blocked: 0 } } });
+    });
+    const leonardoSun = leonardoSunPill(page);
+    expect(await fullyShown(leonardoSun)).toBe(true);
+
+    await leonardoSun.hover();
+    await findSwapIn(leonardoSun).click();
+    await expect(drawer(page)).toBeVisible();
+    await expect.poll(() => calls.candidates.length).toBe(1);
+    expect(calls.candidates[0].body.assignment).toMatchObject({ assignmentId: "leonardo-sun" });
+    await drawer(page).getByRole("heading", { name: "Find a swap" }).hover();
+    await expect(leonardoSun).toHaveCSS("outline-color", "rgb(13, 148, 136)");
+    // Opening narrowed the page by the drawer's width and pushed Sunday out
+    // of the week's view; once the answer is in, the drawer reveals it.
+    await expect.poll(() => fullyShown(leonardoSun)).toBe(true);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("the open Sunday cell whose Find cover… opened the drawer stays in view beside it", async ({ page }) => {
+    const api = await openCalendar(page, calendarState());
+    const calls = await mockSwapApi(page, api);
+    const open = shiftItem(SUN_ON_CALL, "2026-01-11", "On Call", null);
+    await page.route(/\/v1\/swaps\/candidates$/, (route) => {
+      const body = route.request().postDataJSON() as SwapCandidatesRequest;
+      calls.candidates.push({ body, statePosts: api.statePosts.length });
+      const answer = candidates(body, api.state().revision ?? "r0");
+      return route.fulfill({ json: { ...answer, target: { ...answer.target, dateISO: open.dateISO, unit: unitOf(open) } } });
+    });
+    const cell = page.locator(`[data-schedule-cell="true"][data-row-id="${SUN_ON_CALL}"][data-date-iso="2026-01-11"]`);
+    expect(await fullyShown(cell)).toBe(true);
+
+    await cell.click();
+    await page.getByRole("button", { name: "Find cover for this slot" }).click();
+    await expect(page.getByRole("heading", { name: "Find cover" })).toBeVisible();
+    await expect.poll(() => calls.candidates.length).toBe(1);
+    expect(calls.candidates[0].body).toMatchObject({ mode: "cover", slot: { rowId: SUN_ON_CALL, dateISO: "2026-01-11" } });
+    await drawer(page).getByRole("heading", { name: "Find cover" }).hover();
+    await expect.poll(() => fullyShown(cell)).toBe(true);
     expect(api.errors).toEqual([]);
   });
 });

@@ -41,7 +41,7 @@ MODEL_PRICES: Dict[str, tuple] = {
 CACHE_READ_MULTIPLIERS: Dict[str, float] = {"claude-opus-5-5": 0.05}
 DEFAULT_CACHE_READ_MULTIPLIER = 0.1
 # Priced for cost estimates only (arena comparisons, AGENT_MODEL overrides),
-# not selectable in Settings → Solver; same layout as MODEL_PRICES.
+# not selectable in Settings → Planning rules & AI; same layout as MODEL_PRICES.
 ESTIMATE_ONLY_PRICES: Dict[str, tuple] = {
     "claude-sonnet-5-5": (2.0, 10.0),
     "claude-opus-5": (5.0, 25.0),

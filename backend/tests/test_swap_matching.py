@@ -12,6 +12,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import pytest
 from fastapi import HTTPException
 
+from backend import validation
 from backend.models import (
     AppState,
     Assignment,
@@ -26,7 +27,9 @@ from backend.swaps.blocks import SwapUnit, instance_unit
 from backend.swaps.matching import (
     MovePlan,
     SwapContext,
+    apply_plan,
     find_candidates,
+    full_gate,
     plan_kept_warnings,
     plan_option,
     plan_warnings,
@@ -36,7 +39,13 @@ from backend.swaps.matching import (
 )
 from backend.swaps.policy import SwapRules, open_slot
 from backend.swaps.schemas import CandidatesRequest
-from backend.validation import VIOLATION_UNKNOWN_CLINICIAN, VIOLATION_UNKNOWN_SLOT, ValidationReport, Violation
+from backend.validation import (
+    VIOLATION_REST_DAY,
+    VIOLATION_UNKNOWN_CLINICIAN,
+    VIOLATION_UNKNOWN_SLOT,
+    ValidationReport,
+    Violation,
+)
 
 from .conftest import make_clinician, make_template_slot
 from .swap_fixtures import (
@@ -763,6 +772,178 @@ def test_a_moved_rest_day_is_not_removed_twice():
     assert (len(option["restDayMoves"]), option["restDayRemovals"]) == (1, [])
 
 
+MOVED_OR_REMOVED = [
+    pytest.param([asg("x", "night-thu", THU, "clin-anna"), _rest("r", FRI, "clin-anna")], "handover", None,
+                 id="moved-to-the-taker"),
+    pytest.param([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", THU, "clin-ben")], "handover", None,
+                 id="removed-from-the-taker"),
+    pytest.param([asg("x", "night-wed", WED, "clin-anna"), _rest("ra", THU, "clin-anna"),
+                  asg("y", "ct-thu", THU, "clin-ben")], "swap", "y", id="moved-off-the-givers-new-shift"),
+    pytest.param([asg("x", "ct-thu", THU, "clin-anna"), _rest("ra", FRI, "clin-anna"),
+                  asg("y", "ct-fri", FRI, "clin-ben"), _rest("rb", THU, "clin-ben")], "swap", "y",
+                 id="removed-from-both"),
+]
+
+
+@pytest.mark.parametrize("assignments, mode, take_id", MOVED_OR_REMOVED)
+def test_a_rest_day_the_plan_moves_or_removes_no_longer_counts(assignments: List[Assignment], mode: str,
+                                                                take_id: Optional[str]):
+    state = make_swap_state(assignments)
+    plan = _plan(state, mode, "x", "clin-ben", take_id)
+    assert plan.rest_day_moves or plan.rest_day_removals
+    # Search (the slice) and apply (the whole calendar) both count the plan's own Rest Days.
+    assert scoped_gate(SwapContext(state, RULES, NOW), plan)[0] == []
+    assert full_gate(state, plan) == ([], [])
+    (option,) = _options(_search(state, "x", mode, partnerId="clin-ben"))
+    # A moved Rest Day costs nobody a day off; a removed one is noted once per person-day.
+    removed_days = {(a.clinicianId, a.dateISO) for a in plan.rest_day_removals}
+    assert option["group"] == ("possible" if removed_days else "best")
+    assert [finding["code"] for finding in option["findings"]] == ["rest_day_removed"] * len(removed_days)
+
+
+BEN_REST_DAY_REMOVED = {"code": "rest_day_removed", "clinicianId": "clin-ben",
+                        "message": "Ben Ott has a Rest Day on Thu 8 Jan; it will be removed.",
+                        "short": "Rest Day removed"}
+
+
+def test_every_duplicate_of_the_takers_rest_day_is_removed():
+    first, second = _rest("rb", THU, "clin-ben"), _rest("rb-twice", THU, "clin-ben")
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), first, second])
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert plan.rest_day_removals == [first, second]
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    # The preview and the note name the person-day once.
+    assert (option["group"], option["findings"]) == ("possible", [BEN_REST_DAY_REMOVED])
+    assert option["restDayRemovals"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
+
+
+def test_a_partner_whose_rest_day_the_option_removes_comes_after_free_partners_with_a_note():
+    # Since v1.75 a Rest Day is a day off placed by hand, and the person picker
+    # lists such a person after those without a warning. Ben rests on Thursday,
+    # Clara is free, Dora is on vacation.
+    clinicians = _people()
+    clinicians[3].vacations.append(VacationRange(id="v", startISO=THU, endISO=THU))
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", THU, "clin-ben")],
+                            clinicians=clinicians)
+    result = _search(state, "x")
+    assert (_keys(result["best"]), _keys(result["possible"]), _keys(result["blocked"])) == (
+        ["clin-clara|-"], ["clin-ben|-"], ["clin-dora|-"])
+    ben = _option(result, "clin-ben|-")
+    assert ben["findings"] == [BEN_REST_DAY_REMOVED]
+    assert ben["restDayRemovals"] == [{"clinicianId": "clin-ben", "name": "Ben Ott", "dateISO": THU}]
+    assert _option(result, "clin-clara|-")["findings"] == []
+
+
+def test_a_swap_notes_the_rest_day_of_each_person_who_loses_one():
+    # Anna takes Ben's Friday on her Rest Day, Ben takes her Thursday on his.
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("ra", FRI, "clin-anna"),
+                             asg("y", "ct-fri", FRI, "clin-ben"), _rest("rb", THU, "clin-ben")])
+    option = _option(_search(state, "x", "swap"), "clin-ben|ct-fri@2026-01-09")
+    assert option["group"] == "possible"
+    assert [(f["code"], f["clinicianId"], f["message"]) for f in option["findings"]] == [
+        ("rest_day_removed", "clin-ben", "Ben Ott has a Rest Day on Thu 8 Jan; it will be removed."),
+        ("rest_day_removed", "clin-anna", "Anna Weber has a Rest Day on Fri 9 Jan; it will be removed."),
+    ]
+
+
+def test_a_moved_rest_day_takes_every_duplicate_of_the_givers():
+    # The giver keeps no Rest Day after the night she gives away, and the
+    # taker gets one: else undo would find the left-behind entry and refuse.
+    first, second = _rest("ra", FRI, "clin-anna"), _rest("ra-twice", FRI, "clin-anna")
+    state = make_swap_state([asg("x", "night-thu", THU, "clin-anna"), first, second])
+    plan = _plan(state, "handover", "x", "clin-ben")
+    (move,) = plan.rest_day_moves
+    assert (move.from_id, move.to_id, move.date_iso, move.entries) == ("clin-anna", "clin-ben", FRI,
+                                                                      (first, second))
+    assert plan.rest_day_removals == []
+    assert sum(a is first for a in plan.removed) == sum(a is second for a in plan.removed) == 1
+    after = apply_plan(state.assignments, plan)
+    assert [(a.clinicianId, a.dateISO) for a in after if a.rowId == "pool-rest-day"] == [("clin-ben", FRI)]
+    assert full_gate(state, plan) == ([], [])
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert (option["group"], option["findings"], option["restDayRemovals"]) == ("best", [], [])
+    assert option["restDayMoves"] == [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben",
+                                       "dateISO": FRI}]
+
+
+def _ben_with_friday_shift(kind: str) -> AppState:
+    """Anna's night before her Friday Rest Day, and a Friday shift of Ben's the
+    grid does not show: hidden by his vacation, or in a slot without valid
+    times. The REST_DAY rule counts both."""
+    clinicians = _people()
+    shifts = [asg("x", "night-thu", THU, "clin-anna"), _rest("r", FRI, "clin-anna")]
+    if kind == "hidden":
+        clinicians[1].vacations.append(VacationRange(id="v", startISO=FRI, endISO=FRI))
+        shifts.append(asg("b", "late-fri", FRI, "clin-ben"))
+    else:
+        shifts.append(asg("b", "bad-fri", FRI, "clin-ben"))
+    state = make_swap_state(shifts, clinicians=clinicians)
+    state.weeklyTemplate.locations[0].slots.append(make_template_slot(
+        "bad-fri", col_band_id="col-fri", block_id="block-night", start_time="20:00", end_time="08:00"))
+    return state
+
+
+@pytest.mark.parametrize("kind", ["hidden", "untimed"])
+def test_a_rest_day_never_follows_a_night_onto_a_shift_the_taker_holds(kind: str):
+    state = _ben_with_friday_shift(kind)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert plan.rest_day_moves == []
+    assert not any(v.code == VIOLATION_REST_DAY for v in full_gate(state, plan)[0])
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert (option["group"], option["restDayMoves"]) == ("best", [])
+
+
+REST_DAY_REASON = ("rest_day", "Rest Day: Ben Ott has a Rest Day on Thu 8 Jan.")
+
+
+def test_a_shift_on_a_rest_day_the_plan_keeps_is_blocked_with_a_readable_reason(monkeypatch):
+    # The search always removes the taker's Rest Day; without that removal
+    # Ben would rest and work on Thursday.
+    monkeypatch.setattr(matching, "rest_day_removals", lambda ctx, plan: [])
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", THU, "clin-ben")])
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    new = scoped_gate(ctx, plan)[0]
+    assert [(v.code, v.clinician_id, v.date_iso, v.slot_id) for v in new] == [
+        (VIOLATION_REST_DAY, "clin-ben", THU, "ct-thu")]
+    assert reason_for(ctx, plan, new) == REST_DAY_REASON
+    assert reason_for(ctx, plan, full_gate(state, plan)[0]) == REST_DAY_REASON
+    option = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert (option["group"], option["reason"]) == ("blocked", dict(zip(("code", "message"), REST_DAY_REASON)))
+
+
+def test_a_rest_day_the_partner_already_works_on_is_carried_over():
+    # Ben rests on Tuesday but works its early shift: the calendar breaks
+    # REST_DAY already, and the hand-over of Thursday does not make it worse.
+    state = make_swap_state([asg("x", "ct-thu", THU, "clin-anna"), _rest("rb", TUE, "clin-ben"),
+                             asg("b", "early-tue", TUE, "clin-ben")])
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert full_gate(state, plan)[0] == []
+    result = _search(state, "x", partnerId="clin-ben")
+    option = _option(result, "clin-ben|-")
+    assert (option["group"], option["preexisting"]) == ("best", ["rest_day"])
+    assert result["checks"][1:3] == [{"code": "vacation", "label": "No shift moved onto a vacation day"},
+                                     {"code": "rest_day", "label": "No new shift on a Rest Day"}]
+
+
+def test_a_covers_slice_sees_the_rest_day_of_a_co_holder():
+    # ct-thu needs two people: Clara holds it though she rests that day, and
+    # Anna's place is hidden by her vacation. The slice holds only Clara's
+    # shift of her days, but her Rest Day there still counts.
+    anna = _person("clin-anna", "Anna Weber")
+    anna.vacations.append(VacationRange(id="v", startISO=THU, endISO=THU))
+    state = make_swap_state([asg("hidden", "ct-thu", THU, "clin-anna"), asg("c", "ct-thu", THU, "clin-clara"),
+                             _rest("rc", THU, "clin-clara")],
+                            clinicians=[anna] + default_clinicians()[1:], slot_overrides={f"ct-thu__{THU}": 1})
+    ctx = SwapContext(state, RULES, NOW)
+    info = open_slot(ctx.vctx, ctx.by_instance, "ct-thu", THU)
+    plan = plan_option(ctx, "cover", instance_unit(ctx.vctx, "ct-thu", THU), "clin-ben", cover=info,
+                       hidden_removal=info.hidden[0])
+    new, carried = scoped_gate(ctx, plan)
+    assert new == []
+    assert [(v.code, v.clinician_id, v.slot_id) for v in carried] == [(VIOLATION_REST_DAY, "clin-clara", "ct-thu")]
+
+
 # --- Long stretches and the date range ----------------------------------------
 
 
@@ -945,3 +1126,21 @@ def test_two_blocks_of_one_partner_in_one_week_share_a_baseline(monkeypatch):
     result = _search(state, "x", "swap")
     assert result["totals"]["best"] == 2
     assert len(baselines) == 1
+
+
+def test_the_search_reads_the_calendars_rest_days_once(monkeypatch):
+    # The gate runs once per option: it must not scan the whole calendar for
+    # Rest Days each time (only building the search's context does).
+    scanned: List[int] = []
+    original = validation.manual_rest_days
+
+    def counting(*assignment_lists: List[Assignment]):
+        scanned.append(sum(len(assignments) for assignments in assignment_lists))
+        return original(*assignment_lists)
+
+    monkeypatch.setattr(validation, "manual_rest_days", counting)
+    state = rich_swap_state()
+    night = next(a for a in state.assignments if a.rowId.startswith("night-") and a.clinicianId == "clin-anna")
+    result = _search(state, night.id, "swap")
+    assert result["checked"] >= 20 and result["totals"]["best"] + result["totals"]["possible"] > 0
+    assert len([n for n in scanned if n >= len(state.assignments)]) <= 1

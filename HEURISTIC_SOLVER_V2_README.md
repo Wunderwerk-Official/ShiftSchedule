@@ -114,7 +114,7 @@ def reset_day_to_manual_only(day, clinicians, manual_map):
 ## Eligibility Criteria (8 checks)
 
 1. **Qualification**: `slot.section_id in clinician.qualified_sections`
-2. **Vacation**: `not clinician.is_on_vacation(date)`
+2. **Vacation / Rest Day row**: `not clinician.is_on_vacation(date)` and `not clinician.has_rest_day(date)` (placed in the Rest Day row by hand, v1.75)
 3. **Time Overlap**: `not clinician.has_time_overlap(date, slot)`
 4. **Mandatory Time Window**: `slot fits within preferredWorkingTimes[weekday] if requirement="mandatory"`
 5. **On-Call Rest Days**: `not clinician.is_in_on_call_rest_window(date, ...)`, checked live against every on-call assignment (also ones placed earlier in the run); an on-call slot additionally needs the surrounding rest days to be free (`has_any_work_near`)

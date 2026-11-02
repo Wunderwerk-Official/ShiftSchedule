@@ -36,7 +36,7 @@ export default function LinkClinicianCard({ clinicians, onLink, staleLink = fals
           <p className="text-sm text-slate-600 dark:text-slate-400">
             {staleLink
               ? "The person linked to your account is no longer in the plan. Choose yourself again to see your shifts."
-              : "Link your account to your person in the plan to see your own shifts, hours and next duty. You can change this later."}
+              : "Link your account to your person in the plan to see your own shifts, hours and next duty. You can change this later with the arrow next to “My plan”."}
           </p>
         </div>
         {sorted.length === 0 ? (

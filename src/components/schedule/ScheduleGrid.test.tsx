@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, within } from "@testing-library/rea
 import { describe, expect, it, vi } from "vitest";
 import type { RenderedAssignment } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
+import { STACKED_DIVIDER } from "./RowLabel";
 import ScheduleGrid from "./ScheduleGrid";
 import { buildLocationRowTints, buildPersonPillStyles } from "./teamColors";
 
@@ -60,11 +61,10 @@ describe("ScheduleGrid", () => {
     expect(within(pill as HTMLElement).queryByText("08:00 - 16:00")).toBeNull();
   });
 
-  it("renders pills and row labels without inline colors by default", () => {
+  it("renders pills and row labels without inline colors without location colors (print, public)", () => {
     const { container } = renderGrid({
       rows: [locatedRow],
       locationSeparatorRowIds: [locatedRow.id],
-      locationRowTints: buildLocationRowTints([{ id: "loc-1", name: "Berlin" }], false),
     });
     const pill = screen.getByText("Dr. Alice").closest("[data-assignment-pill=\"true\"]");
     expect(pill?.getAttribute("style")).toBeNull();
@@ -72,12 +72,29 @@ describe("ScheduleGrid", () => {
     expect(container.querySelector('[style*="background-color"]')).toBeNull();
   });
 
+  it("gives an uncolored location its automatic color: band, label shade and ink", () => {
+    renderGrid({
+      rows: [locatedRow],
+      locationSeparatorRowIds: [locatedRow.id],
+      locationRowTints: buildLocationRowTints([{ id: "loc-1", name: "Berlin" }], false),
+    });
+    // First location → blue: label ground #DBEAFE with ink #172554, band #1D4ED8.
+    const label = document.querySelector<HTMLElement>("[data-label-shade]")!;
+    expect(label.style.backgroundColor).toBe("rgb(219, 234, 254)");
+    expect(screen.getByTitle("MRI").style.color).toBe("rgb(23, 37, 84)");
+    const band = document.querySelector<HTMLElement>('[data-location-band="true"]')!;
+    expect(band.textContent).toBe("Berlin");
+    expect(band.style.color).toBe("rgb(255, 255, 255)");
+    expect(band.parentElement?.style.backgroundColor).toBe("rgb(29, 78, 216)");
+  });
+
   it("colors pills by person (initials, palette colors, outline for me)", () => {
     renderGrid({ personPillStyles: buildPersonPillStyles(clinicians), myClinicianId: "clin-1" });
     const pill = screen.getByText("Dr. Alice").closest("[data-assignment-pill=\"true\"]") as HTMLElement;
-    // Second clinician → palette p02.
-    expect(pill.style.backgroundColor).toBe("rgb(254, 243, 199)");
-    expect(pill.style.borderColor).toBe("rgb(180, 83, 9)");
+    // Second clinician → palette p02 (rust, dark tone: white text).
+    expect(pill.style.backgroundColor).toBe("rgb(194, 65, 12)");
+    expect(pill.style.borderColor).toBe("rgb(124, 45, 18)");
+    expect(pill.style.color).toBe("rgb(255, 255, 255)");
     expect(within(pill).getByText("AS")).toBeTruthy();
     expect(pill.className).toContain("outline-2");
     // Left-aligned row (a centered one clips the initials), ellipsis on the name.
@@ -93,7 +110,7 @@ describe("ScheduleGrid", () => {
       personPillStyles: buildPersonPillStyles(clinicians, true),
     });
     const pill = screen.getByText("Dr. Alice").closest('[data-assignment-pill="true"]') as HTMLElement;
-    expect(pill.style.backgroundColor).toBe("rgb(70, 36, 16)"); // p02 dark fill #462410
+    expect(pill.style.backgroundColor).toBe("rgb(253, 186, 116)"); // p02 dark fill #FDBA74 (tones swap)
     expect(within(pill).getByText("AS").style.color).toBe("rgb(15, 23, 42)");
     // SPEC E7: the section fill gives way to the person colors.
     expect(container.querySelector('[style*="rgb(255, 153, 204)"]')).toBeNull();
@@ -144,16 +161,66 @@ describe("ScheduleGrid", () => {
     expect(fills[0].textContent).toContain("MRI");
   });
 
-  it("tints the label cells and the separator of a colored location", () => {
-    const { container } = renderGrid({
+  it("uses a location's own color for its label cells and its band", () => {
+    renderGrid({
       rows: [locatedRow],
       locationSeparatorRowIds: [locatedRow.id],
       locationRowTints: buildLocationRowTints([{ id: "loc-1", name: "Berlin", color: "#EEDFC4" }], false),
     });
-    const tinted = container.querySelectorAll<HTMLElement>('[style*="background-color"]');
-    expect(tinted.length).toBeGreaterThanOrEqual(2);
-    const chip = screen.getAllByTitle("Berlin").find((element) => element.style.backgroundColor);
-    expect(chip?.style.backgroundColor).toBe("rgb(226, 201, 158)");
+    // Sand: ground #EEDFC4 on the first row band, band #7A5E2E, ink #5A3E0E.
+    const label = document.querySelector<HTMLElement>("[data-label-shade]")!;
+    expect(label.style.backgroundColor).toBe("rgb(238, 223, 196)");
+    const band = document.querySelector<HTMLElement>('[data-location-band="true"]')!;
+    expect(band.parentElement?.style.backgroundColor).toBe("rgb(122, 94, 46)");
+    const locationLine = screen.getAllByTitle("Berlin").find((element) => element !== band);
+    expect(locationLine?.style.color).toBe("rgb(90, 62, 14)");
+  });
+
+  it("keeps the plain separator without a location name (locations off), still shading the labels", () => {
+    const unnamed = (id: string, band: string): ScheduleRow => ({ ...baseRow, id, locationId: "loc-default", rowBandLabel: band });
+    const { container } = renderGrid({
+      rows: [unnamed("r-mri", "MRI"), unnamed("r-ct", "CT")],
+      locationSeparatorRowIds: ["r-mri"],
+      locationRowTints: buildLocationRowTints([{ id: "loc-default", name: "Berlin" }], false),
+    });
+    expect(document.querySelector('[data-location-band="true"]')).toBeNull();
+    expect(container.querySelector('[style*="rgb(29, 78, 216)"]')).toBeNull();
+    const shades = Array.from(document.querySelectorAll<HTMLElement>("[data-label-shade]")).map(
+      (element) => element.dataset.labelShade,
+    );
+    expect(shades).toEqual(["#DBEAFE", "#93C5FD"]);
+  });
+
+  it("alternates the label shades per row band, restarting at each location", () => {
+    const row = (id: string, locationId: string, band: string): ScheduleRow => ({
+      ...baseRow,
+      id,
+      locationId,
+      locationName: locationId === "loc-1" ? "Berlin" : "Potsdam",
+      rowBandLabel: band,
+    });
+    const rows = [
+      row("b-mri", "loc-1", "MRI"),
+      row("b-ct", "loc-1", "CT"),
+      row("b-us", "loc-1", "US"),
+      row("p-ct", "loc-2", "CT"),
+    ];
+    renderGrid({
+      rows,
+      locationSeparatorRowIds: ["b-mri", "p-ct"],
+      locationRowTints: buildLocationRowTints(
+        [
+          { id: "loc-1", name: "Berlin" },
+          { id: "loc-2", name: "Potsdam" },
+        ],
+        false,
+      ),
+    });
+    const shades = Array.from(document.querySelectorAll<HTMLElement>("[data-label-shade]")).map(
+      (element) => element.dataset.labelShade,
+    );
+    // Berlin blue: light, strong, light; Potsdam green starts light again.
+    expect(shades).toEqual(["#DBEAFE", "#93C5FD", "#DBEAFE", "#DCFCE7"]);
   });
 });
 
@@ -471,38 +538,173 @@ describe("ScheduleGrid stacked times", () => {
     expect(screen.getByText("Campus")).toBeTruthy();
   });
 
-  it("draws a hairline between the lanes of a row, a full line after its last lane", () => {
-    renderStacked();
-    expect(cell("ct-mon-early", MON).className).toContain("border-b-slate-100");
-    expect(cell("ct-mon-late", MON).className).not.toContain("border-b-slate-100");
-    expect(cell("ct-mon-late", MON).className).toContain("border-slate-200");
+  const labelCells = (kind: "band" | "section" | "time") =>
+    Array.from(document.querySelectorAll<HTMLElement>(`[data-stacked-label="${kind}"]`));
+  // The user's case: Monday's late slot is "MR neuro", Tuesday's "MR prostate".
+  const rotating: ScheduleRow = {
+    ...groupRow,
+    slotRows: groupRow.slotRows!.map((slot) =>
+      slot.id === "ct-mon-late"
+        ? { ...slot, sectionId: "sec-neuro", sectionName: "MR neuro", name: "MR neuro", blockColor: "#DDD6FE" }
+        : slot.id === "ct-tue-late"
+          ? { ...slot, sectionId: "sec-pro", sectionName: "MR prostate", name: "MR prostate", blockColor: "#BFDBFE" }
+          : { ...slot, blockColor: "#BBF7D0" },
+    ),
+  };
+
+  const restDay: ScheduleRow = { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" };
+
+  it("splits the label into row band, section and time columns; band and section cells span their lanes", () => {
+    renderStacked({ rows: [rotating, restDay] });
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    expect(grid.style.gridTemplateColumns.startsWith("repeat(3, auto) repeat(2,")).toBe(true);
+    // One row band cell over the row's three lanes, one section cell per section.
+    expect(labelCells("band").map((c) => [c.textContent, c.style.gridRow])).toEqual([["CT", "span 3"]]);
+    expect(labelCells("section").map((c) => [c.textContent, c.style.gridRow])).toEqual([
+      ["", "span 1"],
+      ["MR neuro", "span 1"],
+      ["MR prostate", "span 1"],
+    ]);
+    expect(labelCells("time").map((c) => c.textContent)).toEqual([
+      "07:00–15:00",
+      "14:00–22:00",
+      "14:00–20:00",
+    ]);
+    // The empty top-left header and the pool rows span all three.
+    expect((grid.firstElementChild as HTMLElement).style.gridColumn).toBe("span 3");
+    // The pool row's label is one cell over the three label columns and its
+    // first day cell follows it directly (no shift under section or time).
+    const restMonday = cell("pool-rest-day", MON);
+    const restLabel = restMonday.previousElementSibling as HTMLElement;
+    expect(restLabel.textContent).toBe("Rest Day");
+    expect(restLabel.style.gridColumn).toBe("span 3");
+    expect(restMonday.nextElementSibling).toBe(cell("pool-rest-day", TUE));
   });
 
-  it("shows a cell's own time only where it differs from its row", () => {
-    renderStacked();
-    expect(within(cell("ct-tue-late", TUE)).getByText("14:00–20:00")).toBeTruthy();
+  it("draws a hairline between the lanes of a section, a line between sections, a stronger one between rows", () => {
+    renderStacked({ rows: [rotating, { ...groupRow, id: "group-loc-1__rb-mr", rowBandId: "rb-mr" }] });
+    const classes = (rowId: string, dateISO: string) => cell(rowId, dateISO).className;
+    // Rotating row: CT lane, then MR neuro, then MR prostate — sections differ.
+    expect(classes("ct-mon-early", MON)).toContain(STACKED_DIVIDER.section);
+    expect(classes("ct-mon-late", MON)).toContain(STACKED_DIVIDER.section);
+    // The last lane closes the row.
+    expect(classes("ct-tue-late", TUE)).toContain(STACKED_DIVIDER.row);
+    // Second row: one section in two lanes, a hairline between them.
+    const second = Array.from(
+      document.querySelectorAll<HTMLElement>('[data-schedule-cell="true"][data-row-id="ct-mon-early"]'),
+    ).at(-1)!;
+    expect(second.className).toContain(STACKED_DIVIDER.lane);
+    // The row band cell ends with the row's line, the section cells with theirs.
+    const [firstBand] = labelCells("band");
+    expect(firstBand.className).toContain(STACKED_DIVIDER.row);
+    expect(labelCells("section")[1].className).toContain(STACKED_DIVIDER.section);
+  });
+
+  it("keeps one label cell per lane in a single-day view", () => {
+    renderStacked({
+      rows: [rotating],
+      weekDays: [new Date(2026, 0, 5)],
+      dayColumns: dayColumns.slice(0, 2),
+    });
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    expect(grid.style.gridTemplateColumns.startsWith("minmax(112px, 168px)")).toBe(true);
+    expect(labelCells("band")).toHaveLength(0);
+    // Monday: the CT lane and the MR neuro lane; Tuesday's prostate lane is hidden.
+    expect(screen.getByText("MR neuro")).toBeTruthy();
+    expect(screen.queryByText("MR prostate")).toBeNull();
+  });
+
+  it("names the section on every lane in a single-day view, also on a later lane of one section", () => {
+    renderStacked({
+      rows: [{ ...groupRow, rowBandLabel: "Imaging" }],
+      weekDays: [new Date(2026, 0, 5)],
+      dayColumns: dayColumns.slice(0, 2),
+    });
+    // Both CT lanes (07:00 and 14:00) name CT; the later one a little quieter.
+    const names = screen.getAllByText("CT", { selector: "span" });
+    expect(names).toHaveLength(2);
+    expect(names[0].className).not.toContain("opacity-75");
+    expect(names[1].className).toContain("opacity-75");
+    expect(document.querySelector(".sr-only")).toBeNull();
+  });
+
+  it("shows a cell's own time only where it differs from its row, as a quiet note under the people", () => {
+    renderStacked({
+      assignmentMap: new Map([
+        ...assignmentMap,
+        [`ct-tue-late__${TUE}`, [{ id: "a2", rowId: "ct-tue-late", dateISO: TUE, clinicianId: "y" }]],
+      ]),
+    });
+    const tue = cell("ct-tue-late", TUE);
+    expect(within(tue).getByText("14:00–20:00")).toBeTruthy();
     expect(within(cell("ct-mon-late", MON)).queryByText("14:00–22:00")).toBeNull();
+    // Not a chip above the pills (it was taken for a row label): plain text
+    // with a clock, after the person.
+    const note = tue.querySelector<HTMLElement>("[data-own-time]")!;
+    expect(note.className).not.toMatch(/rounded|ring|bg-/);
+    expect(note.querySelector("svg")).not.toBeNull();
+    const pill = tue.querySelector('[data-assignment-pill="true"]')!;
+    expect(pill.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("names no section in a cell: the label shows +N, the cell keeps it in its tooltip", () => {
-    const mixed: ScheduleRow = {
-      ...groupRow,
-      slotRows: groupRow.slotRows!.map((slot) =>
-        slot.id === "ct-tue-early"
-          ? { ...slot, sectionId: "sec-mr", sectionName: "MR", name: "MR", blockColor: "#BBF7D0" }
-          : { ...slot, blockColor: "#BFDBFE" },
-      ),
-    };
-    renderStacked({ rows: [mixed] });
-    const tue = cell("ct-tue-early", TUE);
-    expect(within(tue).queryByText("MR")).toBeNull();
-    expect(tue.getAttribute("title")).toBe("MR · 07:00 - 15:00");
-    const badge = screen.getByText("+1");
-    expect(badge.getAttribute("title")).toBe("Other days: Tue: MR");
-    // Section look: each cell is tinted with its own section's color.
+  it("never mixes sections in a lane: no section tag in a cell, the label names it", () => {
+    renderStacked({ rows: [rotating], minSlotsByRowId: { "ct-tue-late": { weekday: 1, weekend: 0 } } });
+    // Monday's neuro and Tuesday's prostate slot each have a lane of their
+    // own, so Tuesday in the neuro lane is hatched, not an open "MR neuro" slot.
+    const tuesdayNeuro = document.querySelector(
+      `[data-schedule-cell="true"][data-date-iso="${TUE}"][data-row-id="group-loc-1__rb-ct__t2"]`,
+    ) as HTMLElement;
+    expect(tuesdayNeuro.className).toContain("stacked-off-cell");
+    // The open prostate slot names neither section nor time: its lane's
+    // label says both.
+    const tue = cell("ct-tue-late", TUE);
+    expect(within(tue).queryByText("MR prostate")).toBeNull();
+    expect(tue.querySelector("[data-own-time]")).toBeNull();
+    expect(within(tue).getByText("Open")).toBeTruthy();
+    expect(labelCells("section").at(-1)?.textContent).toBe("MR prostate");
+    expect(labelCells("time").at(-1)?.textContent).toBe("14:00–20:00");
+    // The tooltip keeps section and time; the label has no "+N".
+    expect(tue.getAttribute("title")).toBe("MR prostate · 14:00 - 20:00");
+    expect(screen.queryByText(/^\+\d+$/)).toBeNull();
+    expect(document.querySelector("[data-other-section]")).toBeNull();
+  });
+
+  it("tints each lane label and cell with its own section's color in the section look", () => {
+    renderStacked({ rows: [rotating] });
+    const sectionColors = labelCells("section").map((c) => c.style.getPropertyValue("--section-color"));
+    expect(sectionColors).toEqual(["#BBF7D0", "#DDD6FE", "#BFDBFE"]);
+    expect(labelCells("time").every((c) => c.className.includes("stacked-label-tint"))).toBe(true);
+    const tue = cell("ct-tue-late", TUE);
     expect(tue.className).toContain("stacked-section-cell");
-    expect(tue.style.getPropertyValue("--section-color")).toBe("#BBF7D0");
-    expect(cell("ct-mon-early", MON).style.getPropertyValue("--section-color")).toBe("#BFDBFE");
+    expect(tue.style.getPropertyValue("--section-color")).toBe("#BFDBFE");
+    expect(cell("ct-mon-early", MON).style.getPropertyValue("--section-color")).toBe("#BBF7D0");
+  });
+
+  it("names the section of a later lane for screen readers and in its tooltip", () => {
+    renderStacked({ rows: [{ ...groupRow, rowBandLabel: "Imaging" }] });
+    const [, late] = labelCells("time");
+    expect(late.getAttribute("title")).toBe("CT · 14:00–22:00");
+    expect(late.querySelector(".sr-only")?.textContent?.trim()).toBe("CT");
+    // The section cell spans both lanes and names CT once.
+    expect(labelCells("section").map((c) => [c.textContent, c.style.gridRow])).toEqual([["CT", "span 2"]]);
+  });
+
+  it("colors every lane label of a row band with its location's shade instead of the section color", () => {
+    renderStacked({
+      rows: [{ ...groupRow, slotRows: groupRow.slotRows!.map((slot) => ({ ...slot, blockColor: "#BFDBFE" })) }],
+      locationRowTints: buildLocationRowTints([{ id: "loc-1", name: "Campus", color: "#DCFCE7" }], false),
+    });
+    const labels = Array.from(document.querySelectorAll<HTMLElement>("[data-label-shade]"));
+    // Row band, section and both time cells of the CT row band: the green
+    // location's first shade.
+    expect(labels.map((label) => label.dataset.labelShade)).toEqual(["#DCFCE7", "#DCFCE7", "#DCFCE7", "#DCFCE7"]);
+    expect(labels[0].style.backgroundColor).toBe("rgb(220, 252, 231)");
+    expect(document.querySelector(".stacked-label-tint")).toBeNull();
+    expect(screen.getByText("07:00–15:00").style.color).toBe("rgb(5, 46, 22)");
+    // The band above names the location in white on its strong green.
+    const band = document.querySelector<HTMLElement>('[data-location-band="true"]')!;
+    expect(band.textContent).toBe("Campus");
+    expect(band.parentElement?.style.backgroundColor).toBe("rgb(21, 128, 61)");
   });
 
   it("draws no section block and keeps person-colored cells untinted", () => {
@@ -517,21 +719,13 @@ describe("ScheduleGrid stacked times", () => {
     expect(document.querySelector(".stacked-label-tint")).not.toBeNull();
   });
 
-  it("marks a day of another section without naming it, and hatches days without a slot", () => {
-    const mixed: ScheduleRow = {
-      ...groupRow,
-      // Tuesday has no late slot; its early slot belongs to another section.
-      slotRows: groupRow.slotRows!
-        .filter((slot) => slot.id !== "ct-tue-late")
-        .map((slot) => (slot.id === "ct-tue-early" ? { ...slot, sectionId: "sec-mr", sectionName: "MR", name: "MR" } : slot)),
-    };
-    renderStacked({ rows: [mixed] });
-    expect(cell("ct-tue-early", TUE).querySelector('[data-other-section="true"]')).not.toBeNull();
-    expect(cell("ct-mon-early", MON).querySelector('[data-other-section="true"]')).toBeNull();
+  it("hatches days without a slot in the lane", () => {
+    renderStacked({ rows: [{ ...groupRow, slotRows: groupRow.slotRows!.filter((slot) => slot.id !== "ct-tue-late") }] });
     const lateTuesday = document.querySelector(
       `[data-schedule-cell="true"][data-date-iso="${TUE}"][data-row-id="group-loc-1__rb-ct__t2"]`,
     ) as HTMLElement;
     expect(lateTuesday.className).toContain("stacked-off-cell");
+    expect(cell("ct-tue-early", TUE).className).not.toContain("stacked-off-cell");
   });
 
   it("writes short open slots in the compact grid", () => {

@@ -206,6 +206,71 @@ class TestDaySolverBasics:
         assert len(response.assignments) == 0
 
 
+class TestSolverRestDayRow:
+    """People placed in the Rest Day row by hand are off that day (v1.75)."""
+
+    SOLVED = {"OPTIMAL", "FEASIBLE", "GAP_CONVERGED"}
+
+    def _solve(self, monkeypatch, clinicians, slots, assignments):
+        state = _build_solver_state(
+            clinicians,
+            slots,
+            [make_template_col_band("col-mon-1", "", 1, "mon")],
+            {"enforceSameLocationPerDay": False, "onCallRestEnabled": False},
+            assignments=assignments,
+        )
+        monkeypatch.setattr("backend.solver._load_state", lambda _user_id: state)
+        return _solve_range_impl(
+            SolveRangeRequest(startISO="2026-01-05", endISO="2026-01-05", only_fill_required=True),
+            current_user=TEST_USER,
+        )
+
+    @staticmethod
+    def _rest(clinician_id, source="manual"):
+        return Assignment(id=f"rest-{clinician_id}", rowId="pool-rest-day",
+                          dateISO="2026-01-05", clinicianId=clinician_id, source=source)
+
+    @pytest.mark.parametrize("source", ["manual", "solver"])
+    def test_person_with_rest_day_is_not_chosen(self, monkeypatch, source) -> None:
+        clinicians = [make_clinician("clin-1", "Dr. Alice"), make_clinician("clin-2", "Dr. Bob")]
+        # Both orders: the person without the rest day takes the slot.
+        for rested, free in (("clin-1", "clin-2"), ("clin-2", "clin-1")):
+            response = self._solve(
+                monkeypatch, clinicians,
+                [make_template_slot(slot_id="slot-a", col_band_id="col-mon-1")],
+                [self._rest(rested, source)],
+            )
+            assert [(a.rowId, a.clinicianId) for a in response.assignments] == [("slot-a", free)]
+
+    def test_only_qualified_person_on_rest_day_leaves_the_slot_open(self, monkeypatch) -> None:
+        response = self._solve(
+            monkeypatch, [make_clinician("clin-1", "Dr. Alice")],
+            [make_template_slot(slot_id="slot-a", col_band_id="col-mon-1")],
+            [self._rest("clin-1")],
+        )
+        assert response.assignments == []
+        assert response.debugInfo.solver_status in self.SOLVED
+
+    @pytest.mark.parametrize("with_colleague", [False, True])
+    def test_existing_shift_on_rest_day_stays_and_solve_succeeds(self, monkeypatch, with_colleague) -> None:
+        clinicians = [make_clinician("clin-1", "Dr. Alice")]
+        if with_colleague:
+            clinicians.append(make_clinician("clin-2", "Dr. Bob"))
+        slots = [
+            make_template_slot(slot_id="slot-a", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-b", col_band_id="col-mon-1",
+                               start_time="16:00", end_time="20:00"),
+        ]
+        manual = Assignment(id="manual-1", rowId="slot-a", dateISO="2026-01-05",
+                            clinicianId="clin-1", source="manual")
+        response = self._solve(monkeypatch, clinicians, slots, [manual, self._rest("clin-1")])
+        assert response.debugInfo.solver_status in self.SOLVED
+        # The hand-placed shift is input, not output: it is neither removed nor
+        # duplicated, and the person with the rest day gets nothing more.
+        expected = [("slot-b", "clin-2")] if with_colleague else []
+        assert [(a.rowId, a.clinicianId) for a in response.assignments] == expected
+
+
 class TestDaySolverOverlapConstraints:
     """Tests for time overlap constraints."""
 

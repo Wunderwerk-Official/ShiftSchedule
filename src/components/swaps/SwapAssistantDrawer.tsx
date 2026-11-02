@@ -2,7 +2,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type KeyboardEvent
 import { createPortal } from "react-dom";
 import { SwapApiError, type Clinician } from "../../api/client";
 import { cx } from "../../lib/classNames";
-import { optionHighlightKeys, targetHighlightKeys } from "../../lib/swaps/format";
+import { optionHighlightKeys, targetHighlightKeys, targetRevealKey } from "../../lib/swaps/format";
 import type {
   SwapApplyRequest,
   SwapCandidatesRequest,
@@ -41,7 +41,8 @@ export type SwapAssistantDrawerProps = {
   onApply: (request: SwapApplyRequest) => Promise<void>;
   onUndo: (swapId: string) => Promise<void>;
   onLoadHistory: () => Promise<SwapRecord[]>;
-  /** Scrolls a pill (assignment key) into view next to the drawer. */
+  /** Scrolls a pill (assignment key) into view next to the drawer: the shift of the
+   *  option pointed at, and the target's (a cover's cell) once its first answer is in. */
   onRevealKey: (key: string) => void;
   onClose: () => void;
 };
@@ -197,6 +198,25 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
     const timer = window.setTimeout(() => cb.current.onRevealKey(revealKey), REVEAL_DELAY_MS);
     return () => window.clearTimeout(timer);
   }, [revealKey]);
+
+  // From lg on, opening the drawer narrows the page by its width, which can
+  // push the target's pill (a cover's cell) out of the grid's visible part.
+  // Once the first answer names it, it is revealed, once; an option's shift
+  // revealed first takes over, so the grid never jumps back to the target.
+  const targetKey = response ? targetRevealKey(response.target) : null;
+  const targetRevealDone = useRef(false);
+  useEffect(() => {
+    if (targetRevealDone.current || !targetKey) return;
+    if (revealKey) {
+      targetRevealDone.current = true;
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      targetRevealDone.current = true;
+      cb.current.onRevealKey(targetKey);
+    }, REVEAL_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [targetKey, revealKey]);
 
   useEffect(() => {
     headingRef.current?.focus({ preventScroll: true });

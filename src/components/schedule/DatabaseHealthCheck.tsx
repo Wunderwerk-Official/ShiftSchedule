@@ -74,28 +74,28 @@ type StatKey = "assignments" | "slots" | "clinicians" | "locations" | "blocks" |
 
 const STAT_EXPLANATIONS: Record<StatKey, { title: string; description: string }> = {
   assignments: {
-    title: "Total Assignments",
-    description: "The total number of clinician assignments in your schedule. Each time a clinician is assigned to a slot on a specific date counts as one assignment. This includes both manual assignments and those created by the solver.",
+    title: "Total Shifts",
+    description: "The total number of shifts in your schedule. Each person placed in a slot on a specific date counts as one shift. This includes both shifts placed by hand and those created by the planner.",
   },
   slots: {
     title: "Template Slots",
     description: "The number of unique slot positions defined in your Weekly Calendar Template. Each slot represents a specific section at a specific time on a specific day type (e.g., 'MRI 08:00-12:00 on Monday'). Slots are reused across all weeks.",
   },
   clinicians: {
-    title: "Clinicians",
-    description: "The total number of clinicians/staff members in your system. These are the people who can be assigned to shifts.",
+    title: "People",
+    description: "The total number of people in your system. These are the people who can be planned into shifts.",
   },
   locations: {
     title: "Locations",
     description: "The number of locations (e.g., hospitals, clinics, departments) configured in your template. Each location can have its own set of rows and slots.",
   },
   blocks: {
-    title: "Section Blocks",
-    description: "The number of section blocks defined in your template (e.g., MRI, CT, Sonography). Section blocks define what types of shifts exist and can be placed into the template grid.",
+    title: "Sections",
+    description: "The number of sections defined in your template (e.g., MRI, CT, Sonography). Sections define what kinds of shifts exist and can be placed into the template grid.",
   },
   poolAssignments: {
-    title: "Pool Assignments (Persisted)",
-    description: "Manual assignments to Rest Day or Vacation pools that are saved in the database. Note: The calendar may show additional pool entries that are dynamically generated (e.g., automatic rest days before/after on-call shifts, or vacation entries from clinician vacation ranges). Those generated entries are not counted here as they are not persisted.",
+    title: "Rest Day & Vacation entries",
+    description: "Rest Day and Vacation entries placed by hand. Automatic rest days and vacation periods are not counted.",
   },
 };
 
@@ -157,7 +157,7 @@ function StatExplanationPanel({
                   onClick={() => setShowDetails(!showDetails)}
                   className="text-xs font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-200"
                 >
-                  {showDetails ? "Hide Details" : "Show Persisted Assignments"}
+                  {showDetails ? "Hide details" : "Show saved entries"}
                 </button>
                 {showDetails && (
                   <pre className="mt-2 max-h-32 overflow-auto rounded bg-white/50 p-2 text-xs text-slate-700 dark:bg-slate-900/50 dark:text-slate-300">
@@ -186,11 +186,11 @@ function IssueCard({ issue }: { issue: DatabaseHealthIssue }) {
   const [expanded, setExpanded] = useState(false);
 
   const typeLabels: Record<string, string> = {
-    orphaned_assignment: "Orphaned Assignments",
-    slot_collision: "Slot Collisions",
-    duplicate_assignment: "Duplicate Assignments",
-    colband_explosion: "ColBand Overflow",
-    pool_assignment_info: "Pool Assignments",
+    orphaned_assignment: "Shifts in deleted slots",
+    slot_collision: "Two sections in one cell",
+    duplicate_assignment: "Double entries",
+    colband_explosion: "Too many columns",
+    pool_assignment_info: "Rest Day & Vacation entries",
   };
 
   const isError = issue.severity === "error";
@@ -322,13 +322,13 @@ export default function DatabaseHealthCheck() {
               : "bg-indigo-50 text-indigo-600 hover:bg-indigo-100 dark:bg-indigo-900/30 dark:text-indigo-400 dark:hover:bg-indigo-900/50"
           )}
         >
-          {loading ? "Checking..." : "Run Check"}
+          {loading ? "Checking..." : "Run check"}
         </button>
       </div>
 
       <p className="mb-3 text-xs text-slate-500 dark:text-slate-400">
-        Check for data integrity issues like orphaned assignments, slot collisions, and database inconsistencies.
-        Click on any stat for an explanation.
+        Read-only: looks for shifts in deleted slots, two sections in one template cell, double
+        entries and oversized templates. Click a number for an explanation.
       </p>
 
       {/* Link to full inspector page */}
@@ -341,7 +341,7 @@ export default function DatabaseHealthCheck() {
         </svg>
         <span className="font-medium">Open Database Inspector</span>
         <span className="text-xs text-indigo-500 dark:text-indigo-400">
-          View all slots and assignments for any week
+          Read-only view of all slots and shifts for any week
         </span>
       </a>
 
@@ -384,7 +384,7 @@ export default function DatabaseHealthCheck() {
             <div className="grid grid-cols-3 gap-1">
               <StatCard
                 value={result.stats.totalAssignments}
-                label="Assignments"
+                label="Shifts"
                 statKey="assignments"
                 onClick={handleStatClick}
               />
@@ -396,7 +396,7 @@ export default function DatabaseHealthCheck() {
               />
               <StatCard
                 value={result.stats.totalClinicians}
-                label="Clinicians"
+                label="People"
                 statKey="clinicians"
                 onClick={handleStatClick}
               />
@@ -416,7 +416,7 @@ export default function DatabaseHealthCheck() {
               />
               <StatCard
                 value={result.stats.poolAssignments ?? 0}
-                label="Pool Assigns"
+                label="Rest & vacation"
                 statKey="poolAssignments"
                 onClick={handleStatClick}
               />
@@ -449,7 +449,7 @@ export default function DatabaseHealthCheck() {
 
       {!result && !loading && !error && (
         <div className="rounded-lg bg-slate-50 p-4 text-center text-xs text-slate-500 dark:bg-slate-800 dark:text-slate-400">
-          Click "Run Check" to analyze your database
+          Click "Run check" to check your saved data.
         </div>
       )}
     </div>

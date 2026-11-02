@@ -7,6 +7,8 @@ shapes the solver tests use. Every test is independent of CP-SAT / OR-Tools.
 
 from __future__ import annotations
 
+import pytest
+
 from backend.models import (
     AppState,
     Assignment,
@@ -26,6 +28,7 @@ from backend.validation import (
     VIOLATION_ON_CALL_REST,
     VIOLATION_OVERLAP,
     VIOLATION_QUALIFICATION,
+    VIOLATION_REST_DAY,
     VIOLATION_SAME_LOCATION,
     VIOLATION_SOLVER_RULE,
     VIOLATION_SPLIT_SHIFT,
@@ -40,6 +43,7 @@ from backend.validation import (
     validate_overlaps,
     validate_qualifications,
     validate_references,
+    validate_rest_days,
     validate_same_location_per_day,
     validate_solver_rules,
     validate_split_shifts,
@@ -198,6 +202,95 @@ def test_vacation_ignored_for_pool_rows():
         assignments=[make_assignment("a1", "pool-vacation", "2026-01-05", "clin-1")],
     )
     assert validate_vacations(state, state.assignments) == []
+
+
+# ---------------------------------------------------------------------------
+# Rest Day row (v1.75)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("rest_source", ["manual", "solver", None])
+@pytest.mark.parametrize("slot_source", ["manual", "solver"])
+def test_rest_day_violation_for_slot_on_stored_rest_day(rest_source, slot_source):
+    state = make_app_state(
+        assignments=[
+            make_assignment("rest", "pool-rest-day", "2026-01-05", "clin-1", rest_source),
+            make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1", slot_source),
+        ],
+    )
+    violations = validate_rest_days(state, state.assignments)
+    assert [(v.code, v.clinician_id, v.date_iso, v.slot_id) for v in violations] == [
+        (VIOLATION_REST_DAY, "clin-1", "2026-01-05", "slot-a__mon")
+    ]
+    assert violations[0].message == (
+        "Dr. Alice has a rest day on 2026-01-05 but is assigned to slot slot-a__mon"
+    )
+    report = validate_assignments(state, state.assignments)
+    assert [v.code for v in report.violations] == [VIOLATION_REST_DAY]
+
+
+def test_rest_day_is_read_from_state_and_from_the_checked_list():
+    rest = make_assignment("rest", "pool-rest-day", "2026-01-05", "clin-1", "manual")
+    slot = make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1", "solver")
+    in_state = make_app_state(assignments=[rest])
+    # The candidate list alone (as the agent's dry runs pass it) is enough.
+    assert [v.code for v in validate_rest_days(in_state, [slot])] == [VIOLATION_REST_DAY]
+    in_list = make_app_state(assignments=[])
+    assert [v.code for v in validate_rest_days(in_list, [rest, slot])] == [VIOLATION_REST_DAY]
+
+
+def test_rest_day_only_blocks_its_own_date_and_person():
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice"), make_clinician("clin-2", "Bob")],
+        slots=[
+            make_template_slot("slot-a__mon", col_band_id="col-mon-1", required_slots=2),
+            make_template_slot("slot-a__tue", col_band_id="col-tue-1"),
+        ],
+        assignments=[
+            make_assignment("rest", "pool-rest-day", "2026-01-05", "clin-1", "manual"),
+            make_assignment("a1", "slot-a__tue", "2026-01-06", "clin-1", "solver"),
+            make_assignment("a2", "slot-a__mon", "2026-01-05", "clin-2", "solver"),
+        ],
+    )
+    assert validate_rest_days(state, state.assignments) == []
+    assert validate_assignments(state, state.assignments).is_valid
+
+
+def test_rest_day_follows_vacation_date_semantics_for_overnight_shifts():
+    # A shift counts on its start date: a night shift starting the evening
+    # before the rest day is allowed, exactly like vacation.
+    state = make_app_state(
+        slots=[make_template_slot("night", col_band_id="col-mon-1",
+                                  start_time="20:00", end_time="08:00", end_day_offset=1)],
+        assignments=[
+            make_assignment("rest", "pool-rest-day", "2026-01-06", "clin-1", "manual"),
+            make_assignment("n1", "night", "2026-01-05", "clin-1", "solver"),
+        ],
+    )
+    assert validate_rest_days(state, state.assignments) == []
+    vacation_state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Dr. Alice", vacations=[
+            VacationRange(id="v1", startISO="2026-01-06", endISO="2026-01-06")])],
+        slots=state.weeklyTemplate.locations[0].slots,
+        assignments=[make_assignment("n1", "night", "2026-01-05", "clin-1", "solver")],
+    )
+    assert validate_vacations(vacation_state, vacation_state.assignments) == []
+
+
+def test_rest_day_ignores_pool_rows_and_legacy_vacation_entries():
+    state = make_app_state(
+        assignments=[
+            make_assignment("rest", "pool-rest-day", "2026-01-05", "clin-1", "manual"),
+            make_assignment("vac", "pool-vacation", "2026-01-05", "clin-1", "manual"),
+            # A stored Vacation row entry is legacy: it neither marks a rest
+            # day nor a vacation for the planners.
+            make_assignment("legacy", "pool-vacation", "2026-01-06", "clin-1", "manual"),
+        ],
+    )
+    assert validate_rest_days(state, state.assignments) == []
+    tuesday = make_assignment("a1", "slot-a__mon", "2026-01-06", "clin-1", "solver")
+    assert validate_rest_days(state, [tuesday]) == []
+    assert validate_vacations(state, [tuesday]) == []
 
 
 # ---------------------------------------------------------------------------

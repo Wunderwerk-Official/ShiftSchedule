@@ -18,6 +18,7 @@ import {
   swapTargetKey,
   swapToastMessage,
   targetHighlightKeys,
+  targetRevealKey,
   targetSummary,
   timeRange,
   undoButtonLabel,
@@ -292,6 +293,14 @@ describe("swap highlight", () => {
     expect(targetHighlightKeys(coverTarget)).toEqual([]);
     expect(optionHighlightKeys(option())).toEqual(["ct-sat__2026-11-21__clin-ben"]);
     expect(optionHighlightKeys(option({ take: null }))).toEqual([]);
+  });
+
+  it("reveals the target's first pill, or a cover's cell by a key without a person", () => {
+    expect(targetRevealKey(target())).toBe("night-thu__2026-11-19__clin-anna");
+    expect(targetRevealKey(target({ unit: null }))).toBeNull();
+    const cell = coverTarget.unit!.items[0];
+    expect(targetRevealKey(coverTarget)).toBe(`${cell.rowId}__${cell.dateISO}__`);
+    expect(targetRevealKey({ ...coverTarget, unit: null })).toBeNull();
   });
 
   it("outlines pills and sheet names, with a dark-mode color, escaping the keys", () => {

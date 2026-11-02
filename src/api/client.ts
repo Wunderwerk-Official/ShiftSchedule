@@ -60,6 +60,8 @@ export type PreferredWorkingTimes = Record<
 export type Holiday = {
   dateISO: string;
   name: string;
+  /** "public": loaded (reloading replaces it); "manual": added by hand. Missing on older data. */
+  source?: "public" | "manual";
 };
 
 export type WorkPattern = {
@@ -202,6 +204,9 @@ export type AppState = {
   slotOverridesByKey?: Record<string, number>;
   weeklyTemplate?: WeeklyCalendarTemplate;
   holidayCountry?: string;
+  // ISO 3166-2 subdivision ("DE-NW") that "Load Holidays" filters regional
+  // holidays by (src/lib/holidays.ts); absent = the holidays of all regions.
+  holidayRegion?: string;
   holidayYear?: number;
   holidays?: Holiday[];
   publishedWeekStartISOs?: string[];
@@ -611,6 +616,24 @@ export async function createSnapshot(
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {
     await throwWithDetail(res, `Failed to save snapshot: ${res.status}`);
+  }
+  return res.json();
+}
+
+/**
+ * Save the calendar as shown into the auto-backup slot before a shifts file
+ * replaces its shifts ("Auto-backup before shifts file import"). The slot is
+ * shared with the backup made before a restore; the newest one wins.
+ */
+export async function createImportBackup(state: AppState): Promise<SnapshotMeta> {
+  const res = await fetch(`${API_BASE}/v1/state/snapshots/import-backup`, {
+    method: "POST",
+    headers: buildHeaders(),
+    body: JSON.stringify({ state }),
+  });
+  if (res.status === 401) handleUnauthorized();
+  if (!res.ok) {
+    await throwWithDetail(res, `Failed to save the backup: ${res.status}`);
   }
   return res.json();
 }
@@ -1528,7 +1551,8 @@ export async function exportWeeksPdf(
   return res.blob();
 }
 
-// Per-user UI preferences ("My plan" view, saved views, start pages). Stored
+// Per-user UI preferences ("I am" link, "My plan" view, Times; the saved
+// views and start pages are kept but unused since v1.74). Stored
 // server-side per account in their own table, NOT in AppState, so they never
 // touch the calendar revision. Mirrors backend/models.py::UserPreferences.
 export type PlanScope = "team" | "me";
@@ -1564,9 +1588,15 @@ export type UserPreferences = {
   /** Phones remember their own range (SPEC R17). */
   myPlanRangeMobile: PlanRange;
   teamTimeLayout: TeamTimeLayout;
-  /** At most 12 (backend limit). */
+  /**
+   * No longer used by the UI since v1.74 (start-page star and "Views" menu
+   * removed; the calendar always opens in the team plan). Kept so stored
+   * preferences and the backend stay compatible. At most 12 (backend limit).
+   */
   savedViews: SavedView[];
+  /** Unused by the UI since v1.74 (see savedViews). */
   startViewDesktop: ViewConfig | null;
+  /** Unused by the UI since v1.74 (see savedViews). */
   startViewMobile: ViewConfig | null;
 };
 

@@ -124,8 +124,8 @@ async function createTestUserViaAdminUI(
 // ============================================================================
 
 async function createSectionBlock(page: Page, blockName: string) {
-  console.log(`    -> Clicking "+ Add block" button`);
-  const addBlockBtn = page.locator('button:has-text("+ Add block")');
+  console.log(`    -> Clicking "+ Add section" button`);
+  const addBlockBtn = page.locator('button:has-text("+ Add section")');
   await addBlockBtn.click();
 
   console.log(`    -> Waiting for section name input to appear`);
@@ -157,7 +157,9 @@ async function createLocation(page: Page, locationName: string) {
   await page.waitForTimeout(300);
 
   console.log(`    -> Finding the new location input field`);
-  const locationInputs = page.locator('input[type="text"]');
+  // The location name inputs carry no type attribute; find them by their
+  // accessible name. "+ Location" adds "New Location" at the top.
+  const locationInputs = page.getByRole("textbox", { name: "Location name" });
   const count = await locationInputs.count();
 
   for (let i = count - 1; i >= 0; i--) {
@@ -223,7 +225,7 @@ async function configureTemplateGrid(
           await cell.click();
           await page.waitForTimeout(200);
 
-          // Wait for the "Add block" panel to appear
+          // Wait for the "Add section" panel to appear
           const addBlockPanel = page.locator('[data-add-block-panel]');
           if ((await addBlockPanel.count()) > 0) {
             // Click on the block we want to add
@@ -306,9 +308,14 @@ async function addEligibilityToClinician(
     for (const sectionName of sectionNames) {
       console.log(`      -> Adding eligibility for section: "${sectionName}"`);
 
-      // Find the "Add section" container in the modal
-      // The modal has a dropdown (CustomSelect) and an "Add" button
-      const addSectionDiv = page.locator('div:has-text("Add section")').filter({ has: page.locator('button:has-text("Add")') }).first();
+      // Find the "Add section" container in the modal: the div whose child
+      // label reads exactly "Add section" (the template's "+ Add section"
+      // button behind the modal must not match). It holds a dropdown
+      // (CustomSelect) and an "Add" button.
+      const addSectionDiv = page
+        .locator('div:has(> div:text-is("Add section"))')
+        .filter({ has: page.locator('button:text-is("Add")') })
+        .first();
 
       if ((await addSectionDiv.count()) > 0) {
         // Click the dropdown button to open it

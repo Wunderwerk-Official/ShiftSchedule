@@ -5,21 +5,23 @@ Both re-derive everything from the stored calendar, as run apply does
 and anything that changed since then is a 409. Neither commits; the route's
 authenticated_account_connection commits on success and rolls back on any
 HTTPException. No auto-backup is written: the single reserved backup slot
-belongs to run apply and snapshot restore, and undo restores a swap exactly.
+belongs to run apply, snapshot restore and the shifts file import, and undo
+restores a swap exactly.
 """
 
 import sqlite3
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, Callable, Dict, Iterable, List, Mapping, NamedTuple, Optional, Sequence, Set, Tuple
+from typing import Any, Callable, Dict, List, NamedTuple, Optional, Sequence, Set, Tuple
 
 from fastapi import HTTPException
 
 from .. import schedule_changes
+from ..assignment_policy import REST_DAY_ROW_ID
 from ..constraint_policy import baseline_index, is_new_or_worsened, new_violations
-from ..models import AppState, Assignment, Clinician
+from ..models import AppState, Assignment
 from ..state import _load_state, _normalize_state, _save_state
-from ..validation import Violation, _build_slot_lookup, _is_on_vacation
+from ..validation import VIOLATION_REST_DAY, Violation, _build_slot_lookup
 from . import labels, matching, store
 from .blocks import SwapUnit, abs_minute, instance_unit, is_hidden, local_iso, slot_fingerprint, unit_for
 from .matching import MovePlan, RestDayMove, SwapContext, swap_error
@@ -151,30 +153,17 @@ def _swap_invalid(
                       violations=[asdict(v) for v in violations], reasons=reasons)
 
 
-PersonDay = Tuple[str, str]  # (clinicianId, dateISO)
+Entry = Tuple[str, str, str]  # (clinicianId, dateISO, rowId)
 
 
-def _resting_and_working(
-    entries: Iterable[Tuple[str, str, str]],
-    days: Set[PersonDay],
-    clinicians: Mapping[str, Clinician],
-) -> List[PersonDay]:
-    """The person-days among ``days`` on which ``entries`` ((clinicianId,
-    dateISO, rowId) each) hold a Rest Day and a shift the person's vacation
-    does not hide, a state apply never creates. In date order."""
-    resting: Set[PersonDay] = set()
-    working: Set[PersonDay] = set()
-    for clinician_id, date_iso, row_id in entries:
-        day = (clinician_id, date_iso)
-        if day not in days:
-            continue
-        if row_id == matching.REST_DAY_ROW:
-            resting.add(day)
-        elif not row_id.startswith("pool-"):
-            clinician = clinicians.get(clinician_id)
-            if clinician is None or not _is_on_vacation(clinician, date_iso):
-                working.add(day)
-    return sorted(resting & working, key=lambda day: (day[1], day[0]))
+def _rest_work_pairs(entries: Sequence[Entry]) -> Set[Entry]:
+    """The REST_DAY pairs of ``entries``: every shift dated on a day its person
+    holds a Rest Day entry. Any non-pool entry is a shift, as for
+    validate_rest_days, one hidden by a vacation too."""
+    resting = {(clinician_id, date_iso) for clinician_id, date_iso, row_id in entries
+               if row_id == REST_DAY_ROW_ID}
+    return {(clinician_id, date_iso, row_id) for clinician_id, date_iso, row_id in entries
+            if not row_id.startswith("pool-") and (clinician_id, date_iso) in resting}
 
 
 def _item_refs(ctx: SwapContext, unit: SwapUnit) -> List[Dict[str, Any]]:
@@ -201,10 +190,7 @@ def _summary(ctx: SwapContext, plan: MovePlan) -> Dict[str, Any]:
         "take": _summary_items(ctx, plan.take),
         "restDayMoves": [{"fromClinicianId": m.from_id, "toClinicianId": m.to_id, "dateISO": m.date_iso}
                          for m in plan.rest_day_moves],
-        "restDaysRemoved": [
-            {"clinicianId": a.clinicianId, "name": ctx.name(a.clinicianId), "dateISO": a.dateISO}
-            for a in plan.rest_day_removals
-        ],
+        "restDaysRemoved": matching.rest_day_removal_days(ctx, plan),
         "hiddenRemoved": ({"clinicianId": hidden.clinicianId, "name": ctx.name(hidden.clinicianId)}
                           if hidden is not None else None),
     }
@@ -253,11 +239,6 @@ def apply_swap(conn: sqlite3.Connection, username: str, req: ApplyRequest,
     if any(w.id not in req.acknowledgedWarnings for w in warnings):
         raise swap_error(409, "warnings_unacknowledged", labels.WARNINGS_UNACK,
                          warnings=[w.as_json() for w in warnings])
-    # Person-days the undo will restore entries to that already held a Rest
-    # Day and a shift: undo may bring such a day back, it existed before.
-    rest_work_pairs = _resting_and_working(
-        ((a.clinicianId, a.dateISO, a.rowId) for a in state.assignments),
-        {(a.clinicianId, a.dateISO) for a in plan.removed}, ctx.vctx.clinicians_by_id)
 
     old_blob = state.model_dump(exclude={"revision"})
     state.assignments = candidate
@@ -297,8 +278,7 @@ def apply_swap(conn: sqlite3.Connection, username: str, req: ApplyRequest,
         "applied_revision": state.revision,
         "applied_patch": {"removed": [a.model_dump() for a in plan.removed],
                           "added": [a.model_dump() for a in plan.added],
-                          "resolved": [asdict(v) for v in resolved],
-                          "restWorkPairs": [list(day) for day in rest_work_pairs]},
+                          "resolved": [asdict(v) for v in resolved]},
         "change_id": change_id,
         "reverted_at": None,
         "reverted_by": None,
@@ -362,10 +342,9 @@ def _undo_check(
     wanted = {dump["id"]: (dump["rowId"], dump["dateISO"], dump["clinicianId"]) for dump in patch["added"]}
     removed = {(dump["rowId"], dump["dateISO"], dump["clinicianId"]) for dump in patch["removed"]}
     removed_dates = {date_iso for _row, date_iso, _clinician in removed}
-    # The person-days undo restores entries to, except those that already
-    # held a Rest Day and a shift before the swap.
-    restored_days = ({(clinician_id, date_iso) for _row, date_iso, clinician_id in removed}
-                     - {tuple(day) for day in patch.get("restWorkPairs", [])})
+    # The person-days undo restores entries to: dropping an entry never pairs
+    # a Rest Day with a shift, so only on these days can undo create a pair.
+    restored_days = {(clinician_id, date_iso) for _row, date_iso, clinician_id in removed}
     found: Dict[str, Assignment] = {}
     recreated = False
     on_restored_days: List[Assignment] = []
@@ -383,11 +362,18 @@ def _undo_check(
         return [], _conflict(labels.UNDO_CHANGED)
     # Apply never leaves a person resting and working on one day; undo must
     # not either, whether the Rest Day or the shift is the one it restores.
-    after_undo = [(a.clinicianId, a.dateISO, a.rowId) for a in on_restored_days if found.get(a.id) is not a]
+    # A pair the calendar holds now, or one that existed before the swap (the
+    # swap resolved it), may come back: exactly the undo gate's REST_DAY rule,
+    # so this dedicated text, not the gate's, explains every such refusal.
+    current = [(a.clinicianId, a.dateISO, a.rowId) for a in on_restored_days]
+    after_undo = [entry for a, entry in zip(on_restored_days, current) if found.get(a.id) is not a]
     after_undo += [(dump["clinicianId"], dump["dateISO"], dump["rowId"]) for dump in patch["removed"]]
-    clashes = _resting_and_working(after_undo, restored_days, clinicians)
+    before_swap = {(v["clinician_id"], v["date_iso"], v["slot_id"])
+                   for v in patch.get("resolved", []) if v["code"] == VIOLATION_REST_DAY}
+    clashes = sorted(_rest_work_pairs(after_undo) - _rest_work_pairs(current) - before_swap,
+                     key=lambda pair: (pair[1], pair[0], pair[2]))
     if clashes:
-        clinician_id, date_iso = clashes[0]
+        clinician_id, date_iso, _row_id = clashes[0]
         name = clinicians[clinician_id].name
         return [], _conflict(labels.undo_rest_and_work(name, date_iso),
                              labels.undo_rest_and_work_conflict(name, date_iso))
@@ -438,7 +424,8 @@ def undo_swap(conn: sqlite3.Connection, username: str, swap_id: str, expected_re
     # removed, a week it brought under the limit): undo may bring that back,
     # no worse than it was. Anything else new or worse blocks, as at apply.
     before_swap = baseline_index(Violation(**v) for v in row["applied_patch"].get("resolved", []))
-    violations = [v for v in new_violations(state, state.assignments, candidate, only_fill_required=True)
+    violations = [v for v in new_violations(state, state.assignments, candidate, only_fill_required=True,
+                                            own_rest_days=True)
                   if is_new_or_worsened(v, before_swap)]
     if violations:
         raise _swap_invalid(SwapContext(state, rules, now), violations, partner_id=row["partner_id"],

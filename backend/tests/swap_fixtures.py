@@ -352,3 +352,55 @@ def wide_swap_state(seed: int = 5) -> AppState:
     ben = next(c for c in state.clinicians if c.id == "clin-ben")
     ben.vacations.append(VacationRange(id="vac-ben-wide", startISO=CAPACITY_DAY, endISO=CAPACITY_DAY))
     return state
+
+
+# The fifth property dataset (rest_swap_state): Rest Days in every shape the
+# REST_DAY rule meets.
+REST_PAIR_EVERY = 6  # every sixth shift of the dense weeks has a Rest Day of its holder that day
+REST_DUPLICATE_EVERY = 3  # every third Rest Day after a duty is stored twice
+FOLLOW_NIGHT_DAY, FOLLOW_REST_DAY = "2026-01-27", "2026-01-28"  # a Tuesday night and the Wednesday after
+CO_HOLDER_DAY = "2026-01-29"  # a Thursday
+
+
+def rest_swap_state(seed: int = 7) -> AppState:
+    """The property test's fifth dataset: rich_swap_state with Rest Days in
+    every shape the REST_DAY rule meets:
+
+    - pre-existing pairs: every REST_PAIR_EVERY-th shift of the dense weeks
+      has a Rest Day of its holder on the same day, so the calendar already
+      breaks REST_DAY there;
+    - duplicates: every REST_DUPLICATE_EVERY-th Rest Day after a duty is
+      stored twice;
+    - Eva One works the night of FOLLOW_NIGHT_DAY and rests on FOLLOW_REST_DAY,
+      when Eva Two, on vacation, holds a hidden late shift: handing her the
+      night must not move the Rest Day onto that shift;
+    - ct-thu on CO_HOLDER_DAY has target 2, held by Anna, who rests that day
+      too, and by Ben, whose vacation hides it: a cover's slice must see
+      Anna's Rest Day.
+    """
+    state = rich_swap_state(seed)
+    work = [a for a in state.assignments if not a.rowId.startswith("pool-")]
+    rests = [a for a in state.assignments if a.rowId == "pool-rest-day"]
+    resting = {(a.clinicianId, a.dateISO) for a in rests}
+    pairs: List[Assignment] = []
+    for k, a in enumerate(work):
+        if k % REST_PAIR_EVERY == 0 and (a.clinicianId, a.dateISO) not in resting:
+            resting.add((a.clinicianId, a.dateISO))
+            pairs.append(asg(f"rest-pair-{k}", "pool-rest-day", a.dateISO, a.clinicianId, locked=False))
+    duplicates = [asg(f"{a.id}-twice", "pool-rest-day", a.dateISO, a.clinicianId, locked=False)
+                  for k, a in enumerate(rests) if k % REST_DUPLICATE_EVERY == 0]
+    state.assignments = state.assignments + pairs + duplicates + [
+        asg("follow-night", "night-tue", FOLLOW_NIGHT_DAY, "clin-e1"),
+        asg("follow-rest", "pool-rest-day", FOLLOW_REST_DAY, "clin-e1", locked=False),
+        asg("follow-hidden", "late-wed", FOLLOW_REST_DAY, "clin-e2"),
+        asg("co-holder", "ct-thu", CO_HOLDER_DAY, "clin-anna"),
+        asg("co-holder-rest", "pool-rest-day", CO_HOLDER_DAY, "clin-anna", locked=False),
+        asg("co-holder-hidden", "ct-thu", CO_HOLDER_DAY, "clin-ben"),
+    ]
+    away = {"clin-e2": FOLLOW_REST_DAY, "clin-ben": CO_HOLDER_DAY}
+    for clinician in state.clinicians:
+        if clinician.id in away:
+            clinician.vacations.append(VacationRange(id=f"vac-rest-{clinician.id}", startISO=away[clinician.id],
+                                                     endISO=away[clinician.id]))
+    state.slotOverridesByKey[f"ct-thu__{CO_HOLDER_DAY}"] = 1
+    return state

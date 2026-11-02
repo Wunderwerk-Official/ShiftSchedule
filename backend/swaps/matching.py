@@ -4,11 +4,15 @@ A search evaluates many options against one calendar, so it never validates
 the whole calendar. The gate validates a *slice*: the stored assignments of
 the people a plan touches, in whole ISO weeks around the moved dates plus a
 margin of at least seven days (cover adds the co-holders of the covered slot
-instance). Everyone else keeps identical assignments, so their violations
-cancel between baseline and candidate; the touched people's rules look at
-most seven days away; WEEKLY_HOURS sees whole weeks. The scoped verdict
-therefore equals the full-calendar verdict (test_swap_property.py checks it),
-and apply re-checks the full calendar anyway.
+instance and their Rest Days that day). Everyone else keeps identical
+assignments, so their violations cancel between baseline and candidate; the
+touched people's rules look at most seven days away; WEEKLY_HOURS sees whole
+weeks. Every gate counts the Rest Days a plan holds itself (own_rest_days):
+the slice holds every Rest Day entry of the person-days it checks, so a Rest
+Day the plan moves away or removes stops counting there as on the whole
+calendar. The scoped verdict therefore equals the full-calendar verdict
+(test_swap_property.py checks it), and apply re-checks the full calendar
+anyway.
 
 Working-time warnings name whole work blocks, which can be longer than any
 margin (a holiday stretch of 24 h duties). Their slice widens each person's
@@ -34,6 +38,7 @@ from typing import (
 
 from fastapi import HTTPException
 
+from ..assignment_policy import REST_DAY_ROW_ID
 from ..constraint_policy import classify_violations, resolved_violations
 from ..models import AppState, Assignment, Clinician
 from ..validation import (
@@ -42,6 +47,7 @@ from ..validation import (
     VIOLATION_ON_CALL_REST,
     VIOLATION_OVERLAP,
     VIOLATION_QUALIFICATION,
+    VIOLATION_REST_DAY,
     VIOLATION_SAME_LOCATION,
     VIOLATION_SPLIT_SHIFT,
     VIOLATION_UNKNOWN_CLINICIAN,
@@ -77,7 +83,6 @@ from .worktime import WorkWarning, iso_week, kept_warnings, new_warnings, person
 if TYPE_CHECKING:  # schemas is the HTTP layer; the search only reads the request
     from .schemas import AssignmentRefIn, CandidatesRequest, SlotRefIn
 
-REST_DAY_ROW = "pool-rest-day"
 PREVIEW_ID_PREFIX = "swp-preview"
 
 
@@ -100,12 +105,12 @@ class SwapContext:
         self.by_person: Dict[str, List[Assignment]] = {}
         # Non-pool stored assignments per slot instance (rowId, dateISO).
         self.by_instance: Dict[Tuple[str, str], List[Assignment]] = {}
-        # (clinicianId, dateISO) -> the first stored Rest Day entry.
-        self.rest_day: Dict[Tuple[str, str], Assignment] = {}
+        # (clinicianId, dateISO) -> every stored Rest Day entry, in stored order.
+        self.rest_days: Dict[Tuple[str, str], List[Assignment]] = {}
         for a in state.assignments:
             self.by_person.setdefault(a.clinicianId, []).append(a)
-            if a.rowId == REST_DAY_ROW:
-                self.rest_day.setdefault((a.clinicianId, a.dateISO), a)
+            if a.rowId == REST_DAY_ROW_ID:
+                self.rest_days.setdefault((a.clinicianId, a.dateISO), []).append(a)
             elif not a.rowId.startswith("pool-"):
                 self.by_instance.setdefault((a.rowId, a.dateISO), []).append(a)
         for assignments in self.by_person.values():
@@ -219,7 +224,9 @@ class RestDayMove:
     from_id: str
     to_id: str
     date_iso: str
-    entry: Assignment  # the giver's stored Rest Day entry
+    # Every stored Rest Day entry of the giver that day: the move takes them
+    # all, so the giver keeps none and undo finds none left behind.
+    entries: Tuple[Assignment, ...]
 
 
 @dataclass
@@ -281,9 +288,10 @@ def build_move_plan(
     if hidden_removal is not None:
         removed.append(hidden_removal)
     for k, move in enumerate(rest_day_moves):
-        removed.append(move.entry)
+        removed.extend(move.entries)
+        # One Rest Day for the taker, however many entries the giver had.
         # Pool rows carry no lock, as when a Rest Day is entered by hand.
-        added.append(Assignment(id=f"{id_prefix}-rest-{k}", rowId=REST_DAY_ROW, dateISO=move.date_iso,
+        added.append(Assignment(id=f"{id_prefix}-rest-{k}", rowId=REST_DAY_ROW_ID, dateISO=move.date_iso,
                                 clinicianId=move.to_id, source="manual", locked=False))
     persons = {partner_id}
     if giver_id is not None:
@@ -326,9 +334,12 @@ def detect_rest_day_moves(
     unit: SwapUnit,
     taker_after: Sequence[Assignment],
 ) -> List[RestDayMove]:
-    """The giver's Rest Day entries that belong to the given unit (the day after
-    a night, the on-call rest days after an on-call) and can follow it to the
-    taker: the taker neither rests nor works that day after the work moves."""
+    """The giver's Rest Days that belong to the given unit (the day after a
+    night, the on-call rest days after an on-call) and can follow it to the
+    taker: the taker neither rests nor works that day after the work moves. As
+    for the REST_DAY rule, any stored shift is work, one hidden by a vacation
+    or without valid times too. A move takes every entry of its day, as a
+    removal does."""
     follow = {block.end_date_iso for block in unit.blocks if block.overnight}
     settings = ctx.settings
     days_after = max(0, settings.onCallRestDaysAfter or 0)
@@ -338,12 +349,12 @@ def detect_rest_day_moves(
                 start = date.fromisoformat(item.date_iso)
                 follow.update((start + timedelta(days=k)).isoformat() for k in range(1, days_after + 1))
     days = [day for day in sorted(follow)
-            if (giver_id, day) in ctx.rest_day and (taker_id, day) not in ctx.rest_day]
+            if (giver_id, day) in ctx.rest_days and (taker_id, day) not in ctx.rest_days]
     if not days:
         return []
-    on_days = [a for a in taker_after if a.dateISO in days and a.clinicianId == taker_id]
-    working = {item.date_iso for item in visible_items(ctx.vctx, on_days)}
-    return [RestDayMove(giver_id, taker_id, day, ctx.rest_day[(giver_id, day)])
+    working = {a.dateISO for a in taker_after
+               if a.dateISO in days and a.clinicianId == taker_id and not a.rowId.startswith("pool-")}
+    return [RestDayMove(giver_id, taker_id, day, tuple(ctx.rest_days[(giver_id, day)]))
             for day in days if day not in working]
 
 
@@ -365,16 +376,25 @@ def detected_rest_day_moves(ctx: SwapContext, plan: MovePlan) -> List[RestDayMov
 
 def rest_day_removals(ctx: SwapContext, plan: MovePlan) -> List[Assignment]:
     """The takers' own Rest Day entries on the date of an item they receive,
-    removed as when a shift is added by hand. The end date of a received night
-    does not count: a Rest Day there is the normal free day after it."""
-    moved = {id(move.entry) for move in plan.rest_day_moves}
+    every one of them, removed as when a shift is added by hand. The end date
+    of a received night does not count: a shift counts on its start date, and
+    a Rest Day there is the normal free day after it."""
+    moved = {id(entry) for move in plan.rest_day_moves for entry in move.entries}
     found: Dict[int, Assignment] = {}
     for taker_id, unit in _receipts(plan):
         for item in unit.items:
-            entry = ctx.rest_day.get((taker_id, item.date_iso))
-            if entry is not None and id(entry) not in moved:
-                found.setdefault(id(entry), entry)
+            for entry in ctx.rest_days.get((taker_id, item.date_iso), ()):
+                if id(entry) not in moved:
+                    found.setdefault(id(entry), entry)
     return sorted(found.values(), key=lambda a: (a.dateISO, a.clinicianId))
+
+
+def rest_day_removal_days(ctx: SwapContext, plan: MovePlan) -> List[Dict[str, str]]:
+    """The plan's Rest Day removals as the preview and History name them: one
+    per person-day, though every duplicate entry of that day goes."""
+    days = sorted({(a.dateISO, a.clinicianId) for a in plan.rest_day_removals})
+    return [{"clinicianId": clinician_id, "name": ctx.name(clinician_id), "dateISO": date_iso}
+            for date_iso, clinician_id in days]
 
 
 def plan_option(
@@ -441,10 +461,15 @@ def slice_window(ctx: SwapContext, dates: Iterable[str]) -> Tuple[str, str]:
 def _slice(ctx: SwapContext, plan: MovePlan, lo: str, hi: str) -> List[Assignment]:
     base = [a for cid in sorted(plan.persons) for a in ctx.person_window(cid, lo, hi)]
     if plan.mode == "cover":
-        # Cover changes the instance's count, so CAPACITY must see its co-holders.
+        # Cover changes the instance's count, so CAPACITY must see its
+        # co-holders; REST_DAY then sees their Rest Days that day as well.
         seen = {id(a) for a in base}
         for key in sorted(plan.touched_instances):
-            base.extend(a for a in ctx.by_instance.get(key, []) if id(a) not in seen)
+            for a in ctx.by_instance.get(key, []):
+                for entry in [a, *ctx.rest_days.get((a.clinicianId, a.dateISO), ())]:
+                    if id(entry) not in seen:
+                        seen.add(id(entry))
+                        base.append(entry)
     return base
 
 
@@ -474,11 +499,12 @@ def scoped_gate(
     baseline = cache.get(key) if cache is not None else None
     if baseline is None:
         baseline = validate_assignments(ctx.state, base, skip_references=True, only_fill_required=True,
-                                        context=ctx.vctx).violations
+                                        context=ctx.vctx, own_rest_days=True).violations
         if cache is not None:
             cache[key] = baseline
     return classify_violations(ctx.state, base, apply_plan(base, plan), only_fill_required=True,
-                               skip_references=True, context=ctx.vctx, baseline_violations=baseline)
+                               skip_references=True, context=ctx.vctx, baseline_violations=baseline,
+                               own_rest_days=True)
 
 
 def scoped_new_violations(ctx: SwapContext, plan: MovePlan,
@@ -490,15 +516,18 @@ def full_gate(state: AppState, plan: MovePlan) -> Tuple[List[Violation], List[Vi
     """The apply gate: the whole calendar, references checked, no context.
     Returns (new or worse violations, the calendar's violations the plan
     resolves or eases). Undo may bring the latter back: they existed before."""
-    baseline = validate_assignments(state, state.assignments, only_fill_required=True).violations
+    baseline = validate_assignments(state, state.assignments, only_fill_required=True,
+                                    own_rest_days=True).violations
     new, carried = classify_violations(state, state.assignments, apply_plan(state.assignments, plan),
-                                       only_fill_required=True, baseline_violations=baseline)
+                                       only_fill_required=True, baseline_violations=baseline,
+                                       own_rest_days=True)
     return new, resolved_violations(baseline, new + carried)
 
 
 # --- Warnings, pre-existing problems, findings and hours --------------------
 
 _CARRIED_CHECKS = {
+    VIOLATION_REST_DAY: "rest_day",
     VIOLATION_OVERLAP: "overlap",
     VIOLATION_SAME_LOCATION: "same_location",
     VIOLATION_ON_CALL_REST: "on_call_rest",
@@ -643,6 +672,12 @@ def soft_findings(ctx: SwapContext, plan: MovePlan, hours: Sequence[Dict[str, An
         if finding not in findings:
             findings.append(finding)
 
+    # A receiver's Rest Day is a day off placed by hand: the option removes it
+    # (as adding a shift by hand does), so it is never a best match, just as
+    # the person picker lists such a person after those without a warning.
+    for removal in rest_day_removal_days(ctx, plan):
+        add("rest_day_removed", removal["clinicianId"],
+            labels.rest_day_removed(removal["name"], removal["dateISO"]))
     rule_names = {rule.id: rule.name for rule in ctx.vctx.solver_rules}
     for v in solver_rule_hits(ctx, plan, scope="slice"):
         if v.clinician_id is not None and v.date_iso is not None:
@@ -729,6 +764,7 @@ def target_findings(ctx: SwapContext, mode: str, give: SwapUnit) -> List[Dict[st
 _REASON_PRIORITY = (
     VIOLATION_QUALIFICATION,
     VIOLATION_VACATION,
+    VIOLATION_REST_DAY,
     VIOLATION_OVERLAP,
     VIOLATION_ON_CALL_REST,
     VIOLATION_MANDATORY_WINDOW,
@@ -772,6 +808,8 @@ def _reason(ctx: SwapContext, v: Violation, new_items: Set[ItemKey]) -> Tuple[st
         return "not_qualified", labels.not_qualified(name, ctx.section_name(details.get("section_id", "")))
     if v.code == VIOLATION_VACATION:
         return "on_vacation", labels.on_vacation(name, day)
+    if v.code == VIOLATION_REST_DAY:
+        return "rest_day", labels.rest_day(name, day)
     if v.code == VIOLATION_OVERLAP:
         this = (v.slot_id or "", day)
         other = (details.get("other_slot_id", ""), details.get("other_date_iso", ""))
@@ -1194,8 +1232,7 @@ def _evaluate_valid(
         hours=hours,
         restDayMoves=[{"fromClinicianId": m.from_id, "toClinicianId": m.to_id, "dateISO": m.date_iso}
                       for m in plan.rest_day_moves],
-        restDayRemovals=[{"clinicianId": a.clinicianId, "name": ctx.name(a.clinicianId), "dateISO": a.dateISO}
-                         for a in plan.rest_day_removals],
+        restDayRemovals=rest_day_removal_days(ctx, plan),
         preexisting=preexisting_checks(ctx, plan, carried, kept),
     )
     swap = plan.mode == "swap"

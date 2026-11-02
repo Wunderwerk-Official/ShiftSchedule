@@ -15,6 +15,8 @@ import type {
   SwapWarning,
 } from "../../lib/swaps/types";
 import { SwapSaveBlockedError, type SwapSearchResult } from "../../pages/swapFlow";
+import { initialsOf } from "../myPlan/planChrome";
+import { buildPersonPillStyles } from "../schedule/teamColors";
 import SwapAssistantDrawer, { type SwapAssistantDrawerProps } from "./SwapAssistantDrawer";
 import SwapHistoryButton from "./SwapHistoryButton";
 
@@ -1210,6 +1212,65 @@ describe("SwapAssistantDrawer: shell", () => {
 
     unmount();
     expect(document.head.querySelector("style[data-swap-highlight]")).toBeNull();
+  });
+
+  it("reveals the target's pill once its answer is in, and only once", async () => {
+    // From lg on the opening drawer narrows the page, which can push the target out of view.
+    const { props, rerender } = renderDrawer();
+    await settle();
+    expect(props.onRevealKey).not.toHaveBeenCalled();
+    await advance(400);
+    expect(props.onRevealKey).toHaveBeenCalledWith("night-thu__2026-11-19__clin-anna");
+    // Pointing at an option and away again, or a new answer, never brings the grid back to the target.
+    fireEvent.mouseEnter(optionRow(ben.key));
+    await advance(400);
+    fireEvent.mouseLeave(optionRow(ben.key));
+    await advance(1_000);
+    rerender(<SwapAssistantDrawer {...props} planToken={{}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await settle();
+    await advance(1_000);
+    expect(props.onSearch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(props.onRevealKey).mock.calls).toEqual([
+      ["night-thu__2026-11-19__clin-anna"],
+      ["ct-sat__2026-11-21__clin-ben"],
+    ]);
+  });
+
+  it("reveals a cover's cell once its answer is in", async () => {
+    const { props } = renderDrawer({
+      target: { kind: "slot", slot: { rowId: "ct-thu", dateISO: "2026-11-19" } },
+      onSearch: vi.fn().mockResolvedValue(found(coverResponse)),
+    });
+    await settle();
+    await advance(400);
+    // A key without a person: the page reveals the slot's cell.
+    expect(vi.mocked(props.onRevealKey).mock.calls).toEqual([["ct-thu__2026-11-19__"]]);
+  });
+
+  it("an option's shift revealed before the target takes over", async () => {
+    const { props } = renderDrawer();
+    await settle();
+    fireEvent.mouseEnter(optionRow(ben.key));
+    await advance(400);
+    fireEvent.mouseLeave(optionRow(ben.key));
+    await advance(1_000);
+    expect(vi.mocked(props.onRevealKey).mock.calls).toEqual([["ct-sat__2026-11-21__clin-ben"]]);
+  });
+
+  it("colors each partner like their pills in the team grid, in both themes", async () => {
+    for (const isDark of [false, true]) {
+      const { unmount } = renderDrawer({ isDark });
+      await settle();
+      const pills = buildPersonPillStyles(clinicians, isDark);
+      for (const partner of [carl, ben]) {
+        const { color } = pills.get(partner.partnerId)!;
+        // The avatar is the pill's initials circle.
+        const avatar = within(optionRow(partner.key)).getByText(initialsOf(partner.partnerName));
+        expect(avatar).toHaveStyle({ backgroundColor: color.strong, color: color.onStrong });
+      }
+      unmount();
+    }
   });
 });
 
