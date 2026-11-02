@@ -305,7 +305,9 @@ SolverMode = Literal["cpsat", "heuristic", "agent"]
 # - "repair" (default): heuristic drafts the whole range, the LLM improves it.
 # - "day_by_day": no draft; the LLM builds each day like a human planner —
 #   scarcest slots first, each clinician placed with a contiguous block.
-AgentStrategy = Literal["repair", "day_by_day"]
+# - "direct" (experiment, arena only): the model plans the whole range in one
+#   answer from a complete digest, without tools (backend/agent/direct.py).
+AgentStrategy = Literal["repair", "day_by_day", "direct"]
 
 
 class SolveRangeRequest(BaseModel):

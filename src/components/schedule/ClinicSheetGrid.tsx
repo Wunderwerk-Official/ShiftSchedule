@@ -5,6 +5,7 @@ import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import { cx } from "../../lib/classNames";
 import { sortAssignmentsBySurname, type RenderedAssignment } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
+import type { WeeklyHoursStatus } from "../../lib/weeklyHours";
 import { getLuminance } from "../../lib/shiftRows";
 import {
   buildClinicianOptionsForSlot,
@@ -102,6 +103,8 @@ type ClinicSheetGridProps = {
   getIsQualified: (clinicianId: string, rowId: string) => boolean;
   clinicians?: SlotOptionClinician[];
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
+  /** Weekly-hours check for the picker (src/lib/weeklyHours.ts via the page). */
+  getWeeklyHours?: (clinicianId: string, dateISO: string, rowId: string) => WeeklyHoursStatus | null;
   enforceSameLocationPerDay?: boolean;
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
@@ -135,6 +138,7 @@ export default function ClinicSheetGrid({
   getIsQualified,
   clinicians = [],
   getIsOnRestDay,
+  getWeeklyHours,
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
@@ -274,6 +278,7 @@ export default function ClinicSheetGrid({
         assignedIntervalsByDate,
         unknownIntervalsByDate,
         getIsOnRestDay,
+        getWeeklyHours,
       })
     : [];
   const pickerDateLabel = pickerState.dateISO

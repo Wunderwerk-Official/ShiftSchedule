@@ -187,3 +187,43 @@ describe("buildClinicianOptionsForSlot", () => {
     expect(own?.hasTimeConflict).toBe(false);
   });
 });
+
+describe("buildClinicianOptionsForSlot weekly hours", () => {
+  const row: ScheduleRow = {
+    id: "seno", kind: "class", name: "IRM seno ZK", dotColorClass: "bg-slate-200",
+    sectionId: "sec", locationId: "loc-a", startTime: "07:30", endTime: "11:30",
+  };
+  const people = ["over", "fits", "inSlot"].map((id) => ({ id, name: id, qualifiedClassIds: ["sec"], vacations: [] }));
+  const inSlot = new Map<string, RenderedAssignment[]>([
+    [`seno__${DATE}`, [{ id: "1", rowId: "seno", dateISO: DATE, clinicianId: "inSlot" }]],
+  ]);
+  const options = (getWeeklyHours?: Parameters<typeof buildClinicianOptionsForSlot>[0]["getWeeklyHours"]) => {
+    const rowKindById = buildRowKindById([row]);
+    const shiftIntervalsByRowId = buildShiftIntervalsByRowId([row]);
+    return buildClinicianOptionsForSlot({
+      rowId: "seno", dateISO: DATE, rows: [row], assignmentMap: inSlot, clinicians: people,
+      enforceSameLocationPerDay: false, shiftIntervalsByRowId,
+      ...buildDateIntervalIndex(inSlot, rowKindById, shiftIntervalsByRowId), getWeeklyHours,
+    });
+  };
+
+  it("marks people the 4h slot would push over contract + tolerance", () => {
+    const asked: Array<[string, string, string]> = [];
+    const result = options((clinicianId, dateISO, rowId) => {
+      asked.push([clinicianId, dateISO, rowId]);
+      const afterMinutes = (clinicianId === "over" ? 37.5 * 60 : 20 * 60) + 240;
+      return { weekKey: "2026-W10", assignedMinutes: afterMinutes - 240, afterMinutes,
+               capMinutes: 40 * 60, over: afterMinutes > 40 * 60 };
+    });
+    expect(result.find((o) => o.id === "over")).toMatchObject({
+      isOverWeeklyHours: true, weeklyHoursLabel: "41.5/40 h in 2026-W10" });
+    expect(result.find((o) => o.id === "fits")?.isOverWeeklyHours).toBeUndefined();
+    // The page knows the slot's gate minutes; someone already in the slot is
+    // counted in their week already.
+    expect(asked).toEqual([["over", DATE, "seno"], ["fits", DATE, "seno"]]);
+  });
+
+  it("adds nothing without a weekly-hours source", () => {
+    expect(options().some((o) => "isOverWeeklyHours" in o)).toBe(false);
+  });
+});

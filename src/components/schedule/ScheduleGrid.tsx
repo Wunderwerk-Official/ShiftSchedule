@@ -36,6 +36,7 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from "react";
 import type { ScheduleRow } from "../../lib/shiftRows";
+import type { WeeklyHoursStatus } from "../../lib/weeklyHours";
 import { getContrastTextColor } from "../../lib/shiftRows";
 import type { SwapAssignmentRef, SwapSlotRef } from "../../lib/swaps/types";
 
@@ -95,6 +96,8 @@ type ScheduleGridProps = {
     vacations: Array<{ startISO: string; endISO: string }>;
   }>;
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
+  /** Weekly-hours check for the picker (src/lib/weeklyHours.ts via the page). */
+  getWeeklyHours?: (clinicianId: string, dateISO: string, rowId: string) => WeeklyHoursStatus | null;
   enforceSameLocationPerDay?: boolean;
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
@@ -151,6 +154,7 @@ export default function ScheduleGrid({
   highlightOpenSlots = false,
   clinicians = [],
   getIsOnRestDay,
+  getWeeklyHours,
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
@@ -326,6 +330,7 @@ export default function ScheduleGrid({
       assignedIntervalsByDate,
       unknownIntervalsByDate,
       getIsOnRestDay,
+      getWeeklyHours,
     });
 
   const handleEmptySlotClick = (

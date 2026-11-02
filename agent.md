@@ -89,8 +89,8 @@ Cells
 - Drag/drop does not block rule-violating placements (same-day location mix, multiple shifts); solver enforces rules but manual overrides are allowed and shown in red. Overlap within the same day is blocked by drag/drop (uses time intervals).
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
-- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
-- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.80) that opens the swap drawer in cover mode for that slot instance (both grids).
+- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location", "Over weekly limit (41.5/40 h in 2026-W45)" (v1.80: the week would end above contract + tolerance, counted like the backend gate in `src/lib/weeklyHours.ts`) (`ClinicianPickerPopover.tsx`). A long warning wraps below the name, which keeps at least 7rem (v1.81; before, it squeezed the name to a few pixels).
+- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.81) that opens the swap drawer in cover mode for that slot instance (both grids). It stays below the scrolling list, last in Tab order.
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -107,7 +107,7 @@ Clinic sheet layout (Klinik-Monatslayout)
 Pills
 - Team grid (since v1.69 always): person colors — fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Since v1.71 the palette has 20 colors in two tones (light fill + dark text, or saturated fill + white text), ordered so the first 12 fills differ by ≥ 15 ΔE00 (all 20 by ≥ 9). Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
-- Find swap (⇄, v1.80, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
+- Find swap (⇄, v1.81, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
 - Warning icons are small circular badges at top-right of the pill.
@@ -645,10 +645,10 @@ Endpoint:
 Payload:
 ```json
 { "startISO": "YYYY-MM-DD", "endISO": "YYYY-MM-DD", "only_fill_required": true,
-  "solver_mode": "cpsat" | "heuristic" | "agent", "agent_strategy": "day_by_day" | "repair",
+  "solver_mode": "cpsat" | "heuristic" | "agent", "agent_strategy": "day_by_day" | "repair" | "direct",
   "timeout_seconds": 60 }
 ```
-`endISO` is optional: cpsat/heuristic default to 7 days (resolved and stored on the run); agent solves only `startISO`; `solver_mode` defaults to `cpsat` when omitted (`use_heuristic` is legacy); `agent_strategy` only applies to `agent` (default `day_by_day`).
+`endISO` is optional: cpsat/heuristic default to 7 days (resolved and stored on the run); agent solves only `startISO`; `solver_mode` defaults to `cpsat` when omitted (`use_heuristic` is legacy); `agent_strategy` only applies to `agent` (default `day_by_day`; `repair` and `direct` are arena experiments).
 
 Behavior
 - Considers all clinicians not on vacation; protected (manual or locked/fixed) assignments are kept, unlocked in-range solver assignments are replaced.
@@ -803,14 +803,14 @@ pass/fail check — LLM-generated schedules, external imports, UI conflict
 badges, debug tooling.
 
 Every validator and `validate_assignments` take an optional keyword
-`context=` (v1.80): `build_validation_context(state)` precomputes the template
+`context=` (v1.81): `build_validation_context(state)` precomputes the template
 and roster lookups of ONE state object for callers that validate many
 assignment lists of it (the swap search), the calendar's Rest Days included.
 The result is identical with or without it; a context of another state object
 raises `ValueError`. Every other caller (solvers, agent, run apply, the swap
 apply gate) passes none. `validate_rest_days`, `validate_assignments` and
 `constraint_policy.classify_violations` / `new_violations` also take
-`own_rest_days=` (v1.80, default False): with it only the checked list's own
+`own_rest_days=` (v1.81, default False): with it only the checked list's own
 Rest Day entries count, so for a list that is a whole plan after a change, a
 Rest Day the change moved away or removed no longer counts. Only the swap
 gates set it; every other caller keeps the union of `state.assignments` and
@@ -969,9 +969,10 @@ overlay, which can be sent to the background (floating badge, calendar
 stays usable); a reload re-attaches to the running job.
 
 ### Flow (`backend/agent/harness.py::agent_solve_range`)
-Two strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
+Strategies, selectable per solve via `SolveRangeRequest.agent_strategy`
 (**day_by_day is the default since v1.38**; the UI no longer offers repair —
-it remains for the arena benchmarks and explicit API calls):
+it remains for the arena benchmarks and explicit API calls, like the v1.80
+experiment `direct`):
 
 **repair**: the classic improve-the-draft loop.
 1. **Seed**: `heuristic_solve_range_v2` produces the initial plan (its
@@ -1014,9 +1015,25 @@ planner works, with four extra tools (`get_day_priorities`,
    single-handover batches that keep both days contiguous and never
    create a new over-long or mini-stint day; fixed/manual assignments
    are never touched.
-5. **Zero-progress guard**: an empty day-by-day result never reaches the
+5. **Cross-day coverage repair** (v1.80, `backend/agent/cross_day.py`):
+   after the last day and before the final range review, when required
+   places are still open and the model placed something, CP-SAT re-solves
+   the whole range from the current plan (fewest open required places,
+   then fewest changed assignments, at most 60) and applies the result
+   only through the gate (valid batch preview that improves the best
+   plan). It trades weekly hours between days of one ISO week, which no
+   per-day step can (see v1.80).
+6. **Zero-progress guard**: an empty day-by-day result never reaches the
    client — it falls back to a fresh heuristic draft
    (`AGENT_FALLBACK_SEED`).
+
+**direct** (v1.80, arena only, `backend/agent/direct.py`): no tools; the
+model gets one digest of the whole range (rules, every person's weekly
+hours booked/cap per ISO week, vacations, fixed shifts, windows, every open
+place with the people the gate accepts) and answers with a plan block; the
+placements go through the gate one by one, one correction round sends the
+rejections and the remaining open places back. It measures whether a strong
+model plans better or cheaper without the tool procedure (v1.80 results).
 
 The iteration budget follows the admin rule **total slot instances × 10**
 (floor 10), computed per solve; `AGENT_MAX_ITERATIONS` is no longer read at
@@ -1248,6 +1265,9 @@ with a foreign objective scale, which shows up as a full-height "jump".
 - `backend/tests/test_agent_anthropic_provider.py`, `test_agent_retry.py` —
   Anthropic adapter (empty replies, thinking display per model, SDK errors)
   and provider exceptions inside a run (v1.64)
+- `backend/tests/test_cross_day_repair.py` — v1.80: CP-SAT repair mode,
+  `coverage_repair` through the gate, the day-by-day integration, the
+  weekly-hours magnitudes and the direct strategy (parser, gate, digest)
 - `backend/tests/test_solver_monitor.py` — monitor end states (watchdog kill,
   salvage as `aborted`, torn queue message, spend recorded once);
   `backend/tests/test_solver_run_endpoints.py` — 422 ranges, discard 409s,
@@ -1355,7 +1375,7 @@ Endpoints
 - `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots), `POST /v1/state/snapshots/import-backup` (auto-backup before a shifts file import)
 - `GET /v1/me/preferences`, `PUT /v1/me/preferences` (per-user UI preferences for My plan; outside AppState, 32 KB body cap → 413)
 - `GET /v1/solve/runs`, `GET /v1/solve/runs/{id}`, `POST /v1/solve/runs/{id}/apply|discard|feedback` (run inbox)
-- `POST /v1/swaps/candidates`, `POST /v1/swaps/apply`, `POST /v1/swaps/{id}/undo`, `GET /v1/swaps/history` (v1.80 swap assistant; the owner's JWT only, never web or iCal tokens)
+- `POST /v1/swaps/candidates`, `POST /v1/swaps/apply`, `POST /v1/swaps/{id}/undo`, `GET /v1/swaps/history` (v1.81 swap assistant; the owner's JWT only, never web or iCal tokens)
 - `GET|PUT /v1/agent/settings`, `POST /v1/agent/chat-test`, `POST /v1/agent/model-check` (AI planning settings; `PUT /v1/agent/settings`, `chat-test` and `model-check` are admin only)
 - `GET /v1/admin/solver-runs[/{id}]`, `GET /v1/admin/run-feedback`, `DELETE /v1/admin/run-feedback/{id}`, `GET /v1/admin/schedule-changes` (admin only)
 - `GET /v1/ical/publish`
@@ -1538,14 +1558,16 @@ Frontend
 - `src/pages/scrollToTeamAssignment.ts` (v1.64: "Show in team plan" — scroll to and pulse the person's pill)
 - `src/pages/resetSolverAssignments.ts` (v1.64: Reset rules; v1.69 names "Unlocked shifts" / "Unlocked shifts and rest days")
 - `src/lib/openSlots.ts` (v1.64: open-slot count and jump targets for the badge)
+- `src/lib/weeklyHours.ts` (v1.80: weekly hours per ISO week as the backend gate counts them; the picker's "Over weekly limit")
+- `src/lib/weeklyHours.crossCheck.json` (v1.81, test data only: one calendar with the week totals and limits that the picker, the swap's hours card and cover search and `validate_weekly_hours` must all give, and the hours that the picker and the cover search print for each person over the limit; read by `weeklyHours.crossCheck.test.ts` and `backend/tests/test_weekly_hours_crosscheck.py`)
 - `src/lib/templateLimits.ts` (v1.64: `MAX_TOTAL_COLBANDS` = 300, `countTemplateColBands`)
 - `src/lib/time.ts` (v1.64: the one strict `parseTimeToMinutes`)
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
 - `src/lib/clipboard.ts` (v1.64: `copyTextToClipboard`, reports success)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
-- `src/components/swaps/*` (v1.80 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
-- `src/lib/swaps/*` (v1.80: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
-- `src/pages/swapFlow.ts` (v1.80: search, apply and undo order — save only unsaved edits, send, hydrate)
+- `src/components/swaps/*` (v1.81 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
+- `src/lib/swaps/*` (v1.81: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
+- `src/pages/swapFlow.ts` (v1.81: search, apply and undo order — save only unsaved edits, send, hydrate)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
@@ -1559,7 +1581,8 @@ Backend
 - `backend/pdf.py` (PDF export endpoints)
 - `backend/ical_routes.py` (iCal endpoints)
 - `backend/publication.py` (tokens + caching helpers)
-- `backend/solver.py` (CP-SAT solver endpoint + logic)
+- `backend/solver.py` (CP-SAT solver endpoint + logic; v1.80 repair mode for the agent's cross-day repair)
+- `backend/agent/cross_day.py` (v1.80: cross-day coverage repair), `backend/agent/direct.py` (v1.80: arena-only direct strategy)
 - `backend/heuristic/solver_v2.py` (heuristic solver v2 implementation)
 - `backend/state_routes.py` (health + state endpoints + database inspection)
 - `backend/preferences.py` (v1.64: `GET/PUT /v1/me/preferences`, 32 KB cap)
@@ -1569,7 +1592,7 @@ Backend
 - `backend/snapshots.py` (calendar snapshots)
 - `backend/agent_budget.py` (agent settings, chat test, model check, spend)
 - `backend/schedule_changes.py` (schedule change log, admin endpoint)
-- `backend/swaps/*` (v1.80 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
+- `backend/swaps/*` (v1.81 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
 - `backend/account_lifecycle.py` (account generation/identity checks)
 - `backend/request_logging.py` (redacted access logging)
 - `backend/ical.py` (ICS generation for subscription feeds)
@@ -3129,7 +3152,360 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   "Stacked gives every section…" test.
 - Deploy notes: frontend only, no schema or data change. Version 1.79 (79).
 
-## v1.80 — Swap assistant
+## v1.80 — Planning across days, weekly hours in the picker
+
+- **Merged onto main's v1.74–v1.79.** Built on its branch
+  (`claude/practical-cannon-9flogp`) as "v1.74": that word in the branch's
+  commit messages means this release, not main's v1.74 above, and so does
+  "v1.79" in its last commits before the final merge (main's v1.79 is the
+  calendar-snapshot release above). Its docs, comments, the arena README and
+  the arena workflow's strategy help say v1.80. Main is the base; what the
+  merge adapted:
+  - Run card: main's v1.74 card layout stays; its warning box shows
+    `runReviewLine` (see "Run card" below) instead of the fixed "Incomplete
+    draft: N day(s) need review before applying." line.
+  - Rest Day row (main's v1.75): `REST_DAY` is a blocking reason of its own
+    ("rest day", ranked right after vacation) in `open_reasons.RULE_LABELS`
+    and in `solverOutcome.ts`; `test_frontend_rule_labels_follow_the_closing_report`
+    keeps both tables in step (before, the banner ranked it last). The
+    repair's CP-SAT model has no variable on such a date, so the repair
+    never moves hours onto it; a reference placement without a variable
+    gets no hint and does not count as a change (the change cap still
+    holds). Should a solution put work there anyway, the gate's dry run
+    refuses `REST_DAY` and nothing changes. The direct digest's legal
+    people and its placements use the same gate.
+  - Wording (main's v1.74 pass: location, not site): the reason for
+    `SAME_LOCATION_PER_DAY` reads "other location that day" (was "other
+    site that day"), in the banner and in the run log.
+  - Arena: the fixture has no Rest Day row entries and the on-call rest rule
+    on, so round 9's numbers stay comparable; new reports carry
+    `quality_version` 3 (main's v1.75).
+- **The report.** A run for Thu/Fri 2026-11-05/06 (Opus 5.5, day-by-day)
+  left 9 required places open, among them Friday's IRM seno ZK 07:30–11:30
+  and Echo tout ZK 11:30–15:30, while the picker listed Marie Laurain,
+  Arnaud Sztantics, Hermann Kruppert and Tran Phuc for the first one
+  without any warning. The model's own summary: "Nearly everyone without a vacation
+  would go over their weekly hours (week 45)" and "swapping days … won't
+  change weekly hours since Thursday and Friday fall in the same week".
+- **Cause 1: weekly hours are spent one day at a time.** The weekly cap
+  (contract + tolerance, 5 h when unset, per ISO week, overnight work on its
+  start date) is hard in every planner (`validate_weekly_hours`). The
+  day-by-day agent staffs each day in its own conversation: Thursday's
+  10 h COR tout 08:00–18:00 (priority 7; single-candidate slots go first
+  regardless of priority) went to Marie Laurain (27.5 → 37.5 of 40 h), so
+  2.5 h were left for Friday's 4 h places. The same 10 h would
+  have covered both open Friday places IRM seno ZK 07:30–11:30 and Echo
+  tout ZK 11:30–15:30 (8 h, one site, one block; she is qualified for both)
+  instead of one Thursday place. Friday's other people qualified for IRM
+  seno ZK were at their cap too (Sztantics 33/33 h, Kruppert 41/41 h, Tran
+  Phuc no hours left).
+  The accounting itself is correct (gate and run log agree).
+- **Cause 2: no step searched across days.** `suggest_rescue_moves`
+  rearranges only the same day's own placements; `final_audit` checks each
+  day on its own; the optional neighborhood search
+  (`agentNeighborhoodSearch`, off) explores ±1 day with at most 12 changes
+  and filled nothing on the arena's 5-day week (32 → 32); the LLM range
+  review had no tool for trades between days and wrongly concluded that
+  they cannot help (same week ≠ same slots).
+- **Cause 3: the picker hid it.** It checked qualification, vacation, rest
+  days, overlaps and site, not weekly hours, so blocked people looked free.
+- **Concept.** Three layers, of which 2 and 3 ship now:
+  1. *Prevention* (later): a look-ahead in `suggest_day_blocks` that keeps
+     hours a scarce person needs on a later day of the same week
+     (`reserved_for`). Needs the scarcity of later days, which the repair
+     below already computes exactly; not worth a heuristic yet.
+  2. *Repair across days* (v1.80): once all days are built, an exact
+     search over the whole range trades assignments between days. CP-SAT
+     already models every hard rule (weekly hours, rest days, overlaps,
+     sites, windows), solves a week's repair in seconds and finds chains a
+     model would need dozens of tool calls for; the agent's plan stays the
+     starting point and the gate keeps the final say.
+  3. *Transparency* (v1.80): the picker and the tools say how far a person
+     is over the week, so neither the planner nor a human retries a blocked
+     person.
+- **Cross-day coverage repair** (`backend/agent/cross_day.py`,
+  `coverage_repair`): runs in day-by-day after the last day and before the
+  final range review (and after a direct plan) when required places are
+  open and the model placed something (a run where the model placed nothing
+  still falls back to the heuristic draft and never counts as model work).
+  - Solver repair mode (`_solve_range_impl(…, state_override, repair_reference,
+    repair_max_changes)`): fixed and manual entries stay fixed as always,
+    every agent placement is a solution hint, objective = missing required
+    positions × 1,000,000 + changed assignments × 1,000 + the usual
+    priority-weighted slack, at most 60 changes (`MAX_CHANGES`); no search
+    strategy, gap 0 and no week-by-week split in repair mode.
+  - Time: `min(120, 20 + 10 × days)` s and at most half the remaining run
+    time; under 5 s it is skipped (`no_time`).
+  - Gate: the difference (removals first) is previewed as one batch
+    (`apply_moves` dry run) and applied as one workflow proposal only when
+    the preview is valid (no new hard violation) and improves the best-plan
+    quality tuple; otherwise nothing changes (`rejected` /
+    `no_improvement`). Run log, activity feed and best plan see it like any
+    agent move.
+  - Coverage first, as in the quality tuple: the repair may add a short day
+    or hours deviation for a filled required place; the range review then
+    balances what it can.
+  - Report `debugInfo.agent.cross_day_repair` (status, open before/after,
+    changes, days, seconds, solver status, quality before/after); note
+    "Cross-day repair filled N more required position(s) by changing M
+    assignment(s) across days (A -> B open).", also shown to the range
+    review under "Days as built".
+- **Range review prompt**: weekly hours count per ISO week; moving work
+  between days does not change a week's total but does change which places
+  get those hours; the cross-day repair already searched such trades.
+- **Magnitudes for the model**: batched `candidates` carry
+  `week_over_cap_hours` per blocked person; `explain_unfilled` lists it.
+- **Picker** (`src/lib/weeklyHours.ts`, mirrors the gate): minutes per
+  person and ISO week from all assignments of the calendar, with slot
+  durations as the gate counts them (`gateSlotMinutes`: a slot saved
+  without times is 08:00–16:00, a missing end is start + 8 h, "+N day"
+  0–3, an end at or before the start counts 0; pool rows never count;
+  overnight work on its start day), cap = contract + max(0, tolerance ?? 5)
+  h, no cap without a contract. The grid's conflict interval is not used
+  for this (it is deliberately unknown for a slot without times). A person whose week would end above the cap shows "Over weekly
+  limit (41.5/40 h in 2026-W45)" and sorts after the people without
+  warnings; manual placement stays possible like for the other warnings.
+  `WeeklySchedulePage` builds the index once per change for `ScheduleGrid`
+  and `ClinicSheetGrid`.
+- **Direct strategy** (arena only, `agent_strategy="direct"`,
+  `backend/agent/direct.py`): answers the question whether Opus 5.5 plans
+  better or cheaper with the instructions alone. One digest of the whole
+  range (rules; per person sections, weekly hours booked/cap per ISO week
+  and the hours target for the range ± tolerance exactly as the quality
+  gate's hours deviation measures it (`range_targets`), preferred day
+  length with minimum–comfort, year-to-date %, vacation, fixed shifts, windows;
+  every open place with the people the gate accepts given the fixed
+  context), no tools, one ```plan block answer, placements through the
+  gate one by one, one correction round with the rejections and the
+  remaining places, then the same cross-day repair. 5-day arena digest
+  ≈ 28 k characters (~7 k tokens), built in 2 s.
+- **Measurements without a model** (synthetic-v3; the arena's model-free
+  controller `workflow_eval`: first offer of every tool, then the repair;
+  0 new hard violations everywhere):
+
+  | case | open before → after | changes | seconds | short days | hours deviation (min) |
+  |---|---|---|---|---|---|
+  | 02-02, 3 days, base | 0 → 0 (`complete`) | 0 | 0 | – | – |
+  | 02-19, 2 days, base | 10 → 8 | 18 | 0.2 | 1 → 2 | 3776 → 4976 |
+  | 02-16, 5 days, base (9 of 24 away) | 32 → 24 | 32 | 70 | 6 → 8 | 6376 → 6406 |
+  | 02-16, 5 days, crunch | 45 → 29 | 50 | 70 | 9 → 12 | 5009 → 6068 |
+
+  For comparison on 02-16 × 5: Opus 5.5 day-by-day 31–33 open (round 8),
+  CP-SAT from scratch 27 open after 600 s.
+- **Measurements with Opus 5.5** (arena round 9, `backend/arena/README.md`;
+  one run per configuration): the repair fills +3 on the Thu/Fri case
+  (11 → 8 open, the production pattern) and +8 on the understaffed 5-day
+  week (32 → 24); without tools (direct v3) Opus ends at the same coverage
+  after the repair (8 / 23) for $0.47 / $0.59 instead of $1.34 / $3.55, with
+  fewer short days in its own plan (0–1 vs 1–5) and, on the 3-day case,
+  half the hours deviation (1262 vs 2425 min). Production stays on
+  day-by-day + repair; direct + repair is the candidate to compare on real
+  weeks.
+- **Review of the change** (four reviewers, each finding reproduced, then
+  fixed with a test):
+  - The repair model must accept every plan the gate accepts: in repair
+    mode CP-SAT joins adjacent slots at two sites into one block when the
+    same-site rule is off (the gate merges by time) and allows new work at
+    a site of a fixed two-site day (`merge_sites`, `gate_parity`; default
+    solving unchanged). Before, such legal plans were infeasible hints and
+    the repair was rejected or dropped legal placements.
+  - The repair runs on the best plan (`restore_best` first), not on a
+    working copy that can be worse.
+  - Arena: `modelDaysIncomplete` records what the model left incomplete
+    itself (direct: days with a place someone could still take); a run is
+    invalid when the cross-day repair completed one of those days, so a
+    run the model barely planned never counts as the model's plan.
+  - Direct: only the answer text is parsed (never reasoning that an
+    adapter promoted into `text`), an abort during the call applies
+    nothing, an answer cut off at `max_tokens` before its plan gets one
+    more call with a note (the thinking counts towards the limit) and does
+    not use up the correction round. Placements and removals are applied
+    in the model's order as the prompt says (it decides who keeps scarce
+    hours; sorting by date gave Thursday's long slot the hours again) with
+    retry passes while a pass makes progress (order-only refusals such as a
+    block growing backwards from a fixed shift); every ```plan block is
+    read (any case, one per week), other fenced notes never, and unparsed
+    lines are reported back.
+  - Picker: slot durations as the gate counts them (above); the ISO week
+    is computed once per date (a calendar holds years of assignments).
+  - Arena hashes cover `direct.py`, `cross_day.py` and `solver.py`.
+- A day the model skipped after a provider failure is now filled by the
+  repair instead of the final audit; it still counts as skipped by the
+  model (`modelDaysSkipped`), so the arena marks such a run invalid
+  ("filled by the cross-day repair or the final audit").
+- **Why a slot stayed open, in the product** (completeness critic of the
+  investigation, each point checked against the code; then reviewed by four
+  lenses with a skeptic per finding):
+  - Closing report: `backend/agent/open_reasons.py` names, per open slot,
+    the qualified people not on it (`on_slot`: already on it), how many
+    could still be added directly and how many each hard rule blocks, plus
+    the rule blocking the most (`debugInfo.agent.unsolved.open_slots[].blockers`,
+    run log line "- open: … (1 missing): 6 qualified; blocked by
+    weekly-hours limit 4, vacation 1"; "nobody is qualified" / "no other
+    qualified person (1 already on it)"). Same check as the final audit
+    (3,424 slot × person pairs matched an apply_moves dry run). Budgets:
+    40 slots / 10 s after a finished final audit (cached checks), 12 slots /
+    2 s without one (fallbacks: every check is a full validation), 12 slots
+    and at most 5 s (a quarter of the review's time above its 30 s floor)
+    for the final review's digest; stops on abort; slots past a bound are
+    left out, never guessed.
+  - Banner after a run: "Main reason per slot: weekly-hours limit (7),
+    vacation (2)" ("for 9 of 12 slots" when the check did not reach every
+    slot; "a qualified person is still free" counts slots someone could
+    still take), prefixed "The run ended early." for stopped, out-of-budget
+    or partial runs; without reasons it says the run ended before checking
+    (or just points to the run log) instead of blaming rules.
+  - Apply prompt (409 `partial_result`, new `stopped` flag): "This draft is
+    incomplete or was stopped" when the run was aborted, ended on a budget,
+    provider failure or refusal (`stopReason` ≠ completed), skipped or left
+    a day incomplete, has a pending check, or has open positions on a day
+    whose check ran out of time (`unfinished_dates`). Otherwise "The planner
+    finished, but N required position(s) remain open; the run log lists each
+    one" only when the gate's gaps equal the run's own report; "… remain open
+    in this draft" for CP-SAT/heuristic results; "… the calendar changed
+    since the run" when they differ. The gate asks about the gaps IT finds
+    plus unfinished days, so a stored open slot filled by hand since no
+    longer triggers the question.
+  - Run card: "Finished with open positions on N day(s)" only when nothing
+    is unfinished (aborted runs and older servers keep "Incomplete draft");
+    no line once a run is applied or discarded.
+  - Day digest: the roster shows booked/hard max of the day's ISO week per
+    person (`|8/40`, the gate's numbers incl. work outside the range,
+    1,400 random states matched validate_weekly_hours), between the ytd
+    value and the work-pattern suffix. The slot list and DAY_SYSTEM_PROMPT
+    step 2 now both say suggest_day_blocks without slot_key takes a slot
+    only one person can take first (it said "exactly that order"). Not
+    measured in the arena yet.
+  - Verified unchanged: the picker's week totals already count weekend
+    days and assignments the grid hides on vacation days (all stored
+    assignments), like the gate.
+  - Arena reports also hash `prompts.py` and `open_reasons.py`.
+- **Section order is binding for the repair** (admin decision after main's
+  v1.74 help text "If not every slot can be filled, sections higher in this
+  list are staffed first"). Before, the repair counted open positions only
+  (slot priority broke ties), so it could unstaff a top section's slot to
+  fill two lower ones on another day. Now every section has a tier: the
+  position of its FIRST block in `weeklyTemplate.blocks` (0 = top, the order
+  Settings lists sections in; `solver._section_tier_by_slot_id`). All slots
+  of a section share it on every day and sub-shift, also in a pre-v4
+  template, which has one block per sub-shift and day type. Per tier, the
+  missing positions of that tier and all higher tiers may not exceed those
+  of the agent's plan (`solver._add_priority_dominance`, prefix bounds on
+  the repair's slack variables; only placements the model can represent
+  count, so the plan being repaired always satisfies them). A gap may move
+  to a lower-ranked section or between days of one section, never to a
+  higher-ranked one; the admin's W45 case (COR is the lowest section) is
+  unchanged. `coverage_repair` checks the same rule on the solver's answer
+  (`missing_by_tier`, `priority_trade_down`) and refuses a violation
+  (`rejected`, reason "higher-ranked section left open", `section`).
+  Objective, with weights derived from the model's own bounds: fewest
+  missing positions first; then the sum of the running totals per tier (a
+  gap counts once for its tier and once for every tier below it, so gaps
+  low in the list cost less); then fewest changes. The section term
+  outweighs every change count the cap allows, so with as many positions
+  filled the repair staffs the higher section even when that takes more
+  changes; the missing weight exceeds the section term's bound, so one more
+  filled position always wins. Not done: (a) a pure 1:1 trade upwards (same
+  number of open positions, the higher section staffed): the repair is
+  only applied when the quality tuple improves, and that tuple has no
+  priority term; (b) a strict order that leaves more positions open in
+  total to fill a higher-ranked one: when the agent's plan already left a
+  top slot and two lower ones open and the freed hours fit either the top
+  slot or both lower ones, the repair fills the two; (c) the preference
+  among equally full plans is a weighted sum, not strictly lexicographic
+  (two gaps one tier down can outweigh one gap at the top). Arena round 9
+  ran before this rule.
+- **Merge review fixes** (four checks of the merge with main v1.74–v1.78):
+  - Main reason per open slot: an absent person counts once, under the
+    absence (vacation, then rest day), so a person on a Rest Day row date
+    near their cap no longer makes the banner say "weekly-hours limit";
+    everyone else counts under every rule that blocks them (see the second
+    review below); `blocked_by` lists every rule, ties in the rule order
+    like the banner.
+  - Stopped runs: the toast says "Run stopped - review the best plan so far
+    in the run inbox."; the banner leads with "N required position(s) are
+    still open" instead of "could not be staffed"; the run details say
+    "Run: stopped" / "stopped early: …" from `stopReason` (the harness
+    reports `workflow_finished` on every exit).
+  - Help: the weekly-limit example reads "46/45 h in 2026-W45" for a 40 h
+    contract with 5 h tolerance; section 3 explains the repair across days,
+    the section order and why to plan whole weeks.
+  - `e2e/team-page.spec.ts` (main's v1.76 stacked labels): the branch's
+    fix (poll the label reads, which failed locally in 5 of 6 runs) is part
+    of main's v1.79, which also waits for the mocked calendar; the merge
+    takes main's file.
+- **Second review** (section order, open-slot reasons and stop texts; four
+  lenses, one skeptic per finding; all confirmed findings fixed):
+  - Tier per section, not per block (above). With per-block tiers a pre-v4
+    template ranked Monday above Friday of one section and the sub-shifts
+    among each other, so the repair refused to move a gap from Thursday to
+    Friday inside one section (2 -> 2 open instead of 2 -> 1).
+  - Equal coverage: the repair now staffs the higher section even when that
+    takes more changes (before, the plan with fewer changes won and the top
+    section stayed open).
+  - Main reason per open slot: only an absence replaces a person's other
+    rules. Counting everyone else under the first rule of the order made
+    the banner say "weekly-hours limit" where an overlap blocked everyone.
+  - "partial" is no stop: `run_apply.cut_short` and the frontend's
+    `runStoppedEarly` exclude it; skipped, incomplete and unchecked days are
+    reported per day. A day the model skipped that the repair and the final
+    checks completed reads "Run: finished" (it said "ended with days not
+    finished" next to "Required checks: complete").
+  - The "Run:" line follows the run's status: a Stop during the closing
+    report leaves `stopReason` "completed" on a run stored as aborted.
+  - Toast: "Run stopped early - review the best plan so far in the run
+    inbox." also for budget, provider, error and refusal stops, which are
+    stored as finished (`runFinishedNotice`).
+  - Banner lead: "are still open" also when the slot's day is in the
+    server's `unfinished_dates` (its final check ran out of time) or someone
+    could still take the slot (`openPositionsUnproven`).
+  - Account AI budget used up before the first call (0 iterations): "Run:
+    not started: this account's AI budget is used up", and the basic-plan
+    notice says the same instead of "planning budget".
+  - Help, section 3: the repair "never opens a slot of a section that ranks
+    higher in the section order to fill lower-ranked ones, and when several
+    plans fill as many slots, it prefers to leave the lower-ranked ones
+    open" (it promised it would never leave a higher-ranked section open).
+  - Measured (4-week arena repair, 120 s, 2 CP-SAT workers, two seeds on
+    plans with 39, 64 and 95 open positions): 24/23, 48/48 and 37/39 open
+    after the repair, against 24/25, 47/47 and 39/37 with the objective
+    before (219 in both sums, run-to-run noise as in the review); no
+    trade-down in any run. One week (90 s budget): both reach the optimum
+    (29 -> 0 and 23 -> 0 open, same changes); proving it takes 25 s and
+    31 s instead of 17 s and 29 s. The search cost of the bounds themselves stays
+    (review: 0-3 positions at 2 workers on 4-week ranges, none at 4; the
+    returned plan after the final audit was no worse).
+- Tests: `test_cross_day_repair.py` (solver repair mode, gate,
+  integration, magnitudes, direct strategy; merge: a Rest Day row entry is
+  never filled by the repair, a reference placement without a variable is
+  no change, the gate refuses work on it, legal people and open-slot
+  reasons leave it out), `test_agent_workflow_safety.py`,
+  `test_agent_retry.py`, `test_agent_integration.py`, `test_arena_claude.py`
+  and `test_prompt_eval.py` adjusted; `test_agent_harness.py` (blocking
+  rules per open slot, `on_slot`, bounds, stop, `REST_DAY` in the tie-break
+  order and both rule tables in step; week column in the real
+  day messages), `test_agent_workflow_safety.py` (finished run with open
+  positions; unverified or cut-short runs; CP-SAT and changed-calendar
+  wording; stale report applies without the question), `test_agent_tools.py`
+  (week hours in the day roster, production row shape, the day prompt's
+  auto-select order); `test_cross_day_repair.py` (section order: no trade
+  down in the solver, a gap within one section moves, running-total check,
+  the gate refuses a trade-down answer, a day-by-day run keeps the top
+  section; the three trade-down tests fail without the bounds);
+  `test_agent_harness.py` (absence first for the main reason); second
+  review: `test_cross_day_repair.py` (a gap moves between two blocks of one
+  section in either order, one tier per section in a pre-v4 template, the
+  top section staffed at equal coverage despite more changes),
+  `test_agent_harness.py` (every rule of someone not absent),
+  `test_agent_workflow_safety.py` (a partial run whose skipped day the
+  repair completed is not called stopped); frontend `weeklyHours.test.ts`,
+  `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`,
+  `solverOutcome.test.ts` (also the run-details state, the toast and the
+  banner lead), `SolverInfoModal.test.tsx` (run-card wording, the rendered
+  "Run:" line), `HelpView.test.tsx` (the repair's promise).
+- Deploy notes: no schema or data change. Version 1.80 (80).
+
+## v1.81 — Swap assistant
 
 "Find swap" for the rota planner: swap a shift for one of a colleague's
 (swap), give it away (handover) or fill an open position (cover), with the
@@ -3295,7 +3671,11 @@ server checking every option against all planning rules.
   answer is in, the drawer also reveals the target's pill (a cover's cell),
   once, unless an option's shift was revealed first: from lg on, opening
   it narrows the page and can push a weekend target out of view.
-- **Merged with v1.72–v1.79.**
+- **Merged with v1.72–v1.80.** The branch's commits call this release
+  "v1.71", and after its merges "v1.78" (the version file) and "v1.80" (the
+  last merge's message); each means this release, not main's v1.71
+  (location-colored labels), v1.78 (Working hours) or v1.80 (Planning across
+  days).
   - `REST_DAY` (v1.75): the swap gates count only the Rest Days of the plan
     they check (`own_rest_days`), so a Rest Day the plan moves away or
     removes no longer counts and one it adds does; a pair (Rest Day and a
@@ -3336,7 +3716,10 @@ server checking every option against all planning rules.
     "Hours even" and the over- and under-contract notes count like the
     weekly-hours rule (shifts hidden by a vacation included) against the
     full contract; "behind on hours" is the solver's year-to-date formula
-    from the first planned date. The overview leaves out shifts hidden by
+    from the first planned date. The hours card's limit is contract +
+    tolerance (5 h when unset): the same limit as the person picker's "Over
+    weekly limit" (v1.80), with the same week totals (see Planning across
+    days below). The overview leaves out shifts hidden by
     a vacation, lowers the target for vacation days and counts a week only
     once half of the team's target hours are planned. Example: with one
     test entry in January and planning from October, everyone is on target
@@ -3365,13 +3748,59 @@ server checking every option against all planning rules.
     demo screen also shows. Tests: `SwapHistoryButton.test.tsx`; e2e "the
     swap assistant waits until the calendar has loaded" (`openCalendar`
     takes a `stateGate`).
+  - Planning across days (v1.80). Main's cross-day repair, direct strategy,
+    open-slot reasons and finished-run texts call the validators as before:
+    `own_rest_days` stays off for them and `run_apply._new_violations` stays
+    the thin wrapper over `constraint_policy.new_violations`, which main's
+    `cut_short`, `unfinished_dates` and `_partial_lead` do not use. Both
+    grids pass main's `getWeeklyHours` to the picker, which also has "Find
+    cover…". Swap apply and undo hydrate `assignmentMap`, so the picker
+    counts the new week at once: a cover that takes a person to exactly
+    their limit makes them "Over weekly limit (48/40 h …)" on the next open
+    day of that week, and its undo frees them (checked live with the real
+    backend, team grid and clinic sheet). One weekly-hours rule:
+    the picker (`src/lib/weeklyHours.ts`), the swap's hours card and cover
+    search (`worktime.week_minutes`, `person_hours`, the gate) and
+    `validate_weekly_hours` count the same minutes per ISO week of the
+    start date (shifts hidden by a vacation counted, pool and Rest Day
+    entries not, a slot without times 08:00–16:00, a night in full) and
+    use the same limit, contract + tolerance with 5 h when unset (none
+    without contract hours). So a person the picker marks for an open slot
+    is never offered as its cover, and one it does not mark is never
+    blocked by the weekly hours; another rule (an overlap, on-call rest)
+    can still block either, and the search then names that rule.
+    `src/lib/weeklyHours.crossCheck.json` holds one calendar with these
+    cases, 2026-W53 (Mon 28 Dec 2026 to Sun 3 Jan 2027) and quarter hours
+    (an Early shift 07:45–16:00, a 19.25 h contract);
+    `test_weekly_hours_crosscheck.py` pins the hours card, the gate and the
+    cover search to it, `weeklyHours.crossCheck.test.ts` the picker. On
+    that calendar the cover search blocks exactly the people the picker
+    marks, all with the weekly-hours reason, and offers everyone else. Both
+    texts print the same hours ("32.3/30 h in 2026-W50" and "week 50 would
+    reach 32.3 h (limit 30.0 h)"): the drawer's texts (`labels.hours_text`,
+    `compact_number`) round an exact half up now, as the picker does;
+    Python's rounding printed 32.25 h as 32.2 h, and "+0.2 h over contract"
+    beside an hours card with 40.3 h. The hours card (`format.ts`) rounds
+    the tenths with `Math.round` like the picker, so 1929 minutes (32.15 h)
+    are 32.2 h in both (`toFixed` alone wrote 32.1 h). The cross-check found
+    no wrong number. One difference in form only: the hours card's
+    `limitMinutes` is whole minutes, like the gate's `max_minutes`, while
+    the picker keeps (contract + tolerance) × 60; week totals are whole
+    minutes, so the verdict is the same. In main's picker a long warning
+    squeezed the name to a few pixels (288 px popover); the name now keeps
+    at least 7rem and the warning wraps below it. E2e "Find cover… stays in
+    view below a long list of people over the weekly limit".
 - Tests: backend `test_validation_context.py`, `test_constraint_policy.py`,
   `test_swap_blocks.py`, `test_swap_worktime.py`, `test_swap_policy.py`,
-  `test_swap_matching.py`, `test_swap_property.py` (about 15 s) and
-  `test_swap_endpoints.py`; fixtures in `backend/tests/swap_fixtures.py`.
+  `test_swap_matching.py`, `test_swap_property.py` (about 15 s),
+  `test_swap_endpoints.py` and `test_weekly_hours_crosscheck.py`; fixtures
+  in `backend/tests/swap_fixtures.py`.
   Frontend `src/lib/swaps/format.test.ts`, `src/api/client.swaps.test.ts`,
   `src/pages/swapFlow.test.ts`, `SwapAssistantDrawer.test.tsx`,
-  `SwapHistoryButton.test.tsx`; e2e `e2e/swap-assistant.spec.ts` (mocked
-  API, in CI).
+  `SwapHistoryButton.test.tsx`, `src/lib/weeklyHours.crossCheck.test.ts`
+  (same JSON as the backend cross-check); e2e `e2e/swap-assistant.spec.ts`
+  (mocked API, in CI).
 - Deploy notes: three new tables, created on startup (`db.py`); stored
-  calendars are not changed. Version 1.80 (80).
+  calendars are not changed. DEPLOY.md's CI section names all eight
+  Playwright specs of `ci-cd.yml` (it lacked `holiday-region` and
+  `swap-assistant`). Version 1.81 (81).

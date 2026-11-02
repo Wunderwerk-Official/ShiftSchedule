@@ -7,7 +7,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { appendAgentEvent } from "../lib/agentActivity";
 import { abortableDelay } from "../lib/abortableDelay";
-import { agentReviewNotice, heuristicFallbackNotice } from "../lib/solverOutcome";
+import {
+  agentReviewNotice, coverageExplanation, heuristicFallbackNotice, openPositionsUnproven, runEndedEarly, runFinishedNotice,
+} from "../lib/solverOutcome";
 import ClinicianEditModal from "../components/schedule/ClinicianEditModal";
 import AutomatedPlanningPanel from "../components/schedule/AutomatedPlanningPanel";
 import SolverOverlay, { type LiveSolution, type StatsHistoryEntry } from "../components/schedule/SolverOverlay";
@@ -129,6 +131,7 @@ import {
   type NagerPublicHoliday,
 } from "../lib/holidays";
 import { computeOpenSlots } from "../lib/openSlots";
+import { buildGateMinutesByRowId, buildWeeklyMinutesIndex, checkWeeklyHours } from "../lib/weeklyHours";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
@@ -614,6 +617,11 @@ export default function WeeklySchedulePage({
   const [coverageWarning, setCoverageWarning] = useState<{
     count: number;
     dates: string[];
+    /** Why: the main blocking rule per checked slot, or that the run ended early. */
+    explanation: string;
+    /** Nothing proves them unstaffable (openPositionsUnproven): the run
+     *  ended early, their day is unfinished, or someone could still take one. */
+    stillOpen: boolean;
   } | null>(null);
   const [autoPlanRunning, setAutoPlanRunning] = useState(false);
   const [autoPlanElapsedMs, setAutoPlanElapsedMs] = useState(0);
@@ -1495,6 +1503,26 @@ export default function WeeklySchedulePage({
     return restAssignments.some((assignment) => assignment.clinicianId === clinicianId);
   };
 
+  // Weekly hours per person and ISO week, from ALL stored assignments (also
+  // those the grid hides on vacation days): the planner's gate counts them
+  // the same way, so the picker shows who the planner cannot place.
+  // Slot minutes as the gate counts them: a slot saved without times is
+  // 08:00-16:00 there, not "unknown" as in the grid's conflict checks.
+  const gateMinutesByRowId = useMemo(() => buildGateMinutesByRowId(scheduleRows), [scheduleRows]);
+  const weeklyMinutesIndex = useMemo(
+    () =>
+      buildWeeklyMinutesIndex(
+        Array.from(assignmentMap.values()).flat(),
+        (rowId) => gateMinutesByRowId.get(rowId) ?? null,
+      ),
+    [assignmentMap, gateMinutesByRowId],
+  );
+  const getWeeklyHours = (clinicianId: string, dateISO: string, rowId: string) => {
+    const minutes = gateMinutesByRowId.get(rowId);
+    const clinician = clinicians.find((item) => item.id === clinicianId);
+    return clinician && minutes ? checkWeeklyHours(weeklyMinutesIndex, clinician, dateISO, minutes) : null;
+  };
+
   // Clinic sheet layout (Excel-style monthly view). Month-scoped derived
   // data — the weekly renderAssignmentMap only synthesizes vacation/rest
   // pool entries for the displayed week, so the sheet needs its own map.
@@ -1700,6 +1728,8 @@ export default function WeeklySchedulePage({
         setCoverageWarning({
           count: openSlots.length,
           dates: [...new Set(openSlots.map((slot) => slot.dateISO))].sort(),
+          explanation: coverageExplanation(openSlots, runEndedEarly(run.status, result?.debugInfo)),
+          stillOpen: openPositionsUnproven(run.status, result?.debugInfo, openSlots, run.unfinished_dates),
         });
       }
       const warningNotes = (result?.notes ?? []).filter(
@@ -1722,10 +1752,7 @@ export default function WeeklySchedulePage({
         await applyRunRef.current(runId);
       } else if (applicable) {
         setSolverInfoOpen(true);
-        showSolverNoticeBriefly(
-          "Run finished - review the result in the run inbox and apply it.",
-          6000,
-        );
+        showSolverNoticeBriefly(runFinishedNotice(run.status, result?.debugInfo), 6000);
       }
       setAutoPlanProgress({ current: result?.debugInfo?.agent?.daysPlanned ?? dateRangeLength, total: dateRangeLength });
       setAutoPlanLastRunStats({
@@ -3864,6 +3891,7 @@ export default function WeeklySchedulePage({
               }}
               clinicians={clinicians}
               getIsOnRestDay={isOnRestDayInSheet}
+              getWeeklyHours={getWeeklyHours}
               enforceSameLocationPerDay={solverSettings.enforceSameLocationPerDay}
               onClinicianClick={(clinicianId) => openClinicianEditor(clinicianId)}
               onAddAssignment={handleAddAssignment}
@@ -3945,6 +3973,7 @@ export default function WeeklySchedulePage({
             }}
             clinicians={clinicians}
             getIsOnRestDay={isOnRestDay}
+            getWeeklyHours={getWeeklyHours}
             enforceSameLocationPerDay={solverSettings.enforceSameLocationPerDay}
             slotOverridesByKey={slotOverridesByKey}
             enableSlotOverrides={false}
@@ -3974,16 +4003,15 @@ export default function WeeklySchedulePage({
                 <div className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200">
                   <div className="min-w-0">
                     <span className="font-semibold">
-                      {coverageWarning.count} required position(s) could not be
-                      staffed
+                      {coverageWarning.count} required position(s){" "}
+                      {coverageWarning.stillOpen ? "are still open" : "could not be staffed"}
                     </span>{" "}
                     on{" "}
                     {coverageWarning.dates.slice(0, 8).join(", ")}
                     {coverageWarning.dates.length > 8
                       ? ` and ${coverageWarning.dates.length - 8} more day(s)`
                       : ""}
-                    . Often too few available qualified people (vacations) -
-                    the run log lists every open slot.
+                    . {coverageWarning.explanation}
                   </div>
                   <div className="flex shrink-0 items-center gap-2">
                     <button

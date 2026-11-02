@@ -206,7 +206,9 @@ def explain_unfilled(executor, arguments):
         candidates = executor._candidates_for_slot(executor._resolve_slot_key(item["slot_key"]))
         explanations.append({"slot_key": item["slot_key"], "dateISO": item["dateISO"],
                              "direct_candidates": item["eligible_count"],
-                             "blocking_reasons": [{"clinicianId": c["clinicianId"], "reasons": c["reasons"]}
+                             "blocking_reasons": [{"clinicianId": c["clinicianId"], "reasons": c["reasons"],
+                                                   **({"week_over_cap_hours": c["week_over_cap_hours"]}
+                                                      if "week_over_cap_hours" in c else {})}
                                                   for c in candidates["candidates"] if not c["eligible"]]})
     return {"explanations": explanations, "more_slots": analysis["more_slots"] + len(analysis["bottlenecks"])-len(explanations),
             "not_searched": analysis["not_searched"], "search_status": analysis["search_status"],

@@ -7,6 +7,7 @@ functions; texts without placeholders are constants.
 
 from __future__ import annotations
 
+import math
 from datetime import date
 from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Sequence
 
@@ -42,14 +43,26 @@ class Shift(NamedTuple):
 # --- Numbers, dates and times ------------------------------------------------
 
 
+def _one_decimal(value: float) -> str:
+    """One decimal, an exact half rounded up as the browser's Math.round does
+    in the person picker and the hours card: 32.25 -> "32.3" (Python's round
+    and format would give "32.2")."""
+    scaled = value * 10
+    tenths = math.floor(scaled)
+    if scaled - tenths >= 0.5:
+        tenths += 1
+    sign = "-" if tenths < 0 else ""
+    return f"{sign}{abs(tenths) // 10}.{abs(tenths) % 10}"
+
+
 def hours_text(minutes: float) -> str:
-    """Hours with one decimal: 2640 -> "44.0"."""
-    return f"{minutes / 60:.1f}"
+    """Hours with one decimal: 2640 -> "44.0", 1935 -> "32.3"."""
+    return _one_decimal(minutes / 60)
 
 
 def compact_number(value: float) -> str:
-    """At most one decimal and no trailing ".0": 40 -> "40", 38.5 -> "38.5"."""
-    text = f"{value:.1f}"
+    """At most one decimal and no trailing ".0": 40 -> "40", 38.5 -> "38.5", 19.25 -> "19.3"."""
+    text = _one_decimal(value)
     return text[:-2] if text.endswith(".0") else text
 
 

@@ -21,11 +21,12 @@ import type {
 // drawer; Reveal on hover, also beside a narrow stacked week whose labels keep
 // whole words and over one (below lg) whose labels keep their widths; the
 // target (a cover's cell) revealed once the drawer has opened beside a narrow
-// week; the phone sheet and its Tab trap; cover from the person list;
-// the TopBar history and its Undo (focus stays in the drawer, as after a
-// refused apply); swaps that wait until the calendar has loaded; and the
-// touch layout of the ⇄ button next to the lock. The mocked server keeps one
-// calendar and checks revisions like the real one.
+// week; the phone sheet and its Tab trap; cover from the person list (also
+// below a long list of people over the weekly limit); the TopBar history and
+// its Undo (focus stays in the drawer, as after a refused apply); swaps that
+// wait until the calendar has loaded; and the touch layout of the ⇄ button
+// next to the lock. The mocked server keeps one calendar and checks revisions
+// like the real one.
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -1029,6 +1030,66 @@ test("Find cover… in an open slot's person list searches for cover", async ({ 
     slot: { rowId: WED_CT, dateISO: "2026-01-07" },
   });
   await expect(page.getByRole("button", { name: `Preview ${NAME[SECOND]} covering` })).toBeVisible();
+  expect(api.errors).toEqual([]);
+});
+
+test("Find cover… stays in view below a long list of people over the weekly limit", async ({ page }) => {
+  // 24 more people with a 2 h contract: the open 4 h Wed CT puts each of them
+  // over the weekly limit, a long warning on every row.
+  const state = calendarState();
+  for (let n = 1; n <= 24; n += 1) {
+    state.clinicians.push({
+      ...structuredClone(state.clinicians[0]),
+      id: `extra-${n}`,
+      name: `Maximiliane Musterfrau ${String(n).padStart(2, "0")}`,
+      workingHoursPerWeek: 2,
+      workingHoursToleranceHours: 0,
+      vacations: [],
+    });
+  }
+  const api = await openCalendar(page, state);
+  const calls = await mockSwapApi(page, api);
+
+  await page
+    .locator(`[data-schedule-cell="true"][data-row-id="${WED_CT}"][data-date-iso="2026-01-07"]`)
+    .click();
+  const search = page.getByPlaceholder("Search clinicians...");
+  await expect(search).toBeFocused();
+  const picker = page.locator("div.fixed").filter({ has: search });
+  const people = picker.locator(".overflow-y-auto > button");
+  const findCover = picker.getByRole("button", { name: "Find cover for this slot" });
+  await expect(people).toHaveCount(26);
+  // The two free people first, then everyone with a warning.
+  await expect(people.nth(0)).toHaveText(NAME[FIRST]);
+  await expect(people.nth(1)).toHaveText(NAME[SECOND]);
+  await expect(people.nth(2)).toHaveText("Maximiliane Musterfrau 01!Over weekly limit (4/2 h in 2026-W02)");
+  // The long warning goes below the name instead of squeezing it away.
+  const nameWidths = await people.evaluateAll((buttons) =>
+    buttons.map((button) => button.querySelector(":scope > span")!.getBoundingClientRect().width),
+  );
+  expect(Math.min(...nameWidths)).toBeGreaterThan(100);
+  const [nameBox, warningBox] = await people.nth(2).evaluate((button) =>
+    Array.from(button.children, (child) => {
+      const { top, bottom } = child.getBoundingClientRect();
+      return { top, bottom };
+    }),
+  );
+  expect(warningBox.top).toBeGreaterThanOrEqual(nameBox.bottom - 0.5);
+  // The list scrolls; the footer stays inside the picker, in the window and on top.
+  expect(await picker.locator(".overflow-y-auto").evaluate((list) => list.scrollHeight > list.clientHeight)).toBe(true);
+  const [pickerBox, footerBox] = await Promise.all([picker.boundingBox(), findCover.boundingBox()]);
+  expect(footerBox!.y).toBeGreaterThanOrEqual(pickerBox!.y);
+  expect(footerBox!.y + footerBox!.height).toBeLessThanOrEqual(pickerBox!.y + pickerBox!.height);
+  await expect(findCover).toBeInViewport({ ratio: 1 });
+  expect(await fullyShown(findCover)).toBe(true);
+  // Tab walks every person, then reaches "Find cover…".
+  for (let i = 0; i < 26; i += 1) await page.keyboard.press("Tab");
+  await expect(people.last()).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(findCover).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "Find cover" })).toBeVisible();
+  await expect.poll(() => calls.candidates.length).toBe(1);
   expect(api.errors).toEqual([]);
 });
 

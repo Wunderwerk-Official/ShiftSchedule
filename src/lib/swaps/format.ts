@@ -42,9 +42,18 @@ export function timeRange(start: string, end: string): string {
   return start.slice(0, 10) === end.slice(0, 10) ? `${from}–${to}` : `${from} → ${to}`;
 }
 
+/**
+ * Minutes as hours to one decimal, an exact half up: 1935 → 32.3. The person
+ * picker's "Over weekly limit" and the server's texts round the same way;
+ * toFixed alone would give 32.1 for 1929 minutes (32.15 h) and the picker 32.2.
+ */
+function roundedHours(minutes: number): number {
+  return Math.round((minutes / 60) * 10) / 10;
+}
+
 /** 720 → "12.0 h". */
 export function hoursLabel(minutes: number): string {
-  return formatHours(minutes / 60);
+  return formatHours(roundedHours(minutes));
 }
 
 /** Hours as a count in running text: 10 → "10", 82.46 → "82.5". */
@@ -55,7 +64,7 @@ export function hoursText(hours: number): string {
 
 /** "Week 47: 40.0 → 36.0 h". */
 export function weekChange(week: SwapWeekHours): string {
-  const hours = (minutes: number) => (minutes / 60).toFixed(1);
+  const hours = (minutes: number) => roundedHours(minutes).toFixed(1);
   return `Week ${week.isoWeek}: ${hours(week.beforeMinutes)} → ${hours(week.afterMinutes)} h`;
 }
 

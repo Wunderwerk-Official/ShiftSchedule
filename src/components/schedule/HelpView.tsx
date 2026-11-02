@@ -71,7 +71,13 @@ export default function HelpView() {
           <p>
             The AI plans the selected timeframe day by day: on-call and priority slots
             first, every person with a contiguous block of work. It fills required
-            slots only. Model and instructions are set in Settings → Planning rules &amp; AI.
+            slots only. If required slots stay open, it then moves shifts between the
+            days of the timeframe to fill more of them. It never opens a slot of a
+            section that ranks higher in the section order to fill lower-ranked ones,
+            and when several plans fill as many slots, it prefers to leave the
+            lower-ranked ones open. Plan whole weeks together:
+            days outside the timeframe stay as they are and keep using weekly hours.
+            Model and instructions are set in Settings → Planning rules &amp; AI.
           </p>
 
           <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -148,8 +154,12 @@ export default function HelpView() {
               <span className="font-medium">On vacation</span>,{" "}
               <span className="font-medium">Rest day</span>,{" "}
               <span className="font-medium">Time conflict</span>,{" "}
-              <span className="font-medium">Different location</span> and{" "}
-              <span className="font-medium">Already in slot</span>.
+              <span className="font-medium">Different location</span>,{" "}
+              <span className="font-medium">Over weekly limit</span> and{" "}
+              <span className="font-medium">Already in slot</span>. Over weekly limit
+              means the shift would take the person&apos;s week (Monday to Sunday) above
+              their contract hours plus tolerance, e.g. &quot;46/45 h in 2026-W45&quot; for a
+              40 h contract with 5 h tolerance; the automated planner never plans above it.
             </li>
             <li>
               Drag a name to another shift or the Rest Day/Vacation row on the same day to

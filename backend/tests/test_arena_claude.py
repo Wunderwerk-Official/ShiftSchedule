@@ -93,7 +93,7 @@ def test_a_day_the_model_skipped_makes_the_run_invalid_even_when_the_audit_fille
     assert comparison_problems(clean, "m") == []
     filled = {**clean, "modelDaysSkipped": ["2026-02-03"]}
     assert comparison_problems(filled, "m") == [
-        "days the model skipped (filled by the final audit): 2026-02-03"
+        "days the model skipped (filled by the cross-day repair or the final audit): 2026-02-03"
     ]
     # A day still skipped is named once, under daysSkipped.
     still = {**clean, "daysSkipped": ["2026-02-03"], "modelDaysSkipped": ["2026-02-03"]}

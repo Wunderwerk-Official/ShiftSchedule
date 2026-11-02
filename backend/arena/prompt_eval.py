@@ -12,7 +12,8 @@ from pathlib import Path
 import threading
 import time
 
-from backend.agent import harness, tools as agent_tools
+from backend.agent import cross_day, direct, harness, open_reasons, prompts as agent_prompts, tools as agent_tools
+from backend import solver as range_solver
 from backend.agent.config import ANTHROPIC_EFFORTS, AgentConfig
 from backend.agent.provider import LLMProvider, copy_provider_traits, get_provider
 from backend.agent.tools import PlanToolExecutor
@@ -108,7 +109,7 @@ def main():
     parser.add_argument("--effort", choices=ANTHROPIC_EFFORTS, default=None,
                         help="Claude effort (low/medium/high also via --reasoning-effort)")
     parser.add_argument("--scenario", choices=["base", "vacation-wave", "understaffed", "crunch", "oncall", "pinned", "daynight", "fixed-patterns"], default="base")
-    parser.add_argument("--strategy", choices=["day_by_day", "repair"], default="day_by_day")
+    parser.add_argument("--strategy", choices=["day_by_day", "repair", "direct"], default="day_by_day")
     parser.add_argument("--variant", choices=["baseline", "focused"], default="baseline")
     parser.add_argument("--reasoning-effort", choices=["low", "medium", "high"], default=None)
     parser.add_argument("--mock", action="store_true", help="Exercise tracing without an endpoint or settings access")
@@ -144,8 +145,13 @@ def main():
     end = (date.fromisoformat(args.start) + timedelta(days=args.days - 1)).isoformat()
     scenario_desc = apply_scenario(state, args.scenario, args.start, end)
     day, review = prompt_variant(args.variant)
+    # Every module that changes what a strategy does or what the model sees
+    # (direct: system prompt and digest; cross_day and solver: the repair;
+    # prompts: the day and review digests; open_reasons: open-slot lines).
     hashes = {name: hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest()
-              for name, module in (("harness", harness), ("tools", agent_tools))}
+              for name, module in (("harness", harness), ("tools", agent_tools), ("direct", direct),
+                                   ("cross_day", cross_day), ("solver", range_solver),
+                                   ("prompts", agent_prompts), ("open_reasons", open_reasons))}
     hashes["fixture"] = hashlib.sha256(FIXTURE.read_bytes()).hexdigest()
     fixture_version = json.loads(FIXTURE.read_text()).get("fixtureVersion", "legacy-export-v1")
     hashes["day_prompt"] = hashlib.sha256(day.encode()).hexdigest()
@@ -214,7 +220,8 @@ def main():
                 kwargs["timeout_seconds"], limits["hard_deadline"], before, CALL_GRACE_SECONDS)
             self.delegate.cancel_event = self.cancel_event
             response = self.delegate.complete(**kwargs)
-            row = {"call": len(calls) + 1, "phase": "day" if kwargs["system"] == day else "review" if kwargs["system"] == review else "duty_or_repair",
+            row = {"call": len(calls) + 1, "phase": "day" if kwargs["system"] == day else "review" if kwargs["system"] == review
+                   else "direct" if not kwargs.get("tools") else "duty_or_repair",
                    "seconds": round(time.monotonic() - before, 3),
                    "tools": [c.name for c in response.tool_calls], "stop_reason": response.stop_reason,
                    "usage": response.usage, "reply": response.replay_text, "error": response.error,
@@ -248,6 +255,8 @@ def main():
               "fixture_version": fixture_version,
               "quality_version": agent.get("quality_version"), "completion": agent.get("completion"),
               "final_audit": agent.get("final_audit"),
+              "cross_day_repair": agent.get("cross_day_repair"), "direct": agent.get("direct"),
+              "strategy": args.strategy,
               "quality_profile": args.quality_profile, "neighborhood": args.neighborhood,
               "scenario": args.scenario, "model": agent.get("model"), "requested_model": config.model,
               "model_selection": agent.get("model_selection"), "model_usage": agent.get("model_usage"),

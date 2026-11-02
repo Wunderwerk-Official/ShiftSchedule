@@ -32,6 +32,29 @@ const renderPicker = (onClose: () => void, onFindCover?: () => void) => (
 const flushTimers = () => act(() => new Promise((resolve) => setTimeout(resolve, 10)));
 
 describe("ClinicianPickerPopover", () => {
+  it("names the weekly limit and lists such people after the free ones", async () => {
+    render(
+      <ClinicianPickerPopover
+        open
+        onClose={vi.fn()}
+        onSelect={vi.fn()}
+        clinicians={[
+          { ...option("c1", "Anna Alpha"), isOverWeeklyHours: true, weeklyHoursLabel: "41.5/40 h in 2026-W45" },
+          option("c2", "Bert Beta"),
+        ]}
+        anchorRect={anchorRect}
+        rowName="IRM seno ZK"
+        dateLabel="Fri 6 Nov"
+      />,
+    );
+    await flushTimers();
+    expect(screen.getByText("Over weekly limit (41.5/40 h in 2026-W45)")).toBeInTheDocument();
+    const names = screen.getAllByRole("button").map((button) => button.textContent ?? "");
+    expect(names.findIndex((text) => text.includes("Bert Beta"))).toBeLessThan(
+      names.findIndex((text) => text.includes("Anna Alpha")),
+    );
+  });
+
   it("keeps focus where the user put it when the parent re-renders", async () => {
     const { rerender } = render(renderPicker(() => {}));
     await flushTimers();

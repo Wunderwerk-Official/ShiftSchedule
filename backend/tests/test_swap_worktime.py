@@ -220,6 +220,22 @@ def test_label_number_and_time_formats():
     assert labels.window_range(420, 900) == "07:00–15:00"
 
 
+def test_label_hours_round_an_exact_half_up_like_the_browser():
+    # The person picker ("Over weekly limit (32.3/30 h …)") and the hours card round
+    # with Math.round; Python's format would round 32.25 to even, 32.2.
+    assert labels.hours_text(1935) == "32.3"  # 32.25 h, e.g. 07:45–16:00 plus three 8 h days
+    assert labels.hours_text(1455) == "24.3"  # 19.25 h contract + 5 h tolerance
+    assert labels.hours_text(1965) == "32.8"  # 32.75 h
+    assert labels.hours_text(1929) == "32.2"  # 32.15 h, as the browser's Math.round gives it
+    assert labels.compact_number(19.25) == "19.3"
+    assert labels.compact_number(0.25) == "0.3"
+    assert labels.compact_number(-0.04) == "0"
+    assert labels.weekly_hours("Rita Rounding", 45, 1935, 1800) == (
+        "Rita Rounding: week 45 would reach 32.3 h (limit 30.0 h).")
+    assert labels.hours_above_contract("Tina Tolerant", 45, 2415, 40) == labels.Note(
+        "Tina Tolerant: week 45 at 40.3 h (contract 40 h).", "+0.3 h over contract")
+
+
 def test_label_templates():
     assert labels.weekly_hours("Ben Ott", 47, 2880, 2700) == (
         "Ben Ott: week 47 would reach 48.0 h (limit 45.0 h).")

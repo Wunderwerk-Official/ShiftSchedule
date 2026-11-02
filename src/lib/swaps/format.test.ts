@@ -197,6 +197,15 @@ describe("swap text helpers", () => {
     );
   });
 
+  it("rounds an exact half of a tenth up, as the person picker and the server's texts do", () => {
+    // 1455 min = 24.25 h, 1935 = 32.25 h; 1929 = 32.15 h, which toFixed alone writes as 32.1.
+    expect(weekHoursLine(week({ beforeMinutes: 1455, afterMinutes: 1935, limitMinutes: 1455 }))).toBe(
+      "Week 47: 24.3 → 32.3 h (limit 24.3 h)",
+    );
+    expect(weekChange(week({ beforeMinutes: 1929, afterMinutes: 2409 }))).toBe("Week 47: 32.2 → 40.2 h");
+    expect(hoursLabel(1929)).toBe("32.2 h");
+  });
+
   it("summarizes a unit and writes a partner's shift as one line", () => {
     const demo: SwapItem = { ...night, rowId: "demo-fri", dateISO: "2026-11-20", sectionName: "Demo", start: "2026-11-20T07:15", end: "2026-11-20T07:45", minutes: 30 };
     expect(unitSummary(unitOf([night, demo]))).toBe("Night duty 20:00 → 08:00 + Demo 07:15–07:45");

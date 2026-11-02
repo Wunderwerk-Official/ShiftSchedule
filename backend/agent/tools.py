@@ -970,10 +970,19 @@ class PlanToolExecutor:
                         for c in result["candidates"]
                         if not c["eligible"]
                     }
+                    # Keep the magnitude a weekly-hours block has in the
+                    # single-slot form: 0.5 (a near miss, worth a cross-day
+                    # trade or a tolerance change) reads differently than 20.
+                    over_cap = {
+                        c["clinicianId"]: c["week_over_cap_hours"]
+                        for c in result["candidates"]
+                        if not c["eligible"] and "week_over_cap_hours" in c
+                    }
                     result = {
                         "capacity_left": result["capacity_left"],
                         "eligible": eligible,
                         "ineligible": ineligible,
+                        **({"week_over_cap_hours": over_cap} if over_cap else {}),
                     }
                 out[self._alias_slot_key(self._resolve_slot_key(key))] = result
             return {"slots": out}
@@ -2813,6 +2822,38 @@ class PlanToolExecutor:
             if interval is not None:
                 minutes += max(0, interval[1] - interval[0])
         return minutes / 60.0
+
+    def week_hours_by_clinician(self, date_iso: str) -> Dict[str, float]:
+        """_week_hours for the whole roster in one pass over the plan."""
+        from datetime import date
+
+        target_week = date.fromisoformat(date_iso).isocalendar()[:2]
+        week_of: Dict[str, Tuple[int, int]] = {}
+        minutes: Dict[str, int] = {}
+        for a in self._full_plan():
+            if a.rowId.startswith("pool-"):
+                continue
+            week = week_of.get(a.dateISO)
+            if week is None:
+                week = week_of[a.dateISO] = date.fromisoformat(a.dateISO).isocalendar()[:2]
+            if week != target_week:
+                continue
+            interval = self._assignment_interval(a)
+            if interval is not None:
+                minutes[a.clinicianId] = minutes.get(a.clinicianId, 0) + max(0, interval[1] - interval[0])
+        return {cid: total / 60.0 for cid, total in minutes.items()}
+
+    def week_hours_lines(self, date_iso: str) -> Dict[str, str]:
+        """Roster column 'booked/hard max' for the ISO week of date_iso, e.g.
+        '27.5/40' ('-' max: no weekly cap). The same numbers as the gate."""
+        booked = self.week_hours_by_clinician(date_iso)
+        out: Dict[str, str] = {}
+        for c in self.state.clinicians:
+            contract = c.workingHoursPerWeek
+            cap = (f"{contract + self._tolerance_hours(c):g}"
+                   if isinstance(contract, (int, float)) and contract > 0 else "-")
+            out[c.id] = f"{round(booked.get(c.id, 0.0), 1):g}/{cap}"
+        return out
 
     def ytd_completion_pct(self, clinician_id: str, as_of_iso: str) -> Optional[int]:
         """Percent of the clinician's year-to-date target hours actually

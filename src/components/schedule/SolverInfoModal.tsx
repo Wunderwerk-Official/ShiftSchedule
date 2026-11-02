@@ -5,7 +5,7 @@ import { cx } from "../../lib/classNames";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import { formatFeedDate } from "../../lib/agentActivity";
-import { heuristicFallbackNotice } from "../../lib/solverOutcome";
+import { heuristicFallbackNotice, runReviewLine, runStateLabel } from "../../lib/solverOutcome";
 import {
   buildRunLog,
   downloadTextFile,
@@ -660,6 +660,7 @@ export default function SolverInfoModal({
                       const unresolvedNote = noteLines.find((n) => n.startsWith("Unresolved after this run:"));
                       const issues = unresolvedNote ? parseUnresolvedNote(unresolvedNote) : null;
                       const allClear = noteLines.some((n) => n.startsWith("No unresolved issues"));
+                      const reviewLine = runReviewLine(run);
                       const canDecide = (run.status === "finished" || run.status === "aborted") && run.has_result;
                       const statusStyle = RUN_STATUS_STYLE[run.status] ?? RUN_STATUS_STYLE.discarded;
                       return (
@@ -743,16 +744,12 @@ export default function SolverInfoModal({
                                 No unresolved issues
                               </div>
                             )}
-                            {(run.apply_blocked_reason || !!run.incomplete_dates?.length) && (
+                            {(run.apply_blocked_reason || reviewLine) && (
                               <div className="flex items-start gap-2 rounded-xl bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:bg-amber-900/20 dark:text-amber-300">
                                 <AlertIcon className="mt-px h-4 w-4 shrink-0" />
                                 <div className="flex flex-col gap-0.5">
                                   {run.apply_blocked_reason && <span>{run.apply_blocked_reason}</span>}
-                                  {!!run.incomplete_dates?.length && (
-                                    <span>
-                                      Incomplete draft: {run.incomplete_dates.length} day(s) need review before applying.
-                                    </span>
-                                  )}
+                                  {reviewLine && <span>{reviewLine}</span>}
                                 </div>
                               </div>
                             )}
@@ -1156,7 +1153,7 @@ export default function SolverInfoModal({
                         <div className="mt-3 rounded-lg bg-white/70 p-3 text-xs dark:bg-slate-900/50">
                           <div className="font-medium">Result checks · plan {agent.completion.plan_revision}</div>
                           <ul className="mt-2 space-y-1">
-                            <li>Run: {agent.completion.workflow_finished ? "finished" : "in progress"}</li>
+                            <li>Run: {runStateLabel(agent, selectedEntry.status)}</li>
                             <li>Required checks: {agent.completion.required_checks_complete
                               ? "complete"
                               : agent.completion.required_checks_unverified && agent.completion.required_checks_unverified === (agent.tasks?.tasks.filter(task => task.kind === "required_check" && task.status !== "complete").length ?? -1)

@@ -810,11 +810,26 @@ export type SolverSubScores = {
   hours_penalty: number;
 };
 
+/** Why an open slot stayed open: qualified people not on it (and already
+ *  on it), how many could still be added directly, how many each hard rule
+ *  blocks (rule code -> people), and the rule blocking the most of them (an
+ *  absent person counts only under the absence; "NO_QUALIFIED" when nobody
+ *  is left to add, null when someone can still be added). Absent when the
+ *  bounded closing check did not reach the slot. */
+export type SolverOpenSlotBlockers = {
+  qualified: number;
+  on_slot?: number;
+  addable: number;
+  blocked_by: Record<string, number>;
+  main: string | null;
+};
+
 export type SolverUnsolvedOpenSlot = {
   dateISO: string;
   section: string;
   time: string;
   missing: number;
+  blockers?: SolverOpenSlotBlockers;
 };
 
 export type SolverAgentDebug = {
@@ -993,7 +1008,10 @@ export type SolverRunAgentUsage = {
 /** One row of the server-side run inbox (results are fetched per run). */
 export type SolverRunSummary = {
   apply_blocked_reason?: string | null;
+  /** Days to review before applying: unfinished days plus days with open positions. */
   incomplete_dates?: string[];
+  /** The subset the run did not finish (skipped, incomplete, checks pending). */
+  unfinished_dates?: string[];
   id: string;
   status: string;
   start_iso: string;

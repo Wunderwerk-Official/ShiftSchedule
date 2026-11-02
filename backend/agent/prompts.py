@@ -7,6 +7,7 @@ problem digest goes into the first user message.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Dict, List, Optional
 
 from ..models import AppState
@@ -193,11 +194,12 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    directly with step 2; do not spend an extra orientation round
    re-reading those same priorities.
 2. suggest_day_blocks with dateISO only (no slot_key): it auto-selects the
-   most urgent still-fillable slot in exactly that order and returns up to
-   6 legal candidates, each with a precomputed contiguous work block
-   starting at that slot (adjacent open slots chained up to their
-   preferred daily hours) — their "Anschlussverwendung". Pass slot_key
-   instead only when you deliberately deviate from the given order.
+   most urgent still-fillable slot (a slot only one person can take first,
+   then on-call, then priority; this can differ from the digest's listing)
+   and returns up to 6 legal candidates, each with a precomputed contiguous
+   work block starting at that slot (adjacent open slots chained up to
+   their preferred daily hours) — their "Anschlussverwendung". Pass
+   slot_key instead only when you deliberately pick another slot.
 3. Choosing the candidate: they are PRE-SORTED. The balanced profile sorts
    by its active quality_order; use the first candidate unless a concrete
    admin wish or future scarcity justifies another. In classic: overloaded=true last,
@@ -317,6 +319,14 @@ point (move yesterday's slot to free someone for today); the apply gate
 re-checks every hard rule (rest days, weekly hours, overlaps, windows) on
 every batch, so nothing you try can break the plan.
 
+Weekly hours count per ISO week. Moving work between days of one week does
+not change a person's weekly total, but it does change WHICH slots get those
+hours: one long low-priority shift can use the hours that two higher-priority
+slots on another day need. Before this review, a cross-day coverage repair
+already searched the whole range for such trades (see "cross-day repair"
+under Days as built, when it changed something); focus on the issues that
+remain and keep its coverage.
+
 THE PROCEDURE:
 1. The digest lists the remaining issues, worst first: open slots, then
    short days, then over-long days, then preferred-time misses. Work in
@@ -404,10 +414,12 @@ def _roster_lines(
     worked_pct_by_id: Dict[str, Optional[int]],
     *,
     with_pattern: bool = True,
+    week_hours_by_id: Optional[Dict[str, str]] = None,
 ) -> List[str]:
     """One roster row per clinician (name|qualified|preferred|contract|ytd
-    worked %[|soft work pattern]); missing values render as '-'. The rows
-    sit in the cached prompt prefix, so the format must stay stable."""
+    worked %[|week hours booked/max][|soft work pattern]); missing values
+    render as '-'. The rows sit in the cached prompt prefix, so the format
+    must stay stable."""
     sections = _section_names(state)
 
     def _section_list(ids) -> str:
@@ -421,12 +433,13 @@ def _roster_lines(
             if with_pattern and c.workPattern
             else ""
         )
+        week = f"|{week_hours_by_id.get(c.id, '-')}" if week_hours_by_id is not None else ""
         lines.append(
             f"- {clinician_aliases.get(c.id, c.id)}|{_section_list(c.qualifiedClassIds)}"
             f"|{_section_list(c.preferredClassIds)}"
             f"|{c.workingHoursPerWeek if c.workingHoursPerWeek is not None else '-'}"
             f"|{worked_pct if worked_pct is not None else '-'}"
-            f"{pattern}"
+            f"{week}{pattern}"
         )
     return lines
 
@@ -479,17 +492,24 @@ def build_day_digest(
     clinician_aliases: Dict[str, str],
     ytd_worked_pct_by_id: Dict[str, Optional[int]],
     distribute_all: bool = False,
+    week_hours_by_id: Optional[Dict[str, str]] = None,
 ) -> str:
     """First user message of one day's conversation. The roster's YTD
-    percentages are AS OF this day, including everything placed on earlier
-    days of this run — frozen range-start numbers would misdirect the
-    fairness choices of later days."""
+    percentages and week hours are AS OF this day, including everything
+    placed on earlier days of this run — frozen range-start numbers would
+    misdirect the fairness choices of later days."""
     lines: List[str] = []
+    week_column = ""
+    if week_hours_by_id is not None:
+        year, week, _ = date.fromisoformat(date_iso).isocalendar()
+        week_column = (f"|{year}-W{week:02d} hours booked/hard max (whole ISO week, "
+                       "work outside the range included; later days of this week share what is left)")
     lines.append(
         "Roster (name|qualified sections|preferred|contract h/wk|ytd worked % "
-        f"of target as of {date_iso}, 100=on target, lower=behind):"
+        f"of target as of {date_iso}, 100=on target, lower=behind{week_column}):"
     )
-    lines.extend(_roster_lines(state, clinician_aliases, ytd_worked_pct_by_id))
+    lines.extend(_roster_lines(state, clinician_aliases, ytd_worked_pct_by_id,
+                               week_hours_by_id=week_hours_by_id))
     lines.append("")
     lines.append(
         f"Build day {day_index + 1} of {total_days}: {date_iso} "
@@ -499,8 +519,9 @@ def build_day_digest(
     lines.append("")
     lines.append(
         "Slots of this day (slot_key|section|time|still missing|priority; "
-        "listed in processing order — on-call first, then priority, NOT "
-        "chronological):"
+        "listed on-call first, then by priority, NOT chronological; "
+        "suggest_day_blocks without slot_key takes a slot with only one "
+        "eligible person first):"
     )
     lines.extend(day_slot_lines)
     if fixed_anchor_lines:

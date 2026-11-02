@@ -835,6 +835,13 @@ def test_day_by_day_runs_one_conversation_per_day():
     assert len(provider.seen_messages[3]) == 1  # history did not carry over
     # The day-2 digest reports what day 1 achieved.
     assert "Days already built in this run" in first_day2
+    # The roster carries booked/max of the day's ISO week AS OF that day:
+    # Alice's Monday (8 h, no contract so no cap) is in Tuesday's digest.
+    def alice_row(digest):
+        return next(line for line in digest.splitlines() if line.startswith("- Alice|"))
+    assert "|2026-W02 hours booked/hard max" in first_day1
+    assert alice_row(first_day1).endswith("|0/-")
+    assert alice_row(first_day2).endswith("|8/-")
 
 
 def test_day_track_events_report_a_skipped_day():
@@ -1255,9 +1262,181 @@ def test_finalize_reports_unsolved_overview():
     assert len(unsolved["open_slots"]) == 1
     assert unsolved["open_slots"][0]["section"] == "Section B"
     assert any("open: " in n and "Section B" in n for n in result["notes"])
+    # The closing report says why: nobody is qualified for Section B.
+    assert unsolved["open_slots"][0]["blockers"] == {
+        "qualified": 0, "on_slot": 0, "addable": 0, "blocked_by": {}, "main": "NO_QUALIFIED"}
+    assert any("Section B" in n and n.endswith("(1 missing): nobody is qualified") for n in result["notes"])
     # Alice works one full 8h day: no short or over-long days reported.
     assert unsolved["short_days"] == []
     assert unsolved["overlong_days"] == []
+
+
+def test_finalize_names_the_rules_that_block_an_open_slot():
+    """Admin report 2026-11 (Thu/Fri run): the picker listed people as free
+    while the gate blocked them on weekly hours. The closing report must
+    name, per open slot, how many qualified people each hard rule blocks."""
+    from backend.models import TemplateBlock, VacationRange
+    from .conftest import make_pool_row, make_template_slot, make_workplace_row
+
+    capped = make_clinician("clin-3", "Carol", qualified_class_ids=["section-b"],
+                            working_hours_per_week=2)
+    capped.workingHoursToleranceHours = 0  # cap 2h: the 4h slot is over it
+    state = make_app_state(
+        clinicians=[
+            make_clinician("clin-1", "Alice", qualified_class_ids=["section-a"],
+                           working_hours_per_week=40),
+            make_clinician("clin-2", "Bob", qualified_class_ids=["section-b"],
+                           vacations=[VacationRange(id="v", startISO=MON, endISO=MON)]),
+            capped,
+        ],
+        rows=[
+            make_workplace_row(),
+            make_workplace_row("section-b", "Section B"),
+            make_pool_row("pool-rest-day", "Rest Day"),
+            make_pool_row("pool-vacation", "Vacation"),
+        ],
+        slots=[
+            make_template_slot(slot_id="slot-a__mon", col_band_id="col-mon-1"),
+            make_template_slot(slot_id="slot-b__mon", col_band_id="col-mon-1",
+                               block_id="block-b",
+                               start_time="09:00", end_time="13:00"),
+        ],
+    )
+    state.weeklyTemplate.blocks.append(
+        TemplateBlock(id="block-b", sectionId="section-b", requiredSlots=0)
+    )
+    result = agent_solve_range(
+        _payload(), state, MockCancelEvent(), ProgressRecorder(), time.time(),
+        provider=MockProvider([{"text": "Seed accepted."}]), config=_config(),
+    )
+    open_slots = result["debugInfo"]["agent"]["unsolved"]["open_slots"]
+    assert [entry["section"] for entry in open_slots] == ["Section B"]
+    assert open_slots[0]["blockers"] == {
+        "qualified": 2, "on_slot": 0, "addable": 0,
+        "blocked_by": {"VACATION": 1, "WEEKLY_HOURS": 1},
+        # A tie is broken by the fixed rule order: weekly hours first.
+        "main": "WEEKLY_HOURS",
+    }
+    line = next(n for n in result["notes"] if n.startswith("- open: ") and "Section B" in n)
+    # Ties in the rule order, as in the banner.
+    assert line.endswith("(1 missing): 2 qualified; blocked by weekly-hours limit 1, vacation 1")
+
+
+def test_open_slot_reasons_are_bounded():
+    from backend.agent.open_reasons import _main_reason, blocker_text, open_slot_blockers
+    from collections import Counter
+
+    assert _main_reason(3, 1, Counter({"WEEKLY_HOURS": 2})) is None  # someone can be added
+    assert _main_reason(0, 0, Counter()) == "NO_QUALIFIED"
+    assert _main_reason(4, 0, Counter({"VACATION": 3, "WEEKLY_HOURS": 2})) == "VACATION"
+    assert _main_reason(2, 0, Counter({"OVERLAP": 1, "SAME_LOCATION_PER_DAY": 1})) == "OVERLAP"
+    # main's v1.75 rule: a rest day ranks with vacation, before overlaps.
+    assert _main_reason(2, 0, Counter({"OVERLAP": 1, "REST_DAY": 1})) == "REST_DAY"
+    assert _main_reason(2, 0, Counter({"REST_DAY": 1, "VACATION": 1})) == "VACATION"
+    assert blocker_text({"qualified": 3, "addable": 1, "blocked_by": {"OVERLAP": 2}, "main": None}) == (
+        "3 qualified; 1 could be added directly; blocked by overlapping shift 2")
+    # Nobody left to add because everyone qualified already works the slot.
+    assert blocker_text({"qualified": 0, "on_slot": 1, "addable": 0, "blocked_by": {},
+                         "main": "NO_QUALIFIED"}) == "no other qualified person (1 already on it)"
+
+    class _Gap:
+        def __init__(self, n):
+            self.slot_key, self.slot_id, self.dateISO, self.section_id = f"s{n}__{MON}", f"s{n}", MON, "section-a"
+
+    class _Executor:
+        state = make_app_state(clinicians=[make_clinician("clin-1"), make_clinician("clin-2", "Bob")])
+        current, fixed_identity, calls = {}, set(), 0
+
+        def _direct_addition_codes(self, slot_id, date_iso, cid):
+            self.calls += 1
+            return ["WEEKLY_HOURS"]
+
+    executor = _Executor()
+    gaps = [_Gap(n) for n in range(5)]
+    assert len(open_slot_blockers(executor, gaps, max_slots=2)) == 2
+    assert executor.calls == 4
+    # Past the time limit nothing is guessed: those slots are left out.
+    assert open_slot_blockers(executor, gaps, deadline=time.time() - 1) == {}
+    # A stop ends the check at once.
+    stopped = MockCancelEvent()
+    stopped.set()
+    assert open_slot_blockers(executor, gaps, cancel_event=stopped) == {}
+    assert executor.calls == 4
+    # People already on the slot are counted apart, never as candidates.
+    executor.current = {(f"s0", MON, "clin-1"): object()}
+    result = open_slot_blockers(executor, gaps, max_slots=1)
+    assert result[f"s0__{MON}"]["on_slot"] == 1 and result[f"s0__{MON}"]["qualified"] == 1
+
+
+def test_an_absent_person_counts_as_absent_for_the_main_reason():
+    """Review of the v1.80 merge: someone on a hand-placed rest day who is
+    also near their weekly cap must not make the banner blame weekly hours;
+    no tolerance or trade can bring them in that day."""
+    from backend.agent.open_reasons import blocker_text, open_slot_blockers
+
+    class _Gap:
+        slot_key, slot_id, dateISO, section_id = f"s0__{MON}", "s0", MON, "section-a"
+
+    class _Executor:
+        state = make_app_state(clinicians=[make_clinician("clin-1"), make_clinician("clin-2", "Bob")])
+        current, fixed_identity = {}, set()
+        codes = {"clin-1": ["REST_DAY", "WEEKLY_HOURS"], "clin-2": ["VACATION", "WEEKLY_HOURS"]}
+
+        def _direct_addition_codes(self, slot_id, date_iso, cid):
+            return self.codes[cid]
+
+    blockers = open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]
+    # Both away (vacation ranks before rest day); weekly hours still listed.
+    assert blockers["main"] == "VACATION"
+    assert blockers["blocked_by"] == {"WEEKLY_HOURS": 2, "VACATION": 1, "REST_DAY": 1}
+    assert blocker_text(blockers) == "2 qualified; blocked by weekly-hours limit 2, vacation 1, rest day 1"
+    _Executor.codes = {"clin-1": ["REST_DAY", "WEEKLY_HOURS"], "clin-2": ["OVERLAP"]}
+    assert open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]["main"] == "REST_DAY"
+
+
+def test_main_reason_counts_every_rule_of_someone_who_is_not_absent():
+    """Review of v1.80: only an absence replaces a person's other rules. Two
+    of three people are also near their weekly cap, but all three work at
+    that time: the banner must name the overlap, not weekly hours."""
+    from backend.agent.open_reasons import open_slot_blockers
+
+    class _Gap:
+        slot_key, slot_id, dateISO, section_id = f"s0__{MON}", "s0", MON, "section-a"
+
+    class _Executor:
+        state = make_app_state(clinicians=[make_clinician("clin-1"), make_clinician("clin-2", "Bob"),
+                                           make_clinician("clin-3", "Cyd")])
+        current, fixed_identity = {}, set()
+        codes = {"clin-1": ["OVERLAP", "WEEKLY_HOURS"], "clin-2": ["OVERLAP", "WEEKLY_HOURS"],
+                 "clin-3": ["OVERLAP"]}
+
+        def _direct_addition_codes(self, slot_id, date_iso, cid):
+            return self.codes[cid]
+
+    blockers = open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]
+    assert blockers["blocked_by"] == {"OVERLAP": 3, "WEEKLY_HOURS": 2}
+    assert blockers["main"] == "OVERLAP"
+    # An absent person still counts only once, under the absence.
+    _Executor.codes = {"clin-1": ["VACATION", "WEEKLY_HOURS"], "clin-2": ["VACATION", "OVERLAP"],
+                       "clin-3": ["WEEKLY_HOURS"]}
+    assert open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]["main"] == "VACATION"
+
+
+def test_frontend_rule_labels_follow_the_closing_report():
+    """The banner (src/lib/solverOutcome.ts) uses the closing report's words
+    and breaks ties in its rule order; a rule added to one table only (as
+    REST_DAY was by main's v1.75) would rank last in the other."""
+    import re
+    from pathlib import Path
+
+    from backend.agent.open_reasons import RULE_LABELS
+
+    source = (Path(__file__).resolve().parents[2] / "src/lib/solverOutcome.ts").read_text()
+    body = re.search(r"const RULE_LABELS: Record<string, string> = \{(.*?)\n\};", source, re.S).group(1)
+    frontend = dict(re.findall(r'^\s*([A-Z_]+): "([^"]*)",', body, re.M))
+    assert list(frontend)[:len(RULE_LABELS)] == list(RULE_LABELS)
+    assert {code: frontend[code] for code in RULE_LABELS} == RULE_LABELS
+    assert RULE_LABELS["REST_DAY"] == "rest day"
 
 
 def test_finalize_reports_all_clear_when_nothing_unsolved():
