@@ -329,7 +329,7 @@ export default function HelpView() {
             The <span className="font-medium">Web</span> link shows published weeks as you see
             the team plan: the same layout and Times (stacked or side by side), and the Rest
             Day row with the rest days of on-call shifts in the weeks around it. On a phone it
-            shows one day at a time.
+            shows one day at a time, its times stacked.
           </p>
         </Section>
 

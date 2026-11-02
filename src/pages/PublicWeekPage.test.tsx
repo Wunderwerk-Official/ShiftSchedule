@@ -309,6 +309,15 @@ describe("PublicWeekPage on a phone", () => {
     await waitFor(() => expect(shownDates()).toEqual(["2026-01-11"]));
   });
 
+  it("stacks the day's times even when the owner uses side by side", async () => {
+    window.history.pushState({}, "", `/public/tok?start=${MON}`);
+    vi.mocked(getPublicWebWeek).mockResolvedValue({ ...basePayload("classic"), teamTimeLayout: "columns" });
+    render(<PublicWeekPage token="tok" theme="light" />);
+    await waitFor(() => expect(screen.getByText("Anna Bergmann")).toBeTruthy());
+    // A stacked single day labels each time lane in its section's color.
+    expect(document.querySelector(".stacked-label-tint")).not.toBeNull();
+  });
+
   it("uses the day view for the clinic sheet layout too", async () => {
     window.history.pushState({}, "", `/public/tok?start=${MON}`);
     vi.mocked(getPublicWebWeek).mockResolvedValue(basePayload("clinicSheet"));

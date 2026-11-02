@@ -76,5 +76,5 @@ it("describes what the public web link shows", () => {
   const { container } = render(<HelpView />);
   const text = (container.textContent ?? "").replace(/\s+/g, " ");
   expect(text).toContain("the same layout and Times (stacked or side by side)");
-  expect(text).toContain("On a phone it shows one day at a time.");
+  expect(text).toContain("On a phone it shows one day at a time, its times stacked.");
 });

@@ -198,9 +198,12 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
   // The publisher's layout choice travels with the public payload (and is
   // sanitized by normalizeAppState), so shared links mirror their view; so
   // does their Times choice (side by side unless the payload says stacked).
+  // A phone's single day is always stacked: side by side, a day's time
+  // columns overflow the screen and hide its header and the Rest Day names,
+  // and readers of a link cannot switch Times.
   const isClinicSheet =
     (normalized?.solverSettings?.scheduleLayout ?? "classic") === "clinicSheet" && !isMobile;
-  const timeLayout = data?.teamTimeLayout === "stacked" ? "stacked" : "columns";
+  const timeLayout = isMobile || data?.teamTimeLayout === "stacked" ? "stacked" : "columns";
   const sheetDays = useMemo(
     () =>
       isClinicSheet
