@@ -16,6 +16,7 @@ from .constants import (
 )
 from .db import _get_connection, _utcnow_iso
 from .models import (
+    STORED_STATE_CONTEXT,
     AppState,
     Assignment,
     Clinician,
@@ -34,6 +35,7 @@ from .models import (
     WeeklyCalendarTemplate,
     WeeklyTemplateLocation,
     WorkplaceRow,
+    is_calendar_date,
 )
 from .publication import _prune_clinician_publications
 
@@ -52,17 +54,6 @@ SECTION_BLOCK_COLORS = [
     "#DEE8FF",
     "#E8E1F5",
 ]
-
-
-def _is_valid_date_iso(value: str) -> bool:
-    """Check if value looks like a valid YYYY-MM-DD date string."""
-    if not value or len(value) != 10:
-        return False
-    try:
-        datetime.fromisoformat(f"{value}T00:00:00")
-        return True
-    except ValueError:
-        return False
 
 
 def _get_day_type(date_iso: str, holidays: List[Holiday]) -> str:
@@ -810,6 +801,13 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
         wishes = (clinician.planningWishes or "").strip()[:PLANNING_WISHES_MAX_CHARS] or None
         if wishes != clinician.planningWishes:
             updates["planningWishes"] = wishes
+        vacations = [
+            vacation
+            for vacation in clinician.vacations
+            if is_calendar_date(vacation.startISO) and is_calendar_date(vacation.endISO)
+        ]
+        if len(vacations) != len(clinician.vacations):
+            updates["vacations"] = vacations
         next_clinician = clinician
         if updates:
             next_clinician = clinician.model_copy(update=updates)
@@ -817,6 +815,28 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
         normalized_clinicians.append(next_clinician)
     if normalized_clinicians != state.clinicians:
         state.clinicians = normalized_clinicians
+
+    # Calendars stored before the API checked dates can hold impossible ones
+    # ("2026-02-30"): drop those entries, so nothing below parses them and the
+    # returned calendar passes the checks when it is saved again. Shifts of
+    # people no longer listed go too (the shifts file import skips them).
+    holidays = [holiday for holiday in state.holidays if is_calendar_date(holiday.dateISO)]
+    if len(holidays) != len(state.holidays):
+        state.holidays = holidays
+        changed = True
+    published_weeks = [week for week in state.publishedWeekStartISOs if is_calendar_date(week)]
+    if len(published_weeks) != len(state.publishedWeekStartISOs):
+        state.publishedWeekStartISOs = published_weeks
+        changed = True
+    clinician_ids = {clinician.id for clinician in state.clinicians}
+    kept_assignments = [
+        assignment
+        for assignment in state.assignments
+        if is_calendar_date(assignment.dateISO) and assignment.clinicianId in clinician_ids
+    ]
+    if len(kept_assignments) != len(state.assignments):
+        state.assignments = kept_assignments
+        changed = True
 
     if state.weeklyTemplate is not None and hasattr(state.weeklyTemplate, "blocks"):
         block_section_ids = {
@@ -1078,7 +1098,7 @@ def _normalize_state(state: AppState) -> tuple[AppState, bool]:
         if not row_id or not date_iso:
             continue
         # Skip malformed keys where date_iso is not a valid date (e.g., day type like "mon")
-        if not _is_valid_date_iso(date_iso):
+        if not is_calendar_date(date_iso):
             changed = True
             continue
         next_row_id = row_id
@@ -1247,6 +1267,11 @@ def _state_revision(state: AppState) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
+def _parse_stored_state(data: Dict[str, Any]) -> AppState:
+    """A calendar read back from storage, see STORED_STATE_CONTEXT."""
+    return AppState.model_validate(data, context=STORED_STATE_CONTEXT)
+
+
 def _load_state(user_id: str, *, connection=None) -> AppState:
     if connection is None:
         with closing(_get_connection()) as conn:
@@ -1263,8 +1288,7 @@ def _load_state(user_id: str, *, connection=None) -> AppState:
             "SELECT data FROM app_state WHERE id = ?", ("state",)
         ).fetchone()
         if legacy:
-            data = json.loads(legacy[0])
-            state = AppState.model_validate(data)
+            state = _parse_stored_state(json.loads(legacy[0]))
             state, _ = _normalize_state(state)
             _save_state(state, user_id, connection=conn)
             return state
@@ -1272,7 +1296,7 @@ def _load_state(user_id: str, *, connection=None) -> AppState:
         state = _default_state()
         _save_state(state, user_id, connection=conn)
         return state
-    state = AppState.model_validate(json.loads(row[0]))
+    state = _parse_stored_state(json.loads(row[0]))
     # The save CAS compares against the stored blob's revision, so persist any
     # normalization difference (even one not flagged as changed) to keep the
     # revision returned here equal to the stored one.
@@ -1298,7 +1322,7 @@ def _save_state(
     conn = connection
     if check_revision:
         row = conn.execute("SELECT data FROM app_state WHERE id = ?", (user_id,)).fetchone()
-        current = _state_revision(AppState.model_validate(json.loads(row[0]))) if row else None
+        current = _state_revision(_parse_stored_state(json.loads(row[0]))) if row else None
         if current != expected_revision:
             from fastapi import HTTPException
 
@@ -1386,10 +1410,11 @@ def _load_state_blob_and_updated_at(username: str, *, connection) -> tuple[Dict[
 def _parse_import_state(payload: Optional[Dict[str, Any]]) -> Optional[AppState]:
     if payload is None:
         return None
+    # An exported calendar is stored data: entries with impossible dates are
+    # dropped by the normalization instead of rejecting the whole import.
     if isinstance(payload, dict) and "state" in payload:
-        export = UserStateExport.model_validate(payload)
+        export = UserStateExport.model_validate(payload, context=STORED_STATE_CONTEXT)
         normalized, _ = _normalize_state(export.state)
         return normalized
-    state = AppState.model_validate(payload)
-    normalized, _ = _normalize_state(state)
+    normalized, _ = _normalize_state(_parse_stored_state(payload))
     return normalized

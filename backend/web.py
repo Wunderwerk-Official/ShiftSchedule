@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from .auth import _get_current_user
 from .account_lifecycle import authenticated_account_connection
 from .db import _get_connection, _utcnow_iso
-from .models import AppState, UserPublic, WebPublishStatus
+from .models import UserPublic, WebPublishStatus
 from .publication import (
     _compute_etag,
     _get_web_publication_by_token,
@@ -22,6 +22,7 @@ from .state import (
     _normalize_week_start,
     _parse_date_input,
     _parse_iso_datetime,
+    _parse_stored_state,
 )
 
 router = APIRouter()
@@ -121,7 +122,7 @@ def get_public_web_week(
     if _not_modified(if_none_match, if_modified_since, etag, last_modified):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
 
-    state = AppState.model_validate(state_payload)
+    state = _parse_stored_state(state_payload)
     published_weeks = set(state.publishedWeekStartISOs or [])
     if week_start_iso not in published_weeks:
         return Response(

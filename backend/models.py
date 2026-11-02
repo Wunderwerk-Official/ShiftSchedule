@@ -1,14 +1,59 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+import re
+from datetime import date
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_serializer
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    field_validator,
+    model_serializer,
+)
 
 RowKind = Literal["class", "pool"]
 Role = Literal["admin", "user"]
 ThenType = Literal["shiftRow", "off"]
 DayType = Literal["mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday"]
 WorkingTimeRequirement = Literal["none", "preference", "mandatory"]
+
+_ISO_DATE_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+
+# Validation context for calendars read back from storage (the app_state row,
+# snapshots, exported calendars): the calendar date checks below are skipped,
+# so data saved before they existed still loads, and _normalize_state drops
+# the entries with impossible dates instead of failing the request. Requests
+# that write a calendar validate without it and get a 422.
+STORED_STATE_CONTEXT = {"stored_state": True}
+
+
+def is_calendar_date(value: Any) -> bool:
+    """True for a real calendar date written as YYYY-MM-DD ("2026-02-30" is not)."""
+    if not isinstance(value, str) or not _ISO_DATE_RE.fullmatch(value):
+        return False
+    try:
+        date.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_stored_state(info: ValidationInfo) -> bool:
+    return bool(info.context and info.context.get("stored_state"))
+
+
+def _require_calendar_date(value: str, info: ValidationInfo) -> str:
+    if not _is_stored_state(info) and not is_calendar_date(value):
+        raise ValueError(f"'{value}' is not a valid date (YYYY-MM-DD)")
+    return value
+
+
+# A date field of the calendar (AppState and its parts).
+CalendarDate = Annotated[str, AfterValidator(_require_calendar_date)]
 
 
 class UserPublic(BaseModel):
@@ -91,12 +136,12 @@ class WorkplaceRow(BaseModel):
 
 class VacationRange(BaseModel):
     id: str
-    startISO: str
-    endISO: str
+    startISO: CalendarDate
+    endISO: CalendarDate
 
 
 class Holiday(BaseModel):
-    dateISO: str
+    dateISO: CalendarDate
     name: str
     # "public": loaded from the public-holiday service (reloading replaces
     # it); "manual": added by hand (kept on reload). None = older data.
@@ -157,7 +202,7 @@ class PreferredWorkingTime(BaseModel):
 class Assignment(BaseModel):
     id: str
     rowId: str
-    dateISO: str
+    dateISO: CalendarDate
     clinicianId: str
     source: Optional[Literal["manual", "solver"]] = None
     locked: bool = False  # explicit fixation, independent of provenance
@@ -234,7 +279,7 @@ class AppState(BaseModel):
     holidayRegion: Optional[str] = None
     holidayYear: Optional[int] = None
     holidays: List[Holiday] = Field(default_factory=list)
-    publishedWeekStartISOs: List[str] = Field(default_factory=list)
+    publishedWeekStartISOs: List[CalendarDate] = Field(default_factory=list)
     solverSettings: Dict[str, Any] = Field(default_factory=dict)
     solverRules: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -243,6 +288,20 @@ class AppState(BaseModel):
     def _non_string_holiday_region_is_unset(cls, value: Any) -> Any:
         # A malformed region must never block a calendar save with a 422.
         return value if isinstance(value, str) else None
+
+    @field_validator("slotOverridesByKey")
+    @classmethod
+    def _slot_override_keys_end_in_a_date(
+        cls, value: Dict[str, int], info: ValidationInfo
+    ) -> Dict[str, int]:
+        # Keys are "<slotId>__<YYYY-MM-DD>"; slot ids may contain "__".
+        if not _is_stored_state(info):
+            for key in value:
+                if "__" not in key or not is_calendar_date(key.rsplit("__", 1)[1]):
+                    raise ValueError(
+                        f"Slot override key '{key}' does not end in a valid date (YYYY-MM-DD)"
+                    )
+        return value
 
     # No return annotation, see Location._omit_unset_color.
     @model_serializer(mode="wrap")
