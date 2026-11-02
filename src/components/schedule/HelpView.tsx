@@ -305,9 +305,10 @@ export default function HelpView() {
             <li>
               Each event has the shift&rsquo;s <span className="font-medium">start and end time</span>{" "}
               in the plan&rsquo;s time zone, which follows the holiday country (Germany:
-              Europe/Berlin). A night shift ends the next morning, and nights across a
-              daylight saving change last their real 11 or 13 hours. A shift without times
-              in the template shows on its day without a time.
+              Europe/Berlin). A night shift ends the next morning, and a shift across a
+              daylight saving change lasts its real time: one hour longer in October, one
+              hour shorter in March. A shift without times in the template shows on its day
+              without a time.
             </li>
             <li>
               In <span className="font-medium">Download</span>, you can export either{" "}
@@ -366,9 +367,10 @@ export default function HelpView() {
               that date and briefly highlights your entry.
             </li>
             <li>
-              Hours (shift, day and week totals, rest before, Working hours overview) are
-              real time in the plan&rsquo;s time zone: a night across a daylight saving change
-              counts one hour more in October and one hour less in March.
+              Hours (shift, day and week totals, rest before, Working hours overview) and the
+              Next up countdown are real time in the plan&rsquo;s time zone: a night across a
+              daylight saving change counts one hour more in October and one hour less in
+              March.
             </li>
             <li>
               Keyboard in My plan (not while typing): T / W / M day, week, month · H today ·

@@ -427,6 +427,28 @@ test("a night across the March clock change counts its real 11 hours (v1.78)", a
   expect(api.errors).toEqual([]);
 });
 
+test.describe("in a browser set to another time zone", () => {
+  test.use({ timezoneId: "America/New_York" });
+
+  test("Next up counts down in the plan's time zone (v1.78)", async ({ page }) => {
+    // Wednesday on call 16:00 → Thu 08:00 Berlin time; now is 09:00 in Berlin, 03:00 in New York.
+    const api = await openCalendar(page, {
+      initialState: {
+        ...initialCalendarState(),
+        assignments: [
+          { id: "tz-on-call", rowId: slotId("wed", "On Call"), dateISO: "2026-01-07", clinicianId: ME, source: "manual" },
+        ],
+      },
+      initialPrefs: { clinicianId: ME },
+    });
+    await page.getByRole("group", { name: "Choose plan" }).getByRole("button", { name: "My plan" }).click();
+    await expect(
+      page.getByRole("button", { name: /^Next up: On Call · today 16:00 – Thu 08:00.*, in 7 h\./ }),
+    ).toBeVisible();
+    expect(api.errors).toEqual([]);
+  });
+});
+
 test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 

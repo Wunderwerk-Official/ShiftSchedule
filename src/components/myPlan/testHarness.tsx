@@ -13,14 +13,20 @@ import type { TeamPlanTarget } from "./types";
 
 const source = makeSource();
 
-/** Freeze "now" (Date only, timers stay real) for every test of the file: Wed 14 Oct 2026, 14:32. */
-export function freezeClock(now = new Date(2026, 9, 14, 14, 32)) {
+/**
+ * Freeze "now" (Date only, timers stay real) for every test of the file: Wed
+ * 14 Oct 2026, 14:32, in a browser set to the plan's zone (Europe/Berlin), so
+ * local times and the plan's real instants agree whatever zone runs the tests.
+ */
+export function freezeClock(now = "2026-10-14T14:32:00+02:00") {
   beforeEach(() => {
+    vi.stubEnv("TZ", source.timeZone);
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(now);
+    vi.setSystemTime(new Date(now));
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 }
 

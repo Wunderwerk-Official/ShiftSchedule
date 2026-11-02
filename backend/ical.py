@@ -13,10 +13,6 @@ from .state import _parse_time_to_minutes
 
 MINUTES_PER_DAY = 24 * 60
 
-# Feeds switched from all-day to timed events at this moment. Copies served
-# before must not revalidate, so it takes part in ETag and Last-Modified.
-ICS_FORMAT_SINCE = datetime(2026, 11, 2, tzinfo=timezone.utc)
-
 _GERMAN_LETTERS = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"}
 
 

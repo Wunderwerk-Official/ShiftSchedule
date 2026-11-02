@@ -127,44 +127,54 @@ describe("restBefore across a DST change", () => {
 });
 
 describe("findNextShift", () => {
-  it("finds the next shift with a wall-clock countdown (SPEC A3.8: 14:32 → 17:00)", () => {
-    const next = findNextShift(plan, new Date(2026, 9, 14, 14, 32, 40));
+  // Week 42 is summer time in Europe/Berlin (UTC+2), the fixture's plan zone.
+  it("finds the next shift with a minute countdown (SPEC A3.8: 14:32 → 17:00)", () => {
+    const next = findNextShift(plan, new Date("2026-10-14T14:32:40+02:00"));
     expect(next?.shift.title).toBe("Nachtdienst");
     expect(next).toMatchObject({ running: false, minutesUntil: 148, minutesLeft: 1048 });
   });
 
   it("reports a running night until its end, then the next shift", () => {
-    expect(findNextShift(plan, new Date(2026, 9, 15, 3, 0))).toMatchObject({
+    expect(findNextShift(plan, new Date("2026-10-15T03:00:00+02:00"))).toMatchObject({
       running: true,
       minutesUntil: 0,
       minutesLeft: 300,
     });
-    expect(findNextShift(plan, new Date(2026, 9, 15, 8, 0))?.shift.title).toBe("Angiographie");
+    expect(findNextShift(plan, new Date("2026-10-15T08:00:00+02:00"))?.shift.title).toBe("Angiographie");
   });
 
-  it("counts real minutes across a DST change in the browser's zone", () => {
-    // My plan's "now" is the browser clock; Date arithmetic follows its DST.
-    vi.stubEnv("TZ", "Europe/Berlin");
-    try {
-      const dstPlan = buildPersonPlan({
-        ...makeSource({ assignments: [assign("lh", "nacht", "2026-10-24")] }),
-        clinicianId: "lh",
-        fromISO: "2026-10-24",
-        toISO: "2026-10-25",
-        todayISO: "2026-10-24",
-      });
-      // 01:30 summer time; the night ends at 08:00 winter time, 7.5 real hours later.
-      expect(findNextShift(dstPlan, new Date("2026-10-25T01:30:00+02:00"))).toMatchObject({
-        running: true,
-        minutesLeft: 450,
-      });
-    } finally {
-      vi.unstubAllEnvs();
-    }
-  });
+  it.each(["Europe/Berlin", "America/New_York", "Asia/Tokyo", "Pacific/Auckland"])(
+    "counts real minutes in the plan's zone across a DST change (browser in %s)",
+    (browserZone) => {
+      vi.stubEnv("TZ", browserZone);
+      try {
+        const dstPlan = buildPersonPlan({
+          ...makeSource({ assignments: [assign("lh", "nacht", "2026-10-24")] }),
+          clinicianId: "lh",
+          fromISO: "2026-10-24",
+          toISO: "2026-10-25",
+          todayISO: "2026-10-24",
+        });
+        // Berlin night 17:00 → Sun 08:00. At 01:30 summer time it ends at
+        // 08:00 winter time, 7.5 real hours later.
+        expect(findNextShift(dstPlan, new Date("2026-10-25T01:30:00+02:00"))).toMatchObject({
+          running: true,
+          minutesLeft: 450,
+        });
+        // Before the start, the countdown runs to 17:00 Berlin time.
+        expect(findNextShift(dstPlan, new Date("2026-10-24T14:32:00+02:00"))).toMatchObject({
+          running: false,
+          minutesUntil: 148,
+          minutesLeft: 148 + 16 * 60,
+        });
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    },
+  );
 
   it("returns null when nothing starts within the horizon", () => {
-    expect(findNextShift(plan, new Date(2026, 9, 18, 21, 0))).toBeNull(); // only context left
-    expect(findNextShift(plan, new Date(2026, 9, 14, 14, 32), 0)).toBeNull();
+    expect(findNextShift(plan, new Date("2026-10-18T21:00:00+02:00"))).toBeNull(); // only context left
+    expect(findNextShift(plan, new Date("2026-10-14T14:32:00+02:00"), 0)).toBeNull();
   });
 });

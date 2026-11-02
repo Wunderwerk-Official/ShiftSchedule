@@ -6,17 +6,25 @@ from email.utils import format_datetime
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import ical_routes, publication, web
-from backend.ical import ICS_FORMAT_SINCE
+from backend import db, ical_routes, publication, web
 from backend.main import app
 from .conftest import make_app_state, make_assignment
 
 # Last change of the calendar; requests are timed against it.
 CHANGED_AT = datetime(2026, 11, 16, 12, 0, 0, tzinfo=timezone.utc)
+# When the database first served timed iCal events.
+FORMAT_SINCE = datetime(2026, 11, 3, 9, 0, 0, tzinfo=timezone.utc)
 
 
 def http_date(value):
     return format_datetime(value, usegmt=True)
+
+
+@pytest.fixture(autouse=True)
+def database(tmp_path, monkeypatch):
+    monkeypatch.setattr(db, "DB_PATH", str(tmp_path / "caching.db"))
+    monkeypatch.setattr(db, "_SCHEMA_READY", False)
+    monkeypatch.setattr(ical_routes, "_ical_format_since", lambda _: FORMAT_SINCE)
 
 
 @pytest.fixture(params=["web", "ical", "clinician_ical"])
@@ -94,7 +102,8 @@ def test_last_modified_is_sent_and_honoured_once_its_second_is_over(public_calen
 
 
 def test_feeds_from_before_timed_events_do_not_revalidate(monkeypatch):
-    before_switch = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+    # Saved while the previous version still served all-day events.
+    before_switch = FORMAT_SINCE - timedelta(hours=18)
     payload = make_app_state(published_week_start_isos=["2026-01-05"]).model_dump()
     monkeypatch.setattr(ical_routes, "_load_state_blob_and_updated_at", lambda _, **kwargs: (
         payload, before_switch, before_switch.isoformat(),
@@ -107,7 +116,7 @@ def test_feeds_from_before_timed_events_do_not_revalidate(monkeypatch):
         "/v1/ical/cache-token.ics", headers={"If-Modified-Since": http_date(before_switch)}
     )
     assert response.status_code == 200
-    assert response.headers["Last-Modified"] == http_date(ICS_FORMAT_SINCE)
+    assert response.headers["Last-Modified"] == http_date(FORMAT_SINCE)
 
 
 def test_nonmatching_etag_takes_precedence_over_modified_since(public_calendar, monkeypatch):

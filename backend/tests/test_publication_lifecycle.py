@@ -1,7 +1,8 @@
 """Publication credentials must remain bound to the account they came from."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from threading import Event
 
 import pytest
@@ -234,6 +235,36 @@ def test_ical_feed_answers_head_like_get(settled_clock):
     assert head.headers["Last-Modified"] == got.headers["Last-Modified"]
     assert client.head(url, headers={"If-None-Match": got.headers["ETag"]}).status_code == 304
     assert client.head("/v1/ical/unknown-token.ics").status_code == 404
+
+
+def test_all_day_copies_never_revalidate_after_the_switch_to_timed_events(monkeypatch):
+    _, _, ical_status = seed("Dr. A")
+    # Database as the all-day version left it, saved shortly before the deploy.
+    saved = datetime(2026, 11, 2, 15, 8, 55, tzinfo=timezone.utc)
+    with closing(db._get_connection()) as conn, conn:
+        conn.execute("DROP TABLE ical_formats")
+        conn.execute("UPDATE app_state SET updated_at = ?", (saved.isoformat(),))
+        conn.execute("UPDATE ical_publications SET updated_at = ?",
+                     ((saved - timedelta(days=30)).isoformat(),))
+
+    def start_server(at):
+        monkeypatch.setattr(db, "_SCHEMA_READY", False)
+        monkeypatch.setattr(db, "_utcnow", lambda: at)
+        monkeypatch.setattr(publication, "_utcnow", lambda: at + timedelta(hours=1))
+
+    deployed = saved + timedelta(hours=18)
+    start_server(deployed)
+    client = TestClient(app)
+    url = f"/v1/ical/{ical_token(ical_status.all)}.ics"
+    # An If-Modified-Since-only client holding the all-day copy gets the timed one.
+    fresh = client.get(url, headers={"If-Modified-Since": format_datetime(saved, usegmt=True)})
+    assert fresh.status_code == 200
+    assert "DTSTART:20260105T070000Z" in fresh.text
+    assert fresh.headers["Last-Modified"] == format_datetime(deployed, usegmt=True)
+    # Later restarts keep the moment, so the timed copy keeps validating.
+    start_server(deployed + timedelta(days=7))
+    assert client.get(url, headers={"If-None-Match": fresh.headers["ETag"]}).status_code == 304
+    assert client.get(url, headers={"If-Modified-Since": fresh.headers["Last-Modified"]}).status_code == 304
 
 
 def test_republishing_ical_keeps_tokens_and_feed_validators(monkeypatch):

@@ -1,12 +1,14 @@
+import sqlite3
 from contextlib import closing
+from datetime import datetime
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from .auth import _get_current_user
 from .account_lifecycle import authenticated_account_connection
-from .db import _get_connection, _utcnow_iso
-from .ical import ICS_FORMAT_SINCE, generate_ics, ical_calendar_name, ical_file_name
+from .db import ICAL_FORMAT, _get_connection, _utcnow_iso
+from .ical import generate_ics, ical_calendar_name, ical_file_name
 from .models import (
     IcalPublishStatus,
     UserPublic,
@@ -26,6 +28,14 @@ from .publication import (
 from .state import _load_state, _load_state_blob_and_updated_at, _parse_iso_datetime
 
 router = APIRouter()
+
+
+def _ical_format_since(conn: sqlite3.Connection) -> datetime:
+    """When this database first served the current event format (see db.py)."""
+    row = conn.execute(
+        "SELECT since FROM ical_formats WHERE format = ?", (ICAL_FORMAT,)
+    ).fetchone()
+    return _parse_iso_datetime(row["since"])
 
 
 @router.get("/v1/ical/publish", response_model=IcalPublishStatus)
@@ -134,6 +144,7 @@ def download_ical(
         app_state, state_updated_at, state_updated_at_raw = _load_state_blob_and_updated_at(
             publication["username"], connection=conn
         )
+        format_since = _ical_format_since(conn)
     person = None
     if clinician_scope:
         # A personal link ends with its person (the token row goes with the
@@ -146,14 +157,16 @@ def download_ical(
             raise HTTPException(status_code=404, detail="Not found.")
     publication_updated_at_raw = publication["updated_at"] or ""
     publication_updated_at = _parse_iso_datetime(publication_updated_at_raw)
-    last_modified = max(state_updated_at, publication_updated_at, ICS_FORMAT_SINCE)
+    # No validator from before the format switch may match: copies in the
+    # previous format are replaced once.
+    last_modified = max(state_updated_at, publication_updated_at, format_since)
     etag = _compute_etag(
         token,
         state_updated_at_raw or "",
         publication_updated_at_raw or "",
         app_state,
         dict(publication),
-        ICS_FORMAT_SINCE.isoformat(),
+        format_since.isoformat(),
     )
     headers = _public_cache_headers(etag, last_modified)
     if _not_modified(if_none_match, if_modified_since, etag, last_modified):
