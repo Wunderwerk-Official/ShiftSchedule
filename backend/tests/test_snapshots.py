@@ -331,3 +331,47 @@ def test_restore_of_a_snapshot_stored_with_impossible_dates_drops_them(temp_db):
     assert res.status_code == 200, res.text
     assert [a["id"] for a in res.json()["assignments"]] == ["a1"]
     assert all(h["name"] != "Broken" for h in res.json()["holidays"])
+
+
+def test_import_backup_refuses_a_stale_revision_without_touching_the_backup(temp_db):
+    from backend.snapshots import IMPORT_BACKUP_NAME
+
+    client = _client_as()
+    _save_state(_state_with_assignment("clin-1"), USER)
+    stale = client.get("/v1/state").json()
+    # Another tab saves a newer calendar and restores a snapshot: the
+    # auto-backup now holds that newer calendar.
+    newer = make_app_state(clinicians=[make_clinician("clin-2", "Bob")])
+    _save_state(newer, USER)
+    meta = _create(client, "X", make_app_state(clinicians=[make_clinician("clin-3", "Xena")]))
+    client.post(f"/v1/state/snapshots/{meta['id']}/restore",
+                json={"currentState": client.get("/v1/state").json()})
+    backup_before = [s for s in client.get("/v1/state/snapshots").json() if s["kind"] == "auto_backup"]
+
+    res = client.post("/v1/state/snapshots/import-backup",
+                      json={"state": stale, "expectedRevision": stale["revision"]})
+    assert res.status_code == 409
+    assert res.json()["detail"]["code"] == "state_changed"
+    assert [s for s in client.get("/v1/state/snapshots").json() if s["kind"] == "auto_backup"] == backup_before
+    restored = client.post(f"/v1/state/snapshots/{backup_before[0]['id']}/restore", json={}).json()
+    assert [c["name"] for c in restored["clinicians"]] == ["Bob"]
+
+    # With the live revision the backup is written as before.
+    live = client.get("/v1/state").json()
+    res = client.post("/v1/state/snapshots/import-backup",
+                      json={"state": live, "expectedRevision": live["revision"]})
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] == IMPORT_BACKUP_NAME
+
+
+def test_backup_before_loading_a_copy_is_named_after_it(temp_db):
+    from backend.snapshots import LOAD_COPY_BACKUP_NAME
+
+    client = _client_as()
+    live = client.get("/v1/state").json()
+    res = client.post(
+        "/v1/state/snapshots/import-backup",
+        json={"state": live, "reason": "load_copy", "expectedRevision": live["revision"]},
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] == LOAD_COPY_BACKUP_NAME == "Auto-backup before loading a copy"

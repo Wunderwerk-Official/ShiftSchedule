@@ -387,3 +387,178 @@ class TestWebTokenRotation:
 
         response = client.get(f"/v1/web/{new_token}/week?start=2026-01-05")
         assert response.status_code == 200
+
+
+def _publish(username: str, token: str) -> None:
+    conn = _get_connection()
+    conn.execute(
+        """
+        INSERT OR REPLACE INTO web_publications (username, token, created_at, updated_at)
+        VALUES (?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+        """,
+        (username, token),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _unpublish(username: str) -> None:
+    conn = _get_connection()
+    conn.execute("DELETE FROM web_publications WHERE username = ?", (username,))
+    conn.execute("DELETE FROM app_state WHERE id = ?", (username,))
+    conn.execute("DELETE FROM user_preferences WHERE username = ?", (username,))
+    conn.commit()
+    conn.close()
+
+
+class TestWebRestDayContext:
+    """On-call shifts just outside the published week put rest days into it
+    (Mon after a Sunday night, Sun before a Monday night). The payload carries
+    them, reduced to clinician/date/slot, so the public Rest Day row matches
+    the admin's."""
+
+    USER = "test_rest_context_user"
+    TOKEN = "test_token_rest_context"
+
+    def _state(self, days_before: int = 1, days_after: int = 1, enabled: bool = True):
+        from backend.models import Assignment, TemplateBlock, TemplateRowBand, VacationRange
+        from backend.state import _normalize_state
+
+        from .conftest import make_pool_row, make_template_slot, make_workplace_row
+
+        sections = ["section-a", "section-n"]
+        night = dict(block_id="block-n", row_band_id="row-2", start_time="20:00",
+                     end_time="08:00", end_day_offset=1)
+        state = make_app_state(
+            clinicians=[
+                make_clinician("clin-1", "Samir Amlal", sections),
+                make_clinician("clin-2", "Tom Finck", sections),
+                make_clinician("clin-3", "Vera Holm", sections, vacations=[
+                    VacationRange(id="v1", startISO="2026-01-02", endISO="2026-01-04"),
+                ]),
+            ],
+            rows=[
+                make_workplace_row(),
+                make_workplace_row("section-n", "Night"),
+                make_pool_row("pool-rest-day", "Rest Day"),
+                make_pool_row("pool-vacation", "Vacation"),
+            ],
+            slots=[
+                make_template_slot("slot-a__mon", col_band_id="col-mon-1"),
+                make_template_slot("slot-a__sun", col_band_id="col-sun-1"),
+                make_template_slot("slot-n__sat", col_band_id="col-sat-1", **night),
+                make_template_slot("slot-n__sun", col_band_id="col-sun-1", **night),
+                make_template_slot("slot-n__mon", col_band_id="col-mon-1", **night),
+            ],
+            solver_settings={
+                "enforceSameLocationPerDay": False,
+                "onCallRestEnabled": enabled,
+                "onCallRestClassId": "section-n",
+                "onCallRestDaysBefore": days_before,
+                "onCallRestDaysAfter": days_after,
+            },
+            published_week_start_isos=["2026-01-05"],
+        )
+        state.weeklyTemplate.blocks.append(
+            TemplateBlock(id="block-n", sectionId="section-n", requiredSlots=0)
+        )
+        state.weeklyTemplate.locations[0].rowBands.append(
+            TemplateRowBand(id="row-2", label="Night", order=2)
+        )
+        state.assignments = [
+            # Outside the week, on-call: Sat and Sun before, Mon after.
+            Assignment(id="n-sat", rowId="slot-n__sat", dateISO="2026-01-03", clinicianId="clin-2"),
+            Assignment(id="n-sun", rowId="slot-n__sun", dateISO="2026-01-04", clinicianId="clin-1"),
+            Assignment(id="n-next", rowId="slot-n__mon", dateISO="2026-01-12", clinicianId="clin-2"),
+            # On vacation that day: no rest day follows (as in the admin view).
+            Assignment(id="n-vac", rowId="slot-n__sun", dateISO="2026-01-04", clinicianId="clin-3"),
+            # Outside the week, not on-call: never part of the payload.
+            Assignment(id="d-sun", rowId="slot-a__sun", dateISO="2026-01-04", clinicianId="clin-2"),
+            Assignment(id="d-next", rowId="slot-a__mon", dateISO="2026-01-12", clinicianId="clin-1"),
+            # Inside the week.
+            Assignment(id="d-mon", rowId="slot-a__mon", dateISO="2026-01-05", clinicianId="clin-2"),
+        ]
+        normalized, _ = _normalize_state(state)
+        assert len(normalized.assignments) == len(state.assignments)
+        return normalized
+
+    @pytest.fixture(autouse=True)
+    def _cleanup(self):
+        yield
+        _unpublish(self.USER)
+
+    def _week(self, client: TestClient, **settings) -> Dict[str, Any]:
+        _save_state(self._state(**settings), self.USER)
+        _publish(self.USER, self.TOKEN)
+        response = client.get(f"/v1/web/{self.TOKEN}/week?start=2026-01-05")
+        assert response.status_code == 200
+        return response.json()
+
+    def test_neighbouring_on_call_shifts_are_sent_reduced(self, client: TestClient) -> None:
+        payload = self._week(client)
+        assert payload["restContextAssignments"] == [
+            {"clinicianId": "clin-1", "dateISO": "2026-01-04", "rowId": "slot-n__sun"},
+            {"clinicianId": "clin-2", "dateISO": "2026-01-12", "rowId": "slot-n__mon"},
+        ]
+        # Shifts are still limited to the week; nothing else from the
+        # neighbouring weeks is exposed.
+        assert [a["id"] for a in payload["assignments"]] == ["d-mon"]
+        for hidden in ("n-sat", "n-sun", "n-next", "n-vac", "d-sun", "d-next", "2026-01-03"):
+            assert hidden not in json.dumps(payload["assignments"])
+        assert "n-sun" not in json.dumps(payload)
+
+    def test_window_follows_days_before_and_after(self, client: TestClient) -> None:
+        # Two rest days after a night reach back to Saturday; none before.
+        payload = self._week(client, days_before=0, days_after=2)
+        assert payload["restContextAssignments"] == [
+            {"clinicianId": "clin-2", "dateISO": "2026-01-03", "rowId": "slot-n__sat"},
+            {"clinicianId": "clin-1", "dateISO": "2026-01-04", "rowId": "slot-n__sun"},
+        ]
+
+    def test_no_context_when_the_rest_rule_is_off(self, client: TestClient) -> None:
+        payload = self._week(client, enabled=False)
+        assert payload["restContextAssignments"] == []
+
+
+class TestWebTimeLayout:
+    """The owner's Times choice (side by side / stacked) travels with the week."""
+
+    USER = "test_time_layout_user"
+    TOKEN = "test_token_time_layout"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        _save_state(make_app_state(published_week_start_isos=["2026-01-05"]), self.USER)
+        _publish(self.USER, self.TOKEN)
+        yield
+        _unpublish(self.USER)
+
+    def _store_layout(self, layout: str) -> None:
+        conn = _get_connection()
+        conn.execute(
+            "INSERT OR REPLACE INTO user_preferences (username, data, updated_at) VALUES (?, ?, ?)",
+            (self.USER, json.dumps({"teamTimeLayout": layout, "clinicianId": "private"}),
+             "2026-01-02T00:00:00Z"),
+        )
+        conn.commit()
+        conn.close()
+
+    def test_owner_default_is_stacked(self, client: TestClient) -> None:
+        payload = client.get(f"/v1/web/{self.TOKEN}/week?start=2026-01-05").json()
+        assert payload["teamTimeLayout"] == "stacked"
+
+    def test_follows_the_owner_choice_and_changes_the_etag(self, client: TestClient) -> None:
+        first = client.get(f"/v1/web/{self.TOKEN}/week?start=2026-01-05")
+        self._store_layout("columns")
+        second = client.get(
+            f"/v1/web/{self.TOKEN}/week?start=2026-01-05",
+            headers={"If-None-Match": first.headers["ETag"]},
+        )
+        assert second.status_code == 200
+        assert second.json()["teamTimeLayout"] == "columns"
+        # Only the layout leaves the owner's preferences.
+        assert "private" not in second.text
+
+    def test_unpublished_week_has_no_layout(self, client: TestClient) -> None:
+        payload = client.get(f"/v1/web/{self.TOKEN}/week?start=2026-01-12").json()
+        assert payload == {"published": False, "weekStartISO": "2026-01-12", "weekEndISO": "2026-01-18"}

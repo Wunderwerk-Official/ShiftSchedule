@@ -1,13 +1,14 @@
 import { act, fireEvent, renderHook, screen, within } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createImportBackup, type AppState, type Assignment } from "../api/client";
+import { createImportBackup, savedStateRevision, type AppState, type Assignment } from "../api/client";
 import { ConfirmDialogProvider } from "../components/ui/ConfirmDialog";
 import { backupBeforeHolidayChange, useConfirmHolidayChange } from "./useConfirmHolidayChange";
 
 vi.mock("../api/client", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../api/client")>()),
   createImportBackup: vi.fn(),
+  savedStateRevision: vi.fn(),
 }));
 
 const current = { assignments: [], holidays: [] } as unknown as AppState;
@@ -30,6 +31,7 @@ function ask() {
 
 beforeEach(() => {
   vi.mocked(createImportBackup).mockReset();
+  vi.mocked(savedStateRevision).mockReset().mockResolvedValue("r7");
 });
 
 describe("useConfirmHolidayChange", () => {
@@ -66,7 +68,20 @@ describe("backupBeforeHolidayChange", () => {
       created_at: "", updated_at: "", size_bytes: 1,
     });
     await expect(backupBeforeHolidayChange(current)).resolves.toBeUndefined();
-    expect(createImportBackup).toHaveBeenCalledWith(current, { reason: "holiday_change" });
+    // With this tab's saved revision, so a calendar changed in another tab
+    // refuses the backup instead of replacing the previous one.
+    expect(createImportBackup).toHaveBeenCalledWith(current, {
+      reason: "holiday_change",
+      expectedRevision: "r7",
+    });
+  });
+
+  it("refuses the change when a queued save of this tab failed", async () => {
+    vi.mocked(savedStateRevision).mockRejectedValue(new Error("Failed to save state: 500"));
+    await expect(backupBeforeHolidayChange(current)).rejects.toThrow(
+      "The backup could not be saved, so the holidays were not changed. (Failed to save state: 500)",
+    );
+    expect(createImportBackup).not.toHaveBeenCalled();
   });
 
   it("refuses the change when the backup cannot be saved", async () => {

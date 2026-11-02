@@ -1,5 +1,6 @@
 import json
 from contextlib import closing
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
@@ -7,7 +8,8 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, 
 from .auth import _get_current_user
 from .account_lifecycle import authenticated_account_connection
 from .db import _get_connection, _utcnow_iso
-from .models import UserPublic, WebPublishStatus
+from .models import AppState, Clinician, UserPublic, WebPublishStatus
+from .preferences import _read_preferences
 from .publication import (
     _compute_etag,
     _get_web_publication_by_token,
@@ -26,6 +28,78 @@ from .state import (
 )
 
 router = APIRouter()
+
+
+def _shift_iso(date_iso: str, days: int) -> str:
+    return (date.fromisoformat(date_iso) + timedelta(days=days)).isoformat()
+
+
+def _on_vacation(clinician: Clinician, date_iso: str) -> bool:
+    return any(vacation.startISO <= date_iso <= vacation.endISO for vacation in clinician.vacations)
+
+
+def _rest_context_assignments(
+    state: AppState,
+    week_start_iso: str,
+    week_end_iso: str,
+    clinician_by_id: Dict[str, Clinician],
+) -> List[Dict[str, str]]:
+    """On-call shifts outside the week that put a rest day into it.
+
+    With the on-call rest rule, a night on Sunday makes Monday a rest day (and
+    one on the next Monday the Sunday before). The public page derives rest
+    days from on-call shifts like the admin's calendar, so it needs these
+    shifts too: only the on-call section's, only from the days whose rest
+    reaches into the week (onCallRestDaysAfter before it, onCallRestDaysBefore
+    after it), and reduced to who, when and which slot. They are never shown.
+    """
+    settings = state.solverSettings or {}
+    on_call_class_id = settings.get("onCallRestClassId")
+    if not settings.get("onCallRestEnabled") or not on_call_class_id:
+        return []
+
+    def rest_days(key: str) -> int:
+        # Same bounds as _normalize_state.
+        try:
+            return max(0, min(7, int(settings.get(key, 1))))
+        except (TypeError, ValueError):
+            return 1
+
+    days_after = rest_days("onCallRestDaysAfter")
+    days_before = rest_days("onCallRestDaysBefore")
+    template = state.weeklyTemplate
+    if template is None or (days_after == 0 and days_before == 0):
+        return []
+    on_call_block_ids = {
+        block.id for block in template.blocks or [] if block.sectionId == on_call_class_id
+    }
+    on_call_slot_ids = {
+        slot.id
+        for location in template.locations
+        for slot in location.slots
+        if slot.blockId in on_call_block_ids
+    }
+    earliest_iso = _shift_iso(week_start_iso, -days_after)
+    latest_iso = _shift_iso(week_end_iso, days_before)
+    context: List[Dict[str, str]] = []
+    for assignment in state.assignments:
+        if week_start_iso <= assignment.dateISO <= week_end_iso:
+            continue
+        if not earliest_iso <= assignment.dateISO <= latest_iso:
+            continue
+        if assignment.rowId not in on_call_slot_ids:
+            continue
+        clinician = clinician_by_id.get(assignment.clinicianId)
+        # On vacation the shift is hidden in the calendar and gives no rest day.
+        if not clinician or _on_vacation(clinician, assignment.dateISO):
+            continue
+        context.append({
+            "clinicianId": assignment.clinicianId,
+            "dateISO": assignment.dateISO,
+            "rowId": assignment.rowId,
+        })
+    context.sort(key=lambda item: (item["dateISO"], item["clinicianId"], item["rowId"]))
+    return context
 
 
 @router.get("/v1/web/publish", response_model=WebPublishStatus)
@@ -107,6 +181,9 @@ def get_public_web_week(
         state_payload, state_updated_at, state_updated_at_raw = _load_state_blob_and_updated_at(
             publication["username"], connection=conn
         )
+        # The owner's Times choice (side by side / stacked), so the link
+        # shows the week as they see it. Nothing else of their preferences.
+        team_time_layout = _read_preferences(conn, publication["username"]).teamTimeLayout
     publication_updated_at_raw = publication["updated_at"] or ""
     publication_updated_at = _parse_iso_datetime(publication_updated_at_raw)
     last_modified = max(state_updated_at, publication_updated_at)
@@ -117,6 +194,7 @@ def get_public_web_week(
         publication_updated_at_raw or "",
         state_payload,
         dict(publication),
+        team_time_layout,
     )
     headers = _public_cache_headers(etag, last_modified)
     if _not_modified(if_none_match, if_modified_since, etag, last_modified):
@@ -153,10 +231,7 @@ def get_public_web_week(
         clinician = clinician_by_id.get(assignment.clinicianId)
         if not clinician:
             continue
-        if any(
-            vacation.startISO <= assignment.dateISO <= vacation.endISO
-            for vacation in clinician.vacations
-        ):
+        if _on_vacation(clinician, assignment.dateISO):
             continue
         assignments.append(assignment.model_dump())
 
@@ -191,6 +266,10 @@ def get_public_web_week(
             for clinician in state.clinicians
         ],
         "assignments": assignments,
+        # Only for deriving rest days at the week's edges (see above).
+        "restContextAssignments": _rest_context_assignments(
+            state, week_start_iso, week_end_iso, clinician_by_id
+        ),
         "minSlotsByRowId": {
             row_id: min_slots.model_dump()
             for row_id, min_slots in state.minSlotsByRowId.items()
@@ -213,6 +292,7 @@ def get_public_web_week(
                        "onCallRestDaysBefore", "onCallRestDaysAfter"}
         },
         "solverRules": [],
+        "teamTimeLayout": team_time_layout,
     }
     return Response(
         content=json.dumps(payload),

@@ -318,10 +318,11 @@ test.describe("template above the column limit", () => {
       mimeType: "application/json",
       buffer: Buffer.from(JSON.stringify({ assignments: [assignment("ct", "mon", "CT", FIRST)] })),
     });
-    await page.getByRole("button", { name: "Replace shifts" }).click();
+    // Refused before the question to replace the shifts.
     await expect(
       page.getByText("The current calendar cannot be saved. Fix its template first."),
     ).toBeVisible();
+    await expect(page.getByRole("dialog")).toBeHidden();
     expect(api.statePosts).toEqual([]);
     expect(api.errors).toEqual([]);
   });
@@ -413,12 +414,18 @@ test("Reset → Unlocked shifts and rest days removes planner entries on vacatio
 
 test.describe("shifts file import", () => {
   const BACKUP_NAME = "Auto-backup before shifts file import";
-  const importFile = (page: Page) =>
+  const importFile = (
+    page: Page,
+    assignments: unknown[] = [assignment("new", "mon", "MRI", SECOND)],
+  ) =>
     page.locator('input[type="file"][accept="application/json"]').setInputFiles({
       name: "shifts.json",
       mimeType: "application/json",
-      buffer: Buffer.from(JSON.stringify({ assignments: [assignment("new", "mon", "MRI", SECOND)] })),
+      buffer: Buffer.from(JSON.stringify({ assignments })),
     });
+  const backupMeta = (at = "2026-01-05T08:00:00Z") => ({
+    id: "auto", name: BACKUP_NAME, kind: "auto_backup", created_at: at, updated_at: at, size_bytes: 1,
+  });
   const hasNew = (posted: AppState) => (posted.assignments ?? []).some((item) => item.id === "new");
 
   test("saves a backup of the shown calendar before replacing the shifts", async ({ page }) => {
@@ -426,25 +433,30 @@ test.describe("shifts file import", () => {
     state.assignments = [assignment("old", "mon", "CT", FIRST)];
     const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
     const backups: AppState[] = [];
+    const expectedRevisions: unknown[] = [];
     let postsAtBackup = -1;
     await page.route("**/v1/state/snapshots/import-backup", (route) => {
-      backups.push((route.request().postDataJSON() as { state: AppState }).state);
+      const body = route.request().postDataJSON() as { state: AppState; expectedRevision?: string };
+      backups.push(body.state);
+      expectedRevisions.push(body.expectedRevision);
       postsAtBackup = api.statePosts.length;
-      const at = "2026-01-05T08:00:00Z";
-      return route.fulfill({
-        status: 201,
-        json: { id: "auto", name: BACKUP_NAME, kind: "auto_backup", created_at: at, updated_at: at, size_bytes: 1 },
-      });
+      return route.fulfill({ status: 201, json: backupMeta() });
     });
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await importFile(page);
-    await expect(page.getByRole("dialog")).toContainText("The current calendar is saved in Calendar snapshots first.");
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Replace all 1 current shift with 1 shift from “shifts.json”?");
+    await expect(dialog).toContainText(
+      "The current calendar is saved in Calendar snapshots first; this automatic backup replaces the previous one.",
+    );
     await page.getByRole("button", { name: "Replace shifts" }).click();
 
     await expect(page.getByText(`A backup of the previous calendar is in Calendar snapshots: “${BACKUP_NAME}”.`)).toBeVisible();
     expect(backups).toHaveLength(1);
     expect(backups[0].assignments?.map((item) => item.id)).toEqual(["old"]);
+    // The backup names the revision this tab's calendar is based on.
+    expect(expectedRevisions).toEqual([`r${postsAtBackup}`]);
     // The imported calendar is saved only after the backup.
     expect(api.statePosts.slice(0, postsAtBackup).some(hasNew)).toBe(false);
     await expect.poll(() => api.statePosts.slice(postsAtBackup).some(hasNew)).toBe(true);
@@ -470,6 +482,80 @@ test.describe("shifts file import", () => {
     await page.waitForTimeout(800);
     expect(api.statePosts.some(hasNew)).toBe(false);
     expect(api.state().assignments.map((item) => item.id)).toEqual(["old"]);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("imports nothing from a tab whose calendar changed elsewhere", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    await page.route("**/v1/state/snapshots/import-backup", (route) =>
+      route.fulfill({
+        status: 409,
+        json: { detail: { code: "state_changed", message: "The calendar changed in another tab or operation." } },
+      }),
+    );
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page);
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(page.getByText(/The calendar changed in another tab or operation\./)).toBeVisible();
+    await page.waitForTimeout(800);
+    expect(api.statePosts.some(hasNew)).toBe(false);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("refuses a file without shifts for this calendar before asking", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    let backups = 0;
+    await page.route("**/v1/state/snapshots/import-backup", (route) => {
+      backups += 1;
+      return route.fulfill({ status: 201, json: backupMeta() });
+    });
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+
+    for (const assignments of [
+      [],
+      [{ foo: 1 }, { bar: 2 }],
+      [assignment("foreign", "mon", "MRI", "someone-else")],
+    ]) {
+      await importFile(page, assignments);
+      await expect(
+        page.getByText("This file contains no shifts for this calendar. Nothing was changed."),
+      ).toBeVisible();
+      await expect(page.getByRole("dialog")).toBeHidden();
+    }
+    await page.waitForTimeout(800);
+    expect(backups).toBe(0);
+    expect(api.state().assignments.map((item) => item.id)).toEqual(["old"]);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("keeps each shift once and reports duplicates and invalid entries", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    await page.route("**/v1/state/snapshots/import-backup", (route) =>
+      route.fulfill({ status: 201, json: backupMeta() }),
+    );
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page, [
+      assignment("new", "mon", "MRI", SECOND),
+      assignment("new-copy", "mon", "MRI", SECOND),
+      assignment("new-copy-2", "mon", "MRI", SECOND),
+      { ...assignment("bad-date", "mon", "MRI", FIRST), dateISO: "2026-02-30" },
+    ]);
+    await expect(page.getByRole("dialog")).toContainText(
+      "Skipped from the file: 1 entry that is not a valid shift, 2 duplicates.",
+    );
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(page.getByText(/^Imported 1 shift\. Skipped 1 entry that is not a valid shift, 2 duplicates\./)).toBeVisible();
+    await expect.poll(() => api.state().assignments.map((item) => item.id)).toEqual(["new"]);
     expect(api.errors).toEqual([]);
   });
 });

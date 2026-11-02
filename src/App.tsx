@@ -30,6 +30,8 @@ function VersionBadge() {
 }
 
 export default function App() {
+  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
+  const publicToken = pathname.match(/^\/public\/([^/]+)\/?$/)?.[1] ?? null;
   const [currentUser, setCurrentUser] = useState<AuthUser | null>(null);
   const [loading, setLoading] = useState(true);
   const [theme, setTheme] = useState<"light" | "dark">(() => {
@@ -60,8 +62,10 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    // Public links are read signed out: no session check (and no 401) there.
+    if (publicToken) return;
     checkSession();
-  }, [checkSession]);
+  }, [checkSession, publicToken]);
 
   useEffect(() => {
     const handler = () => setCurrentUser(null);
@@ -75,11 +79,9 @@ export default function App() {
     window.localStorage.setItem("theme", theme);
   }, [theme]);
 
-  const pathname = typeof window !== "undefined" ? window.location.pathname : "";
   const isPrintWeekRoute = pathname.startsWith("/print/week");
   const isPrintWeeksRoute = pathname.startsWith("/print/weeks");
   const isDbInspectorRoute = pathname === "/db-inspector";
-  const publicMatch = pathname.match(/^\/public\/([^/]+)\/?$/);
 
   if (isPrintWeekRoute || isPrintWeeksRoute || isDbInspectorRoute) {
     if (loading) {
@@ -109,8 +111,8 @@ export default function App() {
     return isPrintWeeksRoute ? <PrintWeeksPage theme={theme} /> : <PrintWeekPage theme={theme} />;
   }
 
-  if (publicMatch) {
-    return <PublicWeekPage token={publicMatch[1]} theme={theme} />;
+  if (publicToken) {
+    return <PublicWeekPage token={publicToken} theme={theme} />;
   }
 
   const toggleTheme = () =>

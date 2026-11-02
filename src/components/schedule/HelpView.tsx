@@ -286,9 +286,14 @@ export default function HelpView() {
           </p>
           <p className="mt-2">
             Settings → <span className="font-medium">Shifts file</span> downloads all shifts
-            as a file; importing one replaces all shifts, locked ones too. The calendar
-            before the import is saved first as the latest automatic backup; if that backup
-            cannot be saved, nothing is imported.
+            as a file (shifts-<em>date</em>.json); importing one replaces all shifts, locked
+            ones too. The file is checked first: entries that are not shifts and repeats of
+            the same shift are skipped, and a file without a single shift for this calendar
+            (or larger than 10 MB) changes nothing. The question before the import says how
+            many shifts are replaced by how many. The calendar before the import is saved
+            first as the latest automatic backup; if that backup cannot be saved, nothing is
+            imported. An admin&rsquo;s <span className="font-medium">Load copy</span>{" "}
+            (Settings → Users) saves this backup first too.
           </p>
         </Section>
 
@@ -339,6 +344,12 @@ export default function HelpView() {
               a person from the plan ends their link.
             </li>
           </ul>
+          <p className="mt-2">
+            The <span className="font-medium">Web</span> link shows published weeks as you see
+            the team plan: the same layout and Times (stacked or side by side), and the Rest
+            Day row with the rest days of on-call shifts in the weeks around it. On a phone it
+            shows one day at a time, its times stacked.
+          </p>
         </Section>
 
         <Section title="12. My plan">

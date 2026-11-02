@@ -36,10 +36,12 @@ SNAPSHOT_NAME_MAX_CHARS = 100
 AUTO_BACKUP_NAME = "Auto-backup before restore"
 IMPORT_BACKUP_NAME = "Auto-backup before shifts file import"
 HOLIDAY_CHANGE_BACKUP_NAME = "Auto-backup before holiday change"
-BackupReason = Literal["shifts_file_import", "holiday_change"]
+LOAD_COPY_BACKUP_NAME = "Auto-backup before loading a copy"
+BackupReason = Literal["shifts_file_import", "holiday_change", "load_copy"]
 _BACKUP_NAME_BY_REASON = {
     "shifts_file_import": IMPORT_BACKUP_NAME,
     "holiday_change": HOLIDAY_CHANGE_BACKUP_NAME,
+    "load_copy": LOAD_COPY_BACKUP_NAME,
 }
 
 
@@ -73,9 +75,14 @@ class SnapshotBackupRequest(BaseModel):
     # The calendar as the client shows it, before it is replaced (same
     # payload as its auto-save; the stored row can lag by the debounce).
     state: AppState
-    # What replaces it (names the backup): a shifts file import, or a
-    # holiday change that removes the shifts no longer fitting their day.
+    # What replaces it (names the backup): a shifts file import, a holiday
+    # change that removes the shifts no longer fitting their day, or an
+    # admin loading a copy of another account's calendar.
     reason: BackupReason = "shifts_file_import"
+    # The revision the client's calendar is based on. When the stored
+    # calendar has moved on (another tab), the backup is refused, so a
+    # replacement that would be refused anyway keeps the previous backup.
+    expectedRevision: Optional[str] = None
 
 
 def _clean_name(raw: str) -> str:
@@ -133,6 +140,15 @@ def create_import_backup(
     does not count against the named-snapshot limit and can be restored from
     Calendar snapshots."""
     with authenticated_account_connection(current_user) as conn:
+        if (
+            payload.expectedRevision is not None
+            and payload.expectedRevision != _load_state(current_user.username, connection=conn).revision
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "state_changed",
+                "message": "The calendar changed in another tab or operation. "
+                           "Reload the current calendar and try again.",
+            })
         _write_auto_backup(
             conn, current_user.username, payload.state,
             name=_BACKUP_NAME_BY_REASON[payload.reason],
