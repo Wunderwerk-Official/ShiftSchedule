@@ -15,6 +15,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - Required staffing per weekly-template slot (set per weekday and for holidays) and per-day overrides
 - Clinician qualifications and preferences
 - Vacation tracking
+- Working hours per person against contract hours: a week view (hours per day, planned vs target, difference, year balance) and a compact year view; weeks count once half of the team's hours are planned, vacation lowers the target
 - AI planning drafts with explicit review and apply; CP-SAT and heuristic solvers also remain available through the API
 - Rule checks and an automatic backup before applying; incomplete drafts need confirmation
 - Revision-checked saving prevents older browser edits from overwriting newer calendar changes
@@ -22,7 +23,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 
 ## Tech Stack
 - Frontend: React 18, TypeScript, Vite, Tailwind CSS
-- Backend: FastAPI, OR-Tools, SQLite (calendar state as one JSON row per account in `app_state`; users, publications, solver runs, run feedback, snapshots, change log, per-user preferences and agent settings/spend in their own tables)
+- Backend: FastAPI, OR-Tools, SQLite (calendar state as one JSON row per account in `app_state`; users, publications, solver runs, run feedback, snapshots, change log, per-user preferences, agent settings/spend and swaps (requests, events, settings) in their own tables)
 
 ## Local Development (Step-by-step)
 Prereqs:

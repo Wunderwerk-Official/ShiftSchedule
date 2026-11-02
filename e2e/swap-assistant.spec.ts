@@ -23,8 +23,9 @@ import type {
 // target (a cover's cell) revealed once the drawer has opened beside a narrow
 // week; the phone sheet and its Tab trap; cover from the person list;
 // the TopBar history and its Undo (focus stays in the drawer, as after a
-// refused apply); and the touch layout of the ⇄ button next to the lock. The
-// mocked server keeps one calendar and checks revisions like the real one.
+// refused apply); swaps that wait until the calendar has loaded; and the
+// touch layout of the ⇄ button next to the lock. The mocked server keeps one
+// calendar and checks revisions like the real one.
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -292,16 +293,37 @@ function swapRecord(mode: SwapMode, status: "applied" | "reverted"): SwapRecord 
 type StatePost = { body: AppState; revision: string | null };
 
 /**
+ * The team grid shows the built-in demo calendar (src/data/mockData.ts) at
+ * once and swaps in the mocked one only when GET /v1/state has answered, so a
+ * visible grid is not enough: wait for a cell of the mocked template, or a
+ * test may read or click the demo calendar (as in team-page.spec.ts).
+ */
+async function waitForMockedCalendar(page: Page, state: AppState) {
+  const slotIds = state.weeklyTemplate!.locations.flatMap((location) => location.slots.map((slot) => slot.id));
+  await expect
+    .poll(
+      () =>
+        page
+          .locator('[data-schedule-cell="true"]')
+          .evaluateAll((cells, ids) => cells.some((cell) => ids.includes(cell.getAttribute("data-row-id") ?? "")), slotIds),
+      { message: "the mocked calendar replaces the built-in demo calendar" },
+    )
+    .toBe(true);
+}
+
+/**
  * Opens the team plan on a mocked server that keeps one calendar. As on the
  * real one, a save names the revision it replaces and is refused when the
  * calendar was saved since. `clock: "manual"` installs fake page timers
  * (page.clock) instead of only fixing the date; `prefs` are the account's
- * stored preferences (none by default).
+ * stored preferences (none by default). Returns once the mocked calendar is
+ * shown; with a `stateGate`, GET /v1/state waits for it and the demo calendar
+ * is still shown on return.
  */
 async function openCalendar(
   page: Page,
   state: AppState,
-  options: { clock?: "manual"; prefs?: Partial<UserPreferences> } = {},
+  options: { clock?: "manual"; prefs?: Partial<UserPreferences>; stateGate?: Promise<void> } = {},
 ) {
   let current = { ...state, revision: "r0" } as AppState;
   let saves = 0;
@@ -314,10 +336,11 @@ async function openCalendar(
   await page.route("**/auth/me", (route) =>
     route.fulfill({ json: { username: "test", role: "user", active: true } }),
   );
-  await page.route("**/v1/**", (route) => {
+  await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path.endsWith("/v1/state")) {
+      if (request.method() === "GET" && options.stateGate) await options.stateGate;
       if (request.method() === "POST") {
         const body = request.postDataJSON() as AppState;
         if (body.revision !== current.revision) {
@@ -340,6 +363,7 @@ async function openCalendar(
   });
   await page.goto("/");
   await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+  if (!options.stateGate) await waitForMockedCalendar(page, state);
   /** Another tab saves the calendar: the revision this page holds goes stale. */
   const saveElsewhere = () => {
     current = { ...current, revision: "r-other" };
@@ -617,8 +641,6 @@ test.describe("saving before a search or an apply", () => {
   async function openPaused(page: Page, state: AppState) {
     const api = await openCalendar(page, state, { clock: "manual" });
     const calls = await mockSwapApi(page, api);
-    // The grid shows the built-in calendar until the mocked one has loaded.
-    await expect(galileoPill(page)).toBeVisible();
     await page.clock.pauseAt(new Date(Date.parse(NOW) + 60_000));
     await expect
       .poll(async () => {
@@ -721,15 +743,17 @@ test("the Vacation Planner, Working Hours and Export close the drawer before the
   await mockSwapApi(page, api);
   const modals = [
     ["Open Vacation Planner", "Year planner for clinician vacations."],
-    ["Open Working Hours", "Track working hours by week for all clinicians."],
+    ["Open Working Hours", "Planned hours against contract hours, per week and over the year."],
     ["Open Export", "Choose a format and configure your export."],
   ] as const;
+  // Working Hours is a dialog too (v1.78): find the drawer by its name.
+  const swapDrawer = page.getByRole("dialog", { name: "Find a swap" });
   for (const [opener, subtitle] of modals) {
     await findSwapForGalileo(page);
-    await expect(drawer(page)).toBeVisible();
+    await expect(swapDrawer).toBeVisible();
     // The desktop drawer is non-modal: the panels below the grid stay usable.
     await page.getByRole("button", { name: opener }).click();
-    await expect(drawer(page)).toBeHidden();
+    await expect(swapDrawer).toBeHidden();
     await expect(page.getByText(subtitle)).toBeVisible();
     // Nothing covers the modal's own Close button.
     await page.getByRole("button", { name: "Close", exact: true }).last().click();
@@ -1042,6 +1066,64 @@ test("Undo in the history keeps focus in the drawer, so Escape still closes it",
   await expect.poll(() => focusInDrawer(page)).toBe(true);
   await page.keyboard.press("Escape");
   await expect(drawer(page)).toBeHidden();
+  expect(api.errors).toEqual([]);
+});
+
+test("the swap assistant waits until the calendar has loaded", async ({ page }) => {
+  let releaseState!: () => void;
+  const stateGate = new Promise<void>((resolve) => (releaseState = resolve));
+  const state = calendarState();
+  // Fake page timers: each toast is timed out before the next action.
+  const api = await openCalendar(page, state, { clock: "manual", stateGate });
+  const calls = await mockSwapApi(page, api);
+  const waitText = "Swaps are available once the calendar has loaded.";
+  const toast = page.getByText(waitText);
+  /** The toast shows; it is gone before the next action, which must show it again. */
+  const expectToast = async () => {
+    await expect(toast).toBeVisible();
+    await expect
+      .poll(async () => {
+        await page.clock.fastForward(6_000);
+        return toast.isVisible();
+      })
+      .toBe(false);
+  };
+  const historyButton = page.getByRole("button", { name: "Swap history" });
+
+  // The screen still holds the built-in demo calendar (src/data/mockData.ts:
+  // one open MRI slot on Monday, one person). A search would save it, which
+  // the server refuses, or look for its shifts on the server.
+  await expect(historyButton).toBeDisabled();
+  await expect(historyButton).toHaveAttribute("title", waitText);
+  const demoCell = page.locator('[data-schedule-cell="true"][data-row-id="slot-mri-mon-1"]');
+  await demoCell.click();
+  await page.getByRole("button", { name: "Find cover for this slot" }).click();
+  await expectToast();
+  await demoCell.click();
+  await page.getByRole("button", { name: /^Alex Hartmann/ }).click();
+  const demoPill = pillOf(page, "slot-mri-mon-1", "2026-01-05", "alex-hartmann");
+  await demoPill.hover();
+  await findSwapIn(demoPill).click();
+  await expectToast();
+  await demoPill.getByRole("button", { name: /^Lock assignment for/ }).focus();
+  await page.keyboard.press("s");
+  await expectToast();
+  await expect(drawer(page)).toHaveCount(0);
+  expect(api.statePosts).toEqual([]);
+  expect(calls).toEqual({ candidates: [], apply: [], undo: [], history: 0 });
+
+  releaseState();
+  await waitForMockedCalendar(page, state);
+  await expect(historyButton).toBeEnabled();
+  await expect(historyButton).toHaveAttribute("title", "Swap history");
+  await findSwapForGalileo(page);
+  await expect(page.getByText("Best matches (1)")).toBeVisible();
+  expect(calls.candidates.map(({ body }) => body.assignment)).toEqual([
+    { assignmentId: "galileo-thu", rowId: THU_CT, dateISO: "2026-01-08", clinicianId: FIRST },
+  ]);
+  await expect(toast).toBeHidden();
+  expect(api.statePosts.filter((post) => post.revision === null)).toEqual([]);
+  await expect(page.getByRole("button", { name: "Retry saving" })).toHaveCount(0);
   expect(api.errors).toEqual([]);
 });
 

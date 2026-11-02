@@ -113,6 +113,9 @@ export function undoToastMessage(swap: SwapRecord): string {
   return `Cover undone: ${swap.partnerName} no longer covers ${swap.give[0].sectionName} (${days})`;
 }
 
+/** The page's toast, and the history button's tooltip, until this user's calendar has loaded. */
+export const SWAPS_WAIT_FOR_CALENDAR = "Swaps are available once the calendar has loaded.";
+
 /**
  * Name of History's Undo button: "Undo swap of Anna Weber and Ben Ott (Thu 19 /
  * Sat 21 Nov)", "Undoing …" while it runs. It starts with the visible text.

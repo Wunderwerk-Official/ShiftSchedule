@@ -177,6 +177,17 @@
   background-image: repeating-linear-gradient(135deg, rgb(51 65 85 / 0.5) 0 1px, transparent 1px 6px);
 }
 
+/* Working hours (v1.78): a week nobody has planned yet. Hatched like a day
+   without a slot, so it never reads as zero hours. */
+.hours-unplanned {
+  background-color: rgb(248 250 252);
+  background-image: repeating-linear-gradient(135deg, rgb(226 232 240 / 0.7) 0 1px, transparent 1px 6px);
+}
+.dark .hours-unplanned {
+  background-color: rgb(2 6 23 / 0.4);
+  background-image: repeating-linear-gradient(135deg, rgb(51 65 85 / 0.5) 0 1px, transparent 1px 6px);
+}
+
 .calendar-scroll {
   height: auto !important;
   max-height: none !important;

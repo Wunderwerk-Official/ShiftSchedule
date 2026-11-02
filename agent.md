@@ -17,7 +17,7 @@ Where to look first
 - Heuristic Solver v2: `backend/heuristic/solver_v2.py` (alternative fast solver)
 - **Constraint validator (LLM-backend-ready): `backend/validation.py`** — pure, solver-independent hard-constraint checker; see section 6.5.
 - Solver live stats: `src/lib/solverStats.ts`
-- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `holiday-region`, `model-settings`, `my-plan`, `team-page`
+- E2E tests + diagnostics: `e2e/fixtures.ts`, `e2e/app.spec.ts`, `e2e/colband-explosion.spec.ts`; mocked-API specs run in CI: `e2e/agent-apply.spec.ts`, `agent-activity`, `fixed-assignments`, `holiday-region`, `model-settings`, `my-plan`, `team-page`, `swap-assistant`
 - My plan (v1.64): `src/components/myPlan/MyPlanView.tsx`, pure model `src/lib/myPlan/`, preferences `src/lib/userPreferences.ts` + `backend/preferences.py`
 - API client: `src/api/client.ts`
 - Settings UI: `src/components/schedule/SettingsView.tsx`
@@ -90,7 +90,7 @@ Cells
 - Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
 - Dragging into or out of Vacation updates the clinician vacation ranges.
 - Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
-- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.78) that opens the swap drawer in cover mode for that slot instance (both grids).
+- The picker of a cell with an open position (also one open because its person is on vacation) has a "Find cover…" footer (v1.80) that opens the swap drawer in cover mode for that slot instance (both grids).
 - While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
@@ -107,7 +107,7 @@ Clinic sheet layout (Klinik-Monatslayout)
 Pills
 - Team grid (since v1.69 always): person colors — fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Since v1.71 the palette has 20 colors in two tones (light fill + dark text, or saturated fill + white text), ordered so the first 12 fills differ by ≥ 15 ΔE00 (all 20 by ≥ 9). Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
-- Find swap (⇄, v1.78, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
+- Find swap (⇄, v1.80, `PillSwapButton` in `AssignmentPill` and on clinic sheet names): section rows of editable calendars only, never pools or read-only pages. It is revealed like the open lock (`.pill-swap-reveal`; the name fades under both buttons with `.pill-swap-fade`, or `.pill-swap-fade-inrow` when the row ends at a locked pill's in-row lock) and always sits directly left of the lock. S opens it while the pill's lock or ⇄ button has focus. Touch screens always show it: an unlocked pill keeps room with padding (`[@media(hover:none)]:pr-[42px]`), a locked pill makes room with a row margin (`[@media(hover:none)]:mr-5`), never with pill padding. Opening it outlines the target's pills, and hovering an option the partner's pills, in teal (the swap color) through one injected stylesheet (`SwapHighlightStyle`, matched by `data-assignment-key` / `data-sheet-assignment-key`), so hovering re-renders only the drawer.
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
 - Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
 - Warning icons are small circular badges at top-right of the pill.
@@ -195,17 +195,12 @@ Clinician Editor (modal)
 - Week solver nudges total assigned minutes toward `workingHoursPerWeek` within the tolerance (manual assignments count toward totals).
 - Per-clinician working hours tolerance: stored as `clinician.workingHoursToleranceHours` (default 5 hours). Each clinician can have a different tolerance for how much their assigned hours can deviate from their contract hours.
 
-Working Hours Overview
-- Dashboard panel opens a full-screen modal showing yearly working hours for all clinicians.
-- Year selector with navigation buttons; "Today" button jumps to current year/week.
-- Each clinician shows: name, contract hours (e.g., "40h/w"), weekly hours worked, yearly total.
-- If contract hours are set, also shows: Expected (fractional for partial weeks), Difference, Cumulative.
-- Weeks span Jan 1 to Dec 31 with partial weeks at year boundaries (e.g., if Jan 1 is Thursday, first week has 4 days).
-- Expected hours for partial weeks are calculated as `expectedWeeklyHours * (daysInWeek / 7)`.
-- Color coding: emerald (within ±2h of expected), amber (under by >2h), rose (over by >2h).
-- Pool assignments (rest day, vacation) do not count toward working hours.
-- Slot duration comes from the weekly template; defaults to 8 hours if not set.
-- Current week is highlighted with sky-blue background; sticky header + Total column.
+Working Hours Overview (reworked in v1.78)
+- Dashboard panel opens a full-screen modal with a "Week | Year" switch; every opening starts at this week's week view. Calculations: `src/lib/workingHours.ts` (pure), views `WorkingHoursWeekView.tsx` / `WorkingHoursYearView.tsx`, shared bits `WorkingHoursParts.tsx`.
+- Week view: one row per person (initials in the team color, contract "41 h/wk"), hours per day (Vac / Rest chips, the shifts in the tooltip), Planned, Target, Difference (signed + bar around the target with the tolerance band) and the year's running Balance through this week. Team sums on top (planned, target, difference, under / on / over counts) and per day in the footer. Sort: team order or most under first. Week navigation crosses year boundaries; Today returns to this week.
+- Year view: one row per person, one cell per week (W = ISO week number), tinted under (amber) / on (emerald) / over (rose); "Show: Hours | Difference | Balance". Sticky Planned / Target / Balance columns; a week header opens that week in the week view; today's week is outlined and centered.
+- Rules: shifts (non-pool) count their slot's duration on the start day (8 h without times). A week counts once the team has at least half of its target hours planned (`COUNTED_WEEK_SHARE`; people with contract hours; without any, once anybody has a shift) — weeks before the planner was used, a few test entries and weeks with only the on-call duties planned stay out of targets, totals and balance (hatched in the year view, hours still shown). Target = contract hours × (days in the year's week not on vacation) / 7 (the planner's working-hours rule). On target = within `workingHoursToleranceHours` (default 5 h) scaled the same way; the balance is colored against one week's tolerance.
+- Weeks span Jan 1 to Dec 31 with partial weeks at year boundaries.
 
 Holidays
 - Year selector with stepper buttons.
@@ -276,6 +271,7 @@ Testing
   - Default non-admin test user for local E2E: `testuser` / `sdjhfl34-wfsdfwsd2` (set `ENABLE_E2E_TEST_USER=0` to disable creation, do not use in production).
   - In sandboxed runs, Playwright may need escalated permissions to access `localhost:8000` and launch Chromium (otherwise EPERM/permission-denied errors).
   - Diagnostics on failure: console, page errors, failed requests, >=400 responses, screenshot, HTML snapshot, and trace (see `e2e/fixtures.ts`).
+  - Mocked-API specs: the team grid shows the built-in demo calendar (`src/data/mockData.ts`, row band "Row 1") at once and the mocked one only after `GET /v1/state` has answered, so a visible `[data-schedule-grid]` does not mean the mocked calendar is in. Wait for it before reading or clicking (`openCalendar` in `e2e/team-page.spec.ts` and `e2e/swap-assistant.spec.ts` waits for a cell of the mocked template), and assert on lists with `expect.poll`: a single `evaluateAll` does not retry.
   - PDF export test calls `/v1/pdf/week` and asserts the generated PDF has exactly one page.
   - Print layout test opens `/print/week` in print media and asserts the scaled schedule fits within one A4 page (portrait or landscape) and fills at least 70% of one dimension.
   - ColBand explosion tests (`e2e/colband-explosion.spec.ts`): verify colBand counts stay stable through settings, Copy Day, column operations, and solver runs; checks for console explosion errors.
@@ -807,14 +803,14 @@ pass/fail check — LLM-generated schedules, external imports, UI conflict
 badges, debug tooling.
 
 Every validator and `validate_assignments` take an optional keyword
-`context=` (v1.78): `build_validation_context(state)` precomputes the template
+`context=` (v1.80): `build_validation_context(state)` precomputes the template
 and roster lookups of ONE state object for callers that validate many
 assignment lists of it (the swap search), the calendar's Rest Days included.
 The result is identical with or without it; a context of another state object
 raises `ValueError`. Every other caller (solvers, agent, run apply, the swap
 apply gate) passes none. `validate_rest_days`, `validate_assignments` and
 `constraint_policy.classify_violations` / `new_violations` also take
-`own_rest_days=` (v1.78, default False): with it only the checked list's own
+`own_rest_days=` (v1.80, default False): with it only the checked list's own
 Rest Day entries count, so for a list that is a whole plan after a change, a
 Rest Day the change moved away or removed no longer counts. Only the swap
 gates set it; every other caller keeps the union of `state.assignments` and
@@ -1359,6 +1355,7 @@ Endpoints
 - `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots), `POST /v1/state/snapshots/import-backup` (auto-backup before a shifts file import)
 - `GET /v1/me/preferences`, `PUT /v1/me/preferences` (per-user UI preferences for My plan; outside AppState, 32 KB body cap → 413)
 - `GET /v1/solve/runs`, `GET /v1/solve/runs/{id}`, `POST /v1/solve/runs/{id}/apply|discard|feedback` (run inbox)
+- `POST /v1/swaps/candidates`, `POST /v1/swaps/apply`, `POST /v1/swaps/{id}/undo`, `GET /v1/swaps/history` (v1.80 swap assistant; the owner's JWT only, never web or iCal tokens)
 - `GET|PUT /v1/agent/settings`, `POST /v1/agent/chat-test`, `POST /v1/agent/model-check` (AI planning settings; `PUT /v1/agent/settings`, `chat-test` and `model-check` are admin only)
 - `GET /v1/admin/solver-runs[/{id}]`, `GET /v1/admin/run-feedback`, `DELETE /v1/admin/run-feedback/{id}`, `GET /v1/admin/schedule-changes` (admin only)
 - `GET /v1/ical/publish`
@@ -1514,7 +1511,7 @@ Frontend
 - `src/components/schedule/RowLabel.tsx`
 - `src/components/schedule/AssignmentPill.tsx`
 - `src/components/schedule/VacationOverviewModal.tsx` (vacation planner, scrolls to today on open)
-- `src/components/schedule/WorkingHoursOverviewModal.tsx` (yearly working hours overview for all clinicians)
+- `src/components/schedule/WorkingHoursOverviewModal.tsx` (v1.78: working hours, week view and year view; `WorkingHoursWeekView.tsx`, `WorkingHoursYearView.tsx`, `WorkingHoursParts.tsx`; calculations in `src/lib/workingHours.ts`)
 - `src/components/schedule/SolverOverlay.tsx` (live solver progress overlay; v1.69 layout: header, day track + current step (`AgentActivityPanel`), best plan so far (`ConstraintPulse`), collapsed activity log, action footer)
 - `src/components/schedule/SolverDebugPanel.tsx` (debug info visualization after solve completes)
 - `src/components/schedule/SolverInfoModal.tsx` (solver info modal with history, settings, and configurable weights; auto-resets to info view when opened)
@@ -1546,9 +1543,9 @@ Frontend
 - `src/lib/download.ts` (v1.64: `downloadTextFile`; `runLog.ts` re-exports it)
 - `src/lib/clipboard.ts` (v1.64: `copyTextToClipboard`, reports success)
 - `src/lib/assignmentPolicy.ts` (`isProtectedAssignment`, mirrors `backend/assignment_policy.py`)
-- `src/components/swaps/*` (v1.78 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
-- `src/lib/swaps/*` (v1.78: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
-- `src/pages/swapFlow.ts` (v1.78: search, apply and undo order — save only unsaved edits, send, hydrate)
+- `src/components/swaps/*` (v1.80 swap assistant UI: `SwapAssistantDrawer` (drawer, phone sheet), `SwapFinderPanel`, `SwapResultRow`, `SwapPreview`, `SwapHistoryPanel`, `PillSwapButton`, `SwapHighlightStyle`, `SwapHistoryButton`)
+- `src/lib/swaps/*` (v1.80: `types.ts` = the API contract, `format.ts` = pure labels and the apply request)
+- `src/pages/swapFlow.ts` (v1.80: search, apply and undo order — save only unsaved edits, send, hydrate)
 
 Backend
 - `backend/main.py` (app setup + router wiring)
@@ -1572,7 +1569,7 @@ Backend
 - `backend/snapshots.py` (calendar snapshots)
 - `backend/agent_budget.py` (agent settings, chat test, model check, spend)
 - `backend/schedule_changes.py` (schedule change log, admin endpoint)
-- `backend/swaps/*` (v1.78 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
+- `backend/swaps/*` (v1.80 swap assistant: `blocks` work blocks and units, `policy` swap rules, time zone, started/notice and open slots, `worktime` working-time warnings and weekly hours, `labels` texts, `matching` search and gate, `apply` apply/undo, `store` SQL, `schemas` request models, `routes` `/v1/swaps/*`)
 - `backend/account_lifecycle.py` (account generation/identity checks)
 - `backend/request_logging.py` (redacted access logging)
 - `backend/ical.py` (ICS generation for subscription feeds)
@@ -3074,7 +3071,65 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   busy status text, plain "My plan" label, compact on phones).
 - Deploy notes: frontend only, no schema or data change. Version 1.77 (77).
 
-## v1.78 — Swap assistant
+## v1.78 — Working hours: week view, compact year view, fair targets
+
+- **Why.** The overview showed four rows per person (hours, expected,
+  difference, cumulative) for all 53 weeks, and expected the contract hours
+  for every week since January — also before the planner was used — so the
+  cumulative column read −1694 h for people who were exactly on plan. It
+  also counted vacation weeks as missing hours.
+- **Week view (new, the default).** One row per person: hours per day
+  (vacation and rest days marked, the shifts in the tooltip), planned,
+  target, the difference as a number and a bar around the target with the
+  tolerance band, and the year's running balance through the week. Team sums
+  above the table and per day in the footer; sort by team order or most
+  under first; previous / next week across year boundaries, Today.
+- **Year view (compact).** One row per person instead of four; each week a
+  cell tinted under / on / over target, switchable between hours,
+  difference and running balance; Planned / Target / Balance columns stay
+  in view; a week header opens that week; weeks labelled with ISO numbers
+  (before, years starting on Friday to Sunday were numbered one week off).
+- **Fair targets** (`src/lib/workingHours.ts`): a week counts once the team
+  has half of its target hours planned (`COUNTED_WEEK_SHARE = 0.5`), so test
+  entries, weeks still being planned and future weeks with only the on-call
+  duties do not create deficits; vacation days lower the target (days / 7,
+  as in the planner); "on target" uses each person's tolerance (Clinician
+  editor, default ± 5 h) instead of a fixed ± 2 h. Totals and balance cover
+  the counted weeks only; hours of other weeks still show (hatched).
+- Tests: `src/lib/workingHours.test.ts` (new: weeks and ISO labels,
+  counting rule, vacation-scaled target and tolerance, statuses, day
+  details, running balance, vacation week, fallback without contracts),
+  `WorkingHoursOverviewModal.test.tsx` (rewritten: week view rows, vacation,
+  sort, uncounted week, navigation across years, year view cells and
+  totals, metric switch, week header, time zones, close).
+- Deploy notes: frontend only, no schema or data change. Version 1.78 (78).
+
+## v1.79 — Calendar snapshots wait for the calendar
+
+- Until this user's calendar has loaded (`GET /v1/state` answered), the page
+  holds the built-in demo calendar (`src/data/mockData.ts`). Saving a named
+  snapshot in that moment stored the demo calendar under the typed name (the
+  server does not check snapshots against the calendar's revision); a
+  restore first saved the demo calendar, which the server refused (409), so
+  it failed with a misleading "changed in another tab" message.
+- `SnapshotPopover` has a `calendarLoading` prop (the page passes
+  `!hasLoaded || loadedUserId !== currentUser.username`): Save, Enter in the
+  name field and both Restore buttons wait, with the hint "Saving and
+  restoring are available once the calendar has loaded." in the panel and as
+  the buttons' tooltip. Rename and Delete stay available (they do not use the
+  calendar on screen). `handleSaveSnapshot` and `handleRestoreSnapshot`
+  refuse before loading as well ("Wait until the calendar has loaded before
+  saving / restoring a snapshot."), like import, PDF export and planning.
+- Tests: `SnapshotPopover.test.tsx` (waits while loading, hint and tooltip,
+  Rename stays available, saves once loaded), e2e `team-page.spec.ts`
+  ("Calendar snapshots wait until the calendar has loaded": `openCalendar`
+  takes a `stateGate` that holds back `GET /v1/state`). The same release
+  makes `openCalendar` wait for the mocked calendar instead of the demo grid
+  (see the Testing notes), which fixed a timing-dependent failure of the
+  "Stacked gives every section…" test.
+- Deploy notes: frontend only, no schema or data change. Version 1.79 (79).
+
+## v1.80 — Swap assistant
 
 "Find swap" for the rota planner: swap a shift for one of a colleague's
 (swap), give it away (handover) or fill an open position (cover), with the
@@ -3240,7 +3295,7 @@ server checking every option against all planning rules.
   answer is in, the drawer also reveals the target's pill (a cover's cell),
   once, unless an option's shift was revealed first: from lg on, opening
   it narrows the page and can push a weekend target out of view.
-- **Merged with v1.72–v1.77.**
+- **Merged with v1.72–v1.79.**
   - `REST_DAY` (v1.75): the swap gates count only the Rest Days of the plan
     they check (`own_rest_days`), so a Rest Day the plan moves away or
     removes no longer counts and one it adds does; a pair (Rest Day and a
@@ -3274,12 +3329,49 @@ server checking every option against all planning rules.
   - `planChrome.outlineButtonClass`, which main removed with the saved
     Views, is back: the swap drawer's Preview, Refresh, Search again, Retry,
     Undo and Back buttons use it.
+  - Working hours (v1.78): the overview is a dialog now and still closes
+    the drawer first; the e2e test finds the drawer by its name ("Find a
+    swap") and checks the new subtitle. The swap's hour rules did not
+    change, so its numbers can differ from the overview's. Week hours,
+    "Hours even" and the over- and under-contract notes count like the
+    weekly-hours rule (shifts hidden by a vacation included) against the
+    full contract; "behind on hours" is the solver's year-to-date formula
+    from the first planned date. The overview leaves out shifts hidden by
+    a vacation, lowers the target for vacation days and counts a week only
+    once half of the team's target hours are planned. Example: with one
+    test entry in January and planning from October, everyone is on target
+    in the overview but "89 % behind on hours" in the swap list. Whether
+    the swap should use the overview's targets is an open product decision.
+  - Calendar load (v1.79): until this user's calendar has loaded the page
+    holds the built-in demo calendar: a search would save it (the server
+    refuses) or look for a demo shift. Swaps wait like snapshots, import,
+    PDF export and planning: ⇄, S and "Find cover…" only show the toast
+    "Swaps are available once the calendar has loaded." (the entry points
+    read `calendarLoadedRef`, set on every render, so they keep one
+    identity), and the TopBar history button is disabled with that text as
+    its tooltip, like the snapshot buttons. My plan's "Find swap" has the
+    same check, only as a safety net: My plan shows its loading card until
+    then. `hasLoaded` never goes back to false while the page is mounted
+    (it loads once per user; signing out unmounts it; reloads, restores and
+    imports only hydrate), so the drawer is never open on the demo calendar
+    and search, apply and undo need no check of their own. A person list
+    left open across the load (main's picker) still offers "Find cover…";
+    the search then runs on the loaded calendar and, for a demo slot, says
+    that the slot does not exist on this day. `openCalendar` in
+    `swap-assistant.spec.ts` now waits for the mocked calendar, as in
+    `team-page.spec.ts`: with `GET /v1/state` answered 1 s late, "the labels
+    keep whole words…" checked the demo labels ("Row 1") and passed, and
+    three history tests start with a click on "Swap history", which the
+    demo screen also shows. Tests: `SwapHistoryButton.test.tsx`; e2e "the
+    swap assistant waits until the calendar has loaded" (`openCalendar`
+    takes a `stateGate`).
 - Tests: backend `test_validation_context.py`, `test_constraint_policy.py`,
   `test_swap_blocks.py`, `test_swap_worktime.py`, `test_swap_policy.py`,
   `test_swap_matching.py`, `test_swap_property.py` (about 15 s) and
   `test_swap_endpoints.py`; fixtures in `backend/tests/swap_fixtures.py`.
   Frontend `src/lib/swaps/format.test.ts`, `src/api/client.swaps.test.ts`,
-  `src/pages/swapFlow.test.ts`, `SwapAssistantDrawer.test.tsx`; e2e
-  `e2e/swap-assistant.spec.ts` (mocked API, in CI).
+  `src/pages/swapFlow.test.ts`, `SwapAssistantDrawer.test.tsx`,
+  `SwapHistoryButton.test.tsx`; e2e `e2e/swap-assistant.spec.ts` (mocked
+  API, in CI).
 - Deploy notes: three new tables, created on startup (`db.py`); stored
-  calendars are not changed. Version 1.78 (78).
+  calendars are not changed. Version 1.80 (80).

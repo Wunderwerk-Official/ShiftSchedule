@@ -19,7 +19,12 @@ type SnapshotPopoverProps = {
   onRestoreSnapshot: (snapshotId: string) => Promise<void>;
   // Restoring mid-solve would be clobbered by the run's completion write.
   restoreDisabled?: boolean;
+  // Until this user's calendar has loaded the page holds the built-in demo
+  // calendar: saving would store it, restoring would save it first (v1.79).
+  calendarLoading?: boolean;
 };
+
+const CALENDAR_LOADING_HINT = "Saving and restoring are available once the calendar has loaded.";
 
 const formatDate = (iso: string) => {
   const date = new Date(iso);
@@ -37,6 +42,7 @@ export default function SnapshotPopover({
   onSaveSnapshot,
   onRestoreSnapshot,
   restoreDisabled = false,
+  calendarLoading = false,
 }: SnapshotPopoverProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -98,7 +104,7 @@ export default function SnapshotPopover({
 
   const handleSave = async () => {
     const name = saveName.trim();
-    if (!name || saving) return;
+    if (!name || saving || calendarLoading) return;
     setSaving(true);
     setError(null);
     try {
@@ -219,12 +225,18 @@ export default function SnapshotPopover({
                 <button
                   type="button"
                   onClick={() => void handleSave()}
-                  disabled={!saveName.trim() || saving}
+                  disabled={!saveName.trim() || saving || calendarLoading}
+                  title={calendarLoading ? CALENDAR_LOADING_HINT : undefined}
                   className="shrink-0 rounded-full bg-slate-900 px-3 py-1.5 text-[11px] font-semibold text-white hover:bg-slate-700 disabled:opacity-40 dark:bg-slate-100 dark:text-slate-900 dark:hover:bg-slate-300"
                 >
                   {saving ? "Saving…" : "Save"}
                 </button>
               </div>
+              {calendarLoading ? (
+                <div className="mb-2 px-0.5 text-[11px] text-slate-500 dark:text-slate-400">
+                  {CALENDAR_LOADING_HINT}
+                </div>
+              ) : null}
               {error ? (
                 <div className="mb-2 rounded-lg bg-rose-50 px-2 py-1.5 text-[11px] text-rose-700 dark:bg-rose-950/40 dark:text-rose-300">
                   {error}
@@ -299,11 +311,13 @@ export default function SnapshotPopover({
                                 <div className="flex shrink-0 items-center gap-1">
                                   <button
                                     type="button"
-                                    disabled={busy || restoreDisabled}
+                                    disabled={busy || restoreDisabled || calendarLoading}
                                     title={
                                       restoreDisabled
                                         ? "Not available while the solver is running"
-                                        : undefined
+                                        : calendarLoading
+                                          ? CALENDAR_LOADING_HINT
+                                          : undefined
                                     }
                                     onClick={() =>
                                       setConfirm({ id: snapshot.id, action: "restore" })
@@ -350,7 +364,10 @@ export default function SnapshotPopover({
                                 <div className="mt-1.5 flex items-center justify-end gap-2">
                                   <button
                                     type="button"
-                                    disabled={busy || (confirm.action === "restore" && restoreDisabled)}
+                                    disabled={
+                                      busy ||
+                                      (confirm.action === "restore" && (restoreDisabled || calendarLoading))
+                                    }
                                     onClick={() =>
                                       confirm.action === "restore"
                                         ? void handleRestore(snapshot.id)

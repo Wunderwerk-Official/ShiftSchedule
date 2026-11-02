@@ -70,7 +70,7 @@ it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () =
   expect(text).not.toContain("names its own workplace");
 });
 
-it("explains Find a swap: the S key and Undo (v1.78)", () => {
+it("explains Find a swap: the S key and Undo (v1.80)", () => {
   const { container } = render(<HelpView />);
   expect(screen.getByRole("heading", { name: "13. Find a swap" })).toBeVisible();
   const text = container.textContent ?? "";

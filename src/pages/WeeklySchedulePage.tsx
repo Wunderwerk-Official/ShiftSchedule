@@ -31,7 +31,13 @@ import Toast, { useToast } from "../components/myPlan/Toast";
 import SwapAssistantDrawer from "../components/swaps/SwapAssistantDrawer";
 import SwapHistoryButton from "../components/swaps/SwapHistoryButton";
 import { parseISODate } from "../lib/myPlan";
-import { assignmentKey, swapTargetKey, swapToastMessage, undoToastMessage } from "../lib/swaps/format";
+import {
+  assignmentKey,
+  SWAPS_WAIT_FOR_CALENDAR,
+  swapTargetKey,
+  swapToastMessage,
+  undoToastMessage,
+} from "../lib/swaps/format";
 import type {
   SwapApplyRequest,
   SwapAssignmentRef,
@@ -528,20 +534,35 @@ export default function WeeklySchedulePage({
   /** The partner's new pill after an apply: focused once the drawer has closed. */
   const swapFocusKeyRef = useRef<string | null>(null);
   const { toast: pageToast, show: notify, dismiss: dismissPageToast } = useToast();
-  // Stable: the pill memo keeps the first closures it sees.
+  // Until this user's calendar has loaded the screen holds the built-in demo
+  // calendar: a search would save it (the server refuses) or look for a demo
+  // shift. So swaps wait, like snapshots, import, PDF export and planning.
+  // Set on every render. Once true it stays true (the page loads once per
+  // user; signing out unmounts it), so an open drawer needs no check.
+  const calendarLoadedRef = useRef(false);
+  /** True, with a toast, while the calendar is still loading. */
+  const swapsWaitForCalendar = useCallback(() => {
+    if (calendarLoadedRef.current) return false;
+    notify(SWAPS_WAIT_FOR_CALENDAR);
+    return true;
+  }, [notify]);
+  // Stable (notify is): the pill memo keeps the first closures it sees.
   const openSwapForAssignment = useCallback((assignment: SwapAssignmentRef) => {
+    if (swapsWaitForCalendar()) return;
     swapReturnFocusRef.current = activeElementOrNull();
     setSwapTarget({ kind: "assignment", assignment });
-  }, []);
+  }, [swapsWaitForCalendar]);
   const openSwapForSlot = useCallback((slot: SwapSlotRef) => {
+    if (swapsWaitForCalendar()) return;
     swapReturnFocusRef.current = activeElementOrNull();
     setSwapTarget({ kind: "slot", slot });
     scrollToGridCell(slot.rowId, slot.dateISO);
-  }, []);
+  }, [swapsWaitForCalendar]);
   const openSwapHistory = useCallback(() => {
+    if (swapsWaitForCalendar()) return;
     swapReturnFocusRef.current = activeElementOrNull();
     setSwapTarget({ kind: "history" });
-  }, []);
+  }, [swapsWaitForCalendar]);
   const closeSwap = useCallback(() => setSwapTarget(null), []);
   const [hasLoaded, setHasLoaded] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -571,6 +592,7 @@ export default function WeeklySchedulePage({
     [],
   );
   const [loadedUserId, setLoadedUserId] = useState<string>("");
+  calendarLoadedRef.current = hasLoaded && loadedUserId === currentUser.username;
   const [solverNotice, setSolverNotice] = useState<{
     notes: string;
     debugInfo?: SolverDebugInfo;
@@ -2800,6 +2822,11 @@ export default function WeeklySchedulePage({
   buildCurrentStatePayloadRef.current = buildCurrentStatePayload;
 
   const handleSaveSnapshot = async (name: string) => {
+    // Until this user's calendar has loaded the screen holds the built-in demo
+    // calendar, which the snapshot would store (the popover waits too).
+    if (!hasLoaded || loadedUserId !== currentUser.username) {
+      throw new Error("Wait until the calendar has loaded before saving a snapshot.");
+    }
     const payload = buildCurrentStatePayload();
     if (!payload) {
       throw new Error(
@@ -2811,6 +2838,11 @@ export default function WeeklySchedulePage({
 
   // Flush pending edits and pause autosave while replacing calendar state.
   const handleRestoreSnapshot = async (snapshotId: string) => {
+    // A restore saves the calendar on screen first: the demo calendar until
+    // this user's has loaded.
+    if (!hasLoaded || loadedUserId !== currentUser.username) {
+      throw new Error("Wait until the calendar has loaded before restoring a snapshot.");
+    }
     closeSwap();
     pauseCalendarSaving();
     try {
@@ -3632,6 +3664,7 @@ export default function WeeklySchedulePage({
   // that date. The detail's button goes away with My plan, so focus later
   // returns to the shift's pill in the grid.
   const handleFindSwapFromPlan = (ref: SwapAssignmentRef) => {
+    if (swapsWaitForCalendar()) return;
     swapReturnFocusRef.current = null;
     setAnchorDate(parseISODate(ref.dateISO));
     setPlanScope("team");
@@ -3672,12 +3705,14 @@ export default function WeeklySchedulePage({
               <SwapHistoryButton
                 pressed={swapHistoryOpen}
                 onClick={swapHistoryOpen ? closeSwap : openSwapHistory}
+                calendarLoading={!hasLoaded || loadedUserId !== currentUser.username}
               />
             ) : null}
             <SnapshotPopover
               onSaveSnapshot={handleSaveSnapshot}
               onRestoreSnapshot={handleRestoreSnapshot}
               restoreDisabled={autoPlanRunning}
+              calendarLoading={!hasLoaded || loadedUserId !== currentUser.username}
             />
           </>
         }
@@ -4240,6 +4275,8 @@ export default function WeeklySchedulePage({
         clinicians={clinicians}
         assignments={renderedAssignmentList}
         weeklyTemplate={weeklyTemplate}
+        scheduleRows={scheduleRows}
+        isDark={isDark}
       />
 
       <ClinicianEditModal

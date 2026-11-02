@@ -219,6 +219,7 @@ npx playwright show-report
 - [x] Dragging into and out of the Vacation row adds and removes the vacation day
 - [x] Phone: the open-slots badge switches the day view to the open slot's day
 - [x] Template above the column limit: banner and no save, snapshot import refused, snapshot restore backs up the last saved calendar, sign-out asks first
+- [x] Calendar snapshots wait until the calendar has loaded: Save and Restore are unavailable while the demo calendar is shown, and the snapshot saved afterwards holds the loaded calendar (v1.79)
 - [x] Reset → Unlocked shifts and Unlocked shifts and rest days also remove planner entries on vacation days; both keep locked shifts, hand-placed ones included (v1.69)
 - [x] Times switches between side-by-side and stacked columns and stores the choice (v1.65)
 - [x] Stacked: a section that takes over a row band's slot on one day gets its own lane, named in the label (row band / section / time cells); the other lane is hatched that day; no in-cell section tag (v1.76)
@@ -234,6 +235,8 @@ npx playwright show-report
 **Frontend Tests (v1.76 stacked week: one row per section)**: `src/lib/stackedTeamLayout.test.ts` (`buildTimeLanes`: a slot that overlaps no free lane opens its own, however near its start; `buildSectionLanes`: lanes never mix sections — the user's rotating "IRM HK" row; a section's separate time blocks on different days (the user's IRM cardio HK: Mon/Thu 07:30, Wed 13:00 and 16:00) get a lane each with no differing time; sections by earliest start, then first slot in template column order, then name; a section's lanes by start even when a later day opened them; a weekend variant with another time stays in its section's lane; two slots of one section on a day get two lanes; sections by id, by name without one; `buildStackedTeamLayout`: a day of another section gets its own lane and color, a section named like its row band is titled when another section comes first, lane ids and order are the same whatever days are on screen, also when a hidden day or a holiday decides the order, row/section spans and first/last-in-section flags), `ScheduleGrid.test.tsx` (three label columns with spanning row band and section cells, header and pool row labels span them; divider levels lane / section / row on cells and label cells; single day keeps one label cell and names the section on every lane; no section tag in cells, own time as a quiet clock note under the people (no chip) and tooltip kept, no "+N"; section tints per lane label and cell; a later lane's section for screen readers and in its tooltip; location shade on every label cell), `HelpView.test.tsx` (stacked text), e2e `team-page.spec.ts` (see above).
 
 **Frontend Tests (v1.77 team switch while loading)**: `CalendarPlaceholder.test.tsx` (the "Team | My plan" switch is usable while My plan waits for the calendar and reports "team"; busy status "Loading calendar…"; plain "My plan" label without initials; compact switch on phones).
+
+**Frontend Tests (v1.79 snapshots wait for the calendar)**: `SnapshotPopover.test.tsx` (while the calendar loads, Save, Enter and Restore wait, with the hint in the panel and as the tooltip; Rename stays available; saving works once loaded), e2e `team-page.spec.ts` (see above).
 
 **Frontend Tests (v1.65 stacked times)**: `src/lib/stackedTeamLayout.test.ts` (time lanes: weekend columns by time, shorter shifts by nearest start, same-time columns by section), `ScheduleGrid.test.tsx` ("stacked times": one column per day, labels, own-time captions, drag between lanes), `TeamPlanHeader.test.tsx` (Times switch).
 
@@ -268,7 +271,13 @@ npx playwright show-report
 
 **Frontend Tests**: `SettingsView.test.tsx` (Rest Day row helper, Planning goals on-call note), `HelpView.test.tsx` (Rest Day row day off).
 
-### 3.14 Swap assistant (v1.78)
+### 3.14 Working hours overview (v1.78)
+
+**Frontend Tests**:
+- [x] `src/lib/workingHours.test.ts` — year weeks (partial ends, ISO labels incl. a year starting on Friday), a week counts from half of the team's target hours (fallback: any shift without contracts), target and tolerance scaled by vacation days, statuses, day details (minutes, shifts, rest days), running balance and totals over counted weeks, a vacation week without status
+- [x] `WorkingHoursOverviewModal.test.tsx` — opens on this week; days with Rest / Vac, tooltips, planned, target with vacation note, difference with status, balance, team counts; sort most under first; a week that does not count yet explains why; week navigation across years; year view cells, hatched uncounted weeks, totals, Hours / Difference / Balance; a week header opens the week; Monday and Sunday stay in one week in three time zones; close button and Escape
+
+### 3.15 Swap assistant (v1.80)
 
 **Backend Tests** (`backend/tests/`; fixtures `make_swap_state`, `asg` and `rich_swap_state` in `swap_fixtures.py`):
 - [x] `test_validation_context.py` — `validate_assignments` and every single validator give the same violations with a precomputed `ValidationContext` (arena fixture and 50 seeded subsets of a chained plan, with and without `skip_references` / `only_fill_required`); a context built for another state raises
@@ -300,7 +309,7 @@ npx playwright show-report
 - [x] Phone: hand over in the sheet; after an Undo in the history (focus on the row, after the sheet's last control) Tab and Shift+Tab stay in the sheet
 - [x] Touch screen (`hover: none`): on pills and clinic sheet names the ⇄ button sits left of the lock and right of the name; tapping ⇄ opens the drawer, tapping the lock only toggles it
 
-**Merged with v1.72–v1.77** (main's `REST_DAY` rule, the stacked team week, My plan):
+**Merged with v1.72–v1.79** (main's `REST_DAY` rule, the stacked team week, My plan, the Working Hours dialog, waiting for the calendar):
 - [x] `test_validation_context.py` — the context holds the calendar's Rest Days; results are identical with and without a context also for lists that add or drop Rest Day entries, in both `own_rest_days` modes (which differ on some list); `test_rest_days_come_from_the_calendar_and_the_checked_list`
 - [x] `test_swap_matching.py` — a Rest Day the plan moves or removes no longer counts (slice, full gate and search; four shapes); every duplicate of the taker's Rest Day is removed, and a moved Rest Day takes every duplicate of the giver's; no Rest Day follows a night onto a shift the taker holds (hidden by a vacation, untimed); a shift on a Rest Day the plan keeps is blocked with "Rest Day: Ben Ott has a Rest Day on Thu 8 Jan."; a pair that existed before is carried over (pre-existing `rest_day`, its check line right after vacation); a cover's slice sees a co-holder's Rest Day; a search reads the calendar's Rest Days once; a partner whose Rest Day the option removes comes after free partners, as a possible match with the note "Ben Ott has a Rest Day on Thu 8 Jan; it will be removed." (one per person and day, in a swap one for each person who loses one)
 - [x] `test_swap_endpoints.py` — a swap that frees the partner's Rest Day applies and undoes (moved, or unticked and so removed); a hand-over removes every duplicate of the taker's Rest Day, or moves every duplicate of the giver's, and undo restores them right away (`canUndo` true in History); undo brings back a Rest Day the swap took from a day its holder worked, but refuses a new pair (also onto a vacation-hidden shift) with "Undo would give …", in History and at the endpoint alike; a shift on a Rest Day the swap keeps is a readable `swap_invalid`; History and undo follow a restored snapshot
@@ -311,6 +320,9 @@ npx playwright show-report
 - [x] E2E: an edit inside the autosave window is saved once (its own autosave does not save it again) and searched once
 - [x] E2E: drawer beside a narrow stacked week (1100 px): the grid ends left of the drawer, the row band and section labels keep whole words, the target and the hovered option's shift are outlined, and Reveal scrolls the week sideways to a Sunday shift; the Sunday shift whose ⇄, or the open Sunday cell whose "Find cover…", opened the drawer is revealed beside it
 - [x] E2E: drawer over a narrow week (700 px, below lg): the stacked labels keep their widths, and Reveal brings a Sunday shift fully out from under the drawer
+- [x] E2E: Working Hours, a dialog itself since v1.78, still closes the drawer before it opens (the test finds the drawer by its name, "Find a swap")
+- [x] E2E: the swap assistant waits until the calendar has loaded: while the demo calendar is shown, "Find cover…", ⇄ and S (on a pill added to the demo calendar) only show the toast "Swaps are available once the calendar has loaded.", "Swap history" is disabled with that tooltip, and nothing is saved or sent to `/v1/swaps`; once the mocked calendar is in, ⇄ opens the drawer and searches. `openCalendar` waits for the mocked calendar, not the demo grid (as in `team-page.spec.ts`)
+- [x] `SwapHistoryButton.test.tsx` — disabled, with the reason as its tooltip, while the calendar loads; enabled, with the title "Swap history", and calls its handler once it has loaded
 
 ---
 
@@ -416,4 +428,6 @@ Areas identified for future test expansion:
 | 2026-11-01 | Claude | v1.75: hand-placed rest days block automatic planning (`REST_DAY`); Balanced on-call fairness follows the rest rule |
 | 2026-11-02 | Claude | v1.76: stacked team week with one lane per section (no "+N", no in-cell section tag), three-column label with spanning row band / section cells; review round: overlap rule for time lanes, auto label tracks, own time as a note, phone labels name every lane |
 | 2026-11-02 | Claude | v1.77: the My-plan loading card keeps the "Team | My plan" switch |
-| 2026-11-02 | Claude | v1.78: swap assistant (incl. `swap-assistant` in the CI spec list), merged with v1.72–v1.77: `REST_DAY` in the swap gates and undo, the "Rest Day removed" note, stacked week and My plan wiring |
+| 2026-11-02 | Claude | v1.78: working hours overview with a week view, a compact year view and fair targets (weeks counted from half of the team's target hours, vacation-scaled targets) |
+| 2026-11-02 | Claude | v1.79: Calendar snapshots wait until the calendar has loaded; team-page e2e waits for the mocked calendar, not the demo grid |
+| 2026-11-02 | Claude | v1.80: swap assistant (incl. `swap-assistant` in the CI spec list), merged with v1.72–v1.79: `REST_DAY` in the swap gates and undo, the "Rest Day removed" note, stacked week and My plan wiring, swaps wait until the calendar has loaded |
