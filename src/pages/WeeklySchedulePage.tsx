@@ -235,7 +235,8 @@ import {
   normalizeAppState,
   type ScheduleRow,
 } from "../lib/shiftRows";
-import { useConfirmHolidayChange } from "./useConfirmHolidayChange";
+import { HOLIDAY_CHANGE_BUSY_MESSAGE } from "../lib/holidayChange";
+import { backupBeforeHolidayChange, useConfirmHolidayChange } from "./useConfirmHolidayChange";
 
 type ScheduleSnapshotImportResult = {
   imported: number;
@@ -500,6 +501,10 @@ export default function WeeklySchedulePage({
   const [solverInfoOpen, setSolverInfoOpen] = useState(false);
   const [holidays, setHolidays] = useState<Holiday[]>(defaultAppState.holidays ?? []);
   const confirmHolidayChange = useConfirmHolidayChange();
+  // Set while a holiday change waits for its confirmation and backup.
+  const holidayChangePendingRef = useRef(false);
+  // Counts loads, restores and applied plans (hydrateStateSlices).
+  const calendarReplacedCountRef = useRef(0);
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
   );
@@ -2491,6 +2496,7 @@ export default function WeeklySchedulePage({
   // hydrate identically. (normalizeAppState already guarantees the Rest Day
   // pool row.)
   const hydrateStateSlices = (normalized: AppState) => {
+    calendarReplacedCountRef.current += 1;
     adoptSavedState(normalized);
     if (normalized.locations?.length) setLocations(normalized.locations);
     setLocationsEnabled(normalized.locationsEnabled ?? true);
@@ -3006,31 +3012,60 @@ export default function WeeklySchedulePage({
   // screen too, so it shows what is saved. Resolves to false when the user
   // cancels; throws when the change cannot be applied.
   const changeHolidays = async (update: (previous: Holiday[]) => Holiday[]) => {
+    // One at a time, and not while a restore, import or plan replaces the
+    // calendar: the list a change computes is applied after its confirmation
+    // and backup, and would undo a change made meanwhile (a loaded list
+    // arriving while the dialog is open).
+    if (holidayChangePendingRef.current || calendarTransitionRef.current) {
+      throw new Error(HOLIDAY_CHANGE_BUSY_MESSAGE);
+    }
     const current = buildCurrentStatePayload();
     if (!current) throw new Error("The current calendar cannot be saved. Fix its template first.");
     const nextHolidays = update(holidays);
     const dropped = findAssignmentsDroppedByHolidayChange(current, nextHolidays);
-    if (dropped.length > 0) {
-      if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
-        // Same guard as the shifts file import: before the load the screen is
-        // not the user's calendar, and with a failed save pending the change
-        // would not be stored after the backup replaced the previous one.
-        throw new Error(saveError ?? "Wait until the calendar has loaded before changing holidays.");
-      }
-      if (!(await confirmHolidayChange(current, dropped))) return false;
-      // The screen keeps exactly what the next save stores.
-      setAssignmentMap((prev) =>
-        buildAssignmentMap(
-          normalizeAppState({
-            ...current,
-            holidays: nextHolidays,
-            assignments: Array.from(prev.values()).flat(),
-          }).state.assignments,
-        ),
-      );
+    if (dropped.length === 0) {
+      setHolidays(nextHolidays);
+      return true;
     }
-    setHolidays(nextHolidays);
-    return true;
+    if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
+      // Same guard as the shifts file import: before the load the screen is
+      // not the user's calendar, and with a failed save pending the change
+      // would not be stored after the backup replaced the previous one.
+      throw new Error(saveError ?? "Wait until the calendar has loaded before changing holidays.");
+    }
+    holidayChangePendingRef.current = true;
+    try {
+      const replacedCount = calendarReplacedCountRef.current;
+      if (!(await confirmHolidayChange(dropped))) return false;
+      // A plan applied while the dialog was open (a run applied when it
+      // finished) replaced the calendar the dialog counted.
+      if (calendarTransitionRef.current || calendarReplacedCountRef.current !== replacedCount) {
+        throw new Error(HOLIDAY_CHANGE_BUSY_MESSAGE);
+      }
+      // The screen is blocked until the change is applied, so nothing
+      // (another holiday change, a shift dragged onto the day) changes the
+      // calendar between the backup and the change.
+      pauseCalendarSaving();
+      try {
+        await backupBeforeHolidayChange(current);
+        // The screen keeps exactly what the next save stores.
+        setAssignmentMap((prev) =>
+          buildAssignmentMap(
+            normalizeAppState({
+              ...current,
+              holidays: nextHolidays,
+              assignments: Array.from(prev.values()).flat(),
+            }).state.assignments,
+          ),
+        );
+        setHolidays(nextHolidays);
+      } finally {
+        resumeCalendarSaving();
+      }
+      return true;
+    } finally {
+      holidayChangePendingRef.current = false;
+    }
   };
   // Loading holidays applies the list as it is once the request returns.
   const changeHolidaysRef = useRef(changeHolidays);

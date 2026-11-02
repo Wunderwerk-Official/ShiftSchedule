@@ -43,7 +43,20 @@ const germany2026 = [
   nationwide("2026-12-26", "Zweiter Weihnachtstag"),
 ];
 
-async function openHolidaySettings(page: Page, state: AppState) {
+// Holds a mocked request until release() is called.
+function gate() {
+  let release!: () => void;
+  const opened = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { opened, release };
+}
+
+async function openHolidaySettings(
+  page: Page,
+  state: AppState,
+  hold: { backup?: Promise<void>; holidays?: Promise<void> } = {},
+) {
   let current = { ...state, revision: "r0" } as AppState;
   const statePosts: AppState[] = [];
   const holidayRequests: string[] = [];
@@ -52,11 +65,12 @@ async function openHolidaySettings(page: Page, state: AppState) {
   await page.route("**/auth/me", (route) =>
     route.fulfill({ json: { username: "test", role: "user", active: true } }),
   );
-  await page.route("https://date.nager.at/**", (route) => {
+  await page.route("https://date.nager.at/**", async (route) => {
     holidayRequests.push(new URL(route.request().url()).pathname);
+    await hold.holidays;
     return route.fulfill({ json: germany2026 });
   });
-  await page.route("**/v1/**", (route) => {
+  await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path.endsWith("/v1/state")) {
@@ -68,6 +82,7 @@ async function openHolidaySettings(page: Page, state: AppState) {
     }
     if (path.endsWith("/v1/state/snapshots/import-backup")) {
       backups.push(request.postDataJSON());
+      await hold.backup;
       return route.fulfill({
         status: 201,
         json: { id: "backup", name: "Auto-backup before holiday change", kind: "auto_backup",
@@ -196,6 +211,69 @@ test("removed shifts stay removed when the holiday comes back", async ({ page })
   await expect(page.getByText("Loaded 19 public holidays for 2026.")).toBeVisible();
   await expect(page.getByRole("dialog")).toHaveCount(0);
   await expect.poll(() => holidayNames(api.saved())).toContain("Buß- und Bettag");
+  expect(shiftIds(api.saved())).toEqual(["fron", "hdk", "mon"]);
+  expect(api.backups).toHaveLength(1);
+});
+
+test("the screen waits while the backup is saved, so no other change is lost", async ({ page }) => {
+  const backup = gate();
+  const api = await openHolidaySettings(page, { ...defaultState, assignments: plannedShifts }, {
+    backup: backup.opened,
+  });
+  await page.locator("div.grid", { hasText: "Buß- und Bettag" }).getByRole("button", { name: "Remove" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Remove 2 shifts" }).click();
+  // While the backup is being saved, the calendar cannot be changed: removing
+  // Neujahr (no shifts, so no question) is blocked instead of being undone
+  // when the first change applies.
+  await expect(page.getByRole("status")).toHaveText("Updating calendar…");
+  await expect.poll(() => api.backups.length).toBe(1);
+  const neujahr = page.locator("div.grid", { hasText: "Neujahr" }).getByRole("button", { name: "Remove" });
+  await expect(neujahr.click({ timeout: 500 })).rejects.toThrow();
+  await expect(page.getByText("Buß- und Bettag", { exact: true })).toBeVisible();
+
+  backup.release();
+  await expect(page.getByRole("status")).toHaveCount(0);
+  await expect(page.getByText("Buß- und Bettag", { exact: true })).toHaveCount(0);
+  await neujahr.click();
+  await expect(page.getByText("Neujahr", { exact: true })).toHaveCount(0);
+  await expect.poll(() => holidayNames(api.saved())).toHaveLength(17);
+  expect(holidayNames(api.saved())).not.toContain("Neujahr");
+  expect(holidayNames(api.saved())).not.toContain("Buß- und Bettag");
+  expect(shiftIds(api.saved())).toEqual(["fron", "hdk", "mon"]);
+  expect(api.backups).toHaveLength(1);
+});
+
+test("holidays loaded while a removal waits for its answer are refused, not overwritten", async ({ page }) => {
+  const holidays = gate();
+  const withoutLabourDay = (defaultState.holidays ?? []).filter((holiday) => holiday.dateISO !== "2026-05-01");
+  const api = await openHolidaySettings(
+    page,
+    { ...defaultState, holidays: withoutLabourDay, assignments: plannedShifts },
+    { holidays: holidays.opened },
+  );
+  await expect(page.getByText("Tag der Arbeit", { exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Load Holidays" }).click();
+  await expect.poll(() => api.holidayRequests.length).toBe(1);
+  await page.locator("div.grid", { hasText: "Buß- und Bettag" }).getByRole("button", { name: "Remove" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toContainText("2 shifts, 1 of them locked");
+
+  // The loaded list (which brings back Tag der Arbeit) arrives meanwhile.
+  holidays.release();
+  await expect(
+    page.getByText("Another change to the calendar is in progress, so the holidays were not changed. Try again when it is done."),
+  ).toBeVisible();
+  await expect(page.getByText("Tag der Arbeit", { exact: true })).toHaveCount(0);
+  await dialog.getByRole("button", { name: "Remove 2 shifts" }).click();
+  await expect(page.getByText("Buß- und Bettag", { exact: true })).toHaveCount(0);
+  await expect.poll(() => shiftIds(api.saved())).toEqual(["fron", "hdk", "mon"]);
+  expect(holidayNames(api.saved())).toHaveLength(17);
+
+  // Loading again applies the list.
+  await page.getByRole("button", { name: "Load Holidays" }).click();
+  await expect(page.getByText("Loaded 19 public holidays for 2026.")).toBeVisible();
+  await expect(page.getByText("Tag der Arbeit", { exact: true })).toBeVisible();
+  await expect.poll(() => holidayNames(api.saved())).toHaveLength(19);
   expect(shiftIds(api.saved())).toEqual(["fron", "hdk", "mon"]);
   expect(api.backups).toHaveLength(1);
 });

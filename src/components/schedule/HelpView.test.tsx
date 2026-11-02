@@ -61,6 +61,10 @@ it("says that a holiday change removes the shifts of the changed days only after
       "removed, locked ones too.",
   );
   expect(text).toContain("when you confirm, the calendar is saved as the automatic backup (see 10) before the change");
+  expect(text).toContain(
+    "Before a restore, a planning result, a shifts file import or a holiday change that removes " +
+      "shifts is applied, the current calendar is saved as an automatic backup.",
+  );
 });
 
 it("says that a name dragged into the Rest Day row keeps automatic planning away (v1.75)", () => {

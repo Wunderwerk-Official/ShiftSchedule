@@ -280,9 +280,9 @@ export default function HelpView() {
           <p>
             The <span className="font-medium">Calendar snapshots</span> button in the top
             bar saves the whole calendar under a name and restores it later. Before a
-            restore, a planning result or a shifts file import is applied, the current
-            calendar is saved as an automatic backup. There is one automatic backup: the
-            latest one replaces the previous.
+            restore, a planning result, a shifts file import or a holiday change that
+            removes shifts is applied, the current calendar is saved as an automatic
+            backup. There is one automatic backup: the latest one replaces the previous.
           </p>
           <p className="mt-2">
             Settings → <span className="font-medium">Shifts file</span> downloads all shifts
