@@ -148,8 +148,8 @@ Am Computer liegt ein Vollbild-Overlay über dem Kalender, links der Chat, recht
 │ A: Für welche Tage und Uhrzeiten   │ Entwurf                             │
 │    werden CT, MRT und Angio        │ Standort  Klinikum Mitte            │
 │    besetzt, mit wie vielen Leuten? │ Bereiche  CT, MRT, Angio, Dienst    │
-│ P: CT und MRT werktags halb acht   │                                     │
-│    bis vier, CT mit drei Leuten …  │ Dienst               Mo-Fr Sa So Ft │
+│ P: CT, MRT und Angio werktags      │                                     │
+│    halb acht bis vier, CT mit …    │ Dienst               Mo-Fr Sa So Ft │
 │ ┌ Notiert ────────────────────┐    │ CT     07:30-16:00       3  0  0  0 │
 │ │ CT Mo-Fr 07:30-16:00 3 Pers.│    │ MRT    07:30-16:00       2  0  0  0 │
 │ │ [Bearbeiten] [Rückgängig]   │    │ Angio  07:30-16:00       1  0  0  0 │
@@ -235,7 +235,7 @@ Kapitel `shifts`:
 
 > A: Für welche Tage und Uhrzeiten werden CT, MRT, Angio und der Dienst besetzt, und mit wie vielen Personen?
 >
-> P: CT und MRT werktags halb acht bis vier, CT mit drei Leuten, MRT mit zwei, Angio eine Person. Dienst unter der Woche von 16 Uhr bis halb acht am nächsten Morgen, am Wochenende 24 Stunden, immer einer.
+> P: CT, MRT und Angio werktags halb acht bis vier, CT mit drei Leuten, MRT mit zwei, Angio mit einer Person. Der Dienst geht unter der Woche von 16 Uhr bis halb acht am nächsten Morgen, am Wochenende 24 Stunden, immer eine Person.
 
 Das Modell antwortet mit einem einzigen Werkzeugaufruf:
 
