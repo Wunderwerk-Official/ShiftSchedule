@@ -248,6 +248,45 @@ describe("ClinicSheetGrid", () => {
     expect(onMoveWithinDay).not.toHaveBeenCalled();
   });
 
+  it("moves a Rest Day name to the Rest Day row of another day, like the weekly grid", () => {
+    const slotRow = makeSlotRow();
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const restRow: ScheduleRow = { id: "pool-rest-day", kind: "pool", name: "Ruhetag", dotColorClass: "" };
+    const days = buildMonthDays(new Date(2026, 6, 1), new Set());
+    const model = buildClinicSheetModel({ calendarRows: [groupedRow, restRow], days });
+    const rest: RenderedAssignment = {
+      id: "rest-1",
+      rowId: "pool-rest-day",
+      dateISO: "2026-07-06",
+      clinicianId: "clin-1",
+    };
+    const onMoveRestDay = vi.fn();
+    const onRemoveAssignment = vi.fn();
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={new Map([["pool-rest-day__2026-07-06", [rest]]])}
+        rows={[groupedRow, restRow]}
+        getClinicianName={() => "Anna Bergmann"}
+        getIsQualified={() => true}
+        onMoveWithinDay={vi.fn()}
+        onRemoveAssignment={onRemoveAssignment}
+        onMoveRestDay={onMoveRestDay}
+      />,
+    );
+    const name = screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(name, { dataTransfer });
+    fireEvent.drop(sheetCell("pool-rest-day", "2026-07-08"), { dataTransfer });
+    expect(onMoveRestDay).toHaveBeenCalledWith({
+      fromDateISO: "2026-07-06",
+      toDateISO: "2026-07-08",
+      assignmentId: "rest-1",
+      clinicianId: "clin-1",
+    });
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+  });
+
   it("ignores a malformed drag payload", () => {
     const { onMoveWithinDay, onRemoveAssignment } = setup();
     const name = screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;

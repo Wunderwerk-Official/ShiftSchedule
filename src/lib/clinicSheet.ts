@@ -1,7 +1,7 @@
 import type { DayType } from "../api/client";
 import type { ScheduleRow } from "./shiftRows";
 import { getDayType } from "./dayTypes";
-import { addDays, daysInMonth, formatMonthLabel, startOfMonth, toISODate } from "./date";
+import { addDays, daysInMonth, startOfMonth, toISODate } from "./date";
 
 // Colors lifted verbatim from the clinic's Excel Arbeitsplan.
 export const EXCEL_GRAY = "#C0C0C0";
@@ -196,7 +196,11 @@ export function buildClinicSheetModel(args: {
   }
 
   return {
-    monthLabel: formatMonthLabel(days[0]?.date ?? new Date()),
+    // The sheet clones a German Excel layout: its month label stays German
+    // (the month navigator above it speaks English like the rest of the UI).
+    monthLabel: new Intl.DateTimeFormat("de-DE", { month: "long", year: "numeric" }).format(
+      days[0]?.date ?? new Date(),
+    ),
     days,
     sections,
     poolRows,

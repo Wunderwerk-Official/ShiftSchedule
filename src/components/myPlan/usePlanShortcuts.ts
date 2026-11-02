@@ -1,7 +1,10 @@
 import { useEffect, useRef } from "react";
 
-// Global single-key shortcuts of My plan (SPEC R16). They only act outside
-// text inputs, without Ctrl/Alt/Meta, and not while a modal sheet is open.
+// Global single-key shortcuts of My plan (SPEC R16). They act without
+// Ctrl/Alt/Meta, not while a modal sheet is open, and not while focus is in an
+// editable element or inside a popover, list, menu or dialog (modal or not:
+// the person picker, the shift detail, the day popover). The one exception:
+// N / Shift+N also step on from the shift detail they open.
 
 export type PlanShortcut =
   | "day"
@@ -41,9 +44,30 @@ const BY_KEY: Record<string, PlanShortcut> = {
   "?": "help",
 };
 
-function isTypingTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  return target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName);
+// Focus inside one of these belongs to that control, not to the page.
+const FOCUS_OWNERS = [
+  '[role="dialog"]',
+  '[role="alertdialog"]',
+  '[role="listbox"]',
+  '[role="menu"]',
+  '[role="menubar"]',
+  '[role="textbox"]',
+  '[role="searchbox"]',
+  '[role="combobox"]',
+  "[popover]",
+].join(", ");
+
+// The shift detail popover: N / Shift+N keep stepping from there.
+const SHIFT_STEP_ZONE = "[data-shift-steps]";
+
+function focusOwner(target: EventTarget | null): "page" | "shiftDetail" | "control" {
+  if (!(target instanceof HTMLElement)) return "page";
+  if (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) {
+    return "control";
+  }
+  const owner = target.closest(FOCUS_OWNERS);
+  if (!owner) return "page";
+  return owner.matches(SHIFT_STEP_ZONE) ? "shiftDetail" : "control";
 }
 
 export function usePlanShortcuts(handlers: Partial<Record<PlanShortcut, () => void>>): void {
@@ -52,9 +76,10 @@ export function usePlanShortcuts(handlers: Partial<Record<PlanShortcut, () => vo
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
-      if (isTypingTarget(event.target)) return;
       if (document.querySelector('[role="dialog"][aria-modal="true"]')) return;
+      const owner = focusOwner(event.target);
       const key = event.key.toLowerCase();
+      if (owner === "control" || (owner === "shiftDetail" && key !== "n")) return;
       const shortcut = key === "n" ? (event.shiftKey ? "previousShift" : "nextShift") : BY_KEY[key];
       const handler = shortcut ? handlersRef.current[shortcut] : undefined;
       if (!handler) return;

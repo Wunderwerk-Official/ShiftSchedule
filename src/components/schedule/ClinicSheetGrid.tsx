@@ -3,7 +3,11 @@ import AssignmentLockButton from "./AssignmentLockButton";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import { cx } from "../../lib/classNames";
-import { sortAssignmentsBySurname, type RenderedAssignment } from "../../lib/schedule";
+import {
+  REST_DAY_POOL_ID,
+  sortAssignmentsBySurname,
+  type RenderedAssignment,
+} from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getLuminance } from "../../lib/shiftRows";
 import {
@@ -15,6 +19,7 @@ import {
   DRAG_MIME,
   readDragPayload,
   type DragPayload,
+  type MoveRestDayArgs,
   type SlotOptionClinician,
 } from "../../lib/clinicianSlotOptions";
 import {
@@ -115,6 +120,8 @@ type ClinicSheetGridProps = {
     assignmentId: string;
     clinicianId: string;
   }) => void;
+  /** A Rest Day name dropped on the Rest Day row of another day (other drops on another day remove). */
+  onMoveRestDay?: (args: MoveRestDayArgs) => void;
   onClinicianClick?: (clinicianId: string) => void;
 };
 
@@ -133,6 +140,7 @@ export default function ClinicSheetGrid({
   onRemoveAssignment,
   onToggleAssignmentLock,
   onMoveWithinDay,
+  onMoveRestDay,
   onClinicianClick,
 }: ClinicSheetGridProps) {
   const { days, sections, poolRows } = model;
@@ -194,9 +202,10 @@ export default function ClinicSheetGrid({
     };
   }, [dragging, onRemoveAssignment]);
 
-  // Shared drop handling for slot areas and pool cells: drops from another
-  // day (or onto an incompatible slot) remove the assignment, drops on the
-  // source cell are a no-op, valid same-day drops move.
+  // Shared drop handling for slot areas and pool cells: a Rest Day name
+  // dropped on the Rest Day row of another day moves there, other drops from
+  // another day (or onto an incompatible slot) remove the assignment, drops
+  // on the source cell are a no-op, valid same-day drops move.
   const handleCellDrop = (event: ReactDragEvent, targetRowId: string, dateISO: string) => {
     event.preventDefault();
     event.stopPropagation();
@@ -204,7 +213,16 @@ export default function ClinicSheetGrid({
     setDragging(null);
     if (!payload) return;
     if (payload.dateISO !== dateISO) {
-      onRemoveAssignment?.(payload);
+      if (payload.rowId === REST_DAY_POOL_ID && targetRowId === REST_DAY_POOL_ID && onMoveRestDay) {
+        onMoveRestDay({
+          fromDateISO: payload.dateISO,
+          toDateISO: dateISO,
+          assignmentId: payload.assignmentId,
+          clinicianId: payload.clinicianId,
+        });
+      } else {
+        onRemoveAssignment?.(payload);
+      }
       return;
     }
     if (payload.rowId === targetRowId) return;

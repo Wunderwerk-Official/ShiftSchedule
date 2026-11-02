@@ -86,6 +86,7 @@ export default function MonthNavigator({
               onSelectDate={handleSelectDate}
               selectedDate={month}
               anchorRef={buttonRef}
+              unit="month"
             />
           )}
         </div>

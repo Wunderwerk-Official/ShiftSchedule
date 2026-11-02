@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cx } from "../../lib/classNames";
+import { formatMonthLabel } from "../../lib/date";
 import { ChevronLeftIcon, ChevronRightIcon } from "./icons";
 
 type DatePickerPopoverProps = {
@@ -11,6 +12,8 @@ type DatePickerPopoverProps = {
   onSelectDate: (weekStart: Date, firstDayInMonth: Date) => void;
   selectedDate: Date;
   anchorRef: React.RefObject<HTMLElement>;
+  /** What a row picks: its week (week navigator) or its month (month navigator). */
+  unit?: "week" | "month";
 };
 
 const WEEKDAYS = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
@@ -81,6 +84,7 @@ export default function DatePickerPopover({
   onSelectDate,
   selectedDate,
   anchorRef,
+  unit = "week",
 }: DatePickerPopoverProps) {
   const popoverRef = useRef<HTMLDivElement>(null);
   const [viewDate, setViewDate] = useState(() => new Date(selectedDate));
@@ -138,8 +142,6 @@ export default function DatePickerPopover({
   const month = viewDate.getMonth();
   const weeks = getMonthWeeks(year, month);
 
-  const monthName = new Intl.DateTimeFormat("en-US", { month: "long" }).format(viewDate);
-
   const goToPrevMonth = () => {
     setViewDate(new Date(year, month - 1, 1));
   };
@@ -174,7 +176,7 @@ export default function DatePickerPopover({
           <ChevronLeftIcon className="h-4 w-4" />
         </button>
         <span className="text-sm font-medium text-slate-700 dark:text-slate-200">
-          {monthName} {year}
+          {formatMonthLabel(viewDate)}
         </span>
         <button
           type="button"
@@ -188,7 +190,7 @@ export default function DatePickerPopover({
 
       {/* Hint text */}
       <div className="mb-2 text-center text-[10px] text-slate-400 dark:text-slate-500">
-        Select a week
+        {unit === "month" ? "Select a month" : "Select a week"}
       </div>
 
       {/* Weekday headers */}
@@ -263,14 +265,14 @@ export default function DatePickerPopover({
         })}
       </div>
 
-      {/* This week button */}
+      {/* This week / This month button */}
       <div className="mt-2 border-t border-slate-100 pt-2 dark:border-slate-700">
         <button
           type="button"
           onClick={() => handleSelectWeek(today)}
           className="w-full rounded-lg px-3 py-1.5 text-xs font-medium text-sky-600 hover:bg-sky-50 dark:text-sky-400 dark:hover:bg-sky-900/30"
         >
-          This week
+          {unit === "month" ? "This month" : "This week"}
         </button>
       </div>
     </div>,

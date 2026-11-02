@@ -12,9 +12,14 @@ import {
   readDragPayload,
   type DateIntervalIndex,
   type DragPayload,
+  type MoveRestDayArgs,
 } from "../../lib/clinicianSlotOptions";
 import { formatDayHeader, toISODate } from "../../lib/date";
-import { formatTimeRangeLabel, sortAssignmentsBySurname } from "../../lib/schedule";
+import {
+  formatTimeRangeLabel,
+  REST_DAY_POOL_ID,
+  sortAssignmentsBySurname,
+} from "../../lib/schedule";
 import { getDayType } from "../../lib/dayTypes";
 import {
   buildStackedTeamLayout,
@@ -98,6 +103,8 @@ type ScheduleGridProps = {
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
   onRemoveAssignment?: (args: { rowId: string; dateISO: string; assignmentId: string; clinicianId: string }) => void;
+  /** A Rest Day pill dropped on the Rest Day row of another day (other drops on another day remove). */
+  onMoveRestDay?: (args: MoveRestDayArgs) => void;
   /** Person colors of the team grid by clinician id (absent = section look: print and public pages). */
   personPillStyles?: Map<string, PersonPillStyle>;
   /** Clinician whose pills get the "you" outline (the linked person, with person colors). */
@@ -149,6 +156,7 @@ export default function ScheduleGrid({
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
+  onMoveRestDay,
   onToggleAssignmentLock,
   personPillStyles,
   myClinicianId,
@@ -486,10 +494,12 @@ export default function ScheduleGrid({
                   return (
                     <div
                       key={`day-${dateISO}`}
+                      // The holiday name is clipped to the column: full name on hover.
+                      title={holidayName}
                       className={cx(
                         "sticky top-0 z-30 relative border-b border-r-2 border-slate-300 px-2 py-1 text-center overflow-visible dark:border-slate-700 sm:px-3",
                         isHoliday
-                          ? "bg-[#F3E8FF] dark:bg-slate-800"
+                          ? "bg-[#F3E8FF] dark:bg-[#2E1F47]"
                           : isWeekend
                             ? "bg-[#F3F4F6] dark:bg-slate-800"
                             : "bg-slate-50 dark:bg-slate-900",
@@ -582,6 +592,7 @@ export default function ScheduleGrid({
                         enableSlotOverrides={enableSlotOverrides}
                         onMoveWithinDay={onMoveWithinDay}
                         onRemoveAssignment={onRemoveAssignment}
+                        onMoveRestDay={onMoveRestDay}
                         onToggleAssignmentLock={onToggleAssignmentLock}
                         dragging={dragging}
                         setDragging={setDragging}
@@ -654,6 +665,7 @@ function RowSection({
   enableSlotOverrides,
   onMoveWithinDay,
   onRemoveAssignment,
+  onMoveRestDay,
   onToggleAssignmentLock,
   dragging,
   setDragging,
@@ -715,6 +727,7 @@ function RowSection({
     assignmentId: string;
     clinicianId: string;
   }) => void;
+  onMoveRestDay?: (args: MoveRestDayArgs) => void;
   dragging: DragPayload | null;
   setDragging: (next: DragPayload | null) => void;
   hoveredClassCell: { rowId: string; dateISO: string } | null;
@@ -829,9 +842,10 @@ function RowSection({
       unknownIntervalsByDate,
     });
   // Drop on a pool or class cell: a same-day drop moves the pill, a drop on
-  // its own cell is a no-op. A drop from another day, onto an inactive cell
-  // or onto a slot that clashes with another shift of the person removes the
-  // assignment. A malformed payload is ignored.
+  // its own cell is a no-op. A Rest Day pill dropped on the Rest Day row of
+  // another day moves there. Any other drop from another day, onto an
+  // inactive cell or onto a slot that clashes with another shift of the
+  // person removes the assignment. A malformed payload is ignored.
   const handleCellDrop = (
     event: ReactDragEvent<HTMLElement>,
     targetRowId: string,
@@ -843,7 +857,16 @@ function RowSection({
     setDragging(null);
     if (!payload) return;
     if (payload.dateISO !== dateISO) {
-      onRemoveAssignment?.(payload);
+      if (isRestDayMove(payload.rowId, targetRowId) && onMoveRestDay) {
+        onMoveRestDay({
+          fromDateISO: payload.dateISO,
+          toDateISO: dateISO,
+          assignmentId: payload.assignmentId,
+          clinicianId: payload.clinicianId,
+        });
+      } else {
+        onRemoveAssignment?.(payload);
+      }
       return;
     }
     if (payload.rowId === targetRowId) return;
@@ -983,7 +1006,12 @@ function RowSection({
             const sortedAssignments = sortAssignmentsBySurname(assignments, getClinicianName);
             // For unique abbreviations within the cell.
             const siblingNames = sortedAssignments.map((a) => getClinicianName(a.clinicianId));
-            const isOtherDay = !!dragging && dragging.dateISO !== dateISO;
+            // A dragged Rest Day pill can move to another day's Rest Day
+            // cell: those stay bright, the rest of the other days greys out.
+            const isOtherDay =
+              !!dragging &&
+              dragging.dateISO !== dateISO &&
+              !(onMoveRestDay && isRestDayMove(dragging.rowId, row.id));
             const cellBgClass = isOtherDay
               ? "bg-slate-200/70 text-slate-400 opacity-60"
               : rowBg;
@@ -1003,7 +1031,7 @@ function RowSection({
                     : (e) => {
                         if (!dragging) return;
                         e.preventDefault();
-                        if (dragging.dateISO === dateISO) e.dataTransfer.dropEffect = "move";
+                        if (!isOtherDay) e.dataTransfer.dropEffect = "move";
                       }
                 }
                 onDrop={readOnly ? undefined : (e) => handleCellDrop(e, row.id, dateISO, false)}
@@ -1329,6 +1357,11 @@ function RowSection({
   );
 }
 
+/** A Rest Day pill dropped on the Rest Day row (of another day: a move). */
+function isRestDayMove(fromRowId: string, toRowId: string) {
+  return fromRowId === REST_DAY_POOL_ID && toRowId === REST_DAY_POOL_ID;
+}
+
 function SeparatorRow() {
   return (
     <div
@@ -1475,7 +1508,7 @@ function LocationSeparatorRow({
             className={cx(
               "row border-t-2 border-r-2 border-slate-300 px-1 py-0.5 text-center text-[8px] font-medium text-slate-700 dark:text-slate-200 dark:border-slate-700",
               isHoliday
-                ? "bg-[#F3E8FF] dark:bg-slate-800"
+                ? "bg-[#F3E8FF] dark:bg-[#2E1F47]"
                 : isWeekend
                   ? "bg-[#F3F4F6] dark:bg-slate-800"
                   : "bg-slate-50 dark:bg-slate-900",

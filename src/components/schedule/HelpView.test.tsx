@@ -60,6 +60,17 @@ it("says that a name dragged into the Rest Day row keeps automatic planning away
   );
 });
 
+it("explains moving and removing rest days and the week in the address (v1.78)", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain(
+    "Drag such a name to another day’s Rest Day row to move the day off, or out of the calendar to remove it.",
+  );
+  expect(text).toContain("Rest days from the on-call rule follow the on-call shift");
+  expect(text).toContain("or out of the calendar, to end the vacation that day");
+  expect(text).toContain("The week you look at is part of the page address");
+});
+
 it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () => {
   const { container } = render(<HelpView />);
   const text = (container.textContent ?? "").replace(/\s+/g, " ");

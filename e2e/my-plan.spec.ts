@@ -291,7 +291,7 @@ test("'Not <name>? Change who you are' unlinks the account, so My plan asks agai
   expect(api.errors).toEqual([]);
 });
 
-test("My plan waits for the calendar instead of calling the link stale", async ({ page }) => {
+test("both plans wait for the calendar: no demo calendar in Team, no stale link in My plan", async ({ page }) => {
   // Real ids are not among the built-in demo people the page holds until
   // GET /v1/state answers (the e2e default state reuses the demo ids).
   const REAL = "clinician-real-1";
@@ -313,22 +313,28 @@ test("My plan waits for the calendar instead of calling the link stale", async (
   });
 
   // Preferences are in (linked to REAL), the calendar is not. The team plan
-  // never waits; switching to My plan by hand shows only the placeholder, no
+  // shows the loading card instead of the built-in demo calendar and its
+  // controls (edits there would be lost); My plan shows it too, with no
   // "Who are you" card listing the demo people.
   await prefsAnswered;
   const scope = page.getByRole("group", { name: "Choose plan" });
   await expect(scope.getByRole("button", { name: "Team" })).toHaveAttribute("aria-pressed", "true");
+  await expect(page.getByRole("region", { name: "Team plan" }).getByText("Loading calendar…")).toBeVisible();
+  await expect(page.locator('[data-schedule-grid="true"]')).toHaveCount(0);
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /open slots?$/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open Vacation Planner" })).toBeHidden();
   await scope.getByRole("button", { name: "My plan" }).click();
   await page.waitForTimeout(300);
-  await expect(page.getByText("Loading calendar…")).toBeAttached();
+  await expect(page.getByRole("region", { name: "My plan" }).getByText("Loading calendar…")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toHaveCount(0);
   await expect(page.locator('[data-schedule-grid="true"]')).toHaveCount(0);
 
   // The loading card keeps the switch (v1.77): back to Team and again to My plan.
   await expect(scope.getByRole("button", { name: "My plan" })).toHaveAttribute("aria-pressed", "true");
   await scope.getByRole("button", { name: "Team" }).click();
-  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
-  await expect(page.getByText("Loading calendar…")).toHaveCount(0);
+  await expect(page.getByRole("region", { name: "Team plan" }).getByText("Loading calendar…")).toBeVisible();
+  await expect(page.locator('[data-schedule-grid="true"]')).toHaveCount(0);
   await scope.getByRole("button", { name: "My plan" }).click();
   await expect(page.getByText("Loading calendar…")).toBeVisible();
 
@@ -337,6 +343,9 @@ test("My plan waits for the calendar instead of calling the link stale", async (
   await expect(page.getByRole("button", { name: /^CT, / })).toHaveCount(1);
   await expect(page.getByText("Loading calendar…")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Who are you in the plan?" })).toHaveCount(0);
+  // Back in Team: the real calendar.
+  await scope.getByRole("button", { name: "Team" }).click();
+  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
   expect(api.prefsPuts).toEqual([]);
   expect(api.errors).toEqual([]);
 });
