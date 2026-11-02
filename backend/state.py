@@ -35,6 +35,7 @@ from .models import (
     WeeklyTemplateLocation,
     WorkplaceRow,
 )
+from .publication import _prune_clinician_publications
 
 DAY_TYPES = ("mon", "tue", "wed", "thu", "fri", "sat", "sun", "holiday")
 PREFERRED_WORKING_DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
@@ -1312,6 +1313,7 @@ def _save_state(
         "INSERT OR REPLACE INTO app_state (id, data, updated_at) VALUES (?, ?, ?)",
         (user_id, json.dumps(payload), now),
     )
+    _prune_clinician_publications(conn, user_id, (clinician.id for clinician in state.clinicians))
     state.revision = _state_revision(state)
 
 

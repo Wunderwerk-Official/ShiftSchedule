@@ -52,6 +52,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -66,6 +67,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -80,6 +82,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -96,6 +99,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -111,6 +115,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={[]}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -126,6 +131,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -142,6 +148,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -158,6 +165,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -172,6 +180,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -186,6 +195,7 @@ describe("WorkingHoursOverviewModal", () => {
         clinicians={mockClinicians}
         assignments={[]}
         weeklyTemplate={mockTemplate}
+        timeZone="Europe/Berlin"
       />
     );
 
@@ -387,12 +397,44 @@ describe("Weekly hours aggregation (rendered)", () => {
         clinicians={[{ id: "clin-1", name: "Dr. Night" }]}
         assignments={assignments}
         weeklyTemplate={template}
+        timeZone="Europe/Berlin"
       />,
     );
     expect(screen.getByTestId("hours-clin-1-w1")).toHaveTextContent("8");
     expect(screen.getByTestId("hours-clin-1-w2")).toHaveTextContent("15");
     expect(screen.getByTestId("hours-clin-1-w3")).toHaveTextContent("–");
     expect(screen.getByTestId("hours-clin-1-total")).toHaveTextContent("23");
+  });
+
+  it("counts nights across a DST change with their real length", () => {
+    // The clocks change on the last Sunday of March and October: the night
+    // starting the Saturday before is an hour shorter / longer.
+    const saturdayBeforeChange = (month: number) => {
+      const day = new Date(Date.UTC(year, month + 1, 0));
+      day.setUTCDate(day.getUTCDate() - day.getUTCDay() - 1);
+      return day.toISOString().slice(0, 10);
+    };
+    const dutyTemplate: WeeklyCalendarTemplate = {
+      ...template,
+      locations: [{ ...template.locations[0], slots: [
+        { id: "duty", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "16:00", endTime: "08:00", endDayOffset: 1 },
+      ] }],
+    };
+    render(
+      <WorkingHoursOverviewModal
+        open
+        onClose={() => {}}
+        clinicians={[{ id: "clin-oct", name: "Dr. October" }, { id: "clin-mar", name: "Dr. March" }]}
+        assignments={[
+          { id: "o", rowId: "duty", dateISO: saturdayBeforeChange(9), clinicianId: "clin-oct" },
+          { id: "m", rowId: "duty", dateISO: saturdayBeforeChange(2), clinicianId: "clin-mar" },
+        ]}
+        weeklyTemplate={dutyTemplate}
+        timeZone="Europe/Berlin"
+      />,
+    );
+    expect(screen.getByTestId("hours-clin-oct-total")).toHaveTextContent("17");
+    expect(screen.getByTestId("hours-clin-mar-total")).toHaveTextContent("15");
   });
 
   // Pins that week keys stay consistent across time zones: Monday and Sunday
@@ -416,6 +458,7 @@ describe("Weekly hours aggregation (rendered)", () => {
               { id: "s", rowId: "day", dateISO: toISODate(sunday), clinicianId: "clin-tz" },
             ]}
             weeklyTemplate={template}
+            timeZone="Europe/Berlin"
           />,
         );
         expect(screen.getByTestId("hours-clin-tz-w1")).toHaveTextContent("–");

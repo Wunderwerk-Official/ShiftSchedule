@@ -43,6 +43,8 @@ export type PlanSource = {
   publishedWeekStartISOs: string[];
   /** On-call section (duty style) and on-call rest days, only when enabled. */
   solverSettings?: SolverSettings;
+  /** The plan's IANA zone (planTimeZone(holidayCountry)); slot times are its wall clock. */
+  timeZone: string;
 };
 
 /** One assignment of a clinician on a section slot. */
@@ -75,7 +77,15 @@ export type PlanShift = {
   startMin: number;
   /** Minutes from start-day midnight; > 1440 for overnight shifts. */
   endMin: number;
-  /** Gross slot duration in hours (no break deduction), counted on the start day. */
+  /** Real start instant (ms since epoch) of startMin in the plan's zone. */
+  startsAt: number;
+  /** Real end instant (ms since epoch) of endMin in the plan's zone. */
+  endsAt: number;
+  /**
+   * Gross duration in hours (no break deduction), counted on the start day:
+   * real elapsed time, so a 16:00–08:00 night lasts 17 h when the clocks go
+   * back and 15 h when they go forward.
+   */
   hours: number;
   /**
    * Hours this shift adds to day/week sums (SPEC R4): time overlapping a

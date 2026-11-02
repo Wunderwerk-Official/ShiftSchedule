@@ -8,6 +8,7 @@ These tests verify that the web API correctly:
 """
 
 import json
+from datetime import timedelta
 from typing import Any, Dict
 
 import pytest
@@ -160,10 +161,14 @@ class TestWebEtagCaching:
         assert "ETag" in response.headers
 
     def test_returns_last_modified_header(
-        self, client: TestClient, setup_web_publication
+        self, client: TestClient, setup_web_publication, monkeypatch
     ) -> None:
-        """Response should include Last-Modified header."""
+        """Response should include Last-Modified header (once the change's second is over)."""
+        from backend import publication
+
         token = setup_web_publication["token"]
+        later = publication._utcnow() + timedelta(seconds=1)
+        monkeypatch.setattr(publication, "_utcnow", lambda: later)
         response = client.get(f"/v1/web/{token}/week?start=2026-01-05")
 
         assert response.status_code == 200

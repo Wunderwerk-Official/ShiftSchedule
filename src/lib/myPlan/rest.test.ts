@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { REST_DAY_POOL_ID } from "../schedule";
 import { findNextShift } from "./nextUp";
 import { nextAfter, restBefore } from "./rest";
@@ -101,6 +101,31 @@ describe("restBefore / nextAfter (SPEC D4)", () => {
   });
 });
 
+describe("restBefore across a DST change", () => {
+  it("counts the real rest after a night that gains an hour", () => {
+    const dstPlan = buildPersonPlan({
+      ...makeSource({ assignments: [assign("lh", "nacht", "2026-10-24"), assign("lh", "lke", "2026-10-25")] }),
+      clinicianId: "lh",
+      fromISO: "2026-10-24",
+      toISO: "2026-10-25",
+      todayISO: "2026-10-24",
+    });
+    const lke = [...dstPlan.shifts.values()].find((s) => s.title === "LKE/DL")!;
+    // Night ends Sun 08:00 and LKE starts Sun 08:00: direct, no rest.
+    expect(restBefore(dstPlan, lke)).toMatchObject({ hours: 0, direct: true });
+    const later = buildPersonPlan({
+      ...makeSource({ assignments: [assign("lh", "lke", "2026-10-24"), assign("lh", "lke", "2026-10-25")] }),
+      clinicianId: "lh",
+      fromISO: "2026-10-24",
+      toISO: "2026-10-25",
+      todayISO: "2026-10-24",
+    });
+    const sunday = [...later.shifts.values()].find((s) => s.dateISO === "2026-10-25")!;
+    // Sat 20:00 → Sun 08:00 is 13 real hours (12 on the wall clock).
+    expect(restBefore(later, sunday)?.hours).toBe(13);
+  });
+});
+
 describe("findNextShift", () => {
   it("finds the next shift with a wall-clock countdown (SPEC A3.8: 14:32 → 17:00)", () => {
     const next = findNextShift(plan, new Date(2026, 9, 14, 14, 32, 40));
@@ -115,6 +140,27 @@ describe("findNextShift", () => {
       minutesLeft: 300,
     });
     expect(findNextShift(plan, new Date(2026, 9, 15, 8, 0))?.shift.title).toBe("Angiographie");
+  });
+
+  it("counts real minutes across a DST change in the browser's zone", () => {
+    // My plan's "now" is the browser clock; Date arithmetic follows its DST.
+    vi.stubEnv("TZ", "Europe/Berlin");
+    try {
+      const dstPlan = buildPersonPlan({
+        ...makeSource({ assignments: [assign("lh", "nacht", "2026-10-24")] }),
+        clinicianId: "lh",
+        fromISO: "2026-10-24",
+        toISO: "2026-10-25",
+        todayISO: "2026-10-24",
+      });
+      // 01:30 summer time; the night ends at 08:00 winter time, 7.5 real hours later.
+      expect(findNextShift(dstPlan, new Date("2026-10-25T01:30:00+02:00"))).toMatchObject({
+        running: true,
+        minutesLeft: 450,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("returns null when nothing starts within the horizon", () => {

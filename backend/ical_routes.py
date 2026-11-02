@@ -1,13 +1,12 @@
 from contextlib import closing
 from typing import Optional
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from .auth import _get_current_user
 from .account_lifecycle import authenticated_account_connection
 from .db import _get_connection, _utcnow_iso
-from .ical import generate_ics
+from .ical import ICS_FORMAT_SINCE, generate_ics, ical_calendar_name, ical_file_name
 from .models import (
     IcalPublishStatus,
     UserPublic,
@@ -132,49 +131,41 @@ def download_ical(
                 raise HTTPException(status_code=404, detail="Not found.")
             clinician_scope = publication["clinician_id"]
 
-        owner = publication["username"]
         app_state, state_updated_at, state_updated_at_raw = _load_state_blob_and_updated_at(
-            owner, connection=conn
+            publication["username"], connection=conn
         )
+    person = None
+    if clinician_scope:
+        # A personal link ends with its person (the token row goes with the
+        # next save; this also covers rows left from before that).
+        person = next(
+            (c for c in app_state.get("clinicians") or [] if c.get("id") == clinician_scope),
+            None,
+        )
+        if person is None:
+            raise HTTPException(status_code=404, detail="Not found.")
     publication_updated_at_raw = publication["updated_at"] or ""
     publication_updated_at = _parse_iso_datetime(publication_updated_at_raw)
-    last_modified = max(state_updated_at, publication_updated_at)
+    last_modified = max(state_updated_at, publication_updated_at, ICS_FORMAT_SINCE)
     etag = _compute_etag(
         token,
         state_updated_at_raw or "",
         publication_updated_at_raw or "",
         app_state,
         dict(publication),
+        ICS_FORMAT_SINCE.isoformat(),
     )
     headers = _public_cache_headers(etag, last_modified)
     if _not_modified(if_none_match, if_modified_since, etag, last_modified):
         return Response(status_code=304, headers=headers)
 
-    cal_name = f"Shift Planner ({owner})"
-    if clinician_scope:
-        clinician_name = None
-        for clinician in app_state.get("clinicians") or []:
-            if clinician.get("id") == clinician_scope:
-                clinician_name = clinician.get("name")
-                break
-        if clinician_name:
-            cal_name = f"Shift Planner ({clinician_name})"
     ics = generate_ics(
         app_state,
         app_state.get("publishedWeekStartISOs") or [],
-        cal_name,
+        ical_calendar_name(person),
         clinician_id=clinician_scope,
         dtstamp=last_modified,
     )
-    # Header values are Latin-1; keep the plain filename ASCII (generic when the
-    # account name is not quote-safe ASCII) and carry the account name in the
-    # RFC 6266 UTF-8 form so any username is safe.
-    filename = f"shift-planner-{owner}.ics"
-    plain_safe = (
-        filename.isascii() and filename.isprintable() and not any(c in filename for c in '"\\')
-    )
-    plain_filename = filename if plain_safe else "shift-planner.ics"
-    headers["Content-Disposition"] = (
-        f"inline; filename=\"{plain_filename}\"; filename*=UTF-8''" + quote(filename, safe="")
-    )
+    # Names never carry the account's login name; the file name is ASCII.
+    headers["Content-Disposition"] = f'inline; filename="{ical_file_name(person)}"'
     return Response(content=ics, media_type="text/calendar", headers=headers)

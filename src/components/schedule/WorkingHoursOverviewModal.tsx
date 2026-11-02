@@ -3,9 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { buttonPrimary, buttonSecondary } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
 import { toISODate } from "../../lib/date";
-// Shares only getSlotDurationMinutes with My plan: My plan counts overlapping own shifts once, this sums every non-pool assignment.
-import { getSlotDurationMinutes } from "../../lib/myPlan";
-import type { Assignment, WeeklyCalendarTemplate } from "../../api/client";
+// Shares only getShiftMinutes with My plan: My plan counts overlapping own shifts once, this sums every non-pool assignment.
+import { getShiftMinutes } from "../../lib/myPlan";
+import type { Assignment, TemplateSlot, WeeklyCalendarTemplate } from "../../api/client";
 
 type WorkingHoursOverviewModalProps = {
   open: boolean;
@@ -17,6 +17,8 @@ type WorkingHoursOverviewModalProps = {
   }>;
   assignments: Assignment[];
   weeklyTemplate?: WeeklyCalendarTemplate;
+  /** The plan's time zone; durations are real time in it (DST nights 1 h longer/shorter). */
+  timeZone: string;
 };
 
 const WEEK_WIDTH = 56;
@@ -116,6 +118,7 @@ export default function WorkingHoursOverviewModal({
   clinicians,
   assignments,
   weeklyTemplate,
+  timeZone,
 }: WorkingHoursOverviewModalProps) {
   const currentYear = new Date().getFullYear();
   const [selectedYear, setSelectedYear] = useState(currentYear);
@@ -150,16 +153,11 @@ export default function WorkingHoursOverviewModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, selectedYear]);
 
-  // Build slot duration map
-  const slotDurationMap = useMemo(() => {
-    const map = new Map<string, number>();
-    if (!weeklyTemplate) return map;
-
-    for (const location of weeklyTemplate.locations ?? []) {
-      for (const slot of location.slots ?? []) {
-        const duration = getSlotDurationMinutes(slot);
-        map.set(slot.id, duration);
-      }
+  // Template slots by id (durations depend on the date: DST changes)
+  const slotById = useMemo(() => {
+    const map = new Map<string, TemplateSlot>();
+    for (const location of weeklyTemplate?.locations ?? []) {
+      for (const slot of location.slots ?? []) map.set(slot.id, slot);
     }
     return map;
   }, [weeklyTemplate]);
@@ -207,15 +205,16 @@ export default function WorkingHoursOverviewModal({
       const weekIndex = weekIndexByMonday.get(toISODate(getWeekStart(assignmentDate)));
       if (weekIndex === undefined) continue;
 
-      // Duration from the slot template, default 8 hours
-      const durationMinutes = slotDurationMap.get(assignment.rowId) ?? 8 * 60;
+      // Real duration of the slot on that date, default 8 hours
+      const slot = slotById.get(assignment.rowId);
+      const durationMinutes = slot ? getShiftMinutes(slot, assignment.dateISO, timeZone) : 8 * 60;
 
       // Add to week total
       hoursMap.set(weekIndex, (hoursMap.get(weekIndex) ?? 0) + durationMinutes);
     }
 
     return result;
-  }, [open, clinicians, assignments, weekIndexByMonday, selectedYear, slotDurationMap]);
+  }, [open, clinicians, assignments, weekIndexByMonday, selectedYear, slotById, timeZone]);
 
   // Calculate yearly totals for all clinicians
   const clinicianYearlyTotals = useMemo(() => {

@@ -1,18 +1,17 @@
 import type { Assignment, Clinician, Location } from "../../api/client";
 import { isProtectedAssignment } from "../assignmentPolicy";
 import { getDayType } from "../dayTypes";
+import { wallClockToUtc } from "../planTimeZone";
 import type { ScheduleRow } from "../shiftRows";
 import { parseTimeToMinutes } from "../time";
 import { deriveBlockColors, DUTY_COLORS } from "./colors";
 import { MINUTES_PER_DAY, weekStartISO } from "./dates";
-import { getSlotDurationMinutes } from "./hours";
+import { DEFAULT_START_MIN, getSlotDurationMinutes } from "./hours";
 import type { PlanShift, PlanSource } from "./types";
 
 // Internal: turns assignments into PlanShifts. Shared by the person timeline
 // and the coworker lookup so both apply the same visibility rules as the
 // team grid (slot day type must match the date, vacation hides shifts).
-
-const DEFAULT_START_MIN = 8 * 60;
 
 export type PlanContext = {
   source: PlanSource;
@@ -161,9 +160,10 @@ export function toPlanShift(ctx: PlanContext, assignment: Assignment): PlanShift
   if (row.dayType && row.dayType !== getDayType(assignment.dateISO, ctx.holidayDates)) return null;
   if (isOnVacation(ctx.clinicianById.get(assignment.clinicianId), assignment.dateISO)) return null;
 
-  const durationMin = getSlotDurationMinutes(row);
   const startMin = parseTimeToMinutes(row.startTime) ?? DEFAULT_START_MIN;
-  const endMin = startMin + durationMin;
+  const endMin = startMin + getSlotDurationMinutes(row);
+  const startsAt = wallClockToUtc(assignment.dateISO, startMin, ctx.source.timeZone);
+  const endsAt = wallClockToUtc(assignment.dateISO, endMin, ctx.source.timeZone);
   const sectionTitle = stripTimes(row.sectionName ?? row.name);
   const title = ctx.bandTitles.get(row.id) ?? sectionTitle;
   const isDuty =
@@ -184,7 +184,9 @@ export function toPlanShift(ctx: PlanContext, assignment: Assignment): PlanShift
     locationName: row.locationName,
     startMin,
     endMin,
-    hours: durationMin / 60,
+    startsAt,
+    endsAt,
+    hours: Math.max(0, endsAt - startsAt) / 3_600_000,
     kind: isDuty ? "duty" : "shift",
     colors: isDuty ? DUTY_COLORS : deriveBlockColors(row.blockColor),
     published: ctx.publishedWeeks.has(weekStartISO(assignment.dateISO)),

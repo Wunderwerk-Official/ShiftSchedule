@@ -1,18 +1,27 @@
 """Public calendar validators must track changes even within one clock second."""
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 
 import pytest
 from fastapi.testclient import TestClient
 
-from backend import ical_routes, web
+from backend import ical_routes, publication, web
+from backend.ical import ICS_FORMAT_SINCE
 from backend.main import app
 from .conftest import make_app_state, make_assignment
+
+# Last change of the calendar; requests are timed against it.
+CHANGED_AT = datetime(2026, 11, 16, 12, 0, 0, tzinfo=timezone.utc)
+
+
+def http_date(value):
+    return format_datetime(value, usegmt=True)
 
 
 @pytest.fixture(params=["web", "ical", "clinician_ical"])
 def public_calendar(request, monkeypatch):
-    timestamp = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+    timestamp = CHANGED_AT
     payload = make_app_state(
         assignments=[make_assignment("a1", "slot-a__mon", "2026-01-05", "clin-1")],
         published_week_start_isos=["2026-01-05"],
@@ -48,8 +57,62 @@ def test_same_second_schedule_edit_invalidates_etag(public_calendar):
     assert "Dr. Changed" in updated.text
 
 
-def test_nonmatching_etag_takes_precedence_over_modified_since(public_calendar):
+def at(monkeypatch, moment):
+    monkeypatch.setattr(publication, "_utcnow", lambda: moment)
+
+
+def test_response_in_the_second_of_the_change_has_no_last_modified(public_calendar, monkeypatch):
+    client, url, payload = public_calendar
+    at(monkeypatch, CHANGED_AT)
+    first = client.get(url)
+    assert first.status_code == 200
+    # No date that a further change within this second could still match.
+    assert "Last-Modified" not in first.headers
+    payload["clinicians"][0]["name"] = "Dr. Same Second"
+    at(monkeypatch, CHANGED_AT + timedelta(seconds=1))
+    updated = client.get(url, headers={"If-None-Match": first.headers["ETag"]})
+    assert updated.status_code == 200
+    assert "Dr. Same Second" in updated.text
+
+
+def test_if_modified_since_is_ignored_within_the_second_of_the_change(public_calendar, monkeypatch):
     client, url, _ = public_calendar
+    at(monkeypatch, CHANGED_AT)
+    response = client.get(url, headers={"If-Modified-Since": http_date(CHANGED_AT)})
+    assert response.status_code == 200
+    assert "ETag" in response.headers
+
+
+def test_last_modified_is_sent_and_honoured_once_its_second_is_over(public_calendar, monkeypatch):
+    client, url, _ = public_calendar
+    at(monkeypatch, CHANGED_AT + timedelta(seconds=1))
+    first = client.get(url)
+    assert first.headers["Last-Modified"] == http_date(CHANGED_AT)
+    assert client.get(url, headers={"If-Modified-Since": first.headers["Last-Modified"]}).status_code == 304
+    older = http_date(CHANGED_AT - timedelta(seconds=1))
+    assert client.get(url, headers={"If-Modified-Since": older}).status_code == 200
+
+
+def test_feeds_from_before_timed_events_do_not_revalidate(monkeypatch):
+    before_switch = datetime(2026, 1, 5, 12, 0, 0, tzinfo=timezone.utc)
+    payload = make_app_state(published_week_start_isos=["2026-01-05"]).model_dump()
+    monkeypatch.setattr(ical_routes, "_load_state_blob_and_updated_at", lambda _, **kwargs: (
+        payload, before_switch, before_switch.isoformat(),
+    ))
+    monkeypatch.setattr(ical_routes, "_get_publication_by_token", lambda _, **kwargs: {
+        "username": "cache-test", "token": "cache-token", "updated_at": before_switch.isoformat(),
+    })
+    at(monkeypatch, CHANGED_AT)
+    response = TestClient(app).get(
+        "/v1/ical/cache-token.ics", headers={"If-Modified-Since": http_date(before_switch)}
+    )
+    assert response.status_code == 200
+    assert response.headers["Last-Modified"] == http_date(ICS_FORMAT_SINCE)
+
+
+def test_nonmatching_etag_takes_precedence_over_modified_since(public_calendar, monkeypatch):
+    client, url, _ = public_calendar
+    at(monkeypatch, CHANGED_AT + timedelta(seconds=1))
     first = client.get(url)
     updated = client.get(url, headers={
         "If-None-Match": '"older-representation"',

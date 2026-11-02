@@ -303,9 +303,18 @@ export default function HelpView() {
               <span className="font-medium">multiple events across many dates</span>.
             </li>
             <li>
+              Each event has the shift&rsquo;s <span className="font-medium">start and end time</span>{" "}
+              in the plan&rsquo;s time zone, which follows the holiday country (Germany:
+              Europe/Berlin). A night shift ends the next morning, and nights across a
+              daylight saving change last their real 11 or 13 hours. A shift without times
+              in the template shows on its day without a time.
+            </li>
+            <li>
               In <span className="font-medium">Download</span>, you can export either{" "}
               <span className="font-medium">one file for all people</span> or{" "}
-              <span className="font-medium">individual files per person</span>.
+              <span className="font-medium">individual files per person</span>. Downloads
+              contain published weeks only; tick{" "}
+              <span className="font-medium">Include unpublished weeks</span> to add drafts.
             </li>
             <li>
               In <span className="font-medium">Subscribe / Publish</span>, you can publish a
@@ -317,7 +326,8 @@ export default function HelpView() {
             </li>
             <li>
               When published, you get one link for{" "}
-              <span className="font-medium">all people</span> and one link per person.
+              <span className="font-medium">all people</span> and one link per person. Removing
+              a person from the plan ends their link.
             </li>
           </ul>
         </Section>
@@ -354,6 +364,11 @@ export default function HelpView() {
               Click a shift for its details (hours, who works with you, rest before).{" "}
               <span className="font-medium">Show in team plan</span> opens the team view at
               that date and briefly highlights your entry.
+            </li>
+            <li>
+              Hours (shift, day and week totals, rest before, Working hours overview) are
+              real time in the plan&rsquo;s time zone: a night across a daylight saving change
+              counts one hour more in October and one hour less in March.
             </li>
             <li>
               Keyboard in My plan (not while typing): T / W / M day, week, month · H today ·

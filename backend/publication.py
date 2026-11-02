@@ -4,11 +4,11 @@ import secrets
 import sqlite3
 from email.utils import format_datetime, parsedate_to_datetime
 from hashlib import sha256
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from fastapi import HTTPException, Request
 
-from .db import _utcnow_iso
+from .db import _utcnow, _utcnow_iso
 from .models import Clinician, IcalPublishAllLink, IcalPublishClinicianLink, IcalPublishStatus
 
 PUBLIC_BASE_URL = os.environ.get("PUBLIC_BASE_URL", "").strip()
@@ -46,6 +46,17 @@ def _if_modified_since_matches(
     return parsed_utc >= last_modified
 
 
+def _settled_last_modified(last_modified):
+    """``last_modified`` once its second is over, else None.
+
+    HTTP dates have whole seconds, so a copy served in the second of the last
+    change looks the same as one before a further change in that second.
+    Until the second is over, Last-Modified is not sent and If-Modified-Since
+    is not honoured; the ETag still validates.
+    """
+    return last_modified if last_modified < _utcnow() else None
+
+
 def _compute_etag(*parts: Any) -> str:
     # Timestamps have second precision; separate edits within one second
     # still represent different calendars and must invalidate the cache.
@@ -55,12 +66,15 @@ def _compute_etag(*parts: Any) -> str:
 
 
 def _public_cache_headers(etag: str, last_modified) -> Dict[str, str]:
-    return {
+    headers = {
         "Cache-Control": "private, max-age=0, must-revalidate",
         "ETag": etag,
-        "Last-Modified": _format_http_datetime(last_modified),
         "Referrer-Policy": "no-referrer",
     }
+    settled = _settled_last_modified(last_modified)
+    if settled is not None:
+        headers["Last-Modified"] = _format_http_datetime(settled)
+    return headers
 
 
 def _not_modified(
@@ -69,6 +83,7 @@ def _not_modified(
     # RFC 9110: If-None-Match takes precedence over If-Modified-Since.
     return _etag_matches(if_none_match, etag) or (
         if_none_match is None
+        and _settled_last_modified(last_modified) is not None
         and _if_modified_since_matches(if_modified_since, last_modified)
     )
 
@@ -182,10 +197,30 @@ def _get_clinician_publications_for_user(
     return {row["clinician_id"]: dict(row) for row in rows}
 
 
+def _prune_clinician_publications(
+    conn: sqlite3.Connection, username: str, clinician_ids: Iterable[str]
+) -> None:
+    """Revoke the personal links of people no longer in the plan.
+
+    Runs with every state save, so a person added later under a removed
+    person's id gets a new link instead of the old one.
+    """
+    keep = set(clinician_ids)
+    rows = conn.execute(
+        "SELECT clinician_id FROM ical_clinician_publications WHERE username = ?",
+        (username,),
+    ).fetchall()
+    conn.executemany(
+        "DELETE FROM ical_clinician_publications WHERE username = ? AND clinician_id = ?",
+        [(username, row[0]) for row in rows if row[0] not in keep],
+    )
+
+
 def _ensure_clinician_publications(
     conn: sqlite3.Connection, username: str, clinicians: List[Clinician]
 ) -> Dict[str, Dict[str, Any]]:
     now = _utcnow_iso()
+    _prune_clinician_publications(conn, username, (clinician.id for clinician in clinicians))
     existing = _get_clinician_publications_for_user(conn, username)
     for clinician in clinicians:
         if clinician.id in existing:

@@ -217,7 +217,8 @@ function scrollToGridCell(rowId: string, dateISO: string, maxWaitMs: number = 10
   };
   requestAnimationFrame(tick);
 }
-import { buildICalendar, type ICalEvent } from "../lib/ical";
+import { buildShiftCalendar, type ShiftCalendarOptions } from "../lib/ical";
+import { planTimeZone } from "../lib/planTimeZone";
 import {
   buildRenderedAssignmentMap,
   buildShiftInterval,
@@ -781,10 +782,6 @@ export default function WeeklySchedulePage({
     },
     [scheduleRows],
   );
-  const clinicianById = useMemo(
-    () => new Map(clinicians.map((clinician) => [clinician.id, clinician])),
-    [clinicians],
-  );
   // Team grid colors (plan §2.9): every person has their own color and the
   // linked person ("That's me") gets an outline. Since v1.71 the label column
   // is colored by location (its own color or an automatic one, alternating
@@ -995,101 +992,18 @@ export default function WeeklySchedulePage({
     return out;
   }, [assignmentMap, autoPlanDateRange]);
 
-  const collectClassAssignments = () => {
-    const items: Assignment[] = [];
-    for (const list of assignmentMap.values()) {
-      for (const assignment of list) {
-        const row = rowById.get(assignment.rowId);
-        if (!row || row.kind !== "class") continue;
-        // Vacations override assignments everywhere else (rendered grid,
-        // published web page, subscribed feed) — the local .ics download
-        // must not resurrect them.
-        if (isOnVacation(assignment.clinicianId, assignment.dateISO)) continue;
-        items.push(assignment);
-      }
-    }
-    return items;
-  };
+  // The plan's time zone (from the holiday country): iCal event times and
+  // real shift durations (My plan, working hours overview).
+  const planZone = planTimeZone(holidayCountry);
 
-  const withinRange = (
-    dateISO: string,
-    range: { startISO?: string; endISO?: string },
-  ) => {
-    if (range.startISO && dateISO < range.startISO) return false;
-    if (range.endISO && dateISO > range.endISO) return false;
-    return true;
-  };
-
-  const buildIcalEventsForAssignments = (
-    assignments: Assignment[],
-    options: { includeClinicianInSummary: boolean },
-  ): ICalEvent[] => {
-    return assignments
-      .map((assignment): ICalEvent | null => {
-        const row = rowById.get(assignment.rowId);
-        const clinician = clinicianById.get(assignment.clinicianId);
-        if (!row || row.kind !== "class" || !clinician) return null;
-        const sectionName = row.sectionName ?? row.name;
-        const slotLabel = row.slotLabel;
-        const label = slotLabel ? `${sectionName} (${slotLabel})` : sectionName;
-        const summary = `${label} - ${clinician.name}`;
-        const description = options.includeClinicianInSummary
-          ? undefined
-          : `Person: ${clinician.name}`;
-        return {
-          uid: `${assignment.id}@shift-planner`,
-          dateISO: assignment.dateISO,
-          ...(row.endDayOffset ? { endDayOffset: row.endDayOffset } : {}),
-          summary,
-          ...(description ? { description } : {}),
-        };
-      })
-      .filter((item): item is ICalEvent => item !== null)
-      .sort((a, b) => a.dateISO.localeCompare(b.dateISO));
-  };
-
-  const handleDownloadIcalAll = (range: { startISO?: string; endISO?: string }) => {
-    const classAssignments = collectClassAssignments().filter((assignment) =>
-      withinRange(assignment.dateISO, range),
+  // The .ics download: the subscription feed's events (published weeks unless
+  // the dialog includes unpublished ones), built in src/lib/ical.ts.
+  const handleDownloadIcal = (options: ShiftCalendarOptions) => {
+    const file = buildShiftCalendar(
+      { assignments: toAssignments(), rowById, clinicians, publishedWeekStartISOs, holidayCountry },
+      options,
     );
-    const events = buildIcalEventsForAssignments(classAssignments, {
-      includeClinicianInSummary: true,
-    });
-    const ics = buildICalendar({
-      calendarName: "Shift Planner (All people)",
-      events,
-    });
-    downloadTextFile("shift-planner-all.ics", ics, "text/calendar;charset=utf-8");
-  };
-
-  const handleDownloadIcalClinician = (
-    clinicianId: string,
-    range: { startISO?: string; endISO?: string },
-  ) => {
-    const clinician = clinicianById.get(clinicianId);
-    if (!clinician) return;
-    const classAssignments = collectClassAssignments().filter(
-      (assignment) =>
-        assignment.clinicianId === clinicianId &&
-        withinRange(assignment.dateISO, range),
-    );
-    const events = buildIcalEventsForAssignments(classAssignments, {
-      includeClinicianInSummary: false,
-    });
-    const safeName = clinician.name
-      .trim()
-      .replaceAll(/[^\w\- ]+/g, "")
-      .replaceAll(/\s+/g, "-")
-      .toLowerCase();
-    const ics = buildICalendar({
-      calendarName: `Shift Planner (${clinician.name})`,
-      events,
-    });
-    downloadTextFile(
-      `shift-planner-${safeName || clinician.id}.ics`,
-      ics,
-      "text/calendar;charset=utf-8",
-    );
+    if (file) downloadTextFile(file.fileName, file.ics, "text/calendar;charset=utf-8");
   };
 
   const openExportModal = () => {
@@ -3412,6 +3326,7 @@ export default function WeeklySchedulePage({
               holidays={holidays}
               publishedWeekStartISOs={publishedWeekStartISOs}
               solverSettings={solverSettings}
+              timeZone={planZone}
               anchorDate={anchorDate}
               onAnchorDateChange={setAnchorDate}
               isMobile={isMobile}
@@ -3878,6 +3793,7 @@ export default function WeeklySchedulePage({
         clinicians={clinicians}
         assignments={renderedAssignmentList}
         weeklyTemplate={weeklyTemplate}
+        timeZone={planZone}
       />
 
       <ClinicianEditModal
@@ -3951,8 +3867,9 @@ export default function WeeklySchedulePage({
         clinicians={clinicians.map((clinician) => ({ id: clinician.id, name: clinician.name }))}
         defaultStartISO={toISODate(weekStart)}
         defaultEndISO={toISODate(weekEndInclusive)}
-        onDownloadAll={handleDownloadIcalAll}
-        onDownloadClinician={handleDownloadIcalClinician}
+        timeZone={planZone}
+        onDownloadAll={handleDownloadIcal}
+        onDownloadClinician={(clinicianId, options) => handleDownloadIcal({ ...options, clinicianId })}
         publishStatus={icalPublishStatus}
         publishLoading={icalPublishLoading}
         publishError={icalPublishError}

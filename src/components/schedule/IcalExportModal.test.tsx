@@ -16,6 +16,7 @@ const renderModal = (overrides: Partial<Props> = {}) => {
     defaultPdfStartISO: "2026-03-02",
     onDownloadAll: vi.fn(),
     onDownloadClinician: vi.fn(),
+    timeZone: "Europe/Berlin",
     publishStatus: null,
     publishLoading: false,
     publishError: null,
@@ -93,6 +94,34 @@ describe("IcalExportModal iCal download", () => {
     expect(props.onDownloadAll).toHaveBeenCalledWith({
       startISO: "2026-03-02",
       endISO: "2026-03-08",
+      includeUnpublished: false,
     });
+  });
+
+  it("exports published weeks only unless unpublished weeks are included", () => {
+    const props = renderModal({ clinicians: [{ id: "c1", name: "Dr. A" }] });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Include unpublished weeks" }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(screen.getByText(/Only weeks marked Published/)).toBeInTheDocument();
+    expect(screen.getByText(/Europe\/Berlin, from the\s+holiday country/)).toBeInTheDocument();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "All people (one file)" }));
+    expect(props.onDownloadAll).toHaveBeenLastCalledWith(expect.objectContaining({ includeUnpublished: true }));
+    fireEvent.click(screen.getAllByRole("button", { name: "Download" })[1]);
+    expect(props.onDownloadClinician).toHaveBeenLastCalledWith(
+      "c1",
+      expect.objectContaining({ includeUnpublished: true }),
+    );
+  });
+});
+
+describe("IcalExportModal iCal subscription", () => {
+  it("names the plan's time zone of the event times", () => {
+    renderModal({ timeZone: "Europe/London" });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    expect(screen.getByText(/Europe\/London, from the\s+holiday country/)).toBeInTheDocument();
+    expect(screen.queryByText(/all-day/i)).toBeNull();
   });
 });

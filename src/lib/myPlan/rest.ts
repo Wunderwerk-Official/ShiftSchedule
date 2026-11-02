@@ -6,7 +6,7 @@ import type { PersonPlan, PlanAbsence, PlanShift } from "./types";
 // Both only look at the plan's context window (a week around the range).
 
 export type RestBefore = {
-  /** Gap between the previous shift's end and this start (0 when direct/overlapping). */
+  /** Real time between the previous shift's end and this start (0 when direct/overlapping). */
   hours: number;
   /** "Tue 16:30" — end of the previous shift. */
   fromLabel: string;
@@ -31,9 +31,9 @@ export function restBefore(plan: PersonPlan, shift: PlanShift): RestBefore | nul
     if (!previous || endOf(other, shift.dateISO) > endOf(previous, shift.dateISO)) previous = other;
   }
   if (!previous) return null;
-  const gap = shift.startMin - endOf(previous, shift.dateISO);
+  const gap = shift.startsAt - previous.endsAt;
   return {
-    hours: Math.max(0, gap) / 60,
+    hours: Math.max(0, gap) / 3_600_000,
     fromLabel: formatWeekdayTime(previous.dateISO, previous.endMin),
     toLabel: formatWeekdayTime(shift.dateISO, shift.startMin),
     previous,

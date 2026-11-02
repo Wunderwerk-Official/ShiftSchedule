@@ -400,6 +400,33 @@ test("a location color is saved with the calendar and colors the team rows", asy
   expect(api.errors).toEqual([]);
 });
 
+test("a night across the March clock change counts its real 11 hours (v1.78)", async ({ page }) => {
+  // The default template's Saturday on-call night runs 20:00 → 08:00.
+  const location = defaultState.weeklyTemplate!.locations[0];
+  const onCall = defaultState.rows.find((row) => row.name === "On Call")!.id;
+  const night = location.slots.find(
+    (slot) =>
+      slot.startTime === "20:00" &&
+      location.colBands.find((band) => band.id === slot.colBandId)?.dayType === "sat" &&
+      defaultState.weeklyTemplate!.blocks.find((block) => block.id === slot.blockId)?.sectionId === onCall,
+  )!;
+  const api = await openCalendar(page, {
+    initialState: {
+      ...initialCalendarState(),
+      assignments: [{ id: "dst-night", rowId: night.id, dateISO: "2026-03-28", clinicianId: ME, source: "manual" }],
+    },
+    initialPrefs: { clinicianId: ME },
+  });
+  await page.getByRole("group", { name: "Choose plan" }).getByRole("button", { name: "My plan" }).click();
+  await page.getByRole("group", { name: "Period" }).getByRole("button", { name: "Month" }).click();
+  await page.getByRole("button", { name: "Next month" }).click();
+  await page.getByRole("button", { name: "Next month" }).click();
+  await page.getByRole("group", { name: "Arrangement of days" }).getByRole("button", { name: /Date on left/ }).click();
+  // Wall clock 12 h, but the clocks go forward that night (Europe/Berlin, holiday country DE).
+  await expect(page.getByRole("button", { name: /^On Call 20:00.*11\.0 hours/ }).first()).toBeVisible();
+  expect(api.errors).toEqual([]);
+});
+
 test.describe("on a phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 

@@ -232,6 +232,7 @@ export function makeSource(
     locations,
     holidays: HOLIDAYS,
     publishedWeekStartISOs: PUBLISHED_WEEKS,
+    timeZone: "Europe/Berlin",
     solverSettings: {
       enforceSameLocationPerDay: true,
       onCallRestEnabled: false,

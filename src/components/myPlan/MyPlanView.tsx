@@ -68,6 +68,8 @@ export type MyPlanViewProps = {
   holidays: Holiday[];
   publishedWeekStartISOs: string[];
   solverSettings?: SolverSettings;
+  /** The plan's time zone (planTimeZone(holidayCountry)); hours are real time in it. */
+  timeZone: string;
   anchorDate: Date;
   onAnchorDateChange: (date: Date) => void;
   isMobile: boolean;
@@ -87,7 +89,7 @@ export type MyPlanViewProps = {
 
 export default function MyPlanView(props: MyPlanViewProps) {
   const {
-    scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings,
+    scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings, timeZone,
     anchorDate, onAnchorDateChange, isMobile, isDark, prefs, onUpdatePrefs, prefsLoaded = true,
     currentScope, onScopeChange, onShowInTeam, headerExtras,
   } = props;
@@ -97,8 +99,10 @@ export default function MyPlanView(props: MyPlanViewProps) {
   const { toast, show: notify, dismiss: dismissToast } = useToast();
 
   const source = useMemo<PlanSource>(
-    () => ({ scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings }),
-    [scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings],
+    () => ({
+      scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings, timeZone,
+    }),
+    [scheduleRows, assignments, clinicians, locations, holidays, publishedWeekStartISOs, solverSettings, timeZone],
   );
   const locationsById = useMemo(() => new Map(locations.map((location) => [location.id, location])), [locations]);
   const clinicianIndex = useMemo(() => new Map(clinicians.map((c, index) => [c.id, index])), [clinicians]);
