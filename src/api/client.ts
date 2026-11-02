@@ -550,6 +550,11 @@ export async function getState(): Promise<AppState> {
 const stateSaves = new StateSaveQueue<AppState>();
 export const adoptSavedState = (state: AppState) => stateSaves.adopt(state);
 export const flushStateSaves = () => stateSaves.drain();
+/** This tab's calendar revision once its queued saves have landed (throws when one failed). */
+export async function savedStateRevision(): Promise<string | null | undefined> {
+  await stateSaves.drain();
+  return stateSaves.baseRevision;
+}
 export const retryStateSaves = () => stateSaves.retry();
 
 export function saveState(state: AppState): Promise<AppState> {
@@ -623,13 +628,19 @@ export async function createSnapshot(
 /**
  * Save the calendar as shown into the auto-backup slot before a shifts file
  * replaces its shifts ("Auto-backup before shifts file import"). The slot is
- * shared with the backup made before a restore; the newest one wins.
+ * shared with the backup made before a restore; the newest one wins. With
+ * `expectedRevision` (the revision this tab's calendar is based on) the
+ * server refuses with 409 and keeps the previous backup when the stored
+ * calendar has changed since.
  */
-export async function createImportBackup(state: AppState): Promise<SnapshotMeta> {
+export async function createImportBackup(
+  state: AppState,
+  expectedRevision?: string | null,
+): Promise<SnapshotMeta> {
   const res = await fetch(`${API_BASE}/v1/state/snapshots/import-backup`, {
     method: "POST",
     headers: buildHeaders(),
-    body: JSON.stringify({ state }),
+    body: JSON.stringify(expectedRevision ? { state, expectedRevision } : { state }),
   });
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {

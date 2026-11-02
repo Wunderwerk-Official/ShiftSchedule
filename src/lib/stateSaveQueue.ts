@@ -35,6 +35,11 @@ export class StateSaveQueue<T extends { revision?: string | null }> {
     if (this.failure) throw this.failure;
   }
 
+  /** The revision the next save is based on: the last one adopted or confirmed. */
+  get baseRevision(): string | null | undefined {
+    return this.revision;
+  }
+
   retry() {
     // Keep the old revision. An uncertain earlier write must still pass CAS.
     this.failure = null;

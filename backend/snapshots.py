@@ -67,6 +67,10 @@ class SnapshotBackupRequest(BaseModel):
     # The calendar as the client shows it, before it is replaced (same
     # payload as its auto-save; the stored row can lag by the debounce).
     state: AppState
+    # The revision the client's calendar is based on. When the stored
+    # calendar has moved on (another tab), the backup is refused, so a
+    # replacement that would be refused anyway keeps the previous backup.
+    expectedRevision: Optional[str] = None
 
 
 def _clean_name(raw: str) -> str:
@@ -123,6 +127,15 @@ def create_import_backup(
     file replaces its shifts (like a restore does). It does not count against
     the named-snapshot limit and can be restored from Calendar snapshots."""
     with authenticated_account_connection(current_user) as conn:
+        if (
+            payload.expectedRevision is not None
+            and payload.expectedRevision != _load_state(current_user.username, connection=conn).revision
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "state_changed",
+                "message": "The calendar changed in another tab or operation. Nothing was replaced "
+                           "and the automatic backup was kept. Reload the current calendar and try again.",
+            })
         _write_auto_backup(conn, current_user.username, payload.state, name=IMPORT_BACKUP_NAME)
         row = conn.execute(
             f"SELECT {_META_COLUMNS} FROM calendar_snapshots WHERE username = ? AND kind = 'auto_backup'",

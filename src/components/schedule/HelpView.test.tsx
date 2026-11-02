@@ -46,6 +46,8 @@ it("describes the import backup and the regional holiday loading", () => {
   const text = (container.textContent ?? "").replace(/\s+/g, " ");
   expect(text).toContain("saved first as the latest automatic backup");
   expect(text).toContain("nothing is imported");
+  expect(text).toContain("a file without a single shift for this calendar (or larger than 10 MB) changes nothing");
+  expect(text).toContain("Load copy (Settings → Users) saves this backup first too");
   expect(text).not.toMatch(/without a backup|save a Calendar snapshot first/);
   expect(text).toContain("holidays you added by hand (date + name) stay");
   // Without a state every state's regional holidays are loaded (v1.72).
@@ -68,4 +70,11 @@ it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () =
   expect(text).toContain("a small clock under the names gives that day’s time");
   expect(text).not.toContain("+N next to a row name");
   expect(text).not.toContain("names its own workplace");
+});
+
+it("describes what the public web link shows", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain("the same layout and Times (stacked or side by side)");
+  expect(text).toContain("On a phone it shows one day at a time.");
 });

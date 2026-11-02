@@ -43,6 +43,7 @@ import {
   adoptSavedState,
   flushStateSaves,
   retryStateSaves,
+  savedStateRevision,
   ApplyRunError,
   HttpError,
   publishIcal,
@@ -110,7 +111,12 @@ import { computeOpenSlots } from "../lib/openSlots";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
-import { saveShiftsFileImport } from "../lib/shiftsFileImport";
+import {
+  prepareShiftsImport,
+  saveShiftsFileImport,
+  shiftsFileName,
+  type PreparedShiftsImport,
+} from "../lib/shiftsFileImport";
 import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
 import { resetSolverAssignments, resetUnfixedAssignments } from "./resetSolverAssignments";
 import {
@@ -235,14 +241,6 @@ import {
   normalizeAppState,
   type ScheduleRow,
 } from "../lib/shiftRows";
-
-type ScheduleSnapshotImportResult = {
-  imported: number;
-  droppedClinicians: number;
-  droppedSlots: number;
-  /** Name of the auto-backup of the calendar shown before the import. */
-  backupName?: string;
-};
 
 const defaultAppState = normalizeAppState({
   locations: defaultLocations,
@@ -833,46 +831,17 @@ export default function WeeklySchedulePage({
     assignments: toAssignments(),
   });
 
-  const extractAssignmentsFromSnapshot = (payload: unknown): Assignment[] | null => {
-    if (!payload || typeof payload !== "object") return null;
-    const maybePayload = payload as { assignments?: Assignment[]; state?: { assignments?: Assignment[] } };
-    if (Array.isArray(maybePayload.assignments)) return maybePayload.assignments;
-    if (Array.isArray(maybePayload.state?.assignments)) return maybePayload.state.assignments;
-    return null;
-  };
-
   const handleExportScheduleSnapshot = () => {
-    const snapshot = buildScheduleSnapshot();
-    const dateStamp = snapshot.exportedAt.slice(0, 10);
     downloadTextFile(
-      `schedule-snapshot-${dateStamp}.json`,
-      `${JSON.stringify(snapshot, null, 2)}\n`,
+      shiftsFileName(),
+      `${JSON.stringify(buildScheduleSnapshot(), null, 2)}\n`,
       "application/json",
     );
   };
 
-  const handleImportScheduleSnapshot = async (
-    payload: unknown,
-  ): Promise<ScheduleSnapshotImportResult> => {
-    const assignments = extractAssignmentsFromSnapshot(payload);
-    if (!assignments) {
-      throw new Error("No shifts found in this file.");
-    }
-
-    const clinicianIds = new Set(clinicians.map((clinician) => clinician.id));
-    const filteredByClinician = assignments.filter((assignment) =>
-      clinicianIds.has(assignment.clinicianId),
-    );
-    const droppedClinicians = assignments.length - filteredByClinician.length;
-
-    const normalized = buildCurrentStatePayload(filteredByClinician);
-    if (!normalized) {
-      throw new Error("The current calendar cannot be saved. Fix its template first.");
-    }
-
-    const normalizedAssignments = normalized.assignments ?? [];
-    const droppedSlots = filteredByClinician.length - normalizedAssignments.length;
-
+  // Settings → Import shifts file: the file is checked here (refused with a
+  // message, nothing changed) before Settings asks to replace the shifts.
+  const handlePrepareShiftsFileImport = (payload: unknown): PreparedShiftsImport => {
     if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
       // A pending save failure would reject the import's save right after the
       // backup replaced the only auto-backup: refuse before writing anything.
@@ -884,24 +853,31 @@ export default function WeeklySchedulePage({
     if (!current) {
       throw new Error("The current calendar cannot be saved. Fix its template first.");
     }
-
-    let backupName: string;
-    pauseCalendarSaving();
-    try {
-      ({ backupName } = await saveShiftsFileImport(current, normalized, {
-        createBackup: createImportBackup,
-        saveState,
-      }));
-      setAssignmentMap(buildAssignmentMap(normalizedAssignments));
-    } finally {
-      resumeCalendarSaving();
-    }
-
+    const { next, summary } = prepareShiftsImport(payload, {
+      clinicianIds: new Set(clinicians.map((clinician) => clinician.id)),
+      slotIds: new Set(
+        weeklyTemplate?.locations.flatMap((location) => location.slots.map((slot) => slot.id)),
+      ),
+      holidayDates,
+      buildState: buildCurrentStatePayload,
+    });
     return {
-      imported: normalizedAssignments.length,
-      droppedClinicians,
-      droppedSlots,
-      backupName,
+      currentCount: current.assignments.length,
+      summary,
+      apply: async () => {
+        pauseCalendarSaving();
+        try {
+          const { backupName } = await saveShiftsFileImport(current, next, {
+            currentRevision: savedStateRevision,
+            createBackup: createImportBackup,
+            saveState,
+          });
+          setAssignmentMap(buildAssignmentMap(next.assignments));
+          return { ...summary, backupName };
+        } finally {
+          resumeCalendarSaving();
+        }
+      },
     };
   };
 
@@ -3775,7 +3751,7 @@ export default function WeeklySchedulePage({
               );
             }}
             onExportScheduleSnapshot={handleExportScheduleSnapshot}
-            onImportScheduleSnapshot={handleImportScheduleSnapshot}
+            onPrepareShiftsFileImport={handlePrepareShiftsFileImport}
           />
           <AdminUsersPanel
             isAdmin={currentUser.role === "admin"}

@@ -73,3 +73,19 @@ describe("calendar save ordering", () => {
     expect(operation).toHaveBeenCalledOnce();
   });
 });
+
+describe("base revision", () => {
+  it("follows the adopted calendar and each confirmed save", async () => {
+    const queue = new StateSaveQueue<State>();
+    queue.adopt({ revision: "r0", value: 0 });
+    expect(queue.baseRevision).toBe("r0");
+    const saved = deferred<State>();
+    const pending = queue.save({ value: 1 }, () => saved.promise);
+    // A save in flight has not moved it yet; draining waits for it.
+    expect(queue.baseRevision).toBe("r0");
+    saved.resolve({ revision: "r1", value: 1 });
+    await queue.drain();
+    await pending;
+    expect(queue.baseRevision).toBe("r1");
+  });
+});

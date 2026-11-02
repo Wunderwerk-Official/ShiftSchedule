@@ -344,7 +344,7 @@ export default function SnapshotPopover({
                               <div className="mt-1.5 rounded-lg bg-slate-50 px-2 py-1.5 dark:bg-slate-900/50">
                                 <div className="text-[11px] text-slate-600 dark:text-slate-300">
                                   {confirm.action === "restore"
-                                    ? "Restores the entire calendar (assignments, template, clinicians, settings). Your current calendar is saved to 'Auto-backup before restore' first."
+                                    ? "Restores the entire calendar (assignments, template, clinicians, settings). Your current calendar is saved to 'Auto-backup before restore' first; this automatic backup replaces the previous one."
                                     : "Delete this snapshot? This cannot be undone."}
                                 </div>
                                 <div className="mt-1.5 flex items-center justify-end gap-2">
