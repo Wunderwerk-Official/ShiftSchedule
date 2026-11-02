@@ -333,6 +333,27 @@ def test_strict_order_makes_a_pure_upward_trade():
     assert executor.quality_dict(executor.best_quality)["open_by_section_order"] == [0, 1]
 
 
+def test_strict_repair_spends_a_short_budget_on_the_top_sections_first():
+    """Review of v1.81: with a short budget the stage time was divided by
+    every later TIER with a gap instead of every later window, so the top
+    window was skipped and only a lower one moved Pat. 20 sections needing 40
+    people each need three windows (exact weights grow 41-fold per tier);
+    10 s are plenty for the top one."""
+    sections = [f"s{i:02}" for i in range(20)]
+    state = strict_state(sections, [(f"slot-{sec}", sec, "mon", "08:00", "16:00") for sec in sections],
+                         [("pat", sections, 8, [])])
+    for location in state.weeklyTemplate.locations:
+        for template_slot in location.slots:
+            template_slot.requiredSlots = 40
+    payload = SolveRangeRequest(startISO=MON_W45, endISO=MON_W45, only_fill_required=True, timeout_seconds=10)
+    result = _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
+                               start_time=time.time(), state_override=state,
+                               repair_reference={("slot-s19", MON_W45, "pat")},
+                               repair_max_changes=cross_day.MAX_CHANGES)
+    assert {(a.rowId, a.dateISO, a.clinicianId) for a in result.assignments} == {("slot-s00", MON_W45, "pat")}
+    assert result.debugInfo.solver_status == "OPTIMAL"
+
+
 def test_section_vector_has_one_entry_per_section_and_sums_to_the_count():
     state = two_block_cor_state(friday_block_first=True)
     executor = greedy_executor(state)

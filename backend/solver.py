@@ -785,6 +785,15 @@ def _lexicographic_window(tiers: List[Dict[str, Any]], start: int, bound: int = 
     return end
 
 
+def _count_windows(tiers: List[Dict[str, Any]]) -> int:
+    """How many stages _lexicographic_window would cut ``tiers`` into."""
+    count, index = 0, 0
+    while index < len(tiers):
+        index = _lexicographic_window(tiers, index)
+        count += 1
+    return count
+
+
 def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: int,
                                 time_limit: float, cancel_event, callback) -> Dict[str, Any]:
     """Repair mode, strict section order: minimize the open positions tier by
@@ -865,9 +874,15 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
             continue
         end = _lexicographic_window(tiers, index)
         window = tiers[index:end]
-        remaining_windows = 1 + sum(1 for later in tiers[end:] if incumbent[later["tier"]] > later["lower"])
-        share = (deadline - time.time() - reserve) / max(1, remaining_windows)
+        # An equal share for this window and the ones still to come, but
+        # the order is strict: a higher window takes at least the minimum
+        # stage time before any lower window or the change stage.
+        windows_left = 1 + _count_windows([t for t in tiers[end:] if incumbent[t["tier"]] > t["lower"]])
+        available = deadline - time.time()
+        share = (available - reserve) / windows_left
         if share < REPAIR_MIN_STAGE_SECONDS:
+            share = min(REPAIR_MIN_STAGE_SECONDS, available - 0.5)
+        if share < 1.0:
             optimal = False
             stages.append({"tiers": len(window), "skipped": "no time"})
         else:
