@@ -9,13 +9,18 @@ from .work_patterns import workday_metrics
 # only compared within one definition. 3 (v1.75): the on-call duty category
 # counts only while "Rest days around on-call duty" is on (the section select
 # is disabled otherwise), and Rest Day row dates count as unavailable for
-# duty opportunity weights, like vacation.
-QUALITY_VERSION = 3
+# duty opportunity weights, like vacation. 4 (v1.81): the section order is
+# strict: open_by_section_order (open required positions per section, top of
+# the Settings list first) decides before the open-position count, so one
+# open position in a higher section is worse than any number lower down.
+QUALITY_VERSION = 4
 
-CLASSIC_FIELDS = ("hard_violations_in_range", "open_required_slots", "short_days",
+# open_required_slots stays after the section vector for display: equal
+# vectors have equal sums, so it never decides on its own.
+CLASSIC_FIELDS = ("hard_violations_in_range", "open_by_section_order", "open_required_slots", "short_days",
                   "soft_rule_violations", "hours_deviation_minutes", "preference_and_load_bonus")
-BALANCED_FIELDS = ("hard_violations_in_range", "open_required_slots", "open_priority_points",
-                   "uncomfortable_days", "discomfort_minutes", "soft_rule_violations",
+BALANCED_FIELDS = ("hard_violations_in_range", "open_by_section_order", "open_required_slots",
+                   "open_priority_points", "uncomfortable_days", "discomfort_minutes", "soft_rule_violations",
                    "workday_deviation_days", "structured_wish_violations", "hours_deviation_minutes",
                    "duty_burden_penalty", "changed_existing_assignments", "negative_preference_bonus")
 WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")

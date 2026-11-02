@@ -713,43 +713,200 @@ def section_tier_by_slot_id(state) -> Dict[str, int]:
     return _section_tier_by_slot_id(_collect_slot_contexts(state), template.blocks if template else [])
 
 
-def _add_priority_dominance(model, slack_by_instance, reference, var_map,
-                            tier_by_slot_id) -> Tuple[List[Any], int]:
-    """Repair mode: never trade a position of a higher-ranked section for
-    lower-ranked ones. For every tier, the missing positions of that tier
-    and all higher tiers may not exceed those of the plan being repaired
-    (counting only its placements the model can represent). A gap may move
-    to a lower-ranked section, never to a higher one; the plan being
-    repaired always satisfies this.
+# Repair mode: the largest objective one lexicographic stage may reach.
+# Exact integer weights for several tiers multiply quickly (one week of the
+# arena fixture needs 63 bits for all tiers at once, four weeks about 102);
+# below 2**53 every objective value is also exact as a double, which keeps
+# CP-SAT's LP relaxation and its reported bounds clean.
+REPAIR_LEX_BOUND = 2 ** 53
+# Seconds kept for the last stage (fewest changes), at most this share of
+# the budget; a stage shorter than REPAIR_MIN_STAGE_SECONDS is not started
+# (presolve alone takes 1-2 s on four weeks).
+REPAIR_CHANGE_STAGE_SECONDS = 10.0
+REPAIR_CHANGE_STAGE_SHARE = 0.1
+REPAIR_MIN_STAGE_SECONDS = 2.0
 
-    Returns the open positions weighted by rank (a gap counts once for its
-    own tier and once for every tier below it, so higher-ranked gaps weigh
-    more) and the largest value that sum can take under these bounds."""
+
+def _repair_tiers(model, slack_by_instance, reference, var_map, tier_by_slot_id,
+                  change_cap: Optional[int]) -> List[Dict[str, Any]]:
+    """Repair mode: one entry per section tier, top tier first, with an
+    integer variable for its open positions (``open``), what the plan being
+    repaired misses there (``reference``, counting only its placements the
+    model can represent: the hint), the positions it misses in every plan
+    (``lower``: no variable can fill them) and the most it can miss
+    (``upper``: every changed assignment opens at most one position)."""
     kept: Dict[Tuple[str, str], int] = {}
     for (cid, date_iso, sid) in var_map:
         if (sid, date_iso, cid) in reference:
             kept[(sid, date_iso)] = kept.get((sid, date_iso), 0) + 1
     lowest = max(tier_by_slot_id.values(), default=-1) + 1
-    slack_by_tier: Dict[int, List[Any]] = {}
-    reference_missing_by_tier: Dict[int, int] = {}
-    for (sid, date_iso), (slack, missing) in slack_by_instance.items():
+    by_tier: Dict[int, Dict[str, Any]] = {}
+    for (sid, date_iso), (slack, missing, has_vars) in slack_by_instance.items():
         tier = tier_by_slot_id.get(sid, lowest)
-        slack_by_tier.setdefault(tier, []).append(slack)
-        reference_missing_by_tier[tier] = (reference_missing_by_tier.get(tier, 0)
-                                           + max(0, missing - kept.get((sid, date_iso), 0)))
-    tiers = sorted(slack_by_tier)
-    running: List[Any] = []
-    running_reference = 0
-    weighted: List[Any] = []
-    weighted_max = 0
-    for index, tier in enumerate(tiers):
-        running.extend(slack_by_tier[tier])
-        running_reference += reference_missing_by_tier[tier]
-        model.Add(sum(running) <= running_reference)
-        # The sum of all running totals: at most the plan's own.
-        weighted.extend(slack * (len(tiers) - index) for slack in slack_by_tier[tier])
-        weighted_max += running_reference
-    return weighted, weighted_max
+        entry = by_tier.setdefault(tier, {"tier": tier, "slacks": [], "reference": 0, "upper": 0, "lower": 0})
+        entry["slacks"].append(slack)
+        entry["reference"] += max(0, missing - kept.get((sid, date_iso), 0))
+        entry["upper"] += missing
+        if not has_vars:
+            entry["lower"] += missing
+    tiers = [by_tier[tier] for tier in sorted(by_tier)]
+    for entry in tiers:
+        if change_cap is not None:
+            entry["upper"] = min(entry["upper"], entry["reference"] + change_cap)
+        entry["upper"] = max(entry["upper"], entry["lower"], entry["reference"])
+        entry["open"] = model.NewIntVar(entry["lower"], entry["upper"], f"open_tier_{entry['tier']}")
+        model.Add(entry["open"] == sum(entry["slacks"]))
+    if tiers:
+        # The plan being repaired is feasible: the top tier never gets worse.
+        model.Add(tiers[0]["open"] <= tiers[0]["reference"])
+    return tiers
+
+
+def _lexicographic_weights(group: List[Dict[str, Any]]) -> Tuple[List[int], int]:
+    """Exact weights for consecutive tiers (top first) and the largest
+    objective value: one position fewer in a tier outweighs anything the
+    tiers below it in the group can change (their open counts range from
+    ``lower`` to ``upper``)."""
+    weights = [0] * len(group)
+    below = 0
+    for index in range(len(group) - 1, -1, -1):
+        weights[index] = below + 1
+        below += weights[index] * (group[index]["upper"] - group[index]["lower"])
+    largest = sum(weight * tier["upper"] for weight, tier in zip(weights, group))
+    return weights, largest
+
+
+def _lexicographic_window(tiers: List[Dict[str, Any]], start: int, bound: int = REPAIR_LEX_BOUND) -> int:
+    """End (exclusive) of the longest run of tiers from ``start`` that one
+    stage orders exactly within ``bound``; at least one tier."""
+    end = start + 1
+    while end < len(tiers) and _lexicographic_weights(tiers[start:end + 1])[1] <= bound:
+        end += 1
+    return end
+
+
+def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: int,
+                                time_limit: float, cancel_event, callback) -> Dict[str, Any]:
+    """Repair mode, strict section order: minimize the open positions tier by
+    tier from the top, consecutive tiers sharing one stage while exact
+    weights stay within REPAIR_LEX_BOUND; each stage's result bounds the next
+    ones; a last stage minimizes the changes to the plan being repaired.
+
+    Every stage starts from a complete hint of the previous stage's plan
+    (the plan being repaired first) and a stage plan is only taken when it
+    is not lexicographically worse, so the result is never worse than the
+    plan. A stage that runs out of time keeps its best plan as the bound and
+    the search goes on; a stop ends it at once (a watcher stops the running
+    stage). Returns the solver holding the final plan (None when no stage
+    produced one), its status, whether every stage proved optimality, and a
+    log per stage."""
+    deadline = time.time() + max(0.0, time_limit)
+    reserve = min(REPAIR_CHANGE_STAGE_SECONDS, REPAIR_CHANGE_STAGE_SHARE * max(0.0, time_limit))
+    stages: List[Dict[str, Any]] = []
+    best_solver = None
+    best_result = None
+    optimal = True
+    incumbent = {tier["tier"]: tier["reference"] for tier in tiers}
+    hint: Optional[List[int]] = None  # complete: one value per model variable
+
+    def run(seconds: float, objective=None, fix_to_hint: bool = False):
+        if objective is not None:
+            model.Minimize(objective)
+        if hint is not None:
+            model.ClearHints()
+            for index, value in enumerate(hint):
+                model.AddHint(model.GetIntVarFromProtoIndex(index), value)
+        solver = cp_model.CpSolver()
+        solver.parameters.max_time_in_seconds = max(0.1, seconds)
+        solver.parameters.num_search_workers = workers
+        solver.parameters.relative_gap_limit = 0.0
+        solver.parameters.fix_variables_to_their_hinted_value = fix_to_hint
+        finished = threading.Event()
+
+        def watch() -> None:
+            while not finished.wait(0.05):
+                if cancel_event.is_set():
+                    solver.StopSearch()
+                    return
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            result = solver.Solve(model, callback)
+        finally:
+            finished.set()
+            watcher.join(timeout=1.0)
+        return solver, result
+
+    def take(solver) -> None:
+        nonlocal hint
+        hint = list(solver.ResponseProto().solution)
+        for tier in tiers:
+            incumbent[tier["tier"]] = solver.Value(tier["open"])
+
+    # Complete the plan into a hint of every variable (slack, auxiliaries):
+    # a partial hint lets the first solution start elsewhere.
+    if tiers:
+        solver, result = run(min(5.0, max(0.5, deadline - time.time())),
+                             objective=sum(t["open"] for t in tiers), fix_to_hint=True)
+        if result in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            take(solver)
+            best_solver, best_result = solver, result
+
+    index = 0
+    while index < len(tiers):
+        if cancel_event.is_set() or callback.was_aborted:
+            break
+        tier = tiers[index]
+        if incumbent[tier["tier"]] <= tier["lower"]:
+            # Nothing to gain here once the tiers above are fixed.
+            model.Add(tier["open"] <= incumbent[tier["tier"]])
+            index += 1
+            continue
+        end = _lexicographic_window(tiers, index)
+        window = tiers[index:end]
+        remaining_windows = 1 + sum(1 for later in tiers[end:] if incumbent[later["tier"]] > later["lower"])
+        share = (deadline - time.time() - reserve) / max(1, remaining_windows)
+        if share < REPAIR_MIN_STAGE_SECONDS:
+            optimal = False
+            stages.append({"tiers": len(window), "skipped": "no time"})
+        else:
+            weights, _largest = _lexicographic_weights(window)
+            started = time.time()
+            current = [incumbent[t["tier"]] for t in window]
+            solver, result = run(share, objective=sum(w * t["open"] for w, t in zip(weights, window)))
+            stage = {"tiers": len(window), "status": solver.StatusName(result),
+                     "seconds": round(time.time() - started, 2)}
+            if result in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+                found = [solver.Value(t["open"]) for t in window]
+                if found <= current:  # never a worse plan than the stage started from
+                    take(solver)
+                    best_solver, best_result = solver, result
+            if result != cp_model.OPTIMAL:
+                optimal = False
+            stage["open"] = [incumbent[t["tier"]] for t in window]
+            stages.append(stage)
+        for t in window:
+            model.Add(t["open"] <= incumbent[t["tier"]])
+        index = end
+
+    if cancel_event.is_set() or callback.was_aborted:
+        return {"solver": best_solver, "result": best_result, "optimal": False, "stages": stages,
+                "aborted": True}
+    left = deadline - time.time()
+    if left >= 0.5 and change_terms:
+        started = time.time()
+        solver, result = run(left, objective=sum(change_terms))
+        stages.append({"changes": True, "status": solver.StatusName(result),
+                       "seconds": round(time.time() - started, 2)})
+        if result in (cp_model.OPTIMAL, cp_model.FEASIBLE):
+            best_solver, best_result = solver, result
+        if result != cp_model.OPTIMAL:
+            optimal = False
+    elif change_terms:
+        optimal = False
+    return {"solver": best_solver, "result": best_result, "optimal": optimal and best_solver is not None,
+            "stages": stages, "aborted": False}
 
 
 def _build_date_context(
@@ -1126,7 +1283,8 @@ def _add_coverage_constraints(
     variables, for objectives that count open positions like the agent's
     quality tuple instead of weighting them by slot priority;
     ``slack_by_instance_out`` (optional) maps (slot_id, date_iso) to that
-    variable and the instance's missing positions after fixed entries."""
+    variable, the instance's missing positions after fixed entries and
+    whether any assignment variable can fill it."""
     total_slots = len(slot_contexts)
     order_weight_by_slot_id: Dict[str, int] = {}
     total_required = 0
@@ -1218,7 +1376,7 @@ def _add_coverage_constraints(
         if raw_slack_out is not None:
             raw_slack_out.append(slack)
         if slack_by_instance_out is not None:
-            slack_by_instance_out[(slot_id, date_iso)] = (slack, missing)
+            slack_by_instance_out[(slot_id, date_iso)] = (slack, missing, bool(vars_here))
 
     return coverage_terms, slack_terms, total_required, order_weight_by_slot_id
 
@@ -2332,13 +2490,12 @@ def _solve_range_impl(
         state_override: Optional AppState to solve instead of loading it
         repair_reference: Optional collection of (slotId, dateISO, clinicianId)
             identities, the plan to repair (cross-day coverage repair of the
-            agent, backend/agent/cross_day.py). The plan is a solution hint and
-            the objective becomes: fewest missing required positions first,
-            then open positions as low in the section order as possible,
-            then fewest changes to that plan; no section may end up with more
-            missing positions in its tier and above than in that plan
-            (_add_priority_dominance: a gap may move to a lower-ranked
-            section, never to a higher one).
+            agent, backend/agent/cross_day.py). The plan is the starting
+            solution of a staged search (_solve_repair_lexicographic): the
+            open required positions are minimized section tier by section
+            tier from the top of the section order (strict: one position in a
+            higher section outweighs any number lower down, also when more
+            stay open in total), then the changes to that plan.
             The state must hold only the fixed context, not the plan itself.
         repair_max_changes: Optional cap on changed assignments in repair mode.
 
@@ -2538,9 +2695,7 @@ def _solve_range_impl(
     timer.checkpoint("coverage_constraints")
 
     repair_change_terms: List[Any] = []
-    repair_rank_terms: List[Any] = []
-    repair_rank_max = 0
-    repair_change_cap = 0
+    repair_tiers: List[Dict[str, Any]] = []
     if repair_mode:
         # Stay close to the plan being repaired: it is the starting solution,
         # and every assignment that differs from it counts as one change.
@@ -2549,15 +2704,14 @@ def _solve_range_impl(
             kept = (sid, date_iso, cid) in reference
             model.AddHint(var, 1 if kept else 0)
             repair_change_terms.append(1 - var if kept else var)
-        repair_change_cap = len(repair_change_terms)
         if repair_max_changes is not None:
-            repair_change_cap = min(repair_change_cap, max(0, int(repair_max_changes)))
-            model.Add(sum(repair_change_terms) <= repair_change_cap)
-        # Section order is binding: more filled positions never at the
-        # expense of a higher-ranked section.
-        repair_rank_terms, repair_rank_max = _add_priority_dominance(
+            model.Add(sum(repair_change_terms) <= max(0, int(repair_max_changes)))
+        # Strict section order: the staged search below minimizes the open
+        # positions tier by tier from the top, then the changes.
+        repair_tiers = _repair_tiers(
             model, slack_by_instance, reference, var_map,
             _section_tier_by_slot_id(slot_contexts, state.weeklyTemplate.blocks if state.weeklyTemplate else []),
+            None if repair_max_changes is None else max(0, int(repair_max_changes)),
         )
 
     on_progress("phase", {"phase": "on_call_rest_days", "label": "Preparation (6/10): Setting up on-call rest rules..."})
@@ -2648,19 +2802,10 @@ def _solve_range_impl(
     w_ytd_balance = solver_settings.weightYtdBalance
 
     if repair_mode:
-        # Lexicographic by weights, from the bounds the model itself sets:
-        # one more filled required position outweighs any section order and
-        # any change count; among plans that fill as many, open positions
-        # lower in the section order outweigh any change count (the change
-        # cap bounds that difference); then fewest changes. Soft goals stay
-        # with the plan being repaired.
-        rank_weight = repair_change_cap + 1
-        missing_weight = rank_weight * repair_rank_max + repair_change_cap + 1
-        model.Minimize(
-            sum(raw_slack_vars) * missing_weight
-            + sum(repair_rank_terms) * rank_weight
-            + sum(repair_change_terms)
-        )
+        # The staged search (_solve_repair_lexicographic) sets one objective
+        # per stage: open positions tier by tier from the top, then the
+        # changes. Soft goals stay with the plan being repaired.
+        model.Minimize(sum(raw_slack_vars) if raw_slack_vars else 0)
     elif payload.only_fill_required:
         model.Minimize(
             -total_coverage * w_coverage
@@ -2805,7 +2950,25 @@ def _solve_range_impl(
     solver.parameters.max_time_in_seconds = remaining_timeout
     solver.parameters.num_search_workers = SOLVER_NUM_WORKERS
     solver.parameters.relative_gap_limit = 0.0 if repair_mode else SOLVER_GAP_THRESHOLD
-    result = solver.SolveWithSolutionCallback(model, solution_callback)
+    repair_search: Optional[Dict[str, Any]] = None
+    if repair_mode:
+        repair_search = _solve_repair_lexicographic(
+            model, var_map, repair_tiers, repair_change_terms, SOLVER_NUM_WORKERS,
+            remaining_timeout, cancel_event, solution_callback,
+        )
+        if repair_search["solver"] is not None:
+            solver, result = repair_search["solver"], repair_search["result"]
+        else:
+            result = cp_model.UNKNOWN
+        stage_count = sum(1 for stage in repair_search["stages"] if "status" in stage)
+        notes.append(
+            f"Repair search: {len(repair_tiers)} section tier(s) in {stage_count} stage(s), "
+            f"{'every stage optimal' if repair_search['optimal'] else 'not every stage proven optimal'}."
+        )
+        if repair_search["aborted"]:
+            solution_callback.was_aborted = True
+    else:
+        result = solver.SolveWithSolutionCallback(model, solution_callback)
     solution_callback._cancel_grace_timer()  # clean up any pending timer
     timer.checkpoint("solve")
 
@@ -3047,7 +3210,11 @@ def _solve_range_impl(
         num_variables=len(var_map),
         num_days=len(target_day_isos),
         num_slots=len(slot_contexts),
-        solver_status="ABORTED" if solution_callback.was_aborted else ("GAP_CONVERGED" if solution_callback.stopped_by_gap else solver.StatusName(result)),
+        solver_status="ABORTED" if solution_callback.was_aborted else (
+            "GAP_CONVERGED" if solution_callback.stopped_by_gap
+            # A staged repair is optimal only when every stage proved it.
+            else ("OPTIMAL" if repair_search["optimal"] else "FEASIBLE") if repair_search is not None
+            else solver.StatusName(result)),
         cpu_workers_used=SOLVER_NUM_WORKERS,
         cpu_cores_available=multiprocessing.cpu_count(),
         sub_scores=sub_scores,

@@ -238,13 +238,115 @@ def test_solver_repair_staffs_the_higher_section_when_coverage_ties():
     assert identities(executor) == EQUAL_ORDERED and EQUAL_ORDERED != EQUAL_CHEAP
 
 
-def test_priority_trade_down_compares_running_totals_from_the_top():
-    trade_down = cross_day.priority_trade_down
-    assert trade_down({3: 2}, {3: 1}) is None            # one gap fewer
-    assert trade_down({1: 2}, {3: 1}) is None            # gaps moved to a lower section
-    assert trade_down({1: 1, 2: 1}, {1: 1, 2: 1}) is None
-    assert trade_down({3: 2}, {0: 1}) == 0               # one top gap for two lower ones
-    assert trade_down({2: 1}, {1: 1}) == 1               # a gap moved up
+def strict_state(sections, slots, people) -> AppState:
+    """Sections in list order (top first); slots as (slot_id, section, day,
+    start, end); people as (id, sections, contract h, vacation dates)."""
+    from backend.models import VacationRange
+
+    rows = [WorkplaceRow(id=sec, name=sec.upper(), kind="class", dotColorClass="bg-slate-200",
+                         locationId="loc-default") for sec in sections]
+    rows += [WorkplaceRow(id="pool-rest-day", name="Rest Day", kind="pool", dotColorClass="bg-slate-200"),
+             WorkplaceRow(id="pool-vacation", name="Vacation", kind="pool", dotColorClass="bg-emerald-500")]
+    template = WeeklyCalendarTemplate(
+        version=4,
+        blocks=[TemplateBlock(id=f"block-{sec}", sectionId=sec, requiredSlots=0) for sec in sections],
+        locations=[WeeklyTemplateLocation(
+            locationId="loc-default",
+            rowBands=[TemplateRowBand(id=f"rb-{sec}", label=sec, order=i + 1) for i, sec in enumerate(sections)],
+            colBands=[TemplateColBand(id=f"col-{d}-1", label="", order=1, dayType=d) for d in DAY_TYPES],
+            slots=[TemplateSlot(id=sid, locationId="loc-default", rowBandId=f"rb-{sec}", colBandId=f"col-{day}-1",
+                                blockId=f"block-{sec}", requiredSlots=1, startTime=start, endTime=end,
+                                endDayOffset=0) for sid, sec, day, start, end in slots])])
+    clinicians = [Clinician(id=cid, name=cid.title(), qualifiedClassIds=list(quals),
+                            vacations=[VacationRange(id=f"v-{cid}-{d}", startISO=d, endISO=d) for d in away],
+                            workingHoursPerWeek=hours, workingHoursToleranceHours=0)
+                  for cid, quals, hours, away in people]
+    return AppState(locations=[Location(id="loc-default", name="Site")], locationsEnabled=True, rows=rows,
+                    clinicians=clinicians, assignments=[], minSlotsByRowId={}, slotOverridesByKey={},
+                    weeklyTemplate=template, holidays=[],
+                    solverSettings={"enforceSameLocationPerDay": False, "onCallRestEnabled": False},
+                    solverRules=[])
+
+
+def strict_repair(state, reference, start, end):
+    """The solver's repair and coverage_repair from the same agent plan."""
+    payload = SolveRangeRequest(startISO=start, endISO=end, only_fill_required=True, timeout_seconds=20)
+    result = _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
+                               start_time=time.time(), state_override=state, repair_reference=set(reference),
+                               repair_max_changes=cross_day.MAX_CHANGES)
+    executor = PlanToolExecutor(state, build_scoring_context(state, start, end, only_fill_required=True), [])
+    assert executor._tool_apply_moves({"moves": [
+        {"action": "assign", "slot_key": f"{slot}__{day}", "clinicianId": cid}
+        for slot, day, cid in sorted(reference)]})["applied"]
+    report = cross_day.coverage_repair(executor, cancel_event=threading.Event(), time_limit=20)
+    return {(a.rowId, a.dateISO, a.clinicianId) for a in result.assignments}, report, executor
+
+
+def test_strict_order_unstaffs_two_lower_slots_for_one_higher():
+    """v1.81, strict section order: Pat (8 h a week) holds two 4 h slots of
+    the lower section; the top section's 8 h slot is open. One position in a
+    higher section outweighs any number lower down, also when more stay
+    open in total (the admin's decision)."""
+    state = strict_state(["top", "low"], [("slot-top-fri", "top", "fri", "08:00", "16:00"),
+                                          ("slot-low-mon", "low", "mon", "08:00", "12:00"),
+                                          ("slot-low-tue", "low", "tue", "08:00", "12:00")],
+                         [("pat", ["top", "low"], 8, [])])
+    reference = {("slot-low-mon", MON_W45, "pat"), ("slot-low-tue", TUE_W45, "pat")}
+    plan, report, executor = strict_repair(state, reference, MON_W45, FRI)
+    assert plan == {("slot-top-fri", FRI, "pat")}
+    assert (report["status"], report["open_before"], report["open_after"]) == ("applied", 1, 2), report
+    assert report["section"] == "TOP"
+    assert executor.quality_dict(executor.best_quality)["open_by_section_order"] == [0, 2]
+    assert cross_day.repair_note(report) == (
+        "Cross-day repair staffed TOP first by changing 3 assignment(s) across days (1 -> 2 open); "
+        "the section order comes before the count.")
+
+
+def test_strict_order_gives_freed_hours_to_the_higher_slot():
+    """The admin's case: the day-by-day plan left a top slot and two lower
+    ones open; freeing Pat's Monday (Sam can take it) leaves 8 h that fit the
+    top slot or both lower ones. The top slot wins although the lower pair
+    would fill one more position."""
+    state = strict_state(["top", "mid", "low"], [("slot-top-fri", "top", "fri", "08:00", "16:00"),
+                                                 ("slot-mid-thu-a", "mid", "thu", "08:00", "12:00"),
+                                                 ("slot-mid-thu-b", "mid", "thu", "12:00", "16:00"),
+                                                 ("slot-low-mon", "low", "mon", "08:00", "16:00")],
+                         [("pat", ["top", "mid", "low"], 8, []), ("sam", ["low"], 8, [])])
+    reference = {("slot-low-mon", MON_W45, "pat")}
+    plan, report, executor = strict_repair(state, reference, MON_W45, FRI)
+    assert plan == {("slot-low-mon", MON_W45, "sam"), ("slot-top-fri", FRI, "pat")}
+    assert (report["status"], report["open_before"], report["open_after"]) == ("applied", 3, 2), report
+    assert executor.quality_dict(executor.best_quality)["open_by_section_order"] == [0, 2, 0]
+
+
+def test_strict_order_makes_a_pure_upward_trade():
+    """Same number of open positions, the higher section staffed: before
+    v1.81 the gate refused this (the count did not change)."""
+    state = strict_state(["top", "low"], [("slot-top-mon", "top", "mon", "08:00", "16:00"),
+                                          ("slot-low-mon", "low", "mon", "08:00", "16:00")],
+                         [("pat", ["top", "low"], 40, [])])
+    reference = {("slot-low-mon", MON_W45, "pat")}
+    plan, report, executor = strict_repair(state, reference, MON_W45, MON_W45)
+    assert plan == {("slot-top-mon", MON_W45, "pat")}
+    assert (report["status"], report["open_before"], report["open_after"]) == ("applied", 1, 1), report
+    assert executor.quality_dict(executor.best_quality)["open_by_section_order"] == [0, 1]
+
+
+def test_section_vector_has_one_entry_per_section_and_sums_to_the_count():
+    state = two_block_cor_state(friday_block_first=True)
+    executor = greedy_executor(state)
+    quality = executor.quality_dict(executor.best_quality)
+    # COR's two blocks share one entry; SENO and ECHO have no slots left.
+    assert executor.section_order == ["COR"]
+    assert quality["open_by_section_order"] == [2]
+    assert sum(quality["open_by_section_order"]) == quality["open_required_slots"]
+
+
+def test_first_difference_finds_the_deciding_section():
+    first = cross_day.first_difference
+    assert first([0, 1, 2], [0, 1, 2]) is None
+    assert first([1, 0, 0], [0, 3, 3]) == 0   # the top section decides, whatever follows
+    assert first([0, 2, 0], [0, 1, 5]) == 1
 
 
 def test_coverage_repair_refuses_a_trade_down_from_the_solver(monkeypatch):

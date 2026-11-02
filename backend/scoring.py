@@ -43,6 +43,7 @@ from .planning_preferences import daily_min_minutes, vacation_dates_in_range
 from .solver import (
     EXTRA_ASSIGNMENTS_PER_SLOT_DISTRIBUTE_ALL,
     _build_slot_contexts_and_intervals,
+    _section_tier_by_slot_id,
     _compute_ytd_deficit_hours,
     _get_clinician_time_window,
     _get_day_type,
@@ -200,6 +201,20 @@ class ScoringContext:
                     order_weight=self.order_weight_by_slot_id[slot_id],
                 )
 
+        # Strict section order (v1.81): the sections of this range ranked by
+        # the position of their first block (0 = top of the Settings list);
+        # every day and sub-shift of a section shares its rank.
+        tier_by_slot_id = _section_tier_by_slot_id(
+            slot_contexts, state.weeklyTemplate.blocks if state.weeklyTemplate else [])
+        section_by_tier: Dict[int, str] = {}
+        for inst in self.instances.values():
+            section_by_tier.setdefault(tier_by_slot_id[inst.slot_id], inst.section_id)
+        tiers = sorted(section_by_tier)
+        index_by_tier = {tier: index for index, tier in enumerate(tiers)}
+        self.section_order_ids: List[str] = [section_by_tier[tier] for tier in tiers]
+        self.section_index_by_slot_id: Dict[str, int] = {
+            inst.slot_id: index_by_tier[tier_by_slot_id[inst.slot_id]] for inst in self.instances.values()}
+
         # Fixed context: everything already in state for the range, any source.
         self.fixed_assignments: List[Assignment] = [
             a
@@ -316,7 +331,7 @@ def open_slots(ctx: ScoringContext, new_assignments: List[Assignment]) -> List[O
                     missing=missing,
                 )
             )
-    out.sort(key=lambda o: (o.dateISO, -ctx.order_weight_by_slot_id.get(o.slot_id, 0)))
+    out.sort(key=lambda o: (o.dateISO, ctx.section_index_by_slot_id.get(o.slot_id, len(ctx.section_order_ids))))
     return out
 
 

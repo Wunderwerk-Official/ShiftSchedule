@@ -48,11 +48,14 @@ QUALITY CHECK FOR OPTIONAL HANDOVERS:
 Legal is different from better. A pre-validated balance offer guarantees
 hard-rule legality, NOT improvement of the snapshot that will be returned.
 The strict priority order is: repairable hard violations, open required
-positions, short days, soft if/then rules, weekly-hours deviation, then
-preferences. Lower tiers never compensate for a worse higher tier.
+positions by section order (one open position in a higher section is worse
+than any number lower down), short days, soft if/then rules, weekly-hours
+deviation, then preferences. Lower tiers never compensate for a worse higher
+tier.
 Before an OPTIONAL balance or fairness swap, use apply_moves(dry_run=true)
 once and compare quality_after with quality_of_best_snapshot from your
-latest verification. Apply if it improves the first differing tier, or
+latest verification. Apply if it improves the first differing tier (in
+open_by_section_order: the first differing entry), or
 ties every tier and serves a specific admin wish or fairness goal. Do not
 dry-run ordinary construction blocks that fill open positions.
 If an applied batch warns WORSE than the best snapshot, undo that batch

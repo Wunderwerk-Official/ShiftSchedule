@@ -188,7 +188,7 @@ def analyze_bottlenecks(executor, arguments):
         for item in executor._day_open_entries(day):
             item = {key: value for key, value in item.items() if key != "raw_slot_key"}
             entries.append({**item, "dateISO": day})
-    entries.sort(key=lambda item: (item["eligible_count"], -item["priority"], item["dateISO"]))
+    entries.sort(key=lambda item: (item["eligible_count"], item["section_rank"], item["dateISO"]))
     return {"bottlenecks": entries[:20], "more_slots": max(0, len(entries)-20),
             "not_searched": not_searched, "search_status": "incomplete" if not_searched else "completed",
             "note": "Counts describe direct placements in the current plan. They are not a proof of insufficient capacity: rearranging other days may free hours or rest days."}

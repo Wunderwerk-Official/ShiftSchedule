@@ -68,7 +68,9 @@ def test_duty_burden_penalizes_concentration_with_same_coverage():
 def test_default_profile_preserves_existing_quality_contract():
     ex = executor()
     assert ex.ctx.settings.agentQualityProfile == "classic"
-    assert len(ex.best_quality) == 6
+    # v1.81: the strict section vector is the first coverage tier.
+    assert len(ex.best_quality) == 7
+    assert ex.quality_fields[:3] == ("hard_violations_in_range", "open_by_section_order", "open_required_slots")
     assert "short_days" in ex.quality_dict(ex.best_quality)
     assert not ex.ctx.settings.agentNeighborhoodSearch
 
@@ -120,9 +122,9 @@ def test_rest_day_row_entries_count_as_unavailable_for_duty_opportunities():
     assert rested._duty_opportunity_weights[("on_call", "b")] == plain._duty_opportunity_weights[("on_call", "b")]
 
 
-def test_quality_version_marks_the_v1_75_metric_definition():
+def test_quality_version_marks_the_strict_section_order():
     from backend.agent.quality import QUALITY_VERSION
 
     ex = executor(_on_call_state(False), end=TUE)
-    assert QUALITY_VERSION == 3
-    assert run(ex, "get_plan_overview")["quality_version"] == 3
+    assert QUALITY_VERSION == 4
+    assert run(ex, "get_plan_overview")["quality_version"] == 4

@@ -152,7 +152,8 @@ def test_blocks_rank_seventh_candidate_before_limiting_response():
     accepted = run(ex, "apply_proposal", proposal_id=best["proposal_id"])
     assert accepted["applied"]
     assert accepted["next"]["result"]["day_complete"]
-    assert ex.best_quality[:3] == (0, 0, 0)
+    quality = ex.quality_dict(ex.best_quality)
+    assert (quality["hard_violations_in_range"], quality["open_required_slots"], quality["short_days"]) == (0, 0, 0)
 
 
 def test_proposal_retry_never_reapplies_changes_or_reuses_old_next_options():
@@ -286,7 +287,8 @@ def test_neighborhood_finds_joint_chain_that_shallow_rescue_misses():
     assert len(ex.current) == 2  # searching itself never edits the draft
     applied = run(ex, "apply_proposal", proposal_id=result["proposals"][0]["proposal_id"])
     assert applied["applied"]
-    assert ex.best_quality[:2] == (0, 0)
+    assert (ex.quality_dict(ex.best_quality)["hard_violations_in_range"],
+            ex.quality_dict(ex.best_quality)["open_required_slots"]) == (0, 0)
     assert len(ex.current) == 3
 
 
@@ -308,7 +310,8 @@ def test_neighborhood_releases_weekly_hours_across_days_atomically():
     result = run(ex, "repair_neighborhood", dateISO=TUE)
     assert result["proposals"]
     assert run(ex, "apply_proposal", proposal_id=result["proposals"][0]["proposal_id"])["applied"]
-    assert ex.best_quality[:2] == (0, 0)
+    assert (ex.quality_dict(ex.best_quality)["hard_violations_in_range"],
+            ex.quality_dict(ex.best_quality)["open_required_slots"]) == (0, 0)
     assert all(ex._week_hours(c.id, MON) == 8 for c in clinicians)
 
 
@@ -431,3 +434,21 @@ def test_full_slot_candidate_list_does_not_claim_replacements_are_impossible():
         {"action": "assign", "slot_key": f"slot-a__mon__{MON}", "clinicianId": "b"},
     ])
     assert swap["valid"]
+
+
+@pytest.mark.parametrize("profile", ["classic", "balanced"])
+def test_day_block_candidates_follow_the_strict_section_order(profile):
+    """v1.81: both profiles list first the candidate whose block leaves the
+    better section vector. P's block also fills B; Q's fills both C slots,
+    one position more, yet B ranks above C, so P comes first."""
+    clinicians = [make_clinician("p", "P (A+B)", ["A", "B"], working_hours_per_week=40),
+                  make_clinician("q", "Q (A+C)", ["A", "C"], working_hours_per_week=40)]
+    slots = [make_template_slot("X", block_id="A", row_band_id="row-1", start_time="08:00", end_time="10:00"),
+             make_template_slot("B1", block_id="B", row_band_id="row-1", start_time="10:00", end_time="12:00"),
+             make_template_slot("C1", block_id="C", row_band_id="row-1", start_time="10:00", end_time="12:00"),
+             make_template_slot("C2", block_id="C", row_band_id="row-1", start_time="12:00", end_time="14:00")]
+    state = section_state(clinicians, slots, ["A", "B", "C"])
+    state.solverSettings["agentQualityProfile"] = profile
+    ex = executor(state)
+    out = run(ex, "suggest_day_blocks", slot_key=f"X__{MON}")
+    assert [c["clinicianId"] for c in out["candidates"]][:2] == ["P (A+B)", "Q (A+C)"], out["candidates"]

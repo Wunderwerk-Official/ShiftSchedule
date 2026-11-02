@@ -235,28 +235,39 @@ DAY_TOOL_SPECS = [
 ]
 
 
-def _quality_improvement_note(seed_q, best_q, fields=None) -> str:
+_QUALITY_NOTE_LABELS = {
+    "hard_violations_in_range": "hard-rule violations",
+    "open_required_slots": "open required slots",
+    "short_days": "short work days",
+    "soft_rule_violations": "soft-rule violations",
+}
+
+
+def _quality_improvement_note(seed_q, best_q, fields=None, section_order=()) -> str:
     """Human-readable summary of which quality tiers the agent improved.
 
-    Mirrors the lexicographic tuple in ``PlanToolExecutor._quality``; only
-    components that actually changed are mentioned.
+    Mirrors the lexicographic tuple in ``PlanToolExecutor._quality`` by
+    field name; only components that actually changed are mentioned. The
+    section vector names the sections whose open positions changed.
     """
+    from .quality import CLASSIC_FIELDS
+
     parts: List[str] = []
-    if len(seed_q) != 6 and fields:
-        return ", ".join(f"{field.replace('_', ' ')} {old} -> {new}"
-                         for field, old, new in zip(fields, seed_q, best_q) if old != new)
-    for label, idx in (
-        ("hard-rule violations", 0),
-        ("open required slots", 1),
-        ("short work days", 2),
-        ("soft-rule violations", 3),
-    ):
-        if seed_q[idx] != best_q[idx]:
-            parts.append(f"{label} {seed_q[idx]} -> {best_q[idx]}")
-    if seed_q[4] != best_q[4]:
-        parts.append(f"weekly-hours deviation {seed_q[4]} -> {best_q[4]} min")
-    if seed_q[5] != best_q[5]:
-        parts.append(f"preference/load bonus {-seed_q[5]} -> {-best_q[5]}")
+    for field, old, new in zip(fields or CLASSIC_FIELDS, seed_q, best_q):
+        if old == new:
+            continue
+        if field == "open_by_section_order":
+            changed = [(section_order[i] if i < len(section_order) else f"section {i + 1}", a, b)
+                       for i, (a, b) in enumerate(zip(old, new)) if a != b]
+            shown = ", ".join(f"{name} {a} -> {b}" for name, a, b in changed[:5])
+            more = f" and {len(changed) - 5} more" if len(changed) > 5 else ""
+            parts.append(f"open by section ({shown}{more})")
+        elif field == "hours_deviation_minutes":
+            parts.append(f"weekly-hours deviation {old} -> {new} min")
+        elif field == "preference_and_load_bonus":
+            parts.append(f"preference/load bonus {-old} -> {-new}")
+        else:
+            parts.append(f"{_QUALITY_NOTE_LABELS.get(field, field.replace('_', ' '))} {old} -> {new}")
     return ", ".join(parts)
 
 
@@ -854,7 +865,8 @@ def agent_solve_range(
         elif executor.best_quality < executor.seed_quality:
             notes.append(
                 "Plan improved over the seed: "
-                + _quality_improvement_note(executor.seed_quality, executor.best_quality, executor.quality_fields)
+                + _quality_improvement_note(executor.seed_quality, executor.best_quality, executor.quality_fields,
+                                            executor.section_order)
                 + "."
             )
         elif executor.moves_accepted:
@@ -1001,6 +1013,7 @@ def agent_solve_range(
                     "final_day_checks": run_meta.get("final_day_checks", {}),
                     "quality_profile": ctx.settings.agentQualityProfile,
                     "quality_order": list(executor.quality_fields),
+                    "section_order": list(executor.section_order),
                     "search_history": executor.workflow.summary(),
                     # Diagnostics for the copyable run log (real names).
                     **_log_extras(best),
@@ -1114,6 +1127,13 @@ def agent_solve_range(
                      for c in state.clinicians if c.workPattern]
     wishes_block += "\n\nACTIVE QUALITY PROFILE: " + ctx.settings.agentQualityProfile
     wishes_block += ". Use the tool's quality_order for comparisons; earlier fields dominate later fields."
+    wishes_block += (
+        " open_by_section_order lists the open required positions per section in SECTION ORDER"
+        " (highest first): compare it entry by entry from the left; the first entry that differs"
+        " decides and fewer is better, so one open position in a higher section outweighs any"
+        " number in lower sections, even when more positions stay open in total. SECTION ORDER: "
+        + ", ".join(executor.section_order) + "."
+    )
     if ctx.settings.agentQualityProfile == "balanced":
         wishes_block += " Ordered fields (all minimized): " + ", ".join(executor.quality_fields) + "."
     if pattern_lines:
@@ -1457,13 +1477,13 @@ def agent_solve_range(
             day_slot_lines: List[str] = []
             open_positions = 0
             # Same processing order the tools use (minus eligibility, which
-            # is not known yet): on-call duties first, then slot priority,
-            # then start time — NOT chronological.
+            # is not known yet): on-call duties first, then the section
+            # order, then start time — NOT chronological.
             for inst in sorted(
                 (i for i in ctx.instances.values() if i.date_iso == date_iso),
                 key=lambda i: (
                     i.section_id != on_call_class,
-                    -i.order_weight,
+                    executor.section_rank(i.slot_id),
                     i.start,
                     i.slot_key,
                 ),
@@ -1475,7 +1495,7 @@ def agent_solve_range(
                     f"|{executor.section_names.get(inst.section_id, inst.section_id)}"
                     f"|{_fmt_span(inst.start, inst.end)}"
                     f"|{missing}"
-                    f"|prio {inst.order_weight}"
+                    f"|rank {executor.section_rank(inst.slot_id)}"
                     + ("|ON-CALL" if inst.section_id == on_call_class else "")
                 )
             if ctx.only_fill_required and open_positions == 0:

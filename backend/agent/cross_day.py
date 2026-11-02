@@ -15,13 +15,15 @@ the difference through the executor like any other proposal: the full gate
 must accept it AND the active quality tuple must improve, so a repair never
 trades away coverage, fixed entries or rule compliance.
 
-The section order is binding (Settings: "If not every slot can be filled,
-sections higher in this list are staffed first"): a repair may move a gap
-to a lower-ranked section, never to a higher one. The CP-SAT model bounds
-this per tier, and the result is checked again here before it is applied.
-Among plans that fill as many positions, the model prefers the one whose
-open positions sit lower in the list. A section ranks by its first entry in
-that list, so its days and sub-shifts never outrank each other.
+The section order is strict (Settings: "If not every slot can be filled,
+sections higher in this list are staffed first"; v1.81): one open position
+in a higher section is worse than any number lower down, also when more
+positions stay open in total. The CP-SAT search optimizes the open
+positions section by section from the top, then the number of changes, and
+the gate's quality tuple compares the same section vector first, so the
+plan is applied only when it is better in that order. A section ranks by its
+first entry in that list, so its days and sub-shifts never outrank each
+other.
 """
 from __future__ import annotations
 
@@ -51,30 +53,10 @@ def open_positions(executor) -> int:
                for inst in executor.ctx.instances.values())
 
 
-def missing_by_tier(executor, working, tier_by_slot_id: Dict[str, int]) -> Dict[int, int]:
-    """Missing required positions per section tier (0 = top of the list)."""
-    counts = executor._counts_by_instance(working)
-    lowest = max(tier_by_slot_id.values(), default=-1) + 1
-    out: Dict[int, int] = {}
-    for inst in executor.ctx.instances.values():
-        missing = inst.target - counts.get(inst.slot_key, 0)
-        if missing > 0:
-            tier = tier_by_slot_id.get(inst.slot_id, lowest)
-            out[tier] = out.get(tier, 0) + missing
-    return out
-
-
-def priority_trade_down(before: Dict[int, int], after: Dict[int, int]) -> Optional[int]:
-    """The highest-ranked tier at which the repaired plan has more missing
-    positions in that tier and all higher ones than before, None when the
-    repair never trades a higher-ranked position for lower-ranked ones."""
-    running_before = running_after = 0
-    for tier in sorted(set(before) | set(after)):
-        running_before += before.get(tier, 0)
-        running_after += after.get(tier, 0)
-        if running_after > running_before:
-            return tier
-    return None
+def first_difference(before, after) -> Optional[int]:
+    """Index of the first entry where two section vectors differ, None when
+    they are equal: that entry decides which plan is better."""
+    return next((i for i, (a, b) in enumerate(zip(before, after)) if a != b), None)
 
 
 def coverage_repair(executor, *, cancel_event, time_limit: float,
@@ -104,7 +86,7 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
     if cancel_event.is_set() or time_limit < MIN_SECONDS:
         return done("no_time")
 
-    from ..solver import _solve_range_impl, section_tier_by_slot_id
+    from ..solver import _solve_range_impl
 
     reference: Set[Tuple[str, str, str]] = {(a.rowId, a.dateISO, a.clinicianId) for a in working}
     payload = SolveRangeRequest(
@@ -147,42 +129,44 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
         + [{"action": "assign", "slot_key": f"{slot}__{day}", "clinicianId": cid} for slot, day, cid in added]
     )
     preview = ex._tool_apply_moves({"moves": moves, "dry_run": True})
-    if not preview.get("valid") or not preview.get("improves_best"):
-        reason = "invalid" if not preview.get("valid") else "not an improvement"
+    if not preview.get("valid"):
         rejected = preview.get("rejected") or preview.get("new_hard_violations") or []
-        return done("rejected", reason=reason, solver_status=status, changes_proposed=len(moves),
+        return done("rejected", reason="invalid", solver_status=status, changes_proposed=len(moves),
                     sample=[str(item)[:160] for item in rejected[:3]])
-    # The CP-SAT model is not the authority on the section order either.
-    tiers = section_tier_by_slot_id(ex.state)
-    after_plan = [ex._make_assignment(slot, day, cid) for slot, day, cid in proposed]
-    trade_down = priority_trade_down(missing_by_tier(ex, working, tiers),
-                                     missing_by_tier(ex, after_plan, tiers))
-    if trade_down is not None:
-        return done("rejected", reason="higher-ranked section left open", solver_status=status,
-                    changes_proposed=len(moves), section=_tier_section(ex, trade_down))
+    if not preview.get("improves_best"):
+        # The CP-SAT model is not the authority on the section order: the
+        # gate's tuple compares the same section vector first.
+        before_vector = ex.quality_dict(ex.best_quality)["open_by_section_order"]
+        after_vector = preview["quality_after"]["open_by_section_order"]
+        index = first_difference(before_vector, after_vector)
+        if index is not None and after_vector[index] > before_vector[index]:
+            return done("rejected", reason="higher-ranked section left open", solver_status=status,
+                        changes_proposed=len(moves), section=ex.section_order[index])
+        return done("rejected", reason="not an improvement", solver_status=status, changes_proposed=len(moves))
+    by_section_before = list(ex._open_by_section_order(working))
     proposal = ex.workflow.propose(moves, next_tool=None, next_args={}, preview=preview)
     applied = ex.workflow.apply({"proposal_id": proposal.get("proposal_id")}) if proposal else {}
     if not applied.get("applied"):
         return done("rejected", reason="apply failed", solver_status=status, changes_proposed=len(moves))
     after = open_positions(ex)
+    by_section_after = list(ex._open_by_section_order(ex._working_list()))
+    index = first_difference(by_section_before, by_section_after)
     report.update(open_after=after, changes=len(moves), applied=True,
                   days=sorted({day for _slot, day, _cid in removed + added}),
+                  # The highest-ranked section the repair staffed better.
+                  section=ex.section_order[index] if index is not None else None,
                   quality_after=ex.quality_dict(ex.best_quality))
     return done("applied", solver_status=status)
-
-
-def _tier_section(executor, tier: int) -> Optional[str]:
-    blocks = (executor.state.weeklyTemplate.blocks or []) if executor.state.weeklyTemplate else []
-    if not 0 <= tier < len(blocks):
-        return None
-    return executor.section_names.get(blocks[tier].sectionId, blocks[tier].sectionId)
 
 
 def repair_note(report: Optional[dict]) -> Optional[str]:
     """One run-log sentence for an applied repair, None otherwise."""
     if not report or not report.get("applied"):
         return None
-    gained = int(report["open_before"]) - int(report["open_after"])
-    return (f"Cross-day repair filled {gained} more required position(s) by changing "
-            f"{report['changes']} assignment(s) across days "
-            f"({report['open_before']} -> {report['open_after']} open).")
+    before, after = int(report["open_before"]), int(report["open_after"])
+    changed = f"by changing {report['changes']} assignment(s) across days ({before} -> {after} open)"
+    if after < before:
+        return f"Cross-day repair filled {before - after} more required position(s) {changed}."
+    # Strict section order: a higher section staffed, even if more stay open.
+    section = report.get("section") or "a higher-ranked section"
+    return f"Cross-day repair staffed {section} first {changed}; the section order comes before the count."

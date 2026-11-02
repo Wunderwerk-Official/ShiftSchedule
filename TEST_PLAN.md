@@ -298,6 +298,16 @@ npx playwright show-report
 
 **Frontend Tests**: `src/lib/weeklyHours.test.ts` (ISO weeks as Python's `isocalendar`, counting on the start date, pool rows ignored, slot minutes as the gate counts them incl. slots without times = 08:00–16:00, cap contract + tolerance with 5 h default and explicit 0, over only above the cap, label), `src/lib/clinicianSlotOptions.test.ts` (over-limit flag and label, none for people without a contract or already in the slot), `ClinicianPickerPopover.test.tsx` ("Over weekly limit (…)" shown, sorted after people without warnings), `src/lib/solverOutcome.test.ts` (banner reasons most frequent first whatever the input order, ties in the backend rule order incl. `REST_DAY` before overlaps, no top-N cut, "a qualified person is still free", "for 1 of 2 slots", "The run ended early." / "ended before it checked" instead of blaming rules; run card "Finished with open positions" only when nothing is unfinished, the incomplete wording for unfinished, aborted and older runs, nothing for applied or discarded runs; the run-details state "stopped" / "stopped early: …" from the stop reason and the run's status, "finished" for a partial run with no day left, "not started: this account's AI budget is used up" with 0 iterations; `runStoppedEarly` / `runEndedEarly` without the partial stop; the toast "Run stopped early - …" for budget, provider, error and refusal stops; the banner lead "are still open" for an unfinished day or a slot someone could still take), `SolverInfoModal.test.tsx` (the rendered run-card line; the rendered "Run:" line for a repaired skipped day, a Stop during the closing report, a budget stop and an unstarted run), `HelpView.test.tsx` (the repair's promise and the weekly-limit example); `e2e/team-page.spec.ts` stacked labels poll (stable 6 of 6 locally; main's v1.79 has the same fix and also waits for the mocked calendar).
 
+### 3.16 Strict section order for the AI planner (v1.81)
+
+**Backend Tests**:
+- [x] `test_cross_day_repair.py`: Pat (8 h a week) on two lower 4 h slots and the top section's 8 h slot open: the repair moves Pat to the top slot (1 -> 2 open, report section TOP, note "staffed TOP first … the section order comes before the count"); freed hours (Sam takes Pat's Monday) go to the top slot although two lower slots would fill one more position (3 -> 2 open, vector [0, 2, 0]); a pure 1:1 upward trade is applied (1 -> 1 open); one vector entry per section (two blocks of COR share one) that sums to the open count; `first_difference`; the v1.80 tests (top section kept, gap within one section and across two blocks of one section, staffing the top at equal coverage) hold with the staged search
+- [x] `test_agent_planning_workflow.py`: in both profiles `suggest_day_blocks` lists first the candidate whose block leaves the better section vector (P also fills B; Q fills two C slots)
+- [x] `test_agent_tools.py`: processing order ranks one section once (`section_rank` 3, 2, 1, 1; the earlier start of section A first)
+- [x] `test_agent_quality_profile.py`: classic tuple of 7 fields starting `hard_violations_in_range, open_by_section_order, open_required_slots`; `QUALITY_VERSION` 4 in the overview
+
+**Frontend Tests**: `HelpView.test.tsx` (the strict rule in section 3).
+
 ---
 
 ## 4. Intentionally Not Covered
@@ -404,3 +414,4 @@ Areas identified for future test expansion:
 | 2026-11-02 | Claude | v1.77: the My-plan loading card keeps the "Team | My plan" switch |
 | 2026-11-02 | Claude | v1.79: Calendar snapshots wait until the calendar has loaded; team-page e2e waits for the mocked calendar, not the demo grid |
 | 2026-11-02 | Claude | v1.80 (merged onto v1.74–v1.79; the branch called it v1.74, later v1.79): cross-day coverage repair with the section order binding, weekly hours in the picker, direct strategy (arena), why a slot stayed open; `REST_DAY` among the blocking reasons; stop texts follow the run's status |
+| 2026-11-02 | Claude | v1.81: strict section order for the AI planner (quality tuple `open_by_section_order`, QUALITY_VERSION 4; staged lexicographic cross-day repair; section rank in the day loop) |

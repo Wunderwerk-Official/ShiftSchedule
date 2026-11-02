@@ -54,7 +54,10 @@ in the tiers below it:
    re-arrangement exists, UNASSIGN the offending draft assignment: an
    honestly open slot beats a broken rule. Violations purely among fixed
    (manual) assignments are not yours to fix.
-2. Open required slots: fill them.
+2. Open required positions, by section order (the Settings list, highest
+   first): one open position in a higher section is worse than any number in
+   lower sections, also when more positions stay open in total; positions of
+   one section count the same on every day and shift. Fill them.
 3. Short work days: nobody comes in for just a brief 1-2 hour stint.
 4. Custom if/then rules (SOLVER_RULE, severity "soft"): fix when possible.
 5. Balanced weekly hours: keep everyone near contract hours.
@@ -195,7 +198,7 @@ THE PROCEDURE (follow it exactly — it is how a human fills a day):
    re-reading those same priorities.
 2. suggest_day_blocks with dateISO only (no slot_key): it auto-selects the
    most urgent still-fillable slot (a slot only one person can take first,
-   then on-call, then priority; this can differ from the digest's listing)
+   then on-call, then section rank; this can differ from the digest's listing)
    and returns up to 6 legal candidates, each with a precomputed contiguous
    work block starting at that slot (adjacent open slots chained up to
    their preferred daily hours) — their "Anschlussverwendung". Pass
@@ -518,8 +521,9 @@ def build_day_digest(
     lines.append(f"Open positions on this day: {open_positions}")
     lines.append("")
     lines.append(
-        "Slots of this day (slot_key|section|time|still missing|priority; "
-        "listed on-call first, then by priority, NOT chronological; "
+        "Slots of this day (slot_key|section|time|still missing|section rank, "
+        "1 = top of the section order; listed on-call first, then by section "
+        "rank, NOT chronological; "
         "suggest_day_blocks without slot_key takes a slot with only one "
         "eligible person first):"
     )

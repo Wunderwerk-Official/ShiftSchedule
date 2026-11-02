@@ -277,7 +277,7 @@ def test_week_audit_does_not_stop_after_four_verified_coverage_repairs():
     audit = ex.workflow.final_audit(ex.ctx.target_day_isos, Event())
     assert audit['repair_limit'] == 14
     assert audit['repairs'] == 6
-    assert ex.best_quality[1] == 0
+    assert ex.quality_dict(ex.best_quality)["open_required_slots"] == 0
     assert all(check['complete'] for check in audit['checks'].values())
     assert ex.workflow.tasks()['coverage_complete']
 
@@ -296,7 +296,7 @@ def test_final_repair_budget_prioritizes_missing_coverage_before_an_earlier_long
     assert ex.workflow.review_day(MON)['proposals']
     audit = ex.workflow.final_audit([MON, '2026-01-06'], Event(), max_repairs=1)
     assert audit['repairs'] == 1
-    assert ex.best_quality[1] == 0
+    assert ex.quality_dict(ex.best_quality)["open_required_slots"] == 0
     assert any(a.dateISO == '2026-01-06' for a in ex.best_assignments)
 
 

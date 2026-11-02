@@ -33,7 +33,7 @@ A checker validates every placement you return, one by one in your order, agains
 - Same site per day, one contiguous work block per person per day and rest days around on-call duties, when the rules section says they are enforced.
 - A place takes at most its open count.
 
-Goals, in this order: (1) fill every open place; when not all can be filled, fill the higher-priority places; weekly hours are shared across the days of a week, so do not spend a scarce person's last hours on a low-priority place another day needs them for; (2) no short days (below the person's daily minimum) and no over-long days (above the comfortable length); (3) each person's hours in the range close to their range target (within the given tolerance; the target is the contract pro rata for the days they are not on vacation, fixed work included) - never leave a place open for it: hours above the target are fine up to the hard weekly cap; (4) people behind their year-to-date target first, section preferences, preferred working times, admin instructions and clinician wishes.
+Goals, in this order: (1) fill every open place; when not all can be filled, the section order is strict: one place of a higher-ranked section (rank 1 = top) comes before any number of places lower down, even if more places stay open in total; weekly hours are shared across the days of a week, so do not spend a scarce person's last hours on a lower-ranked place another day needs them for; (2) no short days (below the person's daily minimum) and no over-long days (above the comfortable length); (3) each person's hours in the range close to their range target (within the given tolerance; the target is the contract pro rata for the days they are not on vacation, fixed work included) - never leave a place open for it: hours above the target are fine up to the hard weekly cap; (4) people behind their year-to-date target first, section preferences, preferred working times, admin instructions and clinician wishes.
 
 Plan like an experienced planner: scarcest places first (fewest legal people), give each person one contiguous block per day.
 
@@ -85,7 +85,7 @@ def _legal_people(executor, inst) -> List[str]:
 
 def open_places(executor) -> List[Tuple[object, int, List[str]]]:
     """(slot instance, open count, legal people) for every open place, by
-    day, priority (higher first) and start."""
+    day, section rank (top first) and start."""
     ex = executor
     counts = ex._counts_by_instance(ex._working_list())
     rows = []
@@ -93,7 +93,7 @@ def open_places(executor) -> List[Tuple[object, int, List[str]]]:
         missing = max(0, inst.target - counts.get(inst.slot_key, 0))
         if missing:
             rows.append((inst, missing))
-    rows.sort(key=lambda row: (row[0].date_iso, -row[0].order_weight, row[0].start))
+    rows.sort(key=lambda row: (row[0].date_iso, ex.section_rank(row[0].slot_id), row[0].start))
     return [(inst, missing, _legal_people(ex, inst)) for inst, missing in rows]
 
 
@@ -124,7 +124,7 @@ def open_place_lines(executor, places=None) -> List[str]:
         lines.append(
             f"- {ex._alias_slot_key(inst.slot_key)} | {_weekday(inst.date_iso)} | "
             f"{ex.section_names.get(inst.section_id, inst.section_id)} | {inst.location_id} | "
-            f"{_span(inst.start, inst.end)} | open {missing} | prio {inst.order_weight} | "
+            f"{_span(inst.start, inst.end)} | open {missing} | rank {ex.section_rank(inst.slot_id)} | "
             f"legal: {', '.join(legal) if legal else 'nobody'}"
         )
     return lines
@@ -236,7 +236,7 @@ def build_direct_digest(executor) -> str:
             f"{ytd if ytd is not None else '-'} | {', '.join(vacation) or '-'} | {'; '.join(fixed) or '-'} | "
             f"{'; '.join(windows) or '-'}"
         )
-    lines += ["", "Open places (slot | weekday | section | site | time | open | priority, higher first | "
+    lines += ["", "Open places (slot | weekday | section | site | time | open | section rank, 1 = top | "
                   "legal people given the fixed shifts):"]
     lines += open_place_lines(ex)
     return "\n".join(lines)

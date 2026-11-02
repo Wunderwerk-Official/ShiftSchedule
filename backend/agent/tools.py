@@ -130,7 +130,7 @@ TOOL_SPECS_RAW = [
         "name": "list_open_slots",
         "description": (
             "Slot instances still below their required staffing, sorted by "
-            "date then priority. slot_key identifies an instance like "
+            "date then section order. slot_key identifies an instance like "
             "'S3__2026-07-07' "
             "('<slotId>__<dateISO>') and is what apply_moves expects."
         ),
@@ -261,9 +261,10 @@ TOOL_SPECS_RAW = [
             "day, sorted in PROCESSING ORDER — slots with at most one legal "
             "candidate first (about to be lost), then on-call/duty slots "
             "(rest-day rules ripple into neighbouring days), then the "
-            "practice's slot priority (template order), scarcest first "
-            "within a tier. Staff the top entries first; flexible "
-            "low-priority slots can wait. eligible_count/eligible_preview "
+            "section order (section_rank 1 = top; strict: one open position "
+            "in a higher section outweighs any number lower down), scarcest "
+            "first within a section. Staff the top entries first; flexible "
+            "lower-ranked slots can wait. eligible_count/eligible_preview "
             "are computed against the current plan and change after every "
             "apply_moves."
         ),
@@ -286,7 +287,7 @@ TOOL_SPECS_RAW = [
             "OMIT slot_key and pass dateISO to AUTO-SELECT the day's most "
             "urgent still-fillable slot (same processing order as "
             "get_day_priorities: single-candidate slots, then on-call, then "
-            "slot priority; slots nobody can take are skipped); when "
+            "section order; slots nobody can take are skipped); when "
             "nothing fillable remains it returns day_complete=true instead. "
             "Candidates are pre-sorted (balanced profile: by quality_after; "
             "classic: daily minimum met first, preferred-working-time fit "
@@ -516,6 +517,7 @@ class PlanToolExecutor:
         self.activity_counter = 0
         self.clinicians_by_id: Dict[str, Clinician] = {c.id: c for c in state.clinicians}
         self.section_names: Dict[str, str] = {r.id: r.name for r in state.rows}
+        self._init_section_order()
         # LLM-facing clinician identifiers: real (deduplicated) names.
         self.alias_by_id: Dict[str, str] = build_clinician_aliases(state)
         self.id_by_alias: Dict[str, str] = {v: k for k, v in self.alias_by_id.items()}
@@ -632,15 +634,43 @@ class PlanToolExecutor:
     # plan quality
     # ------------------------------------------------------------------
 
+    def _init_section_order(self) -> None:
+        """The strict section order of this range (Settings: "If not every
+        slot can be filled, sections higher in this list are staffed
+        first"): one entry per section of the range, ranked by the position
+        of the section's first block (ScoringContext.section_order_ids), so
+        every day and sub-shift of a section shares its entry. section_rank
+        in tool results is the entry's position, 1 = top."""
+        self.section_index_by_slot_id: Dict[str, int] = self.ctx.section_index_by_slot_id
+        self.section_order: List[str] = [self.section_names.get(sid, sid) for sid in self.ctx.section_order_ids]
+
+    def section_rank(self, slot_id: str) -> int:
+        """1 = the top section of the order."""
+        return self.section_index_by_slot_id.get(slot_id, len(self.section_order)) + 1
+
+    def _open_by_section_order(self, working: List[Assignment]) -> Tuple[int, ...]:
+        """Open required positions per entry of section_order."""
+        counts = self._counts_by_instance(working)
+        out = [0] * len(self.section_order)
+        for inst in self.ctx.instances.values():
+            missing = inst.target - counts.get(inst.slot_key, 0)
+            if missing > 0:
+                out[self.section_index_by_slot_id[inst.slot_id]] += missing
+        return tuple(out)
+
     def _quality(
         self,
         working: List[Assignment],
         hard_violations: Optional[List[Violation]] = None,
     ) -> Tuple[int, ...]:
         """Lexicographic plan quality — smaller is better, compared tier by
-        tier: (hard violations in the solve range, open required slots, short
-        days, soft-rule violations, weekly hours deviation minutes,
-        -(preference fits + assignments)).
+        tier: (hard violations in the solve range, open required positions per
+        section in section order, open required slots, short days, soft-rule
+        violations, weekly hours deviation minutes, -(preference fits +
+        assignments)). The section vector is compared entry by entry from the
+        top section, so one open position in a higher section is worse than
+        any number lower down (v1.81, strict section order); the count after
+        it is its sum and only shown.
 
         Hard violations are the TOP tier so the agent is rewarded for
         REPAIRING what the draft breaks — unassigning a
@@ -667,14 +697,17 @@ class PlanToolExecutor:
         bonus = stats.section_preference_matches + stats.time_window_fits
         if not self.ctx.only_fill_required:
             bonus += stats.total_assignments
+        by_section = self._open_by_section_order(working)
         if self.ctx.settings.agentQualityProfile == "balanced":
             metrics = extra_metrics(self, working)
-            metrics.update(hard_violations_in_range=hard_in_range, open_required_slots=stats.open_slots,
+            metrics.update(hard_violations_in_range=hard_in_range, open_by_section_order=by_section,
+                           open_required_slots=stats.open_slots,
                            soft_rule_violations=soft, hours_deviation_minutes=stats.working_hours_deviation_minutes,
                            negative_preference_bonus=-bonus)
             return tuple(metrics[field] for field in self.quality_fields)
         return (
             hard_in_range,
+            by_section,
             stats.open_slots,
             stats.short_days,
             soft,
@@ -686,7 +719,10 @@ class PlanToolExecutor:
     def encode_quality(quality: Tuple[int, ...]) -> float:
         """Monotone-ish scalar for the live chart/history (lower = better).
         Saturated per tier so a huge lower tier can't visually outrank a
-        higher one; NOT used for any accept/best decision."""
+        higher one; NOT used for any accept/best decision. The section
+        vector is left out: its sum is the open count that follows it."""
+        if len(quality) > 1 and isinstance(quality[1], (tuple, list)):
+            quality = (quality[0],) + tuple(quality[2:])
         if len(quality) != 6:
             # Display only. Actual snapshot selection always compares the
             # complete ordered tuple, never this compressed chart value.
@@ -703,16 +739,14 @@ class PlanToolExecutor:
         )
 
     def quality_dict(self, quality: Tuple[int, ...]) -> dict:
-        if self.ctx.settings.agentQualityProfile == "balanced":
-            return dict(zip(self.quality_fields, quality))
-        return {
-            "hard_violations_in_range": quality[0],
-            "open_required_slots": quality[1],
-            "short_days": quality[2],
-            "soft_rule_violations": quality[3],
-            "hours_deviation_minutes": quality[4],
-            "preference_and_load_bonus": -quality[5],
-        }
+        """By field name. The section vector renders as a JSON list (one
+        small int per entry of section_order); the classic bonus is shown
+        positive."""
+        out = dict(zip(self.quality_fields, quality))
+        out["open_by_section_order"] = list(out["open_by_section_order"])
+        if self.ctx.settings.agentQualityProfile != "balanced":
+            out["preference_and_load_bonus"] = -out["preference_and_load_bonus"]
+        return out
 
     # ------------------------------------------------------------------
     # plan state helpers
@@ -796,7 +830,9 @@ class PlanToolExecutor:
             "additional_quality_metrics": extra_metrics(self, working),
             "quality": {
                 **self.quality_dict(quality),
-                "note": "strict priority order, improve the highest tier first",
+                "note": "strict priority order, improve the highest tier first; "
+                        "open_by_section_order follows section_order (top first): "
+                        "the first entry that differs decides",
             },
             "quality_of_best_snapshot": self.quality_dict(self.best_quality),
             "stats": stats.model_dump(),
@@ -881,7 +917,8 @@ class PlanToolExecutor:
     # ------------------------------------------------------------------
 
     def _tool_overview(self, args: dict) -> dict:
-        return self._overview()
+        # The legend once per overview, not in every move verification.
+        return {**self._overview(), "section_order": list(self.section_order)}
 
     def _tool_violations(self, args: dict) -> dict:
         severity = args.get("severity")
@@ -1527,8 +1564,8 @@ class PlanToolExecutor:
         legal candidate first (decide it before that person is consumed),
         then on-call/duty slots (their rest-day rules constrain the
         NEIGHBOURING days, so they must be fixed before the day fills up),
-        then the practice's slot priority (template order — the admin's own
-        ranking of what matters), scarcest first within equal priority.
+        then the section order (the admin's own ranking of what matters,
+        strict since v1.81), scarcest first within one section.
         Eligibility = number of clinicians who could legally take the slot
         against the CURRENT plan (the exact apply_moves gate)."""
         counts = self._counts_by_instance(self._working_list())
@@ -1568,7 +1605,7 @@ class PlanToolExecutor:
                     "start": _hhmm(inst.start),
                     "end": _hhmm(inst.end % 1440),
                     "missing": missing,
-                    "priority": inst.order_weight,
+                    "section_rank": self.section_rank(inst.slot_id),
                     "on_call": inst.section_id == on_call_class,
                     "eligible_count": len(eligible),
                     "eligible_preview": eligible[:3],
@@ -1578,7 +1615,7 @@ class PlanToolExecutor:
             key=lambda e: (
                 e["eligible_count"] > 1,
                 not e["on_call"],
-                -e["priority"],
+                e["section_rank"],
                 e["eligible_count"],
                 e["start"],
             )
@@ -1601,8 +1638,8 @@ class PlanToolExecutor:
             "open_positions": sum(e["missing"] for e in entries),
             "note": "PROCESSING ORDER: slots with at most one legal candidate "
             "first, then on-call duties (their rest days constrain the "
-            "neighbouring days), then the practice's slot priority (higher = "
-            "more important), scarcest first within a tier. eligible_count=0 "
+            "neighbouring days), then the section order (section_rank 1 = "
+            "top), scarcest first within a section. eligible_count=0 "
             "means nobody can take it in the current state - staff the rest "
             "of the day first, then re-check; if it stays 0, report it as "
             "not directly fillable. Counts change after every plan change.",
@@ -1718,6 +1755,7 @@ class PlanToolExecutor:
         single = bool(args.get("single"))
         out = []
         not_searched = []
+        raw_blocks: Dict[str, List[str]] = {}
         for candidate_index, cand in enumerate(eligible):
             if self._tool_seconds_left() <= 5:
                 not_searched = [c["clinicianId"] for c in eligible[candidate_index:]]
@@ -1735,6 +1773,7 @@ class PlanToolExecutor:
                 # Duty mode: the slot is taken alone, no chained day work.
                 block_keys = block_keys[:1]
                 block_start, block_end = inst.start, inst.end
+            raw_blocks[cand["clinicianId"]] = list(block_keys)
             block_minutes = block_end - block_start
             day_before = sum(
                 e - s for s, e in self._day_intervals(cid, inst.date_iso)
@@ -1818,7 +1857,19 @@ class PlanToolExecutor:
                     checked.append(candidate)
             out = sorted(checked, key=lambda c: tuple(c["quality_after"][field] for field in self.quality_fields))
         else:
-            out.sort(key=_rank)
+            # The section vector after the block first, like the gate: a block
+            # that also fills a higher-ranked open slot beats any other order.
+            current_vector = self._open_by_section_order(self._working_list())
+
+            def _vector_after(c: dict) -> tuple:
+                vector = list(current_vector)
+                for key in raw_blocks.get(c["clinicianId"], []):
+                    block_inst = self.ctx.instances.get(key)
+                    if block_inst is not None and block_inst.target - counts.get(key, 0) > 0:
+                        vector[self.section_index_by_slot_id[block_inst.slot_id]] -= 1
+                return tuple(vector)
+
+            out.sort(key=lambda c: (_vector_after(c), _rank(c)))
         # Limit the response AFTER comparing work blocks. A later candidate
         # may be the only person able to turn a one-hour stint into a full day.
         total_options = len(out)
@@ -2610,7 +2661,8 @@ class PlanToolExecutor:
         if quality > self.best_quality:
             quality_note = (
                 "WARNING: this state is WORSE than the best snapshot "
-                "(more open slots, short days or hours deviation). The run "
+                "(a higher-ranked section left open, more open slots, short "
+                "days or hours deviation). The run "
                 "returns the best snapshot, not this state - revert these "
                 "moves or improve beyond the previous best."
             )

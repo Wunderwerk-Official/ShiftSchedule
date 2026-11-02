@@ -964,7 +964,7 @@ def test_repairing_seed_violation_by_unassign_counts_as_improvement():
     )
     assert payload["applied"] is True
     assert executor.best_quality[0] == 0  # violations repaired
-    assert executor.best_quality[1] == 1  # one slot honestly open now
+    assert executor.quality_dict(executor.best_quality)["open_required_slots"] == 1  # one slot honestly open now
     assert [a.rowId for a in executor.best_assignments] == ["slot-a__mon"]
     assert executor.best_quality < executor.seed_quality  # improvement, not tie
 
@@ -986,7 +986,7 @@ def test_extending_a_fixed_short_day_counts_as_improvement():
     )
     executor = _make_executor(state)
     # Fixed-only 1h day, minimum 4h -> visible to the quality metric.
-    assert executor.seed_quality[2] == 1, f"seed quality: {executor.seed_quality}"
+    assert executor.quality_dict(executor.seed_quality)["short_days"] == 1, f"seed quality: {executor.seed_quality}"
 
     payload, _ = _run(
         executor,
@@ -995,7 +995,7 @@ def test_extending_a_fixed_short_day_counts_as_improvement():
                     "clinicianId": "Alice"}]},
     )
     assert payload["applied"] is True
-    assert executor.best_quality[2] == 0  # day extended past the minimum
+    assert executor.quality_dict(executor.best_quality)["short_days"] == 0  # day extended past the minimum
     assert executor.best_quality < executor.seed_quality
 
 
@@ -1433,8 +1433,8 @@ def test_day_priorities_caps_slot_list_but_counts_everything():
 def test_day_priorities_processing_order_oncall_and_priority_first():
     """The day is worked in processing order, not chronologically: on-call
     duties first (rest days ripple into neighbouring days), then the
-    practice's slot priority (template order), scarcest within a tier. A
-    slot with only ONE legal candidate jumps the whole queue."""
+    section order, scarcest within a section. A slot with only ONE legal
+    candidate jumps the whole queue."""
     state = make_app_state(
         clinicians=[
             make_clinician("clin-1", "Alice",
@@ -1484,16 +1484,15 @@ def test_day_priorities_processing_order_oncall_and_priority_first():
     order = [s["slot_key"] for s in payload["slots"]]
     key = lambda sid: executor._alias_slot_key(f"{sid}__{MON}")  # noqa: E731
     # Scarce (only Alice) jumps the queue, then the on-call duty, then the
-    # two flexible section-a slots by template priority — the later-starting
-    # high-priority slot BEFORE the earlier-starting low-priority one.
+    # two flexible section-a slots. One section shares one rank on every
+    # shift (v1.81, strict section order), so the earlier start comes first.
     assert order == [
         key("slot-scarce__mon"), key("slot-oc__mon"),
-        key("slot-hi__mon"), key("slot-lo__mon"),
+        key("slot-lo__mon"), key("slot-hi__mon"),
     ]
     oc_entry = payload["slots"][1]
     assert oc_entry["on_call"] is True
-    priorities = [s["priority"] for s in payload["slots"][2:]]
-    assert priorities == sorted(priorities, reverse=True)
+    assert [s["section_rank"] for s in payload["slots"]] == [3, 2, 1, 1]
 
     # Auto-select follows the same order: the scarce slot comes out first.
     auto, _ = _run(executor, "suggest_day_blocks", {"dateISO": MON})

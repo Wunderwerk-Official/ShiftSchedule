@@ -1028,10 +1028,14 @@ as a 500 once a plan exists.
 
 ### Quality gate (`PlanToolExecutor._quality`)
 The best-plan gate is a **lexicographic tuple**, not the hand-weighted scalar
-score: `(hard_violations_in_range, open_required_slots, short_days,
-soft_rule_violations, hours_deviation_minutes, -(preference fits
-[+ assignments in distribute mode]))`, compared tier by tier — no weight can
-trade a required slot against preference wins. Hard violations (in the solve
+score: `(hard_violations_in_range, open_by_section_order,
+open_required_slots, short_days, soft_rule_violations,
+hours_deviation_minutes, -(preference fits [+ assignments in distribute
+mode]))`, compared tier by tier — no weight can trade a required slot
+against preference wins. Since v1.81 the open required positions are
+compared per section in the Settings order first (`open_by_section_order`,
+entry by entry from the top section): one open position in a higher section
+is worse than any number lower down; the count after it only shows the sum. Hard violations (in the solve
 range) are the top tier so REPAIRING what the seed or manual data breaks
 outranks filling slots: unassigning a rest-day-violating draft assignment
 counts as an improvement even though it opens a slot. **Ties keep the agent's newest state**, so quality-neutral
@@ -3482,3 +3486,84 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   banner lead), `SolverInfoModal.test.tsx` (run-card wording, the rendered
   "Run:" line), `HelpView.test.tsx` (the repair's promise).
 - Deploy notes: no schema or data change. Version 1.80 (80).
+
+## v1.81 — The section order is strict for the AI planner
+
+- **Decision** (admin, 2026-11-02, after v1.80's "Not done (b)"): the order
+  in Settings ("If not every slot can be filled, sections higher in this
+  list are staffed first") is strict for the AI planner. One open required
+  position in a higher section is worse than any number lower down, also
+  when more positions stay open in total. A section ranks by the position of
+  its first block in `weeklyTemplate.blocks`, so all its days and sub-shifts
+  share one rank (`ScoringContext.section_order_ids`,
+  `section_index_by_slot_id`; `solver._section_tier_by_slot_id`).
+- **Quality tuple** (`QUALITY_VERSION` 4): `open_by_section_order`, the open
+  required positions per section of the range in that order, is the first
+  coverage tier, right after `hard_violations_in_range`, in both profiles
+  (classic 7 fields, balanced 13). Tuples compare it entry by entry from the
+  top section; `open_required_slots` follows it for display (equal vectors
+  have equal sums). `quality_dict` renders the vector as a JSON list (one
+  small int per section, safe in JavaScript); its legend `section_order` is
+  in `get_plan_overview`, `debugInfo.agent` and every digest ("SECTION
+  ORDER: …" with the comparison rule). `quality_dict`, `encode_quality`
+  (display only, leaves the vector out) and the run note "Plan improved over
+  the seed" work by field name now (they read the tuple by position before).
+  The gate (`improves_best`), the best snapshot and `restore_best` compare
+  the tuple and need no change, so every part of the agent that decides by
+  quality follows the strict order.
+- **Day loop**: `get_day_priorities`, `suggest_day_blocks`' auto-select and
+  the day digest order a day's slots by single candidate, on-call, then
+  `section_rank` (1 = top; the digest shows `rank N` instead of `prio N`).
+  The per-slot `order_weight` they used is capped at 100, so with more than
+  100 template slots the top sections tied, and it ranked the shifts of one
+  section among each other. Classic candidates of `suggest_day_blocks` sort
+  by the section vector after their block first (the balanced profile sorts
+  by `quality_after` already). `analyze_bottlenecks`, `list_open_slots` and
+  the direct strategy (arena) use the rank too. The prompts' quality ladder,
+  the arena's quality guidance and the WORSE warning name the rule.
+- **Cross-day repair**: `solver._solve_repair_lexicographic` replaces v1.80's
+  prefix bounds and weighted objective. A completion solve (hinted variables
+  fixed, about 0.1 s) turns the agent plan into a hint for every variable;
+  stages then minimize the open positions tier by tier from the top.
+  Consecutive tiers share a stage while exact integer weights keep its
+  objective at most 2**53 (`REPAIR_LEX_BOUND`; one integer per tier with the
+  domain "positions no variable can fill" to "the plan's gaps + the change
+  cap"). Each stage's result bounds the later ones, a stage plan is taken
+  only when it is not lexicographically worse than the one it started from,
+  and a tier is skipped when nothing in it can be filled. A last stage
+  minimizes the changes; 10 s (at most 10% of the budget) are kept for it.
+  A stop ends the running stage within about 0.05 s (watcher thread); v1.80
+  stopped only at its next solution. The status is OPTIMAL only when every
+  stage proved it; a note says how many stages ran. `coverage_repair`
+  relies on the gate: a valid answer that is not better is `rejected`
+  ("higher-ranked section left open" with the section when the vector got
+  worse at its first differing entry); `priority_trade_down` and
+  `missing_by_tier` are gone (the prefix rule contradicted the decision).
+  The report names the highest section staffed better (`section`); when the
+  total did not drop, the run note reads "Cross-day repair staffed X first
+  by changing N assignment(s) across days (a -> b open); the section order
+  comes before the count."
+- **Resolved from v1.80's "Not done"**: a pure 1:1 trade upwards is an
+  improvement; a higher section is staffed even when more positions stay
+  open in total; the order is lexicographic, not a weighted sum.
+- **Measured** (arena fixture, saved agent plans, 2 CP-SAT workers): one
+  week (90 s budget) 29 -> 0 open, every stage optimal, 1.8 s (v1.80: 26-36
+  s); four weeks (120 s) 95 -> 55, 39 -> 29 and 64 -> 61 open, the top 12
+  section tiers fully staffed in all three (v1.80: 37, 24 and 48 open, with
+  gaps in the top tiers). Within 120 s not every 4-week stage is proven
+  optimal, and the change cap (60) binds there.
+- **Not changed**: the classic CP-SAT optimizer (non-agent mode) still
+  weights slots by `order_weight`, and the heuristic seed is unchanged.
+- Tests: `test_cross_day_repair.py` (two lower slots unstaffed for one
+  higher, freed hours to the higher slot, a pure upward trade, one vector
+  entry per section summing to the count, first-difference helper; the v1.80
+  section-order tests hold), `test_agent_planning_workflow.py` (block
+  candidates of both profiles in strict order), `test_agent_tools.py`
+  (processing order: one rank per section, earlier start first),
+  `test_agent_quality_profile.py` (tuple length and fields, version 4); the
+  positional tuple assertions in `test_agent_planning_workflow.py`,
+  `test_agent_tools.py` and `test_fixed_planning_tasks.py` read fields by
+  name now; `HelpView.test.tsx` (strict rule).
+- Deploy notes: no schema or data change. Version 1.81 (81). Arena reports
+  compare within one `QUALITY_VERSION`.
+
