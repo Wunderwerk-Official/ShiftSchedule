@@ -57,7 +57,9 @@ def test_cached_inspection_can_never_authorize_an_illegal_assignment():
 
 def paginated_rescue_fixture(*, repair_at_tail=True):
     # Sixteen impossible positions sort before a seventeenth repairable one.
-    sections = [f"impossible-{i:02}" for i in range(16)] + ["A", "B"]
+    # B ranks above A: without Bob, moving Alice up from B is no strict
+    # improvement either (v1.81), so the day really has no rescue.
+    sections = [f"impossible-{i:02}" for i in range(16)] + ["B", "A"]
     clinicians = [make_clinician("a", "Alice", ["A", "B"], working_hours_per_week=40)]
     if repair_at_tail:
         clinicians.append(make_clinician("b", "Bob", ["B"], working_hours_per_week=40))
@@ -260,24 +262,41 @@ def test_other_day_change_invalidates_proposal_and_negative_search_cache():
     assert any(not item["current"] for item in history["searches"])
 
 
-def chain_fixture():
+def chain_fixture(order=("A", "B", "C")):
     state = section_state([
         make_clinician("a", "Alice", ["A", "B"], working_hours_per_week=40),
         make_clinician("b", "Bob", ["B", "C"], working_hours_per_week=40),
         make_clinician("c", "Cara", ["C"], working_hours_per_week=40),
-    ], [make_template_slot(s, block_id=s) for s in ("A", "B", "C")], ["A", "B", "C"])
+    ], [make_template_slot(s, block_id=s) for s in ("A", "B", "C")], list(order))
     state.solverSettings["agentNeighborhoodSearch"] = True
     return executor(state, [make_assignment("draft-1", "B", MON, "a", source="solver"),
                             make_assignment("draft-2", "C", MON, "b", source="solver")])
 
 
 def test_shallow_rescue_reports_search_scope_instead_of_infeasibility():
-    ex = chain_fixture()
+    # A ranks lowest: moving Alice up from B would leave a higher section
+    # open, so the shallow search has nothing to offer.
+    ex = chain_fixture(order=("B", "C", "A"))
     result = run(ex, "suggest_rescue_moves", dateISO=MON)
     assert result["rescues"] == []
     assert result["no_rescue_found"]
     assert "truly_unfillable" not in result
     assert result["search_scope"]["relocated_assignments"] == 1
+
+
+def test_rescue_moves_a_person_up_to_a_higher_section_without_a_substitute():
+    """v1.81, strict section order: nobody can take over Alice's B slot, but
+    A ranks above B, so Alice moving up is an improvement that leaves B
+    open (a 2-move batch, leaves_open)."""
+    ex = chain_fixture()
+    result = run(ex, "suggest_rescue_moves", dateISO=MON)
+    assert len(result["rescues"]) == 1
+    rescue = result["rescues"][0]
+    assert rescue["substitute"] is None and rescue["leaves_open"] == rescue["vacated_slot"]
+    assert [move["action"] for move in rescue["batch"]] == ["unassign", "assign"]
+    assert rescue["improves_best"]
+    assert run(ex, "apply_proposal", proposal_id=rescue["proposal_id"])["applied"]
+    assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 1, 0]
 
 
 def test_neighborhood_finds_joint_chain_that_shallow_rescue_misses():

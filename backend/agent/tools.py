@@ -325,7 +325,10 @@ TOOL_SPECS_RAW = [
             "substitute taking the vacated slot. Returns ready-to-apply "
             "3-move batches (unassign the blocker, assign the substitute, "
             "assign the freed clinician to the stuck slot), each validated "
-            "against the exact apply gate. Apply its proposal_id with apply_proposal. "
+            "against the exact apply gate; without a substitute, a 2-move "
+            "batch when the vacated slot ranks lower in the section order "
+            "than the stuck one (leaves_open: the strict section order makes "
+            "that an improvement). Apply its proposal_id with apply_proposal. "
             "Searches up to 16 blocked slots per call; follow next_cursor to "
             "inspect the rest on the SAME unchanged plan. After a change start "
             "again without a cursor. Fixed/manual "
@@ -2006,8 +2009,10 @@ class PlanToolExecutor:
                     vac_inst = self.ctx.instances.get(vacated_key)
                     if vac_inst is None:
                         continue
-                    # Net gain only: a substitute must cover the vacated
-                    # slot in the SAME batch, else the hole just moves.
+                    # A substitute covers the vacated slot in the SAME batch;
+                    # without one the hole only moves, which helps only when
+                    # it moves to a lower-ranked section (below).
+                    substituted = False
                     for sub in self.state.clinicians:
                         if vac_inst.section_id not in (sub.qualifiedClassIds or []):
                             continue
@@ -2046,7 +2051,35 @@ class PlanToolExecutor:
                                 ],
                             }
                         )
+                        substituted = True
                         break  # one substitute per blocker is enough
+                    if not substituted and self.section_rank(vac_inst.slot_id) > self.section_rank(inst.slot_id):
+                        # Strict section order (v1.81): the stuck slot ranks
+                        # higher than the vacated one, so moving the person
+                        # up improves the plan although the vacated slot
+                        # stays open (trial already passed the gate).
+                        found.append(
+                            {
+                                "fills": entry["slot_key"],
+                                "section": entry["section"],
+                                "frees": self._alias(cid),
+                                "vacated_slot": self._alias_slot_key(vacated_key),
+                                "substitute": None,
+                                "leaves_open": self._alias_slot_key(vacated_key),
+                                "batch": [
+                                    {
+                                        "action": "unassign",
+                                        "slot_key": self._alias_slot_key(vacated_key),
+                                        "clinicianId": self._alias(cid),
+                                    },
+                                    {
+                                        "action": "assign",
+                                        "slot_key": entry["slot_key"],
+                                        "clinicianId": self._alias(cid),
+                                    },
+                                ],
+                            }
+                        )
                     if len(found) >= 2:
                         break
             if found:
@@ -2055,7 +2088,9 @@ class PlanToolExecutor:
                 no_rescue.append(entry["slot_key"])
         out = {
             "dateISO": date_iso,
-            "note": "Each rescue is a pre-validated NET-GAIN batch: use "
+            "note": "Each rescue is a pre-validated batch that improves the "
+            "plan (a substitute takes the vacated slot, or, without one, the "
+            "vacated slot ranks lower in the section order: leaves_open): use "
             "apply_proposal with its proposal_id and use the returned next suggestions "
             "(other rescues may have gone "
             "stale — re-query instead of applying several at once). Slots "
