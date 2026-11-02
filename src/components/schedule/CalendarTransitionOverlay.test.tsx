@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import CalendarTransitionOverlay from "./CalendarTransitionOverlay";
 
 describe("CalendarTransitionOverlay (re-QA)", () => {
-  it("is a modal: the page behind is inert, focus is on Cancel, Escape cancels", () => {
+  it("is a modal: the page behind is inert, focus stays on the dialog (not Cancel), Escape cancels", () => {
     const onCancel = vi.fn();
     const { unmount } = render(
       <div>
@@ -16,7 +16,7 @@ describe("CalendarTransitionOverlay (re-QA)", () => {
     const dialog = screen.getByRole("dialog", { name: "Creating PDF for 2 weeks…" });
     expect(dialog).toHaveAttribute("aria-modal", "true");
     expect(page.closest("[inert]")).not.toBeNull();
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cancel" }));
+    expect(document.activeElement).toBe(dialog);
     fireEvent.keyDown(dialog, { key: "Escape" });
     expect(onCancel).toHaveBeenCalledTimes(1);
     overlay.unmount();

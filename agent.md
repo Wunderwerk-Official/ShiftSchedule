@@ -3635,8 +3635,9 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
   runs); the per-person buttons are named "Download iCal file for <name>" and
   "Copy: subscription link for <name>". The calendar transition overlay is
   now `src/components/schedule/CalendarTransitionOverlay.tsx`: a modal dialog
-  on a card (its text no longer runs into the Export dialog's fields), focus
-  on Cancel, Escape cancels. `ConfirmDialog` is a nested modal too
+  on a card (its text no longer runs into the Export dialog's fields); focus
+  stays on the overlay itself, not on Cancel (a second Enter on "Export PDF"
+  must not land on Cancel), Tab reaches Cancel, Escape cancels. `ConfirmDialog` is a nested modal too
   (`ConfirmDialogView` with `useModalFocus`, focus on the confirm button
   instead of `autoFocus`, Escape stops at it), so a confirmation over the
   Export dialog keeps that dialog inert and returns focus to the opener.
@@ -3645,7 +3646,17 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
   while an export runs (`aria-disabled`; the overlay blocks it), because a
   disabled button loses focus. `CustomDatePicker` and `CustomNumberInput`
   handle Escape themselves while open, so it closes only the popup, not the
-  dialog around it. The PDF error box is `role="alert"`.
+  dialog around it, and give focus back to their trigger after a pick or
+  Escape (else focus fell to the page and the dialog's Escape stopped
+  working). The PDF error box is `role="alert"`. Calendar snapshots
+  (`SnapshotPopover`) keep focus in the row that was acted on (confirm row,
+  after a restore or delete) and return it to the trigger on Escape. The
+  Export dialog's "Links active" switches are named (`aria-labelledby`) and
+  its format, sub-tab, PDF mode and layout buttons expose `aria-pressed`. The
+  iCal live region keys each notice, so a repeated notice is announced again;
+  a person's notice is a full-width line in that row and scrolls into view.
+  Person pills whose notes differ just inside the parenthesis ("(AA)" /
+  "(OA)") keep the whole note in the middle cut.
 - **Calendar.** A hand-placed rest day is not moved onto a day the person is
   on vacation (it would vanish but stay stored); a notice says "… is on
   vacation on Tue 03.11. The rest day stays on Mon 02.11.". A Vacation pill

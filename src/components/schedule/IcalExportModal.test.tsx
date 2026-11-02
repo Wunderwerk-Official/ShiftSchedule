@@ -149,8 +149,13 @@ describe("IcalExportModal iCal download", () => {
     expect(liveRegion).toHaveTextContent("");
     fireEvent.click(screen.getByRole("button", { name: "Download iCal file for Person 19" }));
     expect(liveRegion).toHaveTextContent(notice);
-    const row = screen.getByText("Person 19").parentElement as HTMLElement;
+    const row = screen.getByRole("button", { name: "Download iCal file for Person 19" }).parentElement as HTMLElement;
     expect(within(row).getByText(notice)).toBeInTheDocument();
+    // The same text again (another person) replaces the live region's node so it is announced again.
+    const before = liveRegion.firstChild;
+    fireEvent.click(screen.getByRole("button", { name: "Download iCal file for Person 18" }));
+    expect(liveRegion).toHaveTextContent(notice);
+    expect(liveRegion.firstChild).not.toBe(before);
   });
 });
 
@@ -208,5 +213,15 @@ describe("IcalExportModal inner popups (re-QA)", () => {
     const button = screen.getByRole("button", { name: "Export PDF" });
     expect(button).not.toBeDisabled();
     expect(button).toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+describe("IcalExportModal controls for assistive technology (final check)", () => {
+  it("names the Links active switches and exposes the selected tab and mode", () => {
+    renderModal({ webStatus: { published: true, token: "t" } });
+    expect(screen.getByRole("button", { name: "PDF" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "iCal" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Web" }));
+    expect(screen.getByRole("switch", { name: "Links active" })).toHaveAttribute("aria-checked", "true");
   });
 });

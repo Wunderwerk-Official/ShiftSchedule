@@ -34,6 +34,13 @@ export default function CustomNumberInput({
 }: CustomNumberInputProps) {
   const [isOpen, setIsOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // Closing removes the list; focus inside it would fall to <body> (out of
+  // any dialog around the input), so it goes back to the trigger.
+  const closeAndFocusTrigger = () => {
+    setIsOpen(false);
+    triggerRef.current?.focus();
+  };
 
   // Generate options from min to max. Clamp the length at zero so a caller
   // passing max < min renders an empty dropdown instead of crashing on a
@@ -64,7 +71,7 @@ export default function CustomNumberInput({
 
   const handleSelect = (num: number) => {
     onChange(num);
-    setIsOpen(false);
+    closeAndFocusTrigger();
   };
 
   return (
@@ -75,11 +82,12 @@ export default function CustomNumberInput({
         // Escape closes only this popup, not a dialog around it.
         if (e.key === "Escape" && isOpen) {
           e.stopPropagation();
-          setIsOpen(false);
+          closeAndFocusTrigger();
         }
       }}
     >
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => !disabled && setIsOpen(!isOpen)}
         disabled={disabled}

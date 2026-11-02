@@ -77,11 +77,13 @@ function middleCut(labels: PersonNameLabels, room: number, width: (text: string)
   if (distinctLength > chars.length) return null;
   // Only where a whole word tells them apart (a degree, a note): "Sophie Wa."
   // vs "Sophie We." keeps its end cut rather than reading "So…a.".
-  const start = distinctLength - 1;
+  let start = distinctLength - 1;
+  // "(AA)" / "(OA)": the note differs just inside its parenthesis — keep the whole note.
+  if (chars[start - 1] === "(") start -= 1;
   if (!/[\s,;(]/.test(chars[start]) && !/[\s,;]/.test(chars[start - 1] ?? "")) return null;
   const tail = chars.slice(start).join("").replace(/^[\s,;]+/, "");
   if (!tail) return null;
-  for (let head = distinctLength - 1; head >= 1; head -= 1) {
+  for (let head = start; head >= 1; head -= 1) {
     const text = `${chars.slice(0, head).join("").trimEnd()}…${tail}`;
     if (width(text) <= room) return text;
   }

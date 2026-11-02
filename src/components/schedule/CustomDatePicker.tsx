@@ -122,6 +122,13 @@ export default function CustomDatePicker({
   const [isOpen, setIsOpen] = useState(false);
   const [openAbove, setOpenAbove] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  // Closing removes the popup; focus inside it would fall to <body> (out of
+  // any dialog around the picker), so it goes back to the trigger.
+  const closeAndFocusTrigger = () => {
+    setIsOpen(false);
+    triggerRef.current?.focus();
+  };
   const parsedValue = parseEuropeanDate(value);
   const [viewDate, setViewDate] = useState(() => parsedValue ?? new Date());
   const today = new Date();
@@ -171,7 +178,7 @@ export default function CustomDatePicker({
 
   const handleSelectDate = (date: Date) => {
     onChange(formatEuropeanDate(date));
-    setIsOpen(false);
+    closeAndFocusTrigger();
   };
 
   const displayValue = value || placeholder;
@@ -197,11 +204,12 @@ export default function CustomDatePicker({
         // Escape closes only this popup, not a dialog around it.
         if (e.key === "Escape" && isOpen) {
           e.stopPropagation();
-          setIsOpen(false);
+          closeAndFocusTrigger();
         }
       }}
     >
       <button
+        ref={triggerRef}
         type="button"
         onClick={handleToggle}
         disabled={disabled}

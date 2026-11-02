@@ -55,6 +55,19 @@ export default function SnapshotPopover({
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(
     null,
   );
+  // Row whose first enabled button gets focus once nothing is busy: the
+  // confirm row replaces the focused button, and the restore overlay hands
+  // focus back to <body> (the panel is not a modal).
+  const [focusRowId, setFocusRowId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!focusRowId || busyId !== null) return;
+    const row = panelRef.current?.querySelector<HTMLElement>(
+      `[data-snapshot-id="${CSS.escape(focusRowId)}"]`,
+    );
+    row?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+    setFocusRowId(null);
+  }, [focusRowId, busyId, confirm, snapshots]);
 
   const refresh = async () => {
     try {
@@ -86,7 +99,9 @@ export default function SnapshotPopover({
       setOpen(false);
     };
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
     };
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleKey);
@@ -123,6 +138,7 @@ export default function SnapshotPopover({
       setError(err instanceof Error ? err.message : "Failed to restore snapshot.");
     } finally {
       setBusyId(null);
+      setFocusRowId(snapshotId);
     }
   };
 
@@ -247,6 +263,7 @@ export default function SnapshotPopover({
                     return (
                       <div
                         key={snapshot.id}
+                        data-snapshot-id={snapshot.id}
                         className="rounded-lg border border-slate-100 px-2 py-1.5 dark:border-slate-700/60"
                       >
                         {isRenaming ? (
@@ -310,9 +327,10 @@ export default function SnapshotPopover({
                                         ? "Not available while the solver is running"
                                         : undefined
                                     }
-                                    onClick={() =>
-                                      setConfirm({ id: snapshot.id, action: "restore" })
-                                    }
+                                    onClick={() => {
+                                      setConfirm({ id: snapshot.id, action: "restore" });
+                                      setFocusRowId(snapshot.id);
+                                    }}
                                     className={actionButtonClass}
                                   >
                                     Restore
@@ -332,9 +350,10 @@ export default function SnapshotPopover({
                                   <button
                                     type="button"
                                     disabled={busy}
-                                    onClick={() =>
-                                      setConfirm({ id: snapshot.id, action: "delete" })
-                                    }
+                                    onClick={() => {
+                                      setConfirm({ id: snapshot.id, action: "delete" });
+                                      setFocusRowId(snapshot.id);
+                                    }}
                                     className={cx(
                                       actionButtonClass,
                                       "text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/40",
@@ -377,7 +396,10 @@ export default function SnapshotPopover({
                                   <button
                                     type="button"
                                     disabled={busy}
-                                    onClick={() => setConfirm(null)}
+                                    onClick={() => {
+                                      setConfirm(null);
+                                      setFocusRowId(snapshot.id);
+                                    }}
                                     className={actionButtonClass}
                                   >
                                     Cancel

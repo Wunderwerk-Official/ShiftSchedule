@@ -134,6 +134,15 @@ describe("AssignmentPill with person colors", () => {
     cleanup();
     const oa = renderPerson("Anna Schmidt (OA)", 84, team.get("b"));
     expect(oa.textContent).toBe("Anna…(OA)");
+    cleanup();
+    // Notes that differ just inside the parenthesis keep the whole note.
+    const notes = buildNameLabels([
+      { id: "aa", name: "Anna Schmidt (AA)" },
+      { id: "oa", name: "Anna Schmidt (OA)" },
+    ]);
+    expect(renderPerson("Anna Schmidt (AA)", 84, notes.get("aa")).textContent).toBe("Anna…(AA)");
+    cleanup();
+    expect(renderPerson("Anna Schmidt (OA)", 84, notes.get("oa")).textContent).toBe("Anna…(OA)");
   });
 
   it("shortens 'Last, First' names with titles to the given name and the family initial", () => {

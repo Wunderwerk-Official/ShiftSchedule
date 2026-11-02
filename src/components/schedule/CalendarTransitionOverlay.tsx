@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { createPortal } from "react-dom";
 import { cx } from "../../lib/classNames";
 import { useModalFocus } from "../../lib/useModalFocus";
@@ -13,17 +13,14 @@ type CalendarTransitionOverlayProps = {
 /**
  * Blocks the page while the calendar is replaced or exported. A modal dialog:
  * the page behind it (and the Export dialog) is inert, so nothing can be
- * clicked or focused there; focus sits on Cancel when it is offered.
+ * clicked or focused there; focus sits on the dialog (Tab reaches Cancel).
  */
 export default function CalendarTransitionOverlay({ message, onCancel }: CalendarTransitionOverlayProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
-  const cancelRef = useRef<HTMLButtonElement | null>(null);
-  useModalFocus(true, containerRef, cancelRef);
-  const canCancel = !!onCancel;
-  // Cancel appears once the export request runs (not while saving first).
-  useEffect(() => {
-    if (canCancel) cancelRef.current?.focus();
-  }, [canCancel]);
+  useModalFocus(true, containerRef);
+  // Focus stays on the dialog itself when Cancel appears (Tab reaches it,
+  // Escape cancels): a second Enter on 'Export PDF' (double press, key
+  // repeat) must not land on Cancel and stop the export just started.
 
   return createPortal(
     <div
@@ -47,7 +44,6 @@ export default function CalendarTransitionOverlay({ message, onCancel }: Calenda
         </p>
         {onCancel ? (
           <button
-            ref={cancelRef}
             type="button"
             onClick={onCancel}
             className={cx(
