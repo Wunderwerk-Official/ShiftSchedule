@@ -39,6 +39,63 @@ self-hosted Qwen model on the real endpoint, or (since v1.68,
 `provider=anthropic`) a Claude model with the saved Anthropic key.
 
 
+## Evaluation round 9: cross-day repair and Opus without tools (v1.80, 2026-11-01)
+
+Question: does Claude Opus 5.5 plan better or cheaper when it gets the
+instructions and the whole range in one message, without tools
+(`strategy: direct`), than with the tool-driven day-by-day procedure? And
+what does the v1.80 cross-day coverage repair add to each? Opus 5.5
+(`reasoning` empty = `medium`), `variant baseline`, `scenario base`,
+`timeout 0`, `implementation checkout` (its branch, then numbered v1.74), synthetic-v3. Every
+run below was `valid_for_comparison: true` with 0 hard and 0 new hard
+violations and the fixed context unchanged. One run per configuration
+unless noted (the 5-day direct v1 ran twice), so differences of one or two
+places are within noise. "Model" = the model's own plan
+(`cross_day_repair.quality_before`), "+ repair" = after the repair (the
+returned plan).
+
+Direct digest versions: v1 = weekly hours booked/cap per person; v2 = plus
+the hours target for the range ± tolerance as the quality gate measures it
+and the preferred day length; v3 = v2 plus "never leave a place open for
+the target" (the shipped prompt).
+
+| case | configuration | open: model → + repair | short days | hours deviation (min) | cost | duration |
+|---|---|---|---|---|---|---|
+| 02-02, 3 days | day-by-day | 0 → 0 | 1 | 2425 | $2.51 | 4.2 min |
+| | direct v1 | 0 → 0 | 1 | 3308 | $0.31 | 1.8 min |
+| | direct v2 | 0 → 0 | 1 | **588** | $0.98 | 5.4 min (first answer cut off at 32k tokens) |
+| | direct v3 | 0 → 0 | 1 | 1262 | $0.38 | 2.4 min |
+| 02-19, Thu/Fri | day-by-day | 11 → **8** | 1 → 2 | 3669 → 4316 | $1.34 | 3.2 min |
+| | direct v3 | 10 → **8** | 1 → 2 | 3828 → 3875 | $0.47 | 2.7 min |
+| 02-16, 5 days (9 of 24 away) | day-by-day | 32 → 24 | 5 → 8 | 6706 → 6946 | $3.55 | 8.8 min |
+| | direct v1 (2 runs) | 34 / 33 → 24 / 23 | 0 / 1 → 7 / 8 | 5455 / 5065 → 6316 / 6736 | $0.71 / $0.69 | 5.1 / 5.0 min |
+| | direct v2 | 39 → 24 | 0 → 7 | 4426 → 6676 | $0.67 | 4.9 min |
+| | direct v3 | 34 → 23 | 0 → 8 | 5467 → 6916 | $0.59 | 4.4 min |
+
+For reference, round 8 (v1.69, day-by-day, no repair): 3 days 0 open, 1
+short day, 1979–2455 min, $2.55; 5 days 31–33 open, 4–6 short days, $3.90.
+
+Findings:
+- The cross-day repair fills what the day-by-day procedure cannot: +3 on
+  the Thu/Fri case (the production pattern), +8 on the 5-day week; it costs
+  no model tokens (70 s CP-SAT on 5 days, under 1 s on 2 days). Both
+  strategies end at the same coverage after it (8 / 23–24 / 0 open).
+- Without tools Opus 5.5 is 3–6× cheaper ($0.38–0.71 vs $1.34–3.55) and
+  faster, and its own plan has fewer short days (0–1 vs 1–5). Its own
+  coverage is a little lower in the understaffed week (33–34 vs 32 open)
+  and a little higher on Thu/Fri (10 vs 11); the repair evens both out.
+- The hours target in the digest halves the hours deviation on the 3-day
+  case (1262 vs 2425 min with tools). Stated as a plain goal (v2) the model
+  gave it priority over open places (39 open on 5 days); v3's wording
+  fixed that.
+- A whole-range answer is long: at `medium` effort the thinking used
+  12–24k output tokens; once (v2, 3 days) it hit the 32k limit before the
+  plan, and the follow-up call delivered it (handled since: a cut-off
+  answer gets one more call with a note).
+- Not measured: variance (needs ≥ 3 runs per configuration), other
+  scenarios, real calendars. Production stays on day-by-day + repair until
+  direct + repair has been compared on real weeks.
+
 ## Evaluation round 8: Claude vs Qwen (v1.69, 2026-11-01)
 
 Model comparison on synthetic-v3, `variant baseline`, `scenario base`,
@@ -194,7 +251,7 @@ Actions → **Agent arena (truhn.ai)** → **Run workflow**, then fill in:
 | model | empty = the model saved for that provider; self-hosted: `nvidia/Qwen3.8-Flash-Next-NVFP4` (production default) or `Qwen/Qwen3.5-35B-A3B-GPTQ-Int4` (`Qwen/Qwen3.8-27B` is no longer served); Claude: `claude-opus-5-5`, `claude-sonnet-5-5`, `claude-sonnet-5`, … |
 | variant | `baseline` (production prompts) / `focused` (prompt experiment) |
 | scenario | `base` / `vacation-wave` / `understaffed` / `crunch` / `oncall` / `pinned` / `daynight` / `fixed-patterns` |
-| strategy | `day_by_day` (production; LLM builds each day from scratch) / `repair` (benchmark reference: heuristic seed + LLM repair) |
+| strategy | `day_by_day` (production; LLM builds each day from scratch, then the v1.80 cross-day repair) / `repair` (benchmark reference: heuristic seed + LLM repair) / `direct` (v1.80 experiment: the whole range in one answer, no tools; needs `implementation: checkout` until v1.80 is deployed) |
 | reasoning | empty (endpoint / model default; Opus 5.5: `medium`) / `low` / `medium` / `high`; Claude also `xhigh` / `max` |
 | implementation | `deployed` (container's code and fixture; runs this checkout's `prompt_eval.py` against them, so from v1.68 on it needs v1.68 deployed — use `checkout` until then) / `checkout` (this branch and its fixture in a temporary directory) / `checkout-balanced` / `checkout-neighborhood` / `checkout-balanced-neighborhood` (optional quality-profile / neighborhood-search experiments) |
 
@@ -237,7 +294,7 @@ would cut slower models short and measure speed instead of quality.
 Count a run only when the report says `valid_for_comparison: true`
 (the model, not the heuristic, produced the plan; no heuristic fallback; no
 refusal-fallback turns; no model change; no skipped or incomplete day, also
-none the model skipped and the final audit filled; not aborted by a
+none the model skipped and the cross-day repair or the final audit filled; not aborted by a
 deployment or the 330-minute limit) and
 prompt_eval exited 0 (also no new hard violations, fixed context
 unchanged). Compare valid runs in this order: hard violations → open

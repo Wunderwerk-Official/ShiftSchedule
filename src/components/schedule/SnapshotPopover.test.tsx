@@ -108,6 +108,32 @@ describe("SnapshotPopover", () => {
     expect(props.onRestoreSnapshot).not.toHaveBeenCalled();
   });
 
+  it("waits for the calendar before saving or restoring (v1.79)", async () => {
+    const props = {
+      onSaveSnapshot: vi.fn(() => Promise.resolve()),
+      onRestoreSnapshot: vi.fn(() => Promise.resolve()),
+    };
+    const { rerender } = render(<SnapshotPopover {...props} calendarLoading />);
+    fireEvent.click(screen.getByLabelText("Calendar snapshots"));
+    await waitFor(() => expect(screen.getByText("Planung Juli")).toBeTruthy());
+    const hint = "Saving and restoring are available once the calendar has loaded.";
+    expect(screen.getByText(hint)).toBeTruthy();
+    const input = screen.getByPlaceholderText("Snapshot name");
+    fireEvent.change(input, { target: { value: "Vor dem Laden" } });
+    expect((screen.getByText("Save") as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.keyDown(input, { key: "Enter" });
+    const restoreButtons = screen.getAllByText("Restore") as HTMLButtonElement[];
+    expect(restoreButtons.every((button) => button.disabled && button.title === hint)).toBe(true);
+    // Rename and Delete do not use the calendar on screen.
+    expect((screen.getByText("Rename") as HTMLButtonElement).disabled).toBe(false);
+    expect(props.onSaveSnapshot).not.toHaveBeenCalled();
+
+    rerender(<SnapshotPopover {...props} calendarLoading={false} />);
+    expect(screen.queryByText(hint)).toBeNull();
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(props.onSaveSnapshot).toHaveBeenCalledWith("Vor dem Laden"));
+  });
+
   it("Escape while renaming cancels the rename but keeps the panel open", async () => {
     setup();
     fireEvent.click(screen.getByLabelText("Calendar snapshots"));

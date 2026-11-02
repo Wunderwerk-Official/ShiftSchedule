@@ -434,7 +434,12 @@ def test_day_by_day_failed_day_is_skipped_through_endpoint(
     assert agent["modelDaysSkipped"] == [TUE]
     assert agent["daysSkipped"] == []
     assert agent["daysPlanned"] == 3
-    assert agent["final_audit"]["repairs"] == 1
+    # The skipped Tuesday is filled before the review by the cross-day
+    # coverage repair (v1.80; earlier the final audit filled it). It stays
+    # a day the model skipped (modelDaysSkipped), so the arena never counts it.
+    assert agent["cross_day_repair"]["status"] == "applied"
+    assert agent["cross_day_repair"]["days"] == [TUE]
+    assert agent["final_audit"]["repairs"] == 0
     assert agent["completion"]["required_checks_complete"]
     assert agent["stopReason"] == "partial"
     assert any("day skipped" in n for n in body["notes"])

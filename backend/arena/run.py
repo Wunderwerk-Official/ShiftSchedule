@@ -392,11 +392,23 @@ def comparison_problems(agent: dict, requested_model) -> list:
     for key in ("daysSkipped", "daysIncomplete"):
         if agent.get(key):
             problems.append(f"{key}: {', '.join(agent[key])}")
-    # A day the model gave up on (refusal, error) that the final audit filled
-    # leaves daysSkipped; the plan is then partly not the model's.
+    # A day the model gave up on (refusal, error) that the cross-day repair
+    # (v1.80) or the final audit filled leaves daysSkipped; the plan is then
+    # partly not the model's.
     audit_filled = sorted(set(agent.get("modelDaysSkipped") or []) - set(agent.get("daysSkipped") or []))
     if audit_filled:
-        problems.append(f"days the model skipped (filled by the final audit): {', '.join(audit_filled)}")
+        problems.append("days the model skipped (filled by the cross-day repair or the final audit): "
+                        f"{', '.join(audit_filled)}")
+    # A day the model left incomplete that the cross-day repair (v1.80)
+    # completed: the repair can fill up to 60 places, so a run where the model
+    # barely planned would otherwise look like the model's plan. (A few final
+    # audit repairs of a model-incomplete day stay allowed, as before v1.80.)
+    repaired = set((agent.get("cross_day_repair") or {}).get("days") or [])
+    repair_completed = sorted((set(agent.get("modelDaysIncomplete") or []) & repaired)
+                              - set(agent.get("daysIncomplete") or []))
+    if repair_completed:
+        problems.append("days the model left incomplete (completed by the cross-day repair): "
+                        f"{', '.join(repair_completed)}")
     return problems
 
 

@@ -95,7 +95,7 @@ jobs:
             if curl -fsS http://127.0.0.1:5173/ >/dev/null; then break; fi
             sleep 1
           done
-          npx playwright test e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts e2e/holiday-region.spec.ts e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts
+          npx playwright test e2e/agent-apply.spec.ts e2e/agent-activity.spec.ts e2e/fixed-assignments.spec.ts e2e/holiday-region.spec.ts e2e/model-settings.spec.ts e2e/my-plan.spec.ts e2e/team-page.spec.ts e2e/swap-assistant.spec.ts
 
   # ---------------------------------------------------------------------------
   # Deploy: SSH into the Hetzner server (since 2026-07 only a redirect host to

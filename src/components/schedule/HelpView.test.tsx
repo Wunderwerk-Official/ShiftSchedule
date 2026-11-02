@@ -27,6 +27,11 @@ it("describes the current planning panel and drop rules", () => {
     `open the arrow next to the switch in My plan: the last entry, “${footerLabel}”, lets you choose again;`,
   );
   expect(text).toContain("on a computer, pointing at the circle shows the name.");
+  // v1.80: the promise matches what the cross-day repair guarantees.
+  expect(text).toMatch(/It never opens a slot of a\s+section that ranks higher in the section order to fill lower-ranked ones/);
+  expect(text).toMatch(/it prefers to leave the\s+lower-ranked ones open/);
+  expect(text).not.toContain("without ever leaving a section");
+  expect(text).toContain("46/45 h in 2026-W45");
   expect(text).toContain("shows the initials of the person linked to your account");
   expect(text).not.toMatch(/start page|saved views/i);
 });
@@ -77,7 +82,7 @@ it("says that a name dragged into the Rest Day row keeps automatic planning away
   );
 });
 
-it("explains moving and removing rest days and the week in the address (v1.78)", () => {
+it("explains moving and removing rest days and the week in the address (v1.82)", () => {
   const { container } = render(<HelpView />);
   const text = (container.textContent ?? "").replace(/\s+/g, " ");
   expect(text).toContain(
@@ -113,4 +118,20 @@ it("explains short names and the accent-insensitive person search", () => {
   expect(text).toContain("“muller” or “mueller” finds “Müller”");
   expect(text).toContain("A short name always stands for one person of the team, also in PDFs and on the public page");
   expect(text).toContain("shorten to “Jörg M.”; the clinic sheet lists the surname.");
+});
+
+it("explains Find a swap: the S key and Undo (v1.81)", () => {
+  const { container } = render(<HelpView />);
+  expect(screen.getByRole("heading", { name: "13. Find a swap" })).toBeVisible();
+  const text = container.textContent ?? "";
+  expect(text).toMatch(/press S while its\s+lock or ⇄ button has focus/);
+  expect(text).toMatch(/Undo is in the toast for 10 seconds and later\s+under Swap history/);
+  expect(text).toMatch(/inside 48 h before the start also tick the notice override/);
+  expect(text).toMatch(
+    /A hand-over that leaves the giver\s+under their contract hours says so once, in an amber note under the shift/,
+  );
+  // A Rest Day is a day off placed by hand (v1.75): removing it is never a best match.
+  expect(text).toMatch(
+    /A Rest Day of the person who\s+takes a shift is removed on that day, as when you add a shift by hand; such an\s+option is listed under Also possible with the\s+note Rest Day removed\./,
+  );
 });

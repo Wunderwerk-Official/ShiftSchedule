@@ -47,6 +47,33 @@ it("reports budget fallback and unverified days separately from coverage", () =>
   expect(agentReviewNotice(debug())).toBeNull();
 });
 
+const runLineCases: Array<[string, Partial<SolverAgentDebug>, string]> = [
+  // test_agent_retry: Tuesday's model call failed; the repair and the final checks completed it.
+  ["finished", { stopReason: "partial", modelDaysSkipped: ["2026-01-06"] }, "Run: finished"],
+  // Stop clicked while the closing report ran: the harness still says completed.
+  ["aborted", { stopReason: "completed" }, "Run: stopped"],
+  ["finished", { stopReason: "budget_exhausted" }, "Run: stopped early: planning budget used up"],
+  ["finished", { stopReason: "budget_exhausted", iterations: 0 }, "Run: not started: this account's AI budget is used up"],
+];
+
+it.each(runLineCases)("shows the Run line from the run's status and final state (%s, %j)", async (status, extra, line) => {
+  const debugInfo: SolverDebugInfo = { ...debug({
+    model: "test-model", iterations: 4, daysSkipped: [], daysIncomplete: [], daysPlanned: 3,
+    completion: { plan_revision: 2, workflow_finished: true, required_checks_complete: true,
+      coverage_complete: true, soft_wishes_fulfilled: true, free_text_wishes_verified: true },
+    ...extra,
+  }), solver_status: "AGENT_COMPLETE" };
+  const run: SolverRunDetail = { id: "run-line", status, has_result: true, start_iso: "2026-01-05", end_iso: "2026-01-07",
+    attempt: 1, created_at: "2026-01-05T10:00:00Z",
+    result: { startISO: "2026-01-05", endISO: "2026-01-07", assignments: [], notes: [], debugInfo } };
+  render(<SolverInfoModal isOpen onClose={vi.fn()} serverRuns={[run]}
+    onApplyRun={vi.fn()} onDiscardRun={vi.fn()} onRefreshRuns={vi.fn()}
+    onFetchRunDetail={vi.fn().mockResolvedValue(run)} onSendFeedback={vi.fn()} />);
+  fireEvent.click(screen.getByTitle("Show run details (stats, changes, log)."));
+  expect(await screen.findByText(line)).toBeVisible();
+  expect(screen.getByText("Required checks: complete")).toBeVisible();
+});
+
 it.each([true, false])("reports actual model selection and preserves every attempt in the log (available: %s)", async (available) => {
   const selected = available ? "Qwen/Qwen3.5-35B-A3B-GPTQ-Int4" : null;
   const requested = "nvidia/Qwen3.8-Flash-Next-NVFP4";
@@ -198,4 +225,19 @@ it("marks a run without open issues and folds the explanation away while runs ex
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   fireEvent.click(toggle);
   expect(screen.getByText(/the way an experienced human planner does/)).toBeVisible();
+});
+
+it.each([
+  ["finished", [], "Finished with open positions on 1 day(s): check them before applying."],
+  ["finished", ["2026-11-06"], "Incomplete draft: 1 day(s) need review before applying."],
+  ["applied", [], null],
+])("run card wording for a %s run with unfinished days %j", (status, unfinished, expected) => {
+  const run: SolverRunDetail = { id: `card-${status}-${unfinished.length}`, status, has_result: true,
+    start_iso: "2026-11-05", end_iso: "2026-11-06", attempt: 1, created_at: "2026-11-01T10:00:00Z",
+    incomplete_dates: ["2026-11-06"], unfinished_dates: unfinished };
+  render(<SolverInfoModal isOpen onClose={vi.fn()} serverRuns={[run]}
+    onApplyRun={vi.fn()} onDiscardRun={vi.fn()} onRefreshRuns={vi.fn()}
+    onFetchRunDetail={vi.fn().mockResolvedValue(run)} onSendFeedback={vi.fn()} />);
+  if (expected) expect(screen.getByText(expected)).toBeVisible();
+  else expect(screen.queryByText(/before applying/)).toBeNull();
 });

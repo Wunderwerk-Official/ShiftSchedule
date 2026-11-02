@@ -112,6 +112,31 @@ describe("ShiftDetail", () => {
     anchor.remove();
   });
 
+  it("offers \"Find swap\" only with onFindSwap: first, full width, and hands over the shift", () => {
+    const plain = renderDetail();
+    expect(screen.queryByRole("button", { name: "Find swap" })).not.toBeInTheDocument();
+    plain.unmount();
+    plain.anchor.remove();
+
+    const onFindSwap = vi.fn();
+    const { anchor } = renderDetail({ onFindSwap });
+    const findSwap = screen.getByRole("button", { name: "Find swap" });
+    // Desktop: a row of its own above "Show in team plan | Close".
+    expect(findSwap.parentElement?.firstElementChild).toBe(findSwap);
+    expect(findSwap.className).toContain("col-span-2");
+    fireEvent.click(findSwap);
+    expect(onFindSwap).toHaveBeenCalledWith(night);
+    anchor.remove();
+  });
+
+  it("stacks \"Find swap\" with the other actions on phones", () => {
+    const { anchor } = renderDetail({ onFindSwap: vi.fn(), isMobile: true });
+    const findSwap = screen.getByRole("button", { name: "Find swap" });
+    expect(findSwap.className).toContain("h-12");
+    expect(findSwap.className).not.toContain("col-span-2");
+    anchor.remove();
+  });
+
   it("closes when Tab leaves the desktop popover", () => {
     const { anchor, onClose } = renderDetail();
     const close = screen.getByRole("button", { name: "Close" });

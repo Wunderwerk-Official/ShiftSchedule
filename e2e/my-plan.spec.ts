@@ -452,7 +452,7 @@ test("a location color is saved with the calendar and colors the team rows", asy
   expect(api.errors).toEqual([]);
 });
 
-test("a night across the March clock change counts its real 11 hours (v1.78)", async ({ page }) => {
+test("a night across the March clock change counts its real 11 hours (v1.82)", async ({ page }) => {
   // The default template's Saturday on-call night runs 20:00 → 08:00.
   const location = defaultState.weeklyTemplate!.locations[0];
   const onCall = defaultState.rows.find((row) => row.name === "On Call")!.id;
@@ -482,7 +482,7 @@ test("a night across the March clock change counts its real 11 hours (v1.78)", a
 test.describe("in a browser set to another time zone", () => {
   test.use({ timezoneId: "America/New_York" });
 
-  test("Next up counts down in the plan's time zone (v1.78)", async ({ page }) => {
+  test("Next up counts down in the plan's time zone (v1.82)", async ({ page }) => {
     // Wednesday on call 16:00 → Thu 08:00 Berlin time; now is 09:00 in Berlin, 03:00 in New York.
     const api = await openCalendar(page, {
       initialState: {

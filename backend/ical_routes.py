@@ -179,7 +179,7 @@ def download_ical(
         return Response(status_code=304, headers=headers)
 
     # Cleaned like GET /v1/state (in memory only): entries with impossible
-    # dates stored before v1.78 must not hide shifts from subscribers.
+    # dates stored before v1.82 must not hide shifts from subscribers.
     app_state = _normalize_state(_parse_stored_state(app_state))[0].model_dump()
     ics = generate_ics(
         app_state,

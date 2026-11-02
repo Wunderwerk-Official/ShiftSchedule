@@ -43,7 +43,9 @@ import type {
   MouseEvent as ReactMouseEvent,
 } from "react";
 import type { ScheduleRow } from "../../lib/shiftRows";
+import type { WeeklyHoursStatus } from "../../lib/weeklyHours";
 import { getContrastTextColor } from "../../lib/shiftRows";
+import type { SwapAssignmentRef, SwapSlotRef } from "../../lib/swaps/types";
 
 // Stacked cells: a time other than the lane's, as a quiet note under the
 // people (clock + time, no chip), so it reads as a detail of the slot and
@@ -101,6 +103,8 @@ type ScheduleGridProps = {
     vacations: Array<{ startISO: string; endISO: string }>;
   }>;
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
+  /** Weekly-hours check for the picker (src/lib/weeklyHours.ts via the page). */
+  getWeeklyHours?: (clinicianId: string, dateISO: string, rowId: string) => WeeklyHoursStatus | null;
   enforceSameLocationPerDay?: boolean;
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
@@ -133,6 +137,10 @@ type ScheduleGridProps = {
    * of shortening. Labels wrap in print anyway (index.css .print-wrap).
    */
   print?: boolean;
+  /** "Find swap" of a class pill (its ⇄ button and the S key); editable grids only. */
+  onFindSwap?: (assignment: SwapAssignmentRef) => void;
+  /** "Find cover…" in the picker of a slot with an open position. */
+  onFindCover?: (slot: SwapSlotRef) => void;
 };
 
 export default function ScheduleGrid({
@@ -164,6 +172,7 @@ export default function ScheduleGrid({
   highlightOpenSlots = false,
   clinicians = [],
   getIsOnRestDay,
+  getWeeklyHours,
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
@@ -175,6 +184,8 @@ export default function ScheduleGrid({
   locationRowTints,
   timeLayout = "columns",
   print = false,
+  onFindSwap,
+  onFindCover,
 }: ScheduleGridProps) {
   type DayColumn = NonNullable<ScheduleGridProps["dayColumns"]>[number];
   const sourceColumns: DayColumn[] = useMemo(
@@ -287,7 +298,10 @@ export default function ScheduleGrid({
     dateISO: string;
     anchorRect: DOMRect | null;
     rowName: string;
-  }>({ open: false, rowId: "", dateISO: "", anchorRect: null, rowName: "" });
+    /** Open positions of the slot ("Find cover…" needs one). */
+    openCount: number;
+  }>({ open: false, rowId: "", dateISO: "", anchorRect: null, rowName: "", openCount: 0 });
+  const closePicker = () => setPickerState((prev) => ({ ...prev, open: false, anchorRect: null }));
   const todayISO = toISODate(new Date());
   const isSingleDay = uniqueDayCount === 1;
   // Stacked: day columns may shrink to 64 px (names abbreviate down to
@@ -342,6 +356,7 @@ export default function ScheduleGrid({
       assignedIntervalsByDate,
       unknownIntervalsByDate,
       getIsOnRestDay,
+      getWeeklyHours,
     });
 
   const handleEmptySlotClick = (
@@ -349,6 +364,7 @@ export default function ScheduleGrid({
     rowId: string,
     dateISO: string,
     rowName: string,
+    openCount: number,
   ) => {
     if (readOnly || !onAddAssignment) return;
     event.stopPropagation();
@@ -359,6 +375,7 @@ export default function ScheduleGrid({
       dateISO,
       anchorRect: rect,
       rowName,
+      openCount,
     });
   };
 
@@ -618,6 +635,7 @@ export default function ScheduleGrid({
                         onRemoveAssignment={onRemoveAssignment}
                         onMoveRestDay={onMoveRestDay}
                         onToggleAssignmentLock={onToggleAssignmentLock}
+                        onFindSwap={onFindSwap}
                         dragging={dragging}
                         setDragging={setDragging}
                         hoveredClassCell={hoveredClassCell}
@@ -662,9 +680,7 @@ export default function ScheduleGrid({
         rowName={pickerState.rowName}
         dateLabel={pickerDateLabel}
         clinicians={pickerClinicians}
-        onClose={() =>
-          setPickerState((prev) => ({ ...prev, open: false, anchorRect: null }))
-        }
+        onClose={closePicker}
         onSelect={(clinicianId) => {
           if (!onAddAssignment) return;
           onAddAssignment({
@@ -672,8 +688,16 @@ export default function ScheduleGrid({
             dateISO: pickerState.dateISO,
             clinicianId,
           });
-          setPickerState((prev) => ({ ...prev, open: false, anchorRect: null }));
+          closePicker();
         }}
+        onFindCover={
+          onFindCover && pickerState.openCount > 0
+            ? () => {
+                closePicker();
+                onFindCover({ rowId: pickerState.rowId, dateISO: pickerState.dateISO });
+              }
+            : undefined
+        }
       />
     </div>
   );
@@ -693,6 +717,7 @@ function RowSection({
   onRemoveAssignment,
   onMoveRestDay,
   onToggleAssignmentLock,
+  onFindSwap,
   dragging,
   setDragging,
   hoveredClassCell,
@@ -749,6 +774,7 @@ function RowSection({
     clinicianId: string;
   }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
+  onFindSwap?: (assignment: SwapAssignmentRef) => void;
   onRemoveAssignment?: (args: {
     rowId: string;
     dateISO: string;
@@ -779,6 +805,7 @@ function RowSection({
     rowId: string,
     dateISO: string,
     rowName: string,
+    openCount: number,
   ) => void;
   personPillStyles?: Map<string, PersonPillStyle>;
   nameLabels?: Map<string, PersonNameLabels>;
@@ -950,6 +977,17 @@ function RowSection({
         onToggleLock={
           !readOnly && isClassRow && onToggleAssignmentLock
             ? () => onToggleAssignmentLock(assignment)
+            : undefined
+        }
+        onFindSwap={
+          !readOnly && isClassRow && onFindSwap
+            ? () =>
+                onFindSwap({
+                  assignmentId: assignment.id,
+                  rowId: assignment.rowId,
+                  dateISO: assignment.dateISO,
+                  clinicianId: assignment.clinicianId,
+                })
             : undefined
         }
         isHighlighted={isClassRow ? highlightedSplitShiftKeys?.has(violationKey) : undefined}
@@ -1212,7 +1250,7 @@ function RowSection({
               const target = e.target as HTMLElement;
               if (target.closest('[data-assignment-pill="true"]')) return;
               if (row.kind === "class" && isCellActive && onEmptySlotClick) {
-                onEmptySlotClick(e, activeRow.id, dateISO, activeRow.name);
+                onEmptySlotClick(e, activeRow.id, dateISO, activeRow.name, emptySlots);
                 return;
               }
               if (

@@ -16,7 +16,7 @@ const option = (id: string, name: string): ClinicianOption => ({
 const clinicians = [option("c1", "Anna Alpha"), option("c2", "Bert Beta")];
 const anchorRect = { top: 100, bottom: 120, left: 100, right: 200, width: 100, height: 20 } as DOMRect;
 
-const renderPicker = (onClose: () => void, options: ClinicianOption[] = clinicians) => (
+const renderPicker = (onClose: () => void, options: ClinicianOption[] = clinicians, onFindCover?: () => void) => (
   <ClinicianPickerPopover
     open
     onClose={onClose}
@@ -25,12 +25,36 @@ const renderPicker = (onClose: () => void, options: ClinicianOption[] = clinicia
     anchorRect={anchorRect}
     rowName="MRI"
     dateLabel="Mon 5 Oct"
+    onFindCover={onFindCover}
   />
 );
 
 const flushTimers = () => act(() => new Promise((resolve) => setTimeout(resolve, 10)));
 
 describe("ClinicianPickerPopover", () => {
+  it("names the weekly limit and lists such people after the free ones", async () => {
+    render(
+      <ClinicianPickerPopover
+        open
+        onClose={vi.fn()}
+        onSelect={vi.fn()}
+        clinicians={[
+          { ...option("c1", "Anna Alpha"), isOverWeeklyHours: true, weeklyHoursLabel: "41.5/40 h in 2026-W45" },
+          option("c2", "Bert Beta"),
+        ]}
+        anchorRect={anchorRect}
+        rowName="IRM seno ZK"
+        dateLabel="Fri 6 Nov"
+      />,
+    );
+    await flushTimers();
+    expect(screen.getByText("Over weekly limit (41.5/40 h in 2026-W45)")).toBeInTheDocument();
+    const names = screen.getAllByRole("button").map((button) => button.textContent ?? "");
+    expect(names.findIndex((text) => text.includes("Bert Beta"))).toBeLessThan(
+      names.findIndex((text) => text.includes("Anna Alpha")),
+    );
+  });
+
   it("keeps focus where the user put it when the parent re-renders", async () => {
     const { rerender } = render(renderPicker(() => {}));
     await flushTimers();
@@ -82,5 +106,16 @@ describe("ClinicianPickerPopover", () => {
     expect(found("odegard").some((text) => text.includes("Ødegård"))).toBe(true);
     expect(found("Lefevre").some((text) => text.includes("Lefèvre"))).toBe(true);
     expect(found("muller").some((text) => text.includes("Bert Beta"))).toBe(false);
+  });
+
+  it("offers \"Find cover…\" below the list only with onFindCover", () => {
+    const { rerender } = render(renderPicker(() => {}));
+    expect(screen.queryByRole("button", { name: "Find cover for this slot" })).toBeNull();
+    const onFindCover = vi.fn();
+    rerender(renderPicker(() => {}, clinicians, onFindCover));
+    const button = screen.getByRole("button", { name: "Find cover for this slot" });
+    expect(button).toHaveTextContent("Find cover…");
+    fireEvent.click(button);
+    expect(onFindCover).toHaveBeenCalledOnce();
   });
 });

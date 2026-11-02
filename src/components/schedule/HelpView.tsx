@@ -76,7 +76,13 @@ export default function HelpView() {
           <p>
             The AI plans the selected timeframe day by day: on-call and priority slots
             first, every person with a contiguous block of work. It fills required
-            slots only. Model and instructions are set in Settings → Planning rules &amp; AI.
+            slots only. If required slots stay open, it then moves shifts between the
+            days of the timeframe to fill more of them. It never opens a slot of a
+            section that ranks higher in the section order to fill lower-ranked ones,
+            and when several plans fill as many slots, it prefers to leave the
+            lower-ranked ones open. Plan whole weeks together:
+            days outside the timeframe stay as they are and keep using weekly hours.
+            Model and instructions are set in Settings → Planning rules &amp; AI.
           </p>
 
           <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -162,8 +168,12 @@ export default function HelpView() {
               <span className="font-medium">On vacation</span>,{" "}
               <span className="font-medium">Rest day</span>,{" "}
               <span className="font-medium">Time conflict</span>,{" "}
-              <span className="font-medium">Different location</span> and{" "}
-              <span className="font-medium">Already in slot</span>.
+              <span className="font-medium">Different location</span>,{" "}
+              <span className="font-medium">Over weekly limit</span> and{" "}
+              <span className="font-medium">Already in slot</span>. Over weekly limit
+              means the shift would take the person&apos;s week (Monday to Sunday) above
+              their contract hours plus tolerance, e.g. &quot;46/45 h in 2026-W45&quot; for a
+              40 h contract with 5 h tolerance; the automated planner never plans above it.
             </li>
             <li>
               Drag a name to another shift or the Rest Day/Vacation row on the same day to
@@ -472,6 +482,53 @@ export default function HelpView() {
             standard weekly grid colors that location's row labels and its header band; My
             plan tints each day by the location where a shift starts (picked colors only).
           </p>
+        </Section>
+
+        <Section title="13. Find a swap">
+          <ul className="list-disc space-y-1 pl-5">
+            <li>
+              Point at a shift in the team plan and click the ⇄ button, or press S while its
+              lock or ⇄ button has focus. In My plan, open a shift and choose{" "}
+              <span className="font-medium">Find swap</span>.
+            </li>
+            <li>
+              <span className="font-medium">Swap</span> trades the shift for one of the other
+              person's shifts; <span className="font-medium">Hand over</span> gives it away. The
+              list shows <span className="font-medium">Best matches</span>,{" "}
+              <span className="font-medium">Also possible</span> (with amber notes) and{" "}
+              <span className="font-medium">Not possible</span> (one reason each). Every option is
+              checked against all planning rules on the server. A hand-over that leaves the giver
+              under their contract hours says so once, in an amber note under the shift, not on
+              every option.
+            </li>
+            <li>
+              A shift moves together with everything that touches it in time (for example 08–12
+              and 12–16, or a night and its morning handover).{" "}
+              <span className="font-medium">Whole day</span> moves all of the person's blocks that
+              start that day.
+            </li>
+            <li>
+              <span className="font-medium">Find cover</span> (from an open slot's person list)
+              fills an open position, also one that is open because its person is on vacation;
+              that hidden entry can be removed.
+            </li>
+            <li>
+              <span className="font-medium">Preview</span> shows both people's weekly hours, the
+              checks, working-time warnings you must acknowledge (rest under 11 h, no free day
+              after a night, more than 24 h in a row) and other notes. Tick that the colleague
+              agreed; inside 48 h before the start also tick the notice override. Started shifts
+              can't be swapped.
+            </li>
+            <li>
+              Swapped shifts are locked, so replanning keeps them. A Rest Day of the person who
+              takes a shift is removed on that day, as when you add a shift by hand; such an
+              option is listed under <span className="font-medium">Also possible</span> with the
+              note <span className="font-medium">Rest Day removed</span>.{" "}
+              <span className="font-medium">Undo</span> is in the toast for 10 seconds and later
+              under <span className="font-medium">Swap history</span> (the ⇄ button next to
+              Snapshots), as long as the shifts are unchanged.
+            </li>
+          </ul>
         </Section>
       </div>
 

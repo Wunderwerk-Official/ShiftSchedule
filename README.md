@@ -9,11 +9,13 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - Compact team week: a day's times stacked as rows ("Times: Stacked", default; one row per workplace and time, the label in three columns — row, workplace, time — in location colors, cells with people only) or side by side as columns
 - Colors in the team week: every clinician their own color (20 distinct light and dark colors, your own entries outlined); the label column is colored by location (picked or automatic color, alternating shades per row band, a band per location). Presentation only; planning is unaffected
 - One lock for every shift: names you place or move by hand are locked, the planner's start unlocked; locked shifts survive replanning, applying a plan and Reset
+- Swap assistant for the rota planner: Find swap / Hand over / Find cover with server-side rule checks (no new violations, working-time warnings for rest, nights and long stretches), a preview with both people's weekly hours, consent and notice override, a one-step apply that locks the swapped shifts and writes the change log, and Undo (toast and history)
 - A planning view that shows the day being planned, the agent's current step and the best plan so far, with the activity log on request
 - Rest Day and Vacation rows (a name dragged into the Rest Day row marks a day off; automatic planning leaves that person free that day)
 - Required staffing per weekly-template slot (set per weekday and for holidays) and per-day overrides
 - Clinician qualifications and preferences
 - Vacation tracking
+- Working hours per person against contract hours: a week view (hours per day, planned vs target, difference, year balance) and a compact year view; weeks count once half of the team's hours are planned, vacation lowers the target
 - AI planning drafts with explicit review and apply; CP-SAT and heuristic solvers also remain available through the API
 - Rule checks and an automatic backup before applying; incomplete drafts need confirmation
 - Revision-checked saving prevents older browser edits from overwriting newer calendar changes
@@ -26,7 +28,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 
 ## Tech Stack
 - Frontend: React 18, TypeScript, Vite, Tailwind CSS
-- Backend: FastAPI, OR-Tools, Playwright (server-side PDF), tzdata (time zones for iCal shift times), SQLite (calendar state as one JSON row per account in `app_state`; users, publications, the iCal event format marker, solver runs, run feedback, snapshots, change log, per-user preferences and agent settings/spend in their own tables)
+- Backend: FastAPI, OR-Tools, Playwright (server-side PDF), tzdata (time zones for iCal shift times), SQLite (calendar state as one JSON row per account in `app_state`; users, publications, the iCal event format marker, solver runs, run feedback, snapshots, change log, per-user preferences, agent settings/spend and swaps (requests, events, settings) in their own tables)
 
 ## Local Development (Step-by-step)
 Prereqs:

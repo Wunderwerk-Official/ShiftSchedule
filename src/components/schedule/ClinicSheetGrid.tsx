@@ -10,6 +10,7 @@ import {
   type RenderedAssignment,
 } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
+import type { WeeklyHoursStatus } from "../../lib/weeklyHours";
 import { getLuminance } from "../../lib/shiftRows";
 import {
   buildClinicianOptionsForSlot,
@@ -34,6 +35,9 @@ import {
 } from "../../lib/clinicSheet";
 import { toISODate } from "../../lib/date";
 import { nameLabelsOf, type PersonNameLabels } from "../../lib/personName";
+import { assignmentKey } from "../../lib/swaps/format";
+import type { SwapAssignmentRef, SwapSlotRef } from "../../lib/swaps/types";
+import PillSwapButton, { findSwapOnKey } from "../swaps/PillSwapButton";
 import ClinicianPickerPopover from "./ClinicianPickerPopover";
 
 // Faithful web rendering of the clinic's Excel Arbeitsplan: the whole month
@@ -91,6 +95,8 @@ type ClinicSheetGridProps = {
   getIsQualified: (clinicianId: string, rowId: string) => boolean;
   clinicians?: SlotOptionClinician[];
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
+  /** Weekly-hours check for the picker (src/lib/weeklyHours.ts via the page). */
+  getWeeklyHours?: (clinicianId: string, dateISO: string, rowId: string) => WeeklyHoursStatus | null;
   enforceSameLocationPerDay?: boolean;
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
@@ -110,6 +116,10 @@ type ClinicSheetGridProps = {
   /** A Rest Day name dropped on the Rest Day row of another day (other drops on another day remove). */
   onMoveRestDay?: (args: MoveRestDayArgs) => void;
   onClinicianClick?: (clinicianId: string) => void;
+  /** "Find swap" of a slot name (its ⇄ button and the S key); editable sheets only. */
+  onFindSwap?: (assignment: SwapAssignmentRef) => void;
+  /** "Find cover…" in the picker of a slot area with an open position. */
+  onFindCover?: (slot: SwapSlotRef) => void;
 };
 
 export default function ClinicSheetGrid({
@@ -123,6 +133,7 @@ export default function ClinicSheetGrid({
   getIsQualified,
   clinicians = [],
   getIsOnRestDay,
+  getWeeklyHours,
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
@@ -130,6 +141,8 @@ export default function ClinicSheetGrid({
   onMoveWithinDay,
   onMoveRestDay,
   onClinicianClick,
+  onFindSwap,
+  onFindCover,
 }: ClinicSheetGridProps) {
   const { days, sections, poolRows } = model;
   const todayISO = toISODate(new Date());
@@ -141,7 +154,10 @@ export default function ClinicSheetGrid({
     dateISO: string;
     anchorRect: DOMRect | null;
     rowName: string;
-  }>({ open: false, rowId: "", dateISO: "", anchorRect: null, rowName: "" });
+    /** Open positions of the slot area ("Find cover…" needs one). */
+    openCount: number;
+  }>({ open: false, rowId: "", dateISO: "", anchorRect: null, rowName: "", openCount: 0 });
+  const closePicker = () => setPickerState((prev) => ({ ...prev, open: false, anchorRect: null }));
 
   const rowKindById = useMemo(() => buildRowKindById(rows), [rows]);
   const shiftIntervalsByRowId = useMemo(() => buildShiftIntervalsByRowId(rows), [rows]);
@@ -253,11 +269,12 @@ export default function ClinicSheetGrid({
     rowId: string,
     dateISO: string,
     rowName: string,
+    openCount: number,
   ) => {
     if (readOnly || !onAddAssignment) return;
     event.stopPropagation();
     const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-    setPickerState({ open: true, rowId, dateISO, anchorRect: rect, rowName });
+    setPickerState({ open: true, rowId, dateISO, anchorRect: rect, rowName, openCount });
   };
 
   const pickerClinicians = pickerState.open
@@ -272,6 +289,7 @@ export default function ClinicSheetGrid({
         assignedIntervalsByDate,
         unknownIntervalsByDate,
         getIsOnRestDay,
+        getWeeklyHours,
       })
     : [];
   const pickerDateLabel = pickerState.dateISO
@@ -306,10 +324,27 @@ export default function ClinicSheetGrid({
       dragging.dateISO === dateISO;
     const hasLock = !isPoolCell && !readOnly && !!onToggleAssignmentLock;
     const isLocked = isProtectedAssignment(assignment);
+    const lockInRow = hasLock && isLocked;
+    const findSwap =
+      !isPoolCell && !readOnly && onFindSwap
+        ? () =>
+            onFindSwap({
+              assignmentId: assignment.id,
+              rowId: assignment.rowId,
+              dateISO: assignment.dateISO,
+              clinicianId: assignment.clinicianId,
+            })
+        : undefined;
     return (
       <span
         key={assignment.id}
         data-sheet-name="true"
+        // The preview outline's hook (the swap drawer's stylesheet). Not
+        // data-assignment-key: "Show in team plan" pulses the sheet cell.
+        data-sheet-assignment-key={
+          findSwap ? assignmentKey(assignment.rowId, assignment.dateISO, assignment.clinicianId) : undefined
+        }
+        onKeyDownCapture={findSwap ? findSwapOnKey(findSwap) : undefined}
         draggable={!readOnly}
         title={warnings.length > 0 ? `${name} — ${warnings.join("; ")}` : name}
         onDragStart={
@@ -340,8 +375,12 @@ export default function ClinicSheetGrid({
           // ("Andreas Schulz" / "Andrea Schulz") stay visible; only a single
           // word that is still too wide is cut, the full name in the title.
           "relative flex min-h-[24px] min-w-0 items-center px-0.5 text-[11px] leading-[24px] [contain:inline-size] [&>span]:whitespace-normal [&>span]:py-[3px] [&>span]:leading-[12px]",
-          // Touch screens always show an unlocked name's lock: keep its room.
-          hasLock && !isLocked && "[@media(hover:none)]:pr-5",
+          // Touch screens always show an unlocked name's lock (and the ⇄
+          // button): keep their room. A locked name's room is a margin of
+          // the name instead, so its in-row lock stays at the end.
+          findSwap
+            ? !lockInRow && "[@media(hover:none)]:pr-10"
+            : hasLock && !isLocked && "[@media(hover:none)]:pr-5",
           textClass,
           (isUnqualified || isOnRestDay) && "underline decoration-wavy",
           isOnRestDay ? "decoration-red-600" : isUnqualified && "decoration-amber-500",
@@ -349,7 +388,16 @@ export default function ClinicSheetGrid({
           isBeingDragged && "opacity-40",
         )}
       >
-        <span className={cx("min-w-0 flex-1 truncate", hasLock && !isLocked && "pill-lock-fade")}>
+        <span
+          className={cx(
+            "min-w-0 flex-1 truncate",
+            findSwap
+              ? lockInRow
+                ? "pill-swap-fade-inrow [@media(hover:none)]:mr-5"
+                : "pill-swap-fade"
+              : hasLock && !isLocked && "pill-lock-fade",
+          )}
+        >
           {surname}
         </span>
         {/* The same lock as the weekly grid: a locked name shows it, an
@@ -366,6 +414,16 @@ export default function ClinicSheetGrid({
             }
           />
         )}
+        {findSwap ? (
+          <PillSwapButton
+            name={name}
+            onFindSwap={findSwap}
+            className={cx(
+              "pill-swap-reveal absolute top-1/2 -translate-y-1/2",
+              lockInRow ? "right-[21px]" : "right-[19px]",
+            )}
+          />
+        ) : null}
       </span>
     );
   };
@@ -407,7 +465,7 @@ export default function ClinicSheetGrid({
             ? (e) => {
                 const target = e.target as HTMLElement;
                 if (target.closest('[data-sheet-name="true"]')) return;
-                openPicker(e, area.slotId, day.dateISO, area.sectionName ?? row.label);
+                openPicker(e, area.slotId, day.dateISO, area.sectionName ?? row.label, openSlots);
               }
             : undefined
         }
@@ -711,9 +769,7 @@ export default function ClinicSheetGrid({
         rowName={pickerState.rowName}
         dateLabel={pickerDateLabel}
         clinicians={pickerClinicians}
-        onClose={() =>
-          setPickerState((prev) => ({ ...prev, open: false, anchorRect: null }))
-        }
+        onClose={closePicker}
         onSelect={(clinicianId) => {
           if (!onAddAssignment) return;
           onAddAssignment({
@@ -721,8 +777,16 @@ export default function ClinicSheetGrid({
             dateISO: pickerState.dateISO,
             clinicianId,
           });
-          setPickerState((prev) => ({ ...prev, open: false, anchorRect: null }));
+          closePicker();
         }}
+        onFindCover={
+          onFindCover && pickerState.openCount > 0
+            ? () => {
+                closePicker();
+                onFindCover({ rowId: pickerState.rowId, dateISO: pickerState.dateISO });
+              }
+            : undefined
+        }
       />
     </div>
   );

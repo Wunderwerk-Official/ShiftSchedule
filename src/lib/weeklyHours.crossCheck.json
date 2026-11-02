@@ -1,0 +1,181 @@
+{
+  "_about": [
+    "One weekly-hours rule (v1.81): the person picker's 'Over weekly limit' (src/lib/weeklyHours.ts),",
+    "the swap assistant's hours card and cover search (backend/swaps/worktime.py, matching.py) and the",
+    "planner's gate (backend/validation.py validate_weekly_hours) must count the same minutes per ISO week",
+    "and use the same limit, contract + tolerance (5 h when unset). Read by",
+    "src/lib/weeklyHours.crossCheck.test.ts and backend/tests/test_weekly_hours_crosscheck.py.",
+    "Cases: Uma's clinic slot has no times (08:00-16:00); Nils' nights count on their start date",
+    "(Sun 6 Dec in W49, Sun 13 Dec in W50); Paul's Vacation-row and Rest Day entries count nothing;",
+    "Tara has no tolerance (5 h); Nora has no contract (no limit); Fiona ends exactly at her limit;",
+    "Hanna's Thursday shift is hidden by her vacation and counts; Yara's 2026-W53 runs from",
+    "Mon 28 Dec 2026 to Sun 3 Jan 2027. Covers: Fri 11 Dec (open) and Sat 2 Jan, open because",
+    "Victor, who holds it, is on vacation. Quarter hours: with the Friday cover, Rita's Early shift",
+    "(07:45-16:00) makes her week 32.25 h, and Quinn's 19.25 h contract (+ 5 h) makes his limit 24.25 h;",
+    "both sides print them as 32.3 and 24.3 (an exact half rounds up). 'shown' holds the hours that both",
+    "texts print for each person over the limit."
+  ],
+  "state": {
+    "locations": [{"id": "loc-default", "name": "Berlin"}],
+    "locationsEnabled": true,
+    "rows": [
+      {"id": "sec-day", "name": "Day", "kind": "class", "dotColorClass": "bg-sky-400"},
+      {"id": "sec-night", "name": "Night", "kind": "class", "dotColorClass": "bg-indigo-400"},
+      {"id": "sec-clinic", "name": "Clinic", "kind": "class", "dotColorClass": "bg-amber-400"},
+      {"id": "sec-early", "name": "Early", "kind": "class", "dotColorClass": "bg-teal-400"},
+      {"id": "pool-rest-day", "name": "Rest Day", "kind": "pool", "dotColorClass": "bg-slate-200"},
+      {"id": "pool-vacation", "name": "Vacation", "kind": "pool", "dotColorClass": "bg-emerald-500"}
+    ],
+    "clinicians": [
+      {"id": "clin-uma", "name": "Uma Untimed", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [], "workingHoursPerWeek": 30, "workingHoursToleranceHours": 0},
+      {"id": "clin-nils", "name": "Nils Night", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [], "workingHoursPerWeek": 30, "workingHoursToleranceHours": 0},
+      {"id": "clin-paul", "name": "Paul Pool", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [], "workingHoursPerWeek": 19.5, "workingHoursToleranceHours": 0},
+      {"id": "clin-tara", "name": "Tara Tolerance", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [], "workingHoursPerWeek": 38},
+      {"id": "clin-nora", "name": "Nora Nocontract", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": []},
+      {"id": "clin-fiona", "name": "Fiona Fits", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [], "workingHoursPerWeek": 40, "workingHoursToleranceHours": 0},
+      {"id": "clin-hanna", "name": "Hanna Hidden", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [{"id": "vac-hanna", "startISO": "2026-12-10", "endISO": "2026-12-10"}], "workingHoursPerWeek": 36, "workingHoursToleranceHours": 0},
+      {"id": "clin-yara", "name": "Yara Year", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [], "workingHoursPerWeek": 24, "workingHoursToleranceHours": 0},
+      {"id": "clin-victor", "name": "Victor Vacation", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [{"id": "vac-victor", "startISO": "2027-01-02", "endISO": "2027-01-02"}], "workingHoursPerWeek": 40, "workingHoursToleranceHours": 5},
+      {"id": "clin-rita", "name": "Rita Rounding", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic", "sec-early"], "vacations": [], "workingHoursPerWeek": 30, "workingHoursToleranceHours": 0},
+      {"id": "clin-quinn", "name": "Quinn Quarter", "qualifiedClassIds": ["sec-day", "sec-night", "sec-clinic"], "vacations": [], "workingHoursPerWeek": 19.25, "workingHoursToleranceHours": 5}
+    ],
+    "assignments": [
+      {"id": "uma-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-uma", "source": "manual", "locked": true},
+      {"id": "uma-day-tue-2026-12-08", "rowId": "day-tue", "dateISO": "2026-12-08", "clinicianId": "clin-uma", "source": "manual", "locked": true},
+      {"id": "uma-clinic-wed-2026-12-09", "rowId": "clinic-wed", "dateISO": "2026-12-09", "clinicianId": "clin-uma", "source": "manual", "locked": true},
+      {"id": "nils-night-sun-2026-12-06", "rowId": "night-sun", "dateISO": "2026-12-06", "clinicianId": "clin-nils", "source": "manual", "locked": true},
+      {"id": "nils-night-tue-2026-12-08", "rowId": "night-tue", "dateISO": "2026-12-08", "clinicianId": "clin-nils", "source": "manual", "locked": true},
+      {"id": "nils-night-sun-2026-12-13", "rowId": "night-sun", "dateISO": "2026-12-13", "clinicianId": "clin-nils", "source": "manual", "locked": true},
+      {"id": "paul-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-paul", "source": "manual", "locked": true},
+      {"id": "paul-pool-vacation-2026-12-09", "rowId": "pool-vacation", "dateISO": "2026-12-09", "clinicianId": "clin-paul", "source": "manual", "locked": false},
+      {"id": "paul-pool-rest-day-2026-12-10", "rowId": "pool-rest-day", "dateISO": "2026-12-10", "clinicianId": "clin-paul", "source": "manual", "locked": false},
+      {"id": "tara-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-tara", "source": "manual", "locked": true},
+      {"id": "tara-day-tue-2026-12-08", "rowId": "day-tue", "dateISO": "2026-12-08", "clinicianId": "clin-tara", "source": "manual", "locked": true},
+      {"id": "tara-day-wed-2026-12-09", "rowId": "day-wed", "dateISO": "2026-12-09", "clinicianId": "clin-tara", "source": "manual", "locked": true},
+      {"id": "tara-day-thu-2026-12-10", "rowId": "day-thu", "dateISO": "2026-12-10", "clinicianId": "clin-tara", "source": "manual", "locked": true},
+      {"id": "nora-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-nora", "source": "manual", "locked": true},
+      {"id": "nora-day-tue-2026-12-08", "rowId": "day-tue", "dateISO": "2026-12-08", "clinicianId": "clin-nora", "source": "manual", "locked": true},
+      {"id": "nora-day-wed-2026-12-09", "rowId": "day-wed", "dateISO": "2026-12-09", "clinicianId": "clin-nora", "source": "manual", "locked": true},
+      {"id": "nora-day-thu-2026-12-10", "rowId": "day-thu", "dateISO": "2026-12-10", "clinicianId": "clin-nora", "source": "manual", "locked": true},
+      {"id": "fiona-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-fiona", "source": "manual", "locked": true},
+      {"id": "fiona-day-tue-2026-12-08", "rowId": "day-tue", "dateISO": "2026-12-08", "clinicianId": "clin-fiona", "source": "manual", "locked": true},
+      {"id": "fiona-day-wed-2026-12-09", "rowId": "day-wed", "dateISO": "2026-12-09", "clinicianId": "clin-fiona", "source": "manual", "locked": true},
+      {"id": "fiona-day-thu-2026-12-10", "rowId": "day-thu", "dateISO": "2026-12-10", "clinicianId": "clin-fiona", "source": "manual", "locked": true},
+      {"id": "nora-night-sat-2026-12-12", "rowId": "night-sat", "dateISO": "2026-12-12", "clinicianId": "clin-nora", "source": "manual", "locked": true},
+      {"id": "nora-night-sun-2026-12-13", "rowId": "night-sun", "dateISO": "2026-12-13", "clinicianId": "clin-nora", "source": "manual", "locked": true},
+      {"id": "hanna-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-hanna", "source": "manual", "locked": true},
+      {"id": "hanna-day-tue-2026-12-08", "rowId": "day-tue", "dateISO": "2026-12-08", "clinicianId": "clin-hanna", "source": "manual", "locked": true},
+      {"id": "hanna-day-wed-2026-12-09", "rowId": "day-wed", "dateISO": "2026-12-09", "clinicianId": "clin-hanna", "source": "manual", "locked": true},
+      {"id": "hanna-day-thu-2026-12-10", "rowId": "day-thu", "dateISO": "2026-12-10", "clinicianId": "clin-hanna", "source": "manual", "locked": true},
+      {"id": "yara-day-mon-2026-12-28", "rowId": "day-mon", "dateISO": "2026-12-28", "clinicianId": "clin-yara", "source": "manual", "locked": true},
+      {"id": "yara-day-wed-2026-12-30", "rowId": "day-wed", "dateISO": "2026-12-30", "clinicianId": "clin-yara", "source": "manual", "locked": true},
+      {"id": "yara-day-fri-2027-01-01", "rowId": "day-fri", "dateISO": "2027-01-01", "clinicianId": "clin-yara", "source": "manual", "locked": true},
+      {"id": "yara-day-mon-2027-01-04", "rowId": "day-mon", "dateISO": "2027-01-04", "clinicianId": "clin-yara", "source": "manual", "locked": true},
+      {"id": "victor-day-sat-2027-01-02", "rowId": "day-sat", "dateISO": "2027-01-02", "clinicianId": "clin-victor", "source": "manual", "locked": true},
+      {"id": "rita-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-rita", "source": "manual", "locked": true},
+      {"id": "rita-day-tue-2026-12-08", "rowId": "day-tue", "dateISO": "2026-12-08", "clinicianId": "clin-rita", "source": "manual", "locked": true},
+      {"id": "rita-early-wed-2026-12-09", "rowId": "early-wed", "dateISO": "2026-12-09", "clinicianId": "clin-rita", "source": "manual", "locked": true},
+      {"id": "quinn-day-mon-2026-12-07", "rowId": "day-mon", "dateISO": "2026-12-07", "clinicianId": "clin-quinn", "source": "manual", "locked": true},
+      {"id": "quinn-day-tue-2026-12-08", "rowId": "day-tue", "dateISO": "2026-12-08", "clinicianId": "clin-quinn", "source": "manual", "locked": true},
+      {"id": "quinn-day-wed-2026-12-09", "rowId": "day-wed", "dateISO": "2026-12-09", "clinicianId": "clin-quinn", "source": "manual", "locked": true}
+    ],
+    "minSlotsByRowId": {},
+    "weeklyTemplate": {
+      "version": 4,
+      "blocks": [{"id": "block-day", "sectionId": "sec-day"}, {"id": "block-night", "sectionId": "sec-night"}, {"id": "block-clinic", "sectionId": "sec-clinic"}, {"id": "block-early", "sectionId": "sec-early"}],
+      "locations": [{
+        "locationId": "loc-default",
+        "rowBands": [{"id": "row-day", "order": 1, "label": "Day"}, {"id": "row-night", "order": 2, "label": "Night"}, {"id": "row-clinic", "order": 3, "label": "Clinic"}, {"id": "row-early", "order": 4, "label": "Early"}],
+        "colBands": [
+          {"id": "col-mon", "label": "", "order": 1, "dayType": "mon"},
+          {"id": "col-tue", "label": "", "order": 1, "dayType": "tue"},
+          {"id": "col-wed", "label": "", "order": 1, "dayType": "wed"},
+          {"id": "col-thu", "label": "", "order": 1, "dayType": "thu"},
+          {"id": "col-fri", "label": "", "order": 1, "dayType": "fri"},
+          {"id": "col-sat", "label": "", "order": 1, "dayType": "sat"},
+          {"id": "col-sun", "label": "", "order": 1, "dayType": "sun"}
+        ],
+        "slots": [
+          {"id": "day-mon", "locationId": "loc-default", "rowBandId": "row-day", "colBandId": "col-mon", "blockId": "block-day", "requiredSlots": 8, "startTime": "08:00", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "night-mon", "locationId": "loc-default", "rowBandId": "row-night", "colBandId": "col-mon", "blockId": "block-night", "requiredSlots": 2, "startTime": "20:00", "endTime": "08:00", "endDayOffset": 1},
+          {"id": "clinic-mon", "locationId": "loc-default", "rowBandId": "row-clinic", "colBandId": "col-mon", "blockId": "block-clinic", "requiredSlots": 1},
+          {"id": "day-tue", "locationId": "loc-default", "rowBandId": "row-day", "colBandId": "col-tue", "blockId": "block-day", "requiredSlots": 8, "startTime": "08:00", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "night-tue", "locationId": "loc-default", "rowBandId": "row-night", "colBandId": "col-tue", "blockId": "block-night", "requiredSlots": 2, "startTime": "20:00", "endTime": "08:00", "endDayOffset": 1},
+          {"id": "clinic-tue", "locationId": "loc-default", "rowBandId": "row-clinic", "colBandId": "col-tue", "blockId": "block-clinic", "requiredSlots": 1},
+          {"id": "day-wed", "locationId": "loc-default", "rowBandId": "row-day", "colBandId": "col-wed", "blockId": "block-day", "requiredSlots": 6, "startTime": "08:00", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "night-wed", "locationId": "loc-default", "rowBandId": "row-night", "colBandId": "col-wed", "blockId": "block-night", "requiredSlots": 2, "startTime": "20:00", "endTime": "08:00", "endDayOffset": 1},
+          {"id": "clinic-wed", "locationId": "loc-default", "rowBandId": "row-clinic", "colBandId": "col-wed", "blockId": "block-clinic", "requiredSlots": 1},
+          {"id": "early-wed", "locationId": "loc-default", "rowBandId": "row-early", "colBandId": "col-wed", "blockId": "block-early", "requiredSlots": 1, "startTime": "07:45", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "day-thu", "locationId": "loc-default", "rowBandId": "row-day", "colBandId": "col-thu", "blockId": "block-day", "requiredSlots": 6, "startTime": "08:00", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "night-thu", "locationId": "loc-default", "rowBandId": "row-night", "colBandId": "col-thu", "blockId": "block-night", "requiredSlots": 2, "startTime": "20:00", "endTime": "08:00", "endDayOffset": 1},
+          {"id": "clinic-thu", "locationId": "loc-default", "rowBandId": "row-clinic", "colBandId": "col-thu", "blockId": "block-clinic", "requiredSlots": 1},
+          {"id": "day-fri", "locationId": "loc-default", "rowBandId": "row-day", "colBandId": "col-fri", "blockId": "block-day", "requiredSlots": 6, "startTime": "08:00", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "night-fri", "locationId": "loc-default", "rowBandId": "row-night", "colBandId": "col-fri", "blockId": "block-night", "requiredSlots": 2, "startTime": "20:00", "endTime": "08:00", "endDayOffset": 1},
+          {"id": "clinic-fri", "locationId": "loc-default", "rowBandId": "row-clinic", "colBandId": "col-fri", "blockId": "block-clinic", "requiredSlots": 1},
+          {"id": "day-sat", "locationId": "loc-default", "rowBandId": "row-day", "colBandId": "col-sat", "blockId": "block-day", "requiredSlots": 1, "startTime": "08:00", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "night-sat", "locationId": "loc-default", "rowBandId": "row-night", "colBandId": "col-sat", "blockId": "block-night", "requiredSlots": 2, "startTime": "20:00", "endTime": "08:00", "endDayOffset": 1},
+          {"id": "clinic-sat", "locationId": "loc-default", "rowBandId": "row-clinic", "colBandId": "col-sat", "blockId": "block-clinic", "requiredSlots": 1},
+          {"id": "day-sun", "locationId": "loc-default", "rowBandId": "row-day", "colBandId": "col-sun", "blockId": "block-day", "requiredSlots": 1, "startTime": "08:00", "endTime": "16:00", "endDayOffset": 0},
+          {"id": "night-sun", "locationId": "loc-default", "rowBandId": "row-night", "colBandId": "col-sun", "blockId": "block-night", "requiredSlots": 2, "startTime": "20:00", "endTime": "08:00", "endDayOffset": 1},
+          {"id": "clinic-sun", "locationId": "loc-default", "rowBandId": "row-clinic", "colBandId": "col-sun", "blockId": "block-clinic", "requiredSlots": 1}
+        ]
+      }]
+    },
+    "holidays": [],
+    "solverSettings": {"enforceSameLocationPerDay": false, "onCallRestEnabled": false, "onCallRestClassId": "sec-night", "onCallRestDaysBefore": 0, "onCallRestDaysAfter": 0, "preferContinuousShifts": true},
+    "solverRules": []
+  },
+  "expected": {
+    "weeks": [
+      {"clinicianId": "clin-uma", "week": "2026-W50", "minutes": 1440, "limitMinutes": 1800},
+      {"clinicianId": "clin-nils", "week": "2026-W49", "minutes": 720, "limitMinutes": 1800},
+      {"clinicianId": "clin-nils", "week": "2026-W50", "minutes": 1440, "limitMinutes": 1800},
+      {"clinicianId": "clin-nils", "week": "2026-W51", "minutes": 0, "limitMinutes": 1800},
+      {"clinicianId": "clin-paul", "week": "2026-W50", "minutes": 480, "limitMinutes": 1170},
+      {"clinicianId": "clin-tara", "week": "2026-W50", "minutes": 1920, "limitMinutes": 2580},
+      {"clinicianId": "clin-nora", "week": "2026-W50", "minutes": 3360, "limitMinutes": null},
+      {"clinicianId": "clin-fiona", "week": "2026-W50", "minutes": 1920, "limitMinutes": 2400},
+      {"clinicianId": "clin-hanna", "week": "2026-W50", "minutes": 1920, "limitMinutes": 2160},
+      {"clinicianId": "clin-yara", "week": "2026-W53", "minutes": 1440, "limitMinutes": 1440},
+      {"clinicianId": "clin-yara", "week": "2027-W01", "minutes": 480, "limitMinutes": 1440},
+      {"clinicianId": "clin-victor", "week": "2026-W53", "minutes": 480, "limitMinutes": 2700},
+      {"clinicianId": "clin-rita", "week": "2026-W50", "minutes": 1455, "limitMinutes": 1800},
+      {"clinicianId": "clin-quinn", "week": "2026-W50", "minutes": 1440, "limitMinutes": 1455}
+    ],
+    "covers": [
+      {
+        "slot": {"rowId": "day-fri", "dateISO": "2026-12-11"}, "week": "2026-W50", "slotMinutes": 480,
+        "holders": [],
+        "candidates": [
+          {"clinicianId": "clin-uma", "afterMinutes": 1920, "limitMinutes": 1800, "over": true, "shown": {"after": 32, "limit": 30}},
+          {"clinicianId": "clin-nils", "afterMinutes": 1920, "limitMinutes": 1800, "over": true, "shown": {"after": 32, "limit": 30}},
+          {"clinicianId": "clin-paul", "afterMinutes": 960, "limitMinutes": 1170, "over": false},
+          {"clinicianId": "clin-tara", "afterMinutes": 2400, "limitMinutes": 2580, "over": false},
+          {"clinicianId": "clin-nora", "afterMinutes": 3840, "limitMinutes": null, "over": false},
+          {"clinicianId": "clin-fiona", "afterMinutes": 2400, "limitMinutes": 2400, "over": false},
+          {"clinicianId": "clin-hanna", "afterMinutes": 2400, "limitMinutes": 2160, "over": true, "shown": {"after": 40, "limit": 36}},
+          {"clinicianId": "clin-yara", "afterMinutes": 480, "limitMinutes": 1440, "over": false},
+          {"clinicianId": "clin-victor", "afterMinutes": 480, "limitMinutes": 2700, "over": false},
+          {"clinicianId": "clin-rita", "afterMinutes": 1935, "limitMinutes": 1800, "over": true, "shown": {"after": 32.3, "limit": 30}},
+          {"clinicianId": "clin-quinn", "afterMinutes": 1920, "limitMinutes": 1455, "over": true, "shown": {"after": 32, "limit": 24.3}}
+        ]
+      },
+      {
+        "slot": {"rowId": "day-sat", "dateISO": "2027-01-02"}, "week": "2026-W53", "slotMinutes": 480,
+        "holders": ["clin-victor"],
+        "candidates": [
+          {"clinicianId": "clin-uma", "afterMinutes": 480, "limitMinutes": 1800, "over": false},
+          {"clinicianId": "clin-nils", "afterMinutes": 480, "limitMinutes": 1800, "over": false},
+          {"clinicianId": "clin-paul", "afterMinutes": 480, "limitMinutes": 1170, "over": false},
+          {"clinicianId": "clin-tara", "afterMinutes": 480, "limitMinutes": 2580, "over": false},
+          {"clinicianId": "clin-nora", "afterMinutes": 480, "limitMinutes": null, "over": false},
+          {"clinicianId": "clin-fiona", "afterMinutes": 480, "limitMinutes": 2400, "over": false},
+          {"clinicianId": "clin-hanna", "afterMinutes": 480, "limitMinutes": 2160, "over": false},
+          {"clinicianId": "clin-yara", "afterMinutes": 1920, "limitMinutes": 1440, "over": true, "shown": {"after": 32, "limit": 24}},
+          {"clinicianId": "clin-rita", "afterMinutes": 480, "limitMinutes": 1800, "over": false},
+          {"clinicianId": "clin-quinn", "afterMinutes": 480, "limitMinutes": 1455, "over": false}
+        ]
+      }
+    ]
+  }
+}

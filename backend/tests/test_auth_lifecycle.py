@@ -80,6 +80,14 @@ def seed_owned_data(username):
         conn.execute("INSERT INTO calendar_snapshots VALUES (?, ?, 'private snapshot', 'named', '{}', ?, ?)",
                      (f"snapshot-{username}", username, now, now))
         conn.execute("INSERT INTO user_preferences VALUES (?, ?, ?)", (username, "{}", now))
+        conn.execute("INSERT INTO swap_requests (id, username, kind, status, partner_id, give_items, consent, "
+                     "created_via, created_by, created_at, updated_at) VALUES (?, ?, 'swap', 'applied', "
+                     "'clinician', '[]', 'confirmed_by_planner', 'planner', ?, ?, ?)",
+                     (f"swap-{username}", username, f"user:{username}", now, now))
+        conn.execute("INSERT INTO swap_events (id, request_id, username, actor, action, created_at) "
+                     "VALUES (?, ?, ?, ?, 'applied', ?)",
+                     (f"swap-event-{username}", f"swap-{username}", username, f"user:{username}", now))
+        conn.execute("INSERT INTO swap_settings VALUES (?, ?, ?)", (username, "{}", now))
 
 
 def owned_rows(username):
@@ -88,7 +96,7 @@ def owned_rows(username):
         for table, column in [("app_state", "id")] + [(table, "username") for table in (
             "users", "ical_publications", "ical_clinician_publications", "web_publications",
             "agent_spend", "solver_runs", "run_feedback", "schedule_changes", "calendar_snapshots",
-            "user_preferences",
+            "user_preferences", "swap_requests", "swap_events", "swap_settings",
         )]:
             result[table] = [dict(row) for row in conn.execute(
                 f"SELECT * FROM {table} WHERE {column} = ?", (username,)).fetchall()]

@@ -60,6 +60,16 @@ from .tools import (
     literal_tool_description,
 )
 from .workflow import audit_time_budget
+# range_open_positions: the day loop has a local int named open_positions.
+from .cross_day import coverage_repair, open_positions as range_open_positions, repair_note, repair_seconds
+from .open_reasons import (
+    COLD_SECONDS as REASON_COLD_SECONDS,
+    COLD_SLOTS as REASON_COLD_SLOTS,
+    MAX_SECONDS as REASON_MAX_SECONDS,
+    MAX_SLOTS as REASON_MAX_SLOTS,
+    blocker_text,
+    open_slot_blockers,
+)
 
 # History compaction: once the tool results in the conversation exceed this
 # budget, everything but the most recent exchanges is replaced by a stub in
@@ -309,12 +319,13 @@ def agent_solve_range(
     # Strategy: "day_by_day" (the STANDARD since v1.38) builds the range
     # from scratch, one day per conversation, the way a human planner works.
     # "repair" (heuristic seed + LLM improvement) is deactivated in the UI
-    # and kept only for the arena benchmarks and explicit API calls.
-    strategy = (
-        "repair"
-        if getattr(payload, "agent_strategy", None) == "repair"
-        else "day_by_day"
-    )
+    # and kept only for the arena benchmarks and explicit API calls, like
+    # "direct" (whole range in one answer, no tools; an experiment).
+    requested_strategy = getattr(payload, "agent_strategy", None)
+    strategy = requested_strategy if requested_strategy in ("repair", "direct") else "day_by_day"
+    # Both build the range from scratch: no heuristic seed, and a failed
+    # start falls back to the heuristic draft.
+    from_scratch = strategy in ("day_by_day", "direct")
 
     def muted_progress(event_type: str, data: dict) -> None:
         # Forward the heuristic's phase updates so the overlay stays alive,
@@ -603,18 +614,32 @@ def agent_solve_range(
             "thoughts": list(thought_log),
         }
 
-    def _unsolved_overview(best: List[Assignment]) -> Tuple[List[str], dict]:
+    def _unsolved_overview(best: List[Assignment], *, reason_slots: int = REASON_MAX_SLOTS,
+                           reason_seconds: float = REASON_MAX_SECONDS) -> Tuple[List[str], dict]:
         """The admin's closing report: everything the run could NOT solve —
         open required slots, short days, over-long days — as human-readable
         note lines (they end up in the run log and the run inbox) plus a
         structured block for debugInfo. Real names: browser-only data."""
         remaining_open = open_slots(ctx, best)
+        # Why each slot stayed open (which hard rules block the qualified
+        # people). Only when the working copy IS the returned plan and the
+        # run was not stopped; bounded by the caller's slot/time budget.
+        blockers: Dict[str, dict] = {}
+        returned = {(a.rowId, a.dateISO, a.clinicianId) for a in best}
+        if remaining_open and not cancel_event.is_set() and returned == set(executor.current):
+            try:
+                blockers = open_slot_blockers(executor, remaining_open, max_slots=reason_slots,
+                                              max_seconds=reason_seconds, deadline=run_deadline,
+                                              cancel_event=cancel_event)
+            except Exception:  # the closing report must never fail the run
+                blockers = {}
         open_entries = [
             {
                 "dateISO": g.dateISO,
                 "section": executor.section_names.get(g.section_id, g.section_id),
                 "time": f"{g.start}-{g.end}",
                 "missing": g.missing,
+                **({"blockers": blockers[g.slot_key]} if g.slot_key in blockers else {}),
             }
             for g in remaining_open
         ]
@@ -708,9 +733,10 @@ def agent_solve_range(
             "working times."
         ]
         for entry in open_entries[:12]:
+            why = f": {blocker_text(entry['blockers'])}" if "blockers" in entry else ""
             lines.append(
                 f"- open: {entry['dateISO']} {entry['section']} "
-                f"{entry['time']} ({entry['missing']} missing)"
+                f"{entry['time']} ({entry['missing']} missing){why}"
             )
         if len(open_entries) > 12:
             lines.append(f"- ... and {len(open_entries) - 12} more open slots")
@@ -754,7 +780,7 @@ def agent_solve_range(
         return True
 
     def run_final_checks():
-        if strategy == "day_by_day" and executor.moves_accepted == 0:
+        if from_scratch and executor.moves_accepted == 0:
             return  # preserve the explicit heuristic fallback for failed starts
         restore_best()
         agent_phase("Verify the final plan and remaining gaps")
@@ -791,7 +817,7 @@ def agent_solve_range(
         ):
             run_meta["stop_reason"] = "partial"
         if (
-            strategy == "day_by_day"
+            from_scratch
             and executor.moves_accepted == 0
             and not cancel_event.is_set()
             and not run_meta.get("fallback")
@@ -816,6 +842,8 @@ def agent_solve_range(
                 if run_meta.get("fallback")
                 else f"Agent solver (day-by-day): built from scratch, "
                 if strategy == "day_by_day"
+                else "Agent solver (direct, no tools): whole range in one answer, "
+                if strategy == "direct"
                 else "Agent solver: seed by heuristic v2, "
             )
             + f"{iterations_done} LLM iteration(s), "
@@ -834,7 +862,7 @@ def agent_solve_range(
                 "Quality metrics unchanged; kept the agent's adjustments "
                 "(preference/fairness swaps at equal quality)."
             )
-        elif strategy == "day_by_day" and not run_meta.get("fallback"):
+        elif from_scratch and not run_meta.get("fallback"):
             notes.append(
                 "No assignments could be placed; returning an empty plan "
                 "for the range."
@@ -847,7 +875,15 @@ def agent_solve_range(
         # Closing report (admin request): what stays unsolved — open slots,
         # short days, over-long days — right in the notes so the run log
         # and the run inbox show it without digging through thoughts.
-        unsolved_notes, unsolved = _unsolved_overview(best)
+        # After a finished final audit the reasons mostly read its cached
+        # checks; without one (fallbacks, aborts) every check is a full
+        # validation, so only the slots the notes show, briefly.
+        audited = bool(run_meta.get("final_audit"))
+        unsolved_notes, unsolved = _unsolved_overview(
+            best,
+            reason_slots=REASON_MAX_SLOTS if audited else REASON_COLD_SLOTS,
+            reason_seconds=REASON_MAX_SECONDS if audited else REASON_COLD_SECONDS,
+        )
         notes.extend(unsolved_notes)
         metrics = unsolved["quality_metrics"]
         tasks = executor.workflow.tasks()
@@ -926,6 +962,7 @@ def agent_solve_range(
                     "daysPlanned": len(run_meta["days_planned"]),
                     "daysSkipped": sorted(set(run_meta["days_skipped"])),
                     "modelDaysSkipped": run_meta.get("model_days_skipped", sorted(set(run_meta["days_skipped"]))),
+                    "modelDaysIncomplete": run_meta.get("model_days_incomplete"),
                     "daysIncomplete": sorted(set(run_meta["days_incomplete"])),
                     # Checks that ran out of time at the final revision (not
                     # incomplete days): see completion.required_checks_unverified.
@@ -958,6 +995,8 @@ def agent_solve_range(
                     "completion": completion,
                     "tasks": tasks,
                     "final_audit": run_meta.get("final_audit"),
+                    "cross_day_repair": run_meta.get("cross_day_repair"),
+                    "direct": run_meta.get("direct"),
                     "quality_version": QUALITY_VERSION,
                     "final_day_checks": run_meta.get("final_day_checks", {}),
                     "quality_profile": ctx.settings.agentQualityProfile,
@@ -994,7 +1033,7 @@ def agent_solve_range(
     )
     if payload.agent_budget_exhausted:
         run_meta["stop_reason"] = "budget_exhausted"
-        if strategy == "day_by_day":
+        if from_scratch:
             return heuristic_fallback([budget_note])
         return finalize("AGENT_FALLBACK_SEED", [budget_note])
     if provider is None:
@@ -1009,7 +1048,7 @@ def agent_solve_range(
                 f"Agent LLM unavailable — the AI agent could not start: {exc} "
                 "The basic plan (without AI) was returned instead."
             )
-            if strategy == "day_by_day":
+            if from_scratch:
                 return heuristic_fallback([unavailable_note])
             return finalize("AGENT_FALLBACK_SEED", [unavailable_note])
 
@@ -1476,6 +1515,9 @@ def agent_solve_range(
                     for c in state.clinicians
                 },
                 distribute_all=not ctx.only_fill_required,
+                # Booked/max per ISO week: the gate's numbers, so the model
+                # sees who is about to run out before the week ends.
+                week_hours_by_id=executor.week_hours_lines(date_iso),
             ) + admin_block + wishes_block
             messages: List[ChatMessage] = [ChatMessage(role="user", content=digest)]
             guard = ProgressGuard((tuple(sorted(executor.current)), executor.workflow.search_counter))
@@ -1666,6 +1708,36 @@ def agent_solve_range(
                 f"{still_open} left open"
             )
         # --------------------------------------------------------------
+        # CROSS-DAY COVERAGE REPAIR (deterministic, no model turn): the day
+        # loop spends weekly hours day by day and its rescue/balance searches
+        # only rearrange one day, so a slot only a person whose hours went
+        # to an earlier day can cover stays open (2026-W45 in production).
+        # Repair across the whole range before the review, so the model
+        # reviews (and may polish) the repaired plan.
+        # --------------------------------------------------------------
+        # Only on top of the model's own plan: a run where the model placed
+        # nothing keeps falling back to the heuristic draft (and never
+        # counts as model planning in the arena).
+        # What the model left incomplete itself (the repair and the audit
+        # may complete those days later; the arena tells them apart).
+        run_meta["model_days_incomplete"] = sorted(set(run_meta["days_incomplete"]))
+        # Repair the plan the run would return: the working copy can be
+        # worse than the best snapshot (the review restores it anyway).
+        if not aborted and not cancel_event.is_set() and executor.moves_accepted > 0:
+            restore_best()
+        if (not aborted and not cancel_event.is_set() and executor.moves_accepted > 0
+                and range_open_positions(executor) > 0):
+            # Keep at least half of what is left for the review and audit.
+            repair_budget = min(repair_seconds(len(ctx.target_day_isos)),
+                                (deadline - time.time() - DEADLINE_HEADROOM_SECONDS) / 2)
+            agent_phase("Repair coverage across days")
+            repair_report = coverage_repair(executor, cancel_event=cancel_event, time_limit=repair_budget)
+            run_meta["cross_day_repair"] = repair_report
+            note = repair_note(repair_report)
+            if note:
+                extra_notes.append(note)
+                previous_day_lines.append(f"- cross-day repair: {note}")
+        # --------------------------------------------------------------
         # FINAL RANGE REVIEW (admin request): one conversation that sees
         # the WHOLE built week and may rearrange across days. The day loop
         # only ever saw one day at a time, so imbalances needing another
@@ -1685,7 +1757,14 @@ def agent_solve_range(
             if restore_best():
                 extra_notes.append("Final review starts from the best verified snapshot.")
             review_start_key = tuple(sorted(executor.current))
-            unsolved_lines, _ = _unsolved_overview(executor.best_assignments)
+            # The digest shows 12 open slots; the plan just changed (cold
+            # checks), and the review needs its own time: a quarter of what
+            # is left above its 30 s floor, at most 5 s.
+            unsolved_lines, _ = _unsolved_overview(
+                executor.best_assignments,
+                reason_slots=REASON_COLD_SLOTS,
+                reason_seconds=min(5.0, max(0.0, (deadline - time.time() - 30.0) / 4)),
+            )
             review_digest = (
                 build_review_digest(
                     ctx, unsolved_lines, previous_day_lines, review_rounds
@@ -1851,6 +1930,102 @@ def agent_solve_range(
         )
         return finalize("AGENT_COMPLETE", extra_notes)
 
+    def direct_loop() -> dict:
+        """Experiment (arena): the whole range in one answer without tools,
+        then one correction round (backend/agent/direct.py)."""
+        nonlocal iterations_done
+        from .direct import (DIRECT_MAX_ROUNDS, DIRECT_MAX_TOKENS, DIRECT_SYSTEM_PROMPT, answer_text,
+                             apply_direct_plan, build_direct_digest, build_direct_feedback,
+                             fillable_days, open_places, parse_direct_reply)
+        extra_notes: List[str] = []
+        emit_agent("stage", {"stage": "improve"})
+        agent_phase("Plan the whole range in one answer")
+        # A whole range of placements plus thinking needs more than a tool turn.
+        config.max_tokens = max(config.max_tokens or 0, DIRECT_MAX_TOKENS)
+        messages = [ChatMessage(role="user", content=build_direct_digest(executor) + admin_block + wishes_block)]
+        stats: Dict[str, Any] = {"rounds": 0, "proposed": 0, "accepted": 0, "dropped": 0, "unparsed_lines": 0,
+                                 "open_after_round": [], "dropped_sample": [], "cut_off_rounds": 0}
+        plan_rounds = 0
+        # One extra call for an answer cut off at max_tokens before its plan
+        # (the thinking counts towards the limit); it is not a correction.
+        for _call in range(DIRECT_MAX_ROUNDS + 1):
+            if cancel_event.is_set():
+                return finalize("ABORTED", extra_notes + [ABORT_NOTE])
+            if deadline - time.time() <= max(DEADLINE_HEADROOM_SECONDS, 30.0):
+                extra_notes.append("Direct planning ran out of time.")
+                break
+            executor.current_iteration = iterations_done + 1
+            emit_agent("iteration", {"iteration": iterations_done + 1})
+            response = _complete_with_retry(
+                provider,
+                system=DIRECT_SYSTEM_PROMPT,
+                messages=messages,
+                tools=[],
+                compute_timeout=lambda: max(10.0, min((deadline - time.time()) - DEADLINE_HEADROOM_SECONDS,
+                                                      MAX_PER_CALL_TIMEOUT_SECONDS)),
+                deadline=deadline,
+                cancel_event=cancel_event,
+                on_retry=note_retry,
+            )
+            iterations_done += 1
+            absorb_response(response)
+            if cancel_event.is_set():
+                # Like every other loop: nothing of a reply that arrives after
+                # an abort is applied.
+                run_meta["direct"] = stats
+                return finalize("ABORTED", extra_notes + [ABORT_NOTE])
+            if response.stop_reason in ("error", "refusal"):
+                run_meta["stop_reason"] = response.stop_reason
+                extra_notes.append(f"Direct planning stopped: the model call ended with {response.stop_reason}.")
+                break
+            adds, removes, unparsed = parse_direct_reply(answer_text(response))
+            cut_off = response.stop_reason == "max_tokens" and not adds and not removes
+            if cut_off:
+                stats["cut_off_rounds"] += 1
+            else:
+                plan_rounds += 1
+            applied = apply_direct_plan(executor, adds, removes)
+            applied["unparsed"] = unparsed
+            stats["rounds"] += 1
+            stats["proposed"] += len(adds) + len(removes)
+            stats["accepted"] += applied["accepted"]
+            stats["dropped"] += len(applied["rejected"])
+            stats["unparsed_lines"] += unparsed
+            stats["dropped_sample"] += applied["rejected"][:5]
+            stats["open_after_round"].append(range_open_positions(executor))
+            if not cut_off and not stats["open_after_round"][-1] and not applied["rejected"]:
+                break
+            if plan_rounds >= DIRECT_MAX_ROUNDS or (cut_off and stats["cut_off_rounds"] > 1):
+                break
+            messages.append(ChatMessage(role="assistant", content=response.replay_text or "(plan)",
+                                        raw_content=response.raw_content))
+            messages.append(ChatMessage(role="user", content=build_direct_feedback(executor, applied,
+                                                                                   cut_off=cut_off)))
+        run_meta["direct"] = stats
+        # The model's own plan: days where it left a place someone could take
+        # as it is count as incomplete (what the day loop's checks record),
+        # so the arena can tell its work from the repair's.
+        restore_best()
+        run_meta["days_incomplete"] = fillable_days(open_places(executor))
+        run_meta["model_days_incomplete"] = list(run_meta["days_incomplete"])
+        # The same cross-day repair as day-by-day, so both strategies compare
+        # with and without it (open_after_round = the model's own plan).
+        if not cancel_event.is_set() and executor.moves_accepted > 0 and range_open_positions(executor) > 0:
+            agent_phase("Repair coverage across days")
+            repair_report = coverage_repair(
+                executor, cancel_event=cancel_event,
+                time_limit=min(repair_seconds(len(ctx.target_day_isos)),
+                               (deadline - time.time() - DEADLINE_HEADROOM_SECONDS) / 2))
+            run_meta["cross_day_repair"] = repair_report
+            note = repair_note(repair_report)
+            if note:
+                extra_notes.append(note)
+        run_meta["days_planned"] = list(ctx.target_day_isos)
+        on_progress("phase", {"phase": "agent_finalize", "label": "Agent (3/3): Finalizing best plan..."})
+        return finalize("AGENT_COMPLETE", extra_notes)
+
+    if strategy == "direct":
+        return direct_loop()
     if strategy == "day_by_day":
         return day_by_day_loop()
 

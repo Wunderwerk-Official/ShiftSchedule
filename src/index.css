@@ -102,6 +102,47 @@
   mask-image: none !important;
 }
 
+/* "Find swap" (⇄) of a pill or clinic sheet name: revealed like the open
+   lock, always directly left of the lock. The name fades under both buttons
+   (an unlocked name: 36→48 px of its row; a locked name, whose row ends at
+   the in-row lock: 18→30 px). Touch screens always show it and keep room
+   for it in the components, so nothing fades there. */
+.pill-swap-reveal {
+  opacity: 0;
+}
+:is([data-assignment-pill], [data-sheet-name]):hover .pill-swap-reveal,
+:is([data-assignment-pill], [data-sheet-name]):focus-within .pill-swap-reveal {
+  opacity: 0.6;
+}
+:is([data-assignment-pill], [data-sheet-name]) .pill-swap-reveal:hover,
+:is([data-assignment-pill], [data-sheet-name]) .pill-swap-reveal:focus-visible {
+  opacity: 1;
+}
+@media (hover: hover) {
+  :is([data-assignment-pill], [data-sheet-name]):hover .pill-swap-fade,
+  :is([data-assignment-pill], [data-sheet-name]):focus-within .pill-swap-fade {
+    -webkit-mask-image: linear-gradient(to left, transparent 36px, #000 48px);
+    mask-image: linear-gradient(to left, transparent 36px, #000 48px);
+  }
+  :is([data-assignment-pill], [data-sheet-name]):hover .pill-swap-fade-inrow,
+  :is([data-assignment-pill], [data-sheet-name]):focus-within .pill-swap-fade-inrow {
+    -webkit-mask-image: linear-gradient(to left, transparent 18px, #000 30px);
+    mask-image: linear-gradient(to left, transparent 18px, #000 30px);
+  }
+}
+@media (hover: none) {
+  .pill-swap-reveal {
+    opacity: 0.6;
+  }
+}
+[data-pill-drag-preview="true"] .pill-swap-reveal {
+  opacity: 0 !important;
+}
+[data-pill-drag-preview="true"] :is(.pill-swap-fade, .pill-swap-fade-inrow) {
+  -webkit-mask-image: none !important;
+  mask-image: none !important;
+}
+
 /* "Times: Stacked" team grid: section colors as light tints (the section
    look's cells, every lane label). The color comes in as --section-color. */
 /* Browsers without color-mix() keep the plain section color. (A fallback
@@ -136,10 +177,50 @@
   background-image: repeating-linear-gradient(135deg, rgb(51 65 85 / 0.5) 0 1px, transparent 1px 6px);
 }
 
+/* Working hours (v1.78): a week nobody has planned yet. Hatched like a day
+   without a slot, so it never reads as zero hours. */
+.hours-unplanned {
+  background-color: rgb(248 250 252);
+  background-image: repeating-linear-gradient(135deg, rgb(226 232 240 / 0.7) 0 1px, transparent 1px 6px);
+}
+.dark .hours-unplanned {
+  background-color: rgb(2 6 23 / 0.4);
+  background-image: repeating-linear-gradient(135deg, rgb(51 65 85 / 0.5) 0 1px, transparent 1px 6px);
+}
+
 .calendar-scroll {
   height: auto !important;
   max-height: none !important;
   overflow-y: hidden !important;
+}
+
+/* Below lg the desktop swap drawer (440 px) overlays the grid's right side.
+   A run-out as wide as the drawer after the grid lets the grid scroll its
+   right-hand days out from under it (Reveal on hover, or by hand); the grid
+   keeps its layout. */
+@media (max-width: 1023.98px) {
+  [data-swap-drawer-open="true"] [data-schedule-grid]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 100%;
+    width: 440px;
+    height: 1px;
+    pointer-events: none;
+  }
+}
+/* From lg on the page gives the open drawer its width, which leaves the
+   stacked week about 600 px at 1024–1200 px. Its row band and section labels
+   then wrap between words only: their last resort for a week that must fit
+   the page (breaking inside a word, RowLabel) would cut them into single
+   letters. The grid scrolls sideways instead, as Reveal on hover expects.
+   Below lg the drawer only overlays the grid: the labels keep the last
+   resort, so the week keeps its layout and still fits its box, where the
+   run-out above starts. Print keeps the last resort too. */
+@media screen and (min-width: 1024px) {
+  [data-swap-drawer-open="true"] [data-stacked-label] span {
+    overflow-wrap: break-word;
+  }
 }
 
 @media print {

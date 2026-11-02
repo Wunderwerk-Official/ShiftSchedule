@@ -42,9 +42,10 @@ Deploys are automated via GitHub Actions
    - Frontend: Node 22, `npm ci`, `npm run typecheck`, `npm test` (Vitest),
      `npm run build` (production build), then the critical Playwright specs
      (`e2e/agent-apply.spec.ts`, `e2e/agent-activity.spec.ts`,
-     `e2e/fixed-assignments.spec.ts`, `e2e/model-settings.spec.ts`,
-     `e2e/my-plan.spec.ts`, `e2e/team-page.spec.ts`) against a local Vite dev
-     server with mocked API.
+     `e2e/fixed-assignments.spec.ts`, `e2e/holiday-region.spec.ts`,
+     `e2e/model-settings.spec.ts`, `e2e/my-plan.spec.ts`,
+     `e2e/team-page.spec.ts`, `e2e/swap-assistant.spec.ts`) against a local
+     Vite dev server with mocked API.
 2. **Deploy** only on push to `main` and only if both CI jobs pass. Two jobs
    run in parallel:
    - `deploy-truhn` (production): SSH to `root@10.10.10.6` through the

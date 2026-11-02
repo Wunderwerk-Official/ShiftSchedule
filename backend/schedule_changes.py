@@ -5,11 +5,16 @@ records both so the timeline "run_applied(X) -> manual_edit -> ..." can be
 reconstructed per user (each manual edit carries ``after_run_id``, the most
 recently applied run at the time of the edit).
 
-Two row kinds:
-    run_applied  - a solver run was written into the schedule; ``diff`` holds
-                   {run_id, range, assignments_added, assignments_replaced}.
-    manual_edit  - a POST /v1/state save changed the schedule; ``diff`` holds
-                   compact added/removed sets (shape below).
+Four row kinds:
+    run_applied   - a solver run was written into the schedule; ``diff`` holds
+                    {run_id, range, assignments_added, assignments_replaced}.
+    manual_edit   - a POST /v1/state save changed the schedule; ``diff`` holds
+                    compact added/removed sets (shape below).
+    swap_applied  - the swap assistant applied a swap, handover or cover;
+    swap_reverted - it undid one. Both hold the same sets as manual_edit plus
+                    {swap_id, swap_kind} and are never merged with manual
+                    edits: record_manual_edit coalesces only into a preceding
+                    manual_edit.
 
 Diff scope is deliberately limited to what matters for plan diagnosis:
 assignments, clinician vacations, holidays, and minSlotsByRowId. Structural
@@ -289,6 +294,34 @@ def record_run_applied(
             VALUES (?, ?, 'run_applied', ?, NULL, ?, ?, ?)
             """,
             (change_id, username, run_id, json.dumps(payload), now, now),
+        )
+        _prune(conn, username)
+        if connection is None:
+            conn.commit()
+    return change_id
+
+
+def record_swap_change(
+    username: str,
+    kind: str,
+    swap_id: str,
+    swap_kind: str,
+    old_blob: Dict[str, Any],
+    new_blob: Dict[str, Any],
+    *, connection=None,
+) -> str:
+    """Log an applied ('swap_applied') or undone ('swap_reverted') swap."""
+    diff = {**compute_diff(old_blob, new_blob), "swap_id": swap_id, "swap_kind": swap_kind}
+    now = _utcnow_iso()
+    change_id = _new_change_id()
+    with (closing(_get_connection()) if connection is None else nullcontext(connection)) as conn:
+        conn.execute(
+            """
+            INSERT INTO schedule_changes
+                (id, username, kind, run_id, after_run_id, diff, created_at, updated_at)
+            VALUES (?, ?, ?, NULL, ?, ?, ?, ?)
+            """,
+            (change_id, username, kind, last_applied_run_id(conn, username), json.dumps(diff), now, now),
         )
         _prune(conn, username)
         if connection is None:

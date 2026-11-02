@@ -59,6 +59,19 @@ describe("calendar save ordering", () => {
     expect(send.mock.calls[1][0].revision).toBe("base");
   });
 
+  it("reports the adopted revision, then the last saved one, and keeps it after a failed save", async () => {
+    const queue = new StateSaveQueue<State>();
+    expect(queue.currentRevision()).toBeUndefined();
+    queue.adopt({ revision: "adopted", value: 0 });
+    expect(queue.currentRevision()).toBe("adopted");
+    await queue.save({ value: 1 }, async () => ({ revision: "saved", value: 1 }));
+    expect(queue.currentRevision()).toBe("saved");
+    await expect(
+      queue.save({ value: 2 }, () => Promise.reject(new Error("calendar changed"))),
+    ).rejects.toThrow("calendar changed");
+    expect(queue.currentRevision()).toBe("saved");
+  });
+
   it("drains in-flight writes before another calendar operation proceeds", async () => {
     const queue = new StateSaveQueue<State>();
     const response = deferred<State>();

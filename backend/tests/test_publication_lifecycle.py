@@ -311,7 +311,7 @@ def test_status_adds_link_for_new_clinician_and_keeps_existing_tokens():
 
 
 def test_public_readers_drop_stored_entries_with_impossible_dates():
-    """A vacation stored with an impossible date before v1.78 hid a real shift
+    """A vacation stored with an impossible date before v1.82 hid a real shift
     from the public week and the iCal feeds (string comparison), while the
     admin calendar (GET /v1/state cleans it) showed the shift."""
     import json

@@ -1,472 +1,246 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import WorkingHoursOverviewModal from "./WorkingHoursOverviewModal";
 import type { Assignment, WeeklyCalendarTemplate } from "../../api/client";
+import type { ScheduleRow } from "../../lib/shiftRows";
 import { toISODate } from "../../lib/date";
-import { getSlotDurationMinutes } from "../../lib/myPlan";
 
-// Test the getWeeksInYear logic by checking the rendered output
-describe("WorkingHoursOverviewModal", () => {
-  const mockClinicians = [
-    { id: "clin-1", name: "Dr. Smith", workingHoursPerWeek: 40 },
-    { id: "clin-2", name: "Dr. Jones", workingHoursPerWeek: 32 },
-    { id: "clin-3", name: "Dr. Brown" }, // No contract hours
-  ];
+// Today is Wed 4 Nov 2026 (W45) in every test.
+const NOW = new Date(2026, 10, 4, 10, 0);
 
-  const mockAssignments: Assignment[] = [
-    { id: "a1", rowId: "slot-1", dateISO: "2026-01-05", clinicianId: "clin-1" },
-    { id: "a2", rowId: "slot-1", dateISO: "2026-01-06", clinicianId: "clin-1" },
-    { id: "a3", rowId: "slot-1", dateISO: "2026-01-07", clinicianId: "clin-2" },
-    // Pool assignment should not count
-    { id: "a4", rowId: "pool-rest-day", dateISO: "2026-01-08", clinicianId: "clin-1" },
-  ];
+const template: WeeklyCalendarTemplate = {
+  version: 4,
+  blocks: [{ id: "block-1", sectionId: "section-1", requiredSlots: 1 }],
+  locations: [
+    {
+      locationId: "loc-1",
+      rowBands: [],
+      colBands: [],
+      slots: [
+        { id: "day", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "08:00", endTime: "16:00" },
+        { id: "night", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "19:00", endTime: "07:00", endDayOffset: 1 },
+      ],
+    },
+  ],
+};
+const scheduleRows: ScheduleRow[] = [
+  { id: "day", name: "CT", kind: "class", dotColorClass: "", sectionName: "CT", startTime: "08:00", endTime: "16:00", endDayOffset: 0 },
+];
 
-  const mockTemplate: WeeklyCalendarTemplate = {
-    version: 4,
-    blocks: [{ id: "block-1", sectionId: "section-1", requiredSlots: 1 }],
-    locations: [
-      {
-        locationId: "loc-1",
-        rowBands: [],
-        colBands: [],
-        slots: [
-          {
-            id: "slot-1",
-            locationId: "loc-1",
-            rowBandId: "row-1",
-            colBandId: "col-1",
-            blockId: "block-1",
-            startTime: "08:00",
-            endTime: "16:00",
-          },
-        ],
-      },
-    ],
+const clinicians = [
+  { id: "ann", name: "Ann Arbor", workingHoursPerWeek: 40, vacations: [] },
+  { id: "ben", name: "Ben Brook", workingHoursPerWeek: 20, workingHoursToleranceHours: 2, vacations: [{ startISO: "2026-11-04", endISO: "2026-11-06" }] },
+  { id: "cat", name: "Cat Cole", vacations: [] },
+];
+const W45 = ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08"];
+let nextId = 0;
+const shift = (clinicianId: string, dateISO: string, rowId = "day"): Assignment => ({
+  id: `a${(nextId += 1)}`,
+  rowId,
+  dateISO,
+  clinicianId,
+});
+const assignments: Assignment[] = [
+  // W44: one test entry (not counted).
+  shift("ann", "2026-11-01", "night"),
+  // W45: Ann Mon–Thu (32 h, under), Ben Mon + Tue (16 h, over), Cat Wed.
+  ...W45.slice(0, 4).map((dateISO) => shift("ann", dateISO)),
+  shift("ben", W45[0]),
+  shift("ben", W45[1]),
+  shift("cat", W45[2]),
+  { id: "rest", rowId: "pool-rest-day", dateISO: W45[4], clinicianId: "ann" },
+];
+
+const renderModal = (extra: Partial<Parameters<typeof WorkingHoursOverviewModal>[0]> = {}) => {
+  const onClose = vi.fn();
+  render(
+    <WorkingHoursOverviewModal
+      open
+      onClose={onClose}
+      clinicians={clinicians}
+      assignments={assignments}
+      weeklyTemplate={template}
+      scheduleRows={scheduleRows}
+      {...extra}
+    />,
+  );
+  return { onClose };
+};
+const row = (id: string) => screen.getByTestId(`hours-week-row-${id}`);
+const cellOf = (id: string, testId: string) => within(row(id)).getByTestId(testId);
+
+beforeEach(() => {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(NOW);
+});
+afterEach(() => {
+  vi.useRealTimers();
+});
+
+describe("WorkingHoursOverviewModal — week view", () => {
+  it("opens on this week with each person's days, planned hours and target", () => {
+    renderModal();
+    expect(screen.getByRole("dialog", { name: "Working Hours Overview" })).toBeInTheDocument();
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("W45 · 02.11.–08.11.2026");
+    expect(screen.getByRole("group", { name: "View" }).querySelector('[aria-pressed="true"]')).toHaveTextContent("Week");
+    // Ann: 8 h Mon–Thu, a rest day on Friday, the shift's name in the tooltip.
+    const days = within(row("ann")).getAllByTestId("hours-day");
+    expect(days.map((day) => day.textContent)).toEqual(["8", "8", "8", "8", "Rest", "–", "–"]);
+    expect(days[0]).toHaveAttribute("title", "CT 08:00–16:00");
+    expect(cellOf("ann", "hours-planned")).toHaveTextContent("32");
+    expect(cellOf("ann", "hours-target")).toHaveTextContent("40");
+    expect(within(row("ann")).getByText("40 h/wk")).toBeInTheDocument();
+    expect(within(row("cat")).getByText("No contract hours")).toBeInTheDocument();
+  });
+
+  it("shows differences with their status, vacation days and the year's balance", () => {
+    renderModal();
+    expect(cellOf("ann", "hours-difference")).toHaveTextContent("−8");
+    expect(cellOf("ann", "hours-difference")).toHaveTextContent("Under target");
+    // Ben: Wed–Fri on vacation, target 20 h × 4/7 = 11.4 h, 16 h planned.
+    expect(within(row("ben")).getAllByText("Vac")).toHaveLength(3);
+    expect(cellOf("ben", "hours-target")).toHaveTextContent("11.43 d vac");
+    expect(cellOf("ben", "hours-target")).toHaveAttribute("title", "20 h/wk × 4/7 days (3 vacation days)");
+    expect(cellOf("ben", "hours-difference")).toHaveTextContent("+4.6");
+    expect(cellOf("ben", "hours-difference")).toHaveTextContent("Over target");
+    // W45 is the first counted week: balance = this week's difference.
+    expect(cellOf("ann", "hours-balance")).toHaveTextContent("−8");
+    expect(cellOf("cat", "hours-balance")).toHaveTextContent("–");
+    expect(screen.getByTestId("hours-count-under")).toHaveTextContent("1");
+    expect(screen.getByTestId("hours-count-over")).toHaveTextContent("1");
+    expect(screen.getByTestId("hours-week-summary")).toHaveTextContent("Planned 56 h");
+  });
+
+  it("sorts the most under target first on request, people without a target last", () => {
+    // Team order: Cat (no target), Ben (+4.6 h), Ann (−8 h).
+    renderModal({ clinicians: [clinicians[2], clinicians[1], clinicians[0]] });
+    const order = () =>
+      screen.getAllByTestId(/^hours-week-row-/).map((element) => element.dataset.testid!.replace("hours-week-row-", ""));
+    expect(order()).toEqual(["cat", "ben", "ann"]);
+    fireEvent.click(within(screen.getByRole("group", { name: "Sort" })).getByRole("button", { name: "Most under first" }));
+    expect(order()).toEqual(["ann", "ben", "cat"]);
+  });
+
+  it("explains a week that does not count yet and steps between weeks and years", () => {
+    renderModal();
+    fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("W44 · 26.10.–01.11.2026");
+    // 12 of 60 target hours planned.
+    expect(screen.getByTestId("hours-week-not-counted")).toHaveTextContent(
+      "20% of the team's target hours are planned. The week counts from 50%.",
+    );
+    expect(cellOf("ann", "hours-planned")).toHaveTextContent("12");
+    expect(cellOf("ann", "hours-target")).toHaveTextContent("–");
+    fireEvent.click(screen.getByRole("button", { name: "Today" }));
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("W45");
+    // Back over the year boundary: W1 of 2026 → the last week of 2025.
+    for (let step = 0; step < 44; step += 1) fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("W1 · 01.01.–04.01.2026");
+    fireEvent.click(screen.getByRole("button", { name: "Previous week" }));
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("W1 · 29.12.–31.12.2025");
+    fireEvent.click(screen.getByRole("button", { name: "Next week" }));
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("W1 · 01.01.–04.01.2026");
+  });
+});
+
+describe("WorkingHoursOverviewModal — year view", () => {
+  const openYear = () => {
+    renderModal();
+    fireEvent.click(within(screen.getByRole("group", { name: "View" })).getByRole("button", { name: "Year" }));
   };
 
-  it("renders modal when open", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.getByText("Working Hours Overview")).toBeInTheDocument();
+  it("shows one row per person: counted weeks tinted, others hatched, totals over counted weeks", () => {
+    openYear();
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("2026");
+    expect(screen.getByTestId("hours-year-row-ann")).toBeInTheDocument();
+    const w45 = screen.getByTestId("hours-ann-w45");
+    expect(w45).toHaveTextContent("32");
+    expect(w45.className).toContain("bg-amber-50");
+    expect(w45.getAttribute("title")).toContain("32 h planned · target 40 h · −8 h (under target) · balance −8 h");
+    // W44's test entry: shown, hatched, not counted.
+    const w44 = screen.getByTestId("hours-ann-w44");
+    expect(w44).toHaveTextContent("12");
+    expect(w44.className).toContain("hours-unplanned");
+    expect(screen.getByTestId("hours-ann-w43")).toHaveTextContent("");
+    // Totals count only the counted weeks.
+    expect(screen.getByTestId("hours-ann-total")).toHaveTextContent("32");
+    expect(screen.getByTestId("hours-ann-target")).toHaveTextContent("40");
+    expect(screen.getByTestId("hours-ann-balance")).toHaveTextContent("−8");
+    expect(screen.getByTestId("hours-cat-target")).toHaveTextContent("–");
   });
 
-  it("does not render when closed", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={false}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.queryByText("Working Hours Overview")).not.toBeInTheDocument();
+  it("switches the cells between hours, difference and balance", () => {
+    openYear();
+    const show = screen.getByRole("group", { name: "Show" });
+    fireEvent.click(within(show).getByRole("button", { name: "Difference" }));
+    expect(screen.getByTestId("hours-ben-w45")).toHaveTextContent("+4.6");
+    fireEvent.click(within(show).getByRole("button", { name: "Balance" }));
+    expect(screen.getByTestId("hours-ann-w45")).toHaveTextContent("−8");
+    // Balance status: −8 h is beyond Ann's ± 5 h.
+    expect(screen.getByTestId("hours-ann-w45").className).toContain("bg-amber-50");
   });
 
-  it("displays all clinician names", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.getByText("Dr. Smith")).toBeInTheDocument();
-    expect(screen.getByText("Dr. Jones")).toBeInTheDocument();
-    expect(screen.getByText("Dr. Brown")).toBeInTheDocument();
+  it("opens a week from its header and changes years", () => {
+    openYear();
+    fireEvent.click(screen.getByRole("button", { name: "Open W44 · 26.10.–01.11.2026 in the week view" }));
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("W44 · 26.10.–01.11.2026");
+    fireEvent.click(within(screen.getByRole("group", { name: "View" })).getByRole("button", { name: "Year" }));
+    fireEvent.click(screen.getByRole("button", { name: "Previous year" }));
+    expect(screen.getByTestId("hours-period")).toHaveTextContent("2025");
+    expect(screen.getByTestId("hours-ann-total")).toHaveTextContent("–");
   });
 
-  it("shows contract hours for clinicians that have them", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.getByText("40h/w")).toBeInTheDocument();
-    expect(screen.getByText("32h/w")).toBeInTheDocument();
-  });
-
-  it("shows empty state when no clinicians", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={[]}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.getByText("No clinicians added yet.")).toBeInTheDocument();
-  });
-
-  it("displays year selector with current year", () => {
-    const currentYear = new Date().getFullYear();
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    // Year appears in multiple places (selector and date range column), so use getAllByText
-    const yearElements = screen.getAllByText(currentYear.toString());
-    expect(yearElements.length).toBeGreaterThan(0);
-  });
-
-  it("has week columns with W1, W2, etc.", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    // W1, W2 appear once in header
-    expect(screen.getByText("W1")).toBeInTheDocument();
-    expect(screen.getByText("W2")).toBeInTheDocument();
-  });
-
-  it("shows Total column", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.getByText("Total")).toBeInTheDocument();
-  });
-
-  it("shows Today button", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.getByText("Today")).toBeInTheDocument();
-  });
-
-  it("shows Close button", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open={true}
-        onClose={() => {}}
-        clinicians={mockClinicians}
-        assignments={[]}
-        weeklyTemplate={mockTemplate}
-        timeZone="Europe/Berlin"
-      />
-    );
-
-    expect(screen.getByText("Close")).toBeInTheDocument();
-  });
-});
-
-// Unit tests for week calculation logic
-describe("Week calculation logic", () => {
-  // Helper to calculate weeks for a year (replicating the modal's logic)
-  function getWeeksInYear(year: number): Array<{ weekNum: number; start: Date; end: Date; daysInWeek: number }> {
-    const weeks: Array<{ weekNum: number; start: Date; end: Date; daysInWeek: number }> = [];
-
-    const jan1 = new Date(year, 0, 1);
-    const dec31 = new Date(year, 11, 31);
-
-    function getWeekStart(date: Date): Date {
-      const d = new Date(date);
-      const day = d.getDay();
-      const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-      d.setDate(diff);
-      d.setHours(0, 0, 0, 0);
-      return d;
-    }
-
-    let weekMonday = getWeekStart(jan1);
-    let weekNum = 1;
-
-    while (weekMonday <= dec31) {
-      const weekSunday = new Date(weekMonday);
-      weekSunday.setDate(weekSunday.getDate() + 6);
-
-      const clampedStart = weekMonday < jan1 ? jan1 : weekMonday;
-      const clampedEnd = weekSunday > dec31 ? dec31 : weekSunday;
-
-      const msPerDay = 24 * 60 * 60 * 1000;
-      const daysInWeek = Math.round((clampedEnd.getTime() - clampedStart.getTime()) / msPerDay) + 1;
-
-      weeks.push({
-        weekNum,
-        start: new Date(clampedStart),
-        end: new Date(clampedEnd),
-        daysInWeek,
-      });
-
-      weekMonday.setDate(weekMonday.getDate() + 7);
-      weekNum++;
-
-      if (weekNum > 54) break;
-    }
-
-    return weeks;
-  }
-
-  it("first week starts on Jan 1", () => {
-    const weeks2026 = getWeeksInYear(2026);
-    expect(weeks2026[0].start.getMonth()).toBe(0); // January
-    expect(weeks2026[0].start.getDate()).toBe(1);
-  });
-
-  it("last week ends on Dec 31", () => {
-    const weeks2026 = getWeeksInYear(2026);
-    const lastWeek = weeks2026[weeks2026.length - 1];
-    expect(lastWeek.end.getMonth()).toBe(11); // December
-    expect(lastWeek.end.getDate()).toBe(31);
-  });
-
-  it("calculates partial week days correctly for 2026", () => {
-    // 2026: Jan 1 is Thursday, so first week has 4 days (Thu-Sun)
-    const weeks2026 = getWeeksInYear(2026);
-    // Jan 1 2026 is Thursday (day 4), week ends Sunday (3 days: Thu, Fri, Sat, Sun = 4 days)
-    expect(weeks2026[0].daysInWeek).toBeLessThanOrEqual(7);
-  });
-
-  it("calculates partial week days correctly for 2025", () => {
-    // 2025: Jan 1 is Wednesday
-    const weeks2025 = getWeeksInYear(2025);
-    // First week should have fewer than 7 days
-    expect(weeks2025[0].daysInWeek).toBeLessThanOrEqual(7);
-  });
-
-  it("has correct number of weeks for typical year", () => {
-    const weeks2026 = getWeeksInYear(2026);
-    // A year typically has 52-54 weeks
-    expect(weeks2026.length).toBeGreaterThanOrEqual(52);
-    expect(weeks2026.length).toBeLessThanOrEqual(54);
-  });
-
-  it("total days across all weeks equals 365 or 366", () => {
-    const weeks2026 = getWeeksInYear(2026);
-    const totalDays = weeks2026.reduce((sum, w) => sum + w.daysInWeek, 0);
-    expect(totalDays).toBe(365); // 2026 is not a leap year
-
-    const weeks2024 = getWeeksInYear(2024);
-    const totalDays2024 = weeks2024.reduce((sum, w) => sum + w.daysInWeek, 0);
-    expect(totalDays2024).toBe(366); // 2024 is a leap year
-  });
-
-  it("calculates fractional expected hours correctly", () => {
-    const weeks2026 = getWeeksInYear(2026);
-    const expectedWeeklyHours = 40;
-
-    // Calculate total expected hours accounting for partial weeks
-    const totalExpected = weeks2026.reduce(
-      (sum, w) => sum + expectedWeeklyHours * (w.daysInWeek / 7),
-      0
-    );
-
-    // Should be close to 40 * 52 = 2080, but adjusted for partial weeks
-    // 365 days / 7 = 52.14 weeks approximately
-    expect(totalExpected).toBeCloseTo((365 / 7) * 40, 1);
-  });
-});
-
-// Tests for hours calculation (the modal uses the shared My plan rule)
-describe("Hours calculation", () => {
-  it("calculates slot duration from start and end time", () => {
-    // 08:00 to 16:00 = 8 hours = 480 minutes
-    expect(getSlotDurationMinutes({ startTime: "08:00", endTime: "16:00" })).toBe(480);
-    expect(getSlotDurationMinutes({ startTime: "09:00", endTime: "17:00" })).toBe(480);
-    expect(getSlotDurationMinutes({ startTime: "06:00", endTime: "14:00" })).toBe(480);
-  });
-
-  it("handles overnight shifts with day offset", () => {
-    // 22:00 to 06:00 next day = 8 hours = 480 minutes
-    expect(
-      getSlotDurationMinutes({ startTime: "22:00", endTime: "06:00", endDayOffset: 1 })
-    ).toBe(480);
-
-    // 20:00 to 08:00 next day = 12 hours = 720 minutes
-    expect(
-      getSlotDurationMinutes({ startTime: "20:00", endTime: "08:00", endDayOffset: 1 })
-    ).toBe(720);
-  });
-
-  it("uses default 8 hours when times are missing", () => {
-    expect(getSlotDurationMinutes({})).toBe(480);
-    expect(getSlotDurationMinutes({ startTime: "08:00" })).toBe(480);
-    expect(getSlotDurationMinutes({ endTime: "16:00" })).toBe(480);
-  });
-});
-
-// Tests for formatting
-describe("formatHours", () => {
-  function formatHours(minutes: number): string {
-    const hours = minutes / 60;
-    if (hours === 0) return "–";
-    return hours.toFixed(1).replace(/\.0$/, "");
-  }
-
-  it("formats zero as dash", () => {
-    expect(formatHours(0)).toBe("–");
-  });
-
-  it("formats whole hours without decimal", () => {
-    expect(formatHours(480)).toBe("8"); // 8 hours
-    expect(formatHours(600)).toBe("10"); // 10 hours
-  });
-
-  it("formats fractional hours with one decimal", () => {
-    expect(formatHours(450)).toBe("7.5"); // 7.5 hours
-    expect(formatHours(510)).toBe("8.5"); // 8.5 hours
-  });
-});
-
-describe("Weekly hours aggregation (rendered)", () => {
-  const year = new Date().getFullYear();
-  const template: WeeklyCalendarTemplate = {
-    version: 4,
-    blocks: [{ id: "block-1", sectionId: "section-1", requiredSlots: 1 }],
-    locations: [
-      {
-        locationId: "loc-1",
-        rowBands: [],
-        colBands: [],
-        slots: [
-          { id: "day", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "08:00", endTime: "16:00" },
-          { id: "night", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "17:00", endTime: "08:00", endDayOffset: 1 },
-        ],
-      },
-    ],
-  };
-  const assignments: Assignment[] = [
-    // Counted: week 1 (contains Jan 1) and week 2 (Jan 8 is always in week 2)
-    { id: "a1", rowId: "day", dateISO: `${year}-01-01`, clinicianId: "clin-1" },
-    { id: "a2", rowId: "night", dateISO: `${year}-01-08`, clinicianId: "clin-1" },
-    // Ignored: other years, pool rows, unknown clinicians
-    { id: "a3", rowId: "day", dateISO: `${year - 1}-12-31`, clinicianId: "clin-1" },
-    { id: "a4", rowId: "day", dateISO: `${year + 1}-01-01`, clinicianId: "clin-1" },
-    { id: "a5", rowId: "pool-rest-day", dateISO: `${year}-01-02`, clinicianId: "clin-1" },
-    { id: "a6", rowId: "day", dateISO: `${year}-01-02`, clinicianId: "ghost" },
-  ];
-
-  it("sums slot durations per week and year for the selected year only", () => {
-    render(
-      <WorkingHoursOverviewModal
-        open
-        onClose={() => {}}
-        clinicians={[{ id: "clin-1", name: "Dr. Night" }]}
-        assignments={assignments}
-        weeklyTemplate={template}
-        timeZone="Europe/Berlin"
-      />,
-    );
-    expect(screen.getByTestId("hours-clin-1-w1")).toHaveTextContent("8");
-    expect(screen.getByTestId("hours-clin-1-w2")).toHaveTextContent("15");
-    expect(screen.getByTestId("hours-clin-1-w3")).toHaveTextContent("–");
-    expect(screen.getByTestId("hours-clin-1-total")).toHaveTextContent("23");
-  });
-
-  it("counts nights across a DST change with their real length", () => {
-    // The clocks change on the last Sunday of March and October: the night
-    // starting the Saturday before is an hour shorter / longer.
-    const saturdayBeforeChange = (month: number) => {
-      const day = new Date(Date.UTC(year, month + 1, 0));
-      day.setUTCDate(day.getUTCDate() - day.getUTCDay() - 1);
-      return day.toISOString().slice(0, 10);
-    };
-    const dutyTemplate: WeeklyCalendarTemplate = {
-      ...template,
-      locations: [{ ...template.locations[0], slots: [
-        { id: "duty", locationId: "loc-1", rowBandId: "r", colBandId: "c", blockId: "block-1", startTime: "16:00", endTime: "08:00", endDayOffset: 1 },
-      ] }],
-    };
-    render(
-      <WorkingHoursOverviewModal
-        open
-        onClose={() => {}}
-        clinicians={[{ id: "clin-oct", name: "Dr. October" }, { id: "clin-mar", name: "Dr. March" }]}
-        assignments={[
-          { id: "o", rowId: "duty", dateISO: saturdayBeforeChange(9), clinicianId: "clin-oct" },
-          { id: "m", rowId: "duty", dateISO: saturdayBeforeChange(2), clinicianId: "clin-mar" },
-        ]}
-        weeklyTemplate={dutyTemplate}
-        timeZone="Europe/Berlin"
-      />,
-    );
-    expect(screen.getByTestId("hours-clin-oct-total")).toHaveTextContent("17");
-    expect(screen.getByTestId("hours-clin-mar-total")).toHaveTextContent("15");
-  });
-
-  // Pins that week keys stay consistent across time zones: Monday and Sunday
-  // of a week land in that week, wherever the browser runs.
+  // Week keys stay consistent across time zones: Monday and Sunday of a
+  // week land in that week, wherever the browser runs.
   it.each(["Europe/Berlin", "America/New_York", "Pacific/Auckland"])(
     "keeps Monday and Sunday shifts in the same week in %s",
     (timeZone) => {
-      // Node applies a runtime change of TZ to all later Date operations.
       vi.stubEnv("TZ", timeZone);
       try {
-        const jan8 = new Date(year, 0, 8); // always in week 2
-        const monday = new Date(year, 0, 8 - ((jan8.getDay() + 6) % 7));
-        const sunday = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + 6);
+        const monday = new Date(2026, 0, 12);
+        const sunday = new Date(2026, 0, 18);
         render(
           <WorkingHoursOverviewModal
             open
             onClose={() => {}}
-            clinicians={[{ id: "clin-tz", name: "Dr. Zone" }]}
+            clinicians={[{ id: "tz", name: "Dr. Zone" }]}
             assignments={[
-              { id: "m", rowId: "day", dateISO: toISODate(monday), clinicianId: "clin-tz" },
-              { id: "s", rowId: "day", dateISO: toISODate(sunday), clinicianId: "clin-tz" },
+              { id: "m", rowId: "day", dateISO: toISODate(monday), clinicianId: "tz" },
+              { id: "s", rowId: "day", dateISO: toISODate(sunday), clinicianId: "tz" },
             ]}
             weeklyTemplate={template}
             timeZone="Europe/Berlin"
           />,
         );
-        expect(screen.getByTestId("hours-clin-tz-w1")).toHaveTextContent("–");
-        expect(screen.getByTestId("hours-clin-tz-w2")).toHaveTextContent("16");
-        expect(screen.getByTestId("hours-clin-tz-w3")).toHaveTextContent("–");
+        fireEvent.click(within(screen.getByRole("group", { name: "View" })).getByRole("button", { name: "Year" }));
+        expect(screen.getByTestId("hours-tz-w2")).toHaveTextContent("");
+        expect(screen.getByTestId("hours-tz-w3")).toHaveTextContent("16");
+        expect(screen.getByTestId("hours-tz-w4")).toHaveTextContent("");
       } finally {
         vi.unstubAllEnvs();
       }
     },
   );
+});
+
+describe("WorkingHoursOverviewModal — shell", () => {
+  it("renders nothing while closed", () => {
+    render(
+      <WorkingHoursOverviewModal open={false} onClose={() => {}} clinicians={clinicians} assignments={[]} weeklyTemplate={template} />,
+    );
+    expect(screen.queryByText("Working Hours Overview")).not.toBeInTheDocument();
+  });
+
+  it("closes with the button and with Escape", () => {
+    const { onClose } = renderModal();
+    // The backdrop is a "Close" button too; this is the labelled one.
+    fireEvent.click(screen.getByText("Close", { selector: "button" }));
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("shows an empty state without clinicians", () => {
+    renderModal({ clinicians: [] });
+    expect(screen.getByText("No clinicians added yet.")).toBeInTheDocument();
+  });
 });

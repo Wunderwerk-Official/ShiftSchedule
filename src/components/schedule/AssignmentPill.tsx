@@ -1,4 +1,5 @@
 import AssignmentLockButton from "./AssignmentLockButton";
+import PillSwapButton, { findSwapOnKey } from "../swaps/PillSwapButton";
 import { cx } from "../../lib/classNames";
 import { memo, useEffect, useMemo, useRef, useState, useLayoutEffect } from "react";
 import type { CSSProperties, DragEventHandler, MouseEventHandler } from "react";
@@ -116,6 +117,12 @@ type AssignmentPillProps = {
    * with the name fading out under it.
    */
   onToggleLock?: () => void;
+  /**
+   * "Find swap" (class rows of editable calendars): the ⇄ button, always
+   * directly left of the lock and revealed like the open lock, plus the S key
+   * while the lock or the ⇄ button has focus.
+   */
+  onFindSwap?: () => void;
   isDragging?: boolean;
   isDragFocus?: boolean;
   className?: string;
@@ -150,6 +157,7 @@ function AssignmentPillImpl({
   isViolation = false,
   isLocked = false,
   onToggleLock,
+  onFindSwap,
   isDragging = false,
   isDragFocus = false,
   className,
@@ -313,15 +321,19 @@ function AssignmentPillImpl({
   const paddingClass = cx(
     personStyle ? "py-px pl-0.5" : "py-0.5 pl-1.5",
     lockInRow ? "pr-px" : "pr-1.5",
-    // Touch screens have no hover, so an unlocked pill always shows its lock:
-    // keep its room there, and the name is measured beside it, not under it.
-    lockOnHover && "[@media(hover:none)]:pr-[22px]",
+    // Touch screens have no hover, so an unlocked pill always shows its lock
+    // (and its ⇄ button): keep their room there, and the name is measured
+    // beside them, not under them. A locked pill makes that room with a row
+    // margin instead: more padding would move its in-row lock under the ⇄.
+    lockOnHover && (onFindSwap ? "[@media(hover:none)]:pr-[42px]" : "[@media(hover:none)]:pr-[22px]"),
+    !onToggleLock && onFindSwap && "[@media(hover:none)]:pr-[22px]",
   );
   return (
     <div
       data-assignment-pill="true"
       data-assignment-key={assignmentKey}
       data-locked={onToggleLock ? String(isLocked) : undefined}
+      onKeyDownCapture={onFindSwap ? findSwapOnKey(onFindSwap) : undefined}
       draggable={draggable}
       onDragStart={onDragStart}
       onDragEnd={onDragEnd}
@@ -369,10 +381,15 @@ function AssignmentPillImpl({
           // Section look: "safe" centering, so a name that still overflows
           // (one long word) loses its end, never its first letters.
           personStyle ? "justify-start" : "[justify-content:safe_center]",
-          // The open lock of an unlocked pill appears over the row's end on
-          // hover: the name fades out under it (index.css) instead of a box
-          // on top. Touch screens keep room for it instead (padding above).
-          lockOnHover && "pill-lock-fade",
+          // The open lock of an unlocked pill (and the ⇄ button) appears over
+          // the row's end on hover: the name fades out under it (index.css)
+          // instead of a box on top. Touch screens keep room for them instead
+          // (padding above; a locked pill's row ends 20 px earlier).
+          onFindSwap
+            ? lockInRow
+              ? "pill-swap-fade-inrow [@media(hover:none)]:mr-5"
+              : "pill-swap-fade"
+            : lockOnHover && "pill-lock-fade",
         )}
       >
         {personStyle ? (
@@ -416,6 +433,23 @@ function AssignmentPillImpl({
                   personStyle ? "right-[3px]" : "right-0.5",
                 )
               : "relative -my-px",
+          )}
+        />
+      ) : null}
+      {onFindSwap ? (
+        <PillSwapButton
+          name={name}
+          onFindSwap={onFindSwap}
+          className={cx(
+            "pill-swap-reveal absolute top-1/2 z-[150] -translate-y-1/2",
+            // Directly left of the lock: an in-row lock takes 1–19 px in both
+            // looks (the touch row margin ends at 39 px), a hover lock 2–20 px
+            // (3–21 px with person colors); without a lock, the lock's place.
+            lockInRow || (onToggleLock && !personStyle)
+              ? "right-[21px]"
+              : onToggleLock
+                ? "right-[22px]"
+                : personStyle ? "right-[3px]" : "right-0.5",
           )}
         />
       ) : null}
@@ -481,6 +515,7 @@ function arePillPropsEqual(
     prev.isViolation === next.isViolation &&
     prev.isLocked === next.isLocked &&
     Boolean(prev.onToggleLock) === Boolean(next.onToggleLock) &&
+    Boolean(prev.onFindSwap) === Boolean(next.onFindSwap) &&
     prev.isDragging === next.isDragging &&
     prev.isDragFocus === next.isDragFocus &&
     prev.draggable === next.draggable &&

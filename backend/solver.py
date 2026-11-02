@@ -692,6 +692,66 @@ def _collect_slot_contexts(state) -> List[Dict[str, Any]]:
     return contexts
 
 
+def _section_tier_by_slot_id(slot_contexts, blocks) -> Dict[str, int]:
+    """Priority tier per slot: the position of its section's FIRST block in
+    the template's block list, the order Settings shows ("If not every slot
+    can be filled, sections higher in this list are staffed first"; 0 =
+    top). Every slot of a section shares it, on every day and sub-shift: a
+    pre-v4 template has one block per sub-shift and day type, and those
+    blocks must not rank Monday above Friday of the same section."""
+    first: Dict[str, int] = {}
+    tier_by_block_id: Dict[str, int] = {}
+    for index, block in enumerate(blocks or []):
+        tier_by_block_id[block.id] = first.setdefault(block.sectionId or f"block:{block.id}", index)
+    return {ctx["slot_id"]: tier_by_block_id.get(ctx["block"].id, ctx["block_order"])
+            for ctx in slot_contexts}
+
+
+def section_tier_by_slot_id(state) -> Dict[str, int]:
+    """The section tier of every template slot (see _section_tier_by_slot_id)."""
+    template = state.weeklyTemplate
+    return _section_tier_by_slot_id(_collect_slot_contexts(state), template.blocks if template else [])
+
+
+def _add_priority_dominance(model, slack_by_instance, reference, var_map,
+                            tier_by_slot_id) -> Tuple[List[Any], int]:
+    """Repair mode: never trade a position of a higher-ranked section for
+    lower-ranked ones. For every tier, the missing positions of that tier
+    and all higher tiers may not exceed those of the plan being repaired
+    (counting only its placements the model can represent). A gap may move
+    to a lower-ranked section, never to a higher one; the plan being
+    repaired always satisfies this.
+
+    Returns the open positions weighted by rank (a gap counts once for its
+    own tier and once for every tier below it, so higher-ranked gaps weigh
+    more) and the largest value that sum can take under these bounds."""
+    kept: Dict[Tuple[str, str], int] = {}
+    for (cid, date_iso, sid) in var_map:
+        if (sid, date_iso, cid) in reference:
+            kept[(sid, date_iso)] = kept.get((sid, date_iso), 0) + 1
+    lowest = max(tier_by_slot_id.values(), default=-1) + 1
+    slack_by_tier: Dict[int, List[Any]] = {}
+    reference_missing_by_tier: Dict[int, int] = {}
+    for (sid, date_iso), (slack, missing) in slack_by_instance.items():
+        tier = tier_by_slot_id.get(sid, lowest)
+        slack_by_tier.setdefault(tier, []).append(slack)
+        reference_missing_by_tier[tier] = (reference_missing_by_tier.get(tier, 0)
+                                           + max(0, missing - kept.get((sid, date_iso), 0)))
+    tiers = sorted(slack_by_tier)
+    running: List[Any] = []
+    running_reference = 0
+    weighted: List[Any] = []
+    weighted_max = 0
+    for index, tier in enumerate(tiers):
+        running.extend(slack_by_tier[tier])
+        running_reference += reference_missing_by_tier[tier]
+        model.Add(sum(running) <= running_reference)
+        # The sum of all running totals: at most the plan's own.
+        weighted.extend(slack * (len(tiers) - index) for slack in slack_by_tier[tier])
+        weighted_max += running_reference
+    return weighted, weighted_max
+
+
 def _build_date_context(
     payload: SolveRangeRequest, context_pad_days: int = 1
 ) -> Tuple[date, date, List[str], List[str], set[str], Dict[str, int]]:
@@ -935,8 +995,14 @@ def _add_overlap_constraints(
     vars_by_clinician_date: Dict[str, Dict[str, List[Tuple[str, cp_model.IntVar, int, int, str]]]],
     manual_by_clinician_date: Dict[str, Dict[str, List[Tuple[int, int, str]]]],
     day_index_by_iso: Dict[str, int],
+    gate_parity: bool = False,
 ) -> None:
     """Block overlapping intervals and (optionally) multiple locations per day.
+
+    ``gate_parity`` (repair mode): on a day whose fixed work already spans
+    several sites (a manual override), allow new work at any of those sites,
+    as the agent's gate does (it tolerates the baseline violation and checks
+    that no new site is added); the default allows none.
 
     Uses CP-SAT IntervalVar + NoOverlap for O(n log n) propagation instead of
     O(n²) pairwise boolean constraints.  A single NoOverlap per clinician
@@ -1018,9 +1084,11 @@ def _add_overlap_constraints(
                 if manual_locs:
                     # Manual assignments pin the location for this day.
                     # A solver var at location X is only allowed if every
-                    # manual assignment is also at X (matches old behaviour).
+                    # manual assignment is also at X (matches old behaviour);
+                    # with gate_parity, if X is one of the manual sites.
                     for loc, loc_vars in vars_by_loc.items():
-                        if manual_locs != {loc}:
+                        allowed = loc in manual_locs if gate_parity else manual_locs == {loc}
+                        if not allowed:
                             for var in loc_vars:
                                 model.Add(var == 0)
                 elif len(vars_by_loc) > 1:
@@ -1044,13 +1112,21 @@ def _add_coverage_constraints(
     day_type_by_iso: Dict[str, str],
     var_map: Dict[Tuple[str, str, str], cp_model.IntVar],
     manual_assignments: Dict[Tuple[str, str], List[str]],
+    raw_slack_out: Optional[List[Any]] = None,
+    slack_by_instance_out: Optional[Dict[Tuple[str, str], Tuple[Any, int]]] = None,
 ) -> Tuple[
     List[Any],
     List[Any],
     int,
     Dict[str, int],
 ]:
-    """Apply required-slot coverage + per-slot capacity caps."""
+    """Apply required-slot coverage + per-slot capacity caps.
+
+    ``raw_slack_out`` (optional) collects the unweighted missing-position
+    variables, for objectives that count open positions like the agent's
+    quality tuple instead of weighting them by slot priority;
+    ``slack_by_instance_out`` (optional) maps (slot_id, date_iso) to that
+    variable and the instance's missing positions after fixed entries."""
     total_slots = len(slot_contexts)
     order_weight_by_slot_id: Dict[str, int] = {}
     total_required = 0
@@ -1139,6 +1215,10 @@ def _add_coverage_constraints(
         else:
             model.Add(slack >= missing)
         slack_terms.append(slack * order_weight)
+        if raw_slack_out is not None:
+            raw_slack_out.append(slack)
+        if slack_by_instance_out is not None:
+            slack_by_instance_out[(slot_id, date_iso)] = (slack, missing)
 
     return coverage_terms, slack_terms, total_required, order_weight_by_slot_id
 
@@ -1551,8 +1631,15 @@ def _add_continuity_constraints(
     solver_settings: SolverSettings,
     vars_by_clinician_date: Dict[str, Dict[str, List[Tuple[str, cp_model.IntVar, int, int, str]]]],
     manual_by_clinician_date: Dict[str, Dict[str, List[Tuple[int, int, str]]]],
+    merge_sites: bool = False,
 ) -> None:
-    """Enforce max 1 continuous work block per clinician/day (or manual blocks)."""
+    """Enforce max 1 continuous work block per clinician/day (or manual blocks).
+
+    Adjacent slots join one block only at the same site by default.
+    ``merge_sites`` (repair mode) joins them by time alone, as the agent's
+    gate does (validation.validate_split_shifts): with the same-site rule
+    off, site A 06-07 followed by site B 07-08 is one legal block there.
+    """
     if not solver_settings.preferContinuousShifts:
         return
 
@@ -1563,6 +1650,9 @@ def _add_continuity_constraints(
             manual_slots = clinician_manual.get(date_iso, [])
             if not manual_slots and not day_vars:
                 continue
+            if merge_sites:
+                day_vars = [(sid, var, start, end, "") for sid, var, start, end, _loc in day_vars]
+                manual_slots = [(start, end, "") for start, end, _loc in manual_slots]
 
             candidate_ends_by_key: Dict[Tuple[int, str], List[cp_model.IntVar]] = {}
             for _sid, var, start, end, loc in day_vars:
@@ -2214,6 +2304,8 @@ def _solve_range_impl(
     on_progress=None,
     start_time: float = None,
     state_override=None,
+    repair_reference=None,
+    repair_max_changes: Optional[int] = None,
 ):
     """
     Core solver implementation that builds and solves the constraint satisfaction problem.
@@ -2238,6 +2330,17 @@ def _solve_range_impl(
         on_progress: Optional callback(event_type, data) for UI progress updates
         start_time: Timestamp when request started (for accurate timeout calculation)
         state_override: Optional AppState to solve instead of loading it
+        repair_reference: Optional collection of (slotId, dateISO, clinicianId)
+            identities, the plan to repair (cross-day coverage repair of the
+            agent, backend/agent/cross_day.py). The plan is a solution hint and
+            the objective becomes: fewest missing required positions first,
+            then open positions as low in the section order as possible,
+            then fewest changes to that plan; no section may end up with more
+            missing positions in its tier and above than in that plan
+            (_add_priority_dominance: a gap may move to a lower-ranked
+            section, never to a higher one).
+            The state must hold only the fixed context, not the plan itself.
+        repair_max_changes: Optional cap on changed assignments in repair mode.
 
     Returns:
         SolveRangeResponse with assignments, notes, and debug timing info
@@ -2404,6 +2507,8 @@ def _solve_range_impl(
         vars_by_clinician_date,
         manual_by_clinician_date,
         day_index_by_iso,
+        # A repair must accept every plan the agent's gate accepted.
+        gate_parity=repair_reference is not None,
     )
     timer.checkpoint("overlap_constraints")
 
@@ -2415,6 +2520,9 @@ def _solve_range_impl(
     if orphaned_assignments:
         notes.append(f"WARNING: {len(orphaned_assignments)} assignment(s) reference slots not in the template and were ignored by the solver.")
 
+    repair_mode = repair_reference is not None
+    raw_slack_vars: List[Any] = []
+    slack_by_instance: Dict[Tuple[str, str], Tuple[Any, int]] = {}
     coverage_terms, slack_terms, total_required, order_weight_by_slot_id = _add_coverage_constraints(
         model,
         payload,
@@ -2424,8 +2532,33 @@ def _solve_range_impl(
         day_type_by_iso,
         var_map,
         manual_assignments,
+        raw_slack_out=raw_slack_vars if repair_mode else None,
+        slack_by_instance_out=slack_by_instance if repair_mode else None,
     )
     timer.checkpoint("coverage_constraints")
+
+    repair_change_terms: List[Any] = []
+    repair_rank_terms: List[Any] = []
+    repair_rank_max = 0
+    repair_change_cap = 0
+    if repair_mode:
+        # Stay close to the plan being repaired: it is the starting solution,
+        # and every assignment that differs from it counts as one change.
+        reference = set(repair_reference)
+        for (cid, date_iso, sid), var in var_map.items():
+            kept = (sid, date_iso, cid) in reference
+            model.AddHint(var, 1 if kept else 0)
+            repair_change_terms.append(1 - var if kept else var)
+        repair_change_cap = len(repair_change_terms)
+        if repair_max_changes is not None:
+            repair_change_cap = min(repair_change_cap, max(0, int(repair_max_changes)))
+            model.Add(sum(repair_change_terms) <= repair_change_cap)
+        # Section order is binding: more filled positions never at the
+        # expense of a higher-ranked section.
+        repair_rank_terms, repair_rank_max = _add_priority_dominance(
+            model, slack_by_instance, reference, var_map,
+            _section_tier_by_slot_id(slot_contexts, state.weeklyTemplate.blocks if state.weeklyTemplate else []),
+        )
 
     on_progress("phase", {"phase": "on_call_rest_days", "label": "Preparation (6/10): Setting up on-call rest rules..."})
     rest_day_conflicts, rest_boundary_conflict = _add_on_call_rest_constraints(
@@ -2473,6 +2606,8 @@ def _solve_range_impl(
         solver_settings,
         vars_by_clinician_date,
         manual_by_clinician_date,
+        # A repair must accept every plan the agent's gate accepted.
+        merge_sites=repair_mode,
     )
 
     timer.checkpoint("continuity_constraints")
@@ -2512,7 +2647,21 @@ def _solve_range_impl(
     w_min_daily = solver_settings.weightMinimumDailyHours
     w_ytd_balance = solver_settings.weightYtdBalance
 
-    if payload.only_fill_required:
+    if repair_mode:
+        # Lexicographic by weights, from the bounds the model itself sets:
+        # one more filled required position outweighs any section order and
+        # any change count; among plans that fill as many, open positions
+        # lower in the section order outweigh any change count (the change
+        # cap bounds that difference); then fewest changes. Soft goals stay
+        # with the plan being repaired.
+        rank_weight = repair_change_cap + 1
+        missing_weight = rank_weight * repair_rank_max + repair_change_cap + 1
+        model.Minimize(
+            sum(raw_slack_vars) * missing_weight
+            + sum(repair_rank_terms) * rank_weight
+            + sum(repair_change_terms)
+        )
+    elif payload.only_fill_required:
         model.Minimize(
             -total_coverage * w_coverage
             + total_slack * w_slack
@@ -2541,7 +2690,8 @@ def _solve_range_impl(
         key=lambda k: order_weight_by_slot_id.get(k[2], 0),
         reverse=True,
     )
-    if priority_sorted_vars:
+    # A repair starts from its hint instead (the plan being repaired).
+    if priority_sorted_vars and not repair_mode:
         model.AddDecisionStrategy(
             [var_map[k] for k in priority_sorted_vars],
             cp_model.CHOOSE_FIRST,
@@ -2625,7 +2775,9 @@ def _solve_range_impl(
             best_bound = self.BestObjectiveBound()
             denom = max(1, abs(objective))
             gap = abs(objective - best_bound) / denom
-            if gap <= SOLVER_GAP_THRESHOLD:
+            # A repair runs to its time limit: 5% of a missing-position
+            # objective is more than one whole position.
+            if gap <= SOLVER_GAP_THRESHOLD and not repair_mode:
                 # Within gap — (re)start the grace countdown.
                 # Each new improving solution resets the 20 s window.
                 self._restart_grace_timer()
@@ -2652,7 +2804,7 @@ def _solve_range_impl(
         )
     solver.parameters.max_time_in_seconds = remaining_timeout
     solver.parameters.num_search_workers = SOLVER_NUM_WORKERS
-    solver.parameters.relative_gap_limit = SOLVER_GAP_THRESHOLD
+    solver.parameters.relative_gap_limit = 0.0 if repair_mode else SOLVER_GAP_THRESHOLD
     result = solver.SolveWithSolutionCallback(model, solution_callback)
     solution_callback._cancel_grace_timer()  # clean up any pending timer
     timer.checkpoint("solve")
@@ -2704,7 +2856,8 @@ def _solve_range_impl(
 
         # If solving the entire range failed and range is > 14 days, try week-by-week
         total_days = (range_end - range_start).days + 1
-        if total_days > 14:
+        # A repair that finds nothing keeps the plan it was given.
+        if total_days > 14 and not repair_mode:
             # Attempt week-by-week solving as fallback
             week_assignments: List[Assignment] = []
             # Each solved chunk becomes fixed context for subsequent chunks,

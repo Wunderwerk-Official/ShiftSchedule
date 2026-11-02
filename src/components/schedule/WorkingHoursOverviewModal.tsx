@@ -1,113 +1,71 @@
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { Assignment, TemplateSlot, WeeklyCalendarTemplate } from "../../api/client";
 import { buttonPrimary, buttonSecondary } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
-import { toISODate } from "../../lib/date";
-// Shares only getShiftMinutes with My plan: My plan counts overlapping own shifts once, this sums every non-pool assignment.
-import { getShiftMinutes } from "../../lib/myPlan";
-import type { Assignment, TemplateSlot, WeeklyCalendarTemplate } from "../../api/client";
+import { getShiftMinutes, personTone } from "../../lib/myPlan";
+import type { ScheduleRow } from "../../lib/shiftRows";
+import { compactTimeLabel, slotTimeLabel } from "../../lib/stackedTeamLayout";
+import {
+  buildWorkingHoursYear,
+  getWeeksInYear,
+  slotMinutesFromTemplate,
+  weekIndexOf,
+  type HoursClinician,
+} from "../../lib/workingHours";
+import { initialsOf } from "../myPlan/planChrome";
+import { HoursLegend, todayISO, weekTitle } from "./WorkingHoursParts";
+import WorkingHoursWeekView, { type HoursPerson, type WeekSort } from "./WorkingHoursWeekView";
+import WorkingHoursYearView, { YEAR_METRIC_LABEL, type YearMetric } from "./WorkingHoursYearView";
+
+// Working hours overview (v1.78): a week view (each person's days, planned
+// vs target, the year's balance) and a compact year view (one row per
+// person). Calculations: lib/workingHours.
+
+type View = "week" | "year";
 
 type WorkingHoursOverviewModalProps = {
   open: boolean;
   onClose: () => void;
-  clinicians: Array<{
-    id: string;
-    name: string;
-    workingHoursPerWeek?: number;
-  }>;
+  clinicians: Array<HoursClinician & { name: string }>;
   assignments: Assignment[];
   weeklyTemplate?: WeeklyCalendarTemplate;
-  /** The plan's time zone; durations are real time in it (DST nights 1 h longer/shorter). */
-  timeZone: string;
+  /** Slot rows of the calendar: names and times for the day tooltips. */
+  scheduleRows?: ScheduleRow[];
+  isDark?: boolean;
+  /** The plan's time zone: shift hours are real time in it (DST nights 1 h longer/shorter). */
+  timeZone?: string;
 };
 
-const WEEK_WIDTH = 56;
-const LEFT_COLUMN_WIDTH = 160;
-const TOTAL_COLUMN_WIDTH = 72;
-const ROW_HEIGHT = 28;
-
-// Get the Monday of the week containing a date
-function getWeekStart(date: Date): Date {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  d.setDate(diff);
-  d.setHours(0, 0, 0, 0);
-  return d;
-}
-
-// Get all weeks in a year, starting Jan 1 and ending Dec 31
-// Returns daysInWeek to calculate fractional expected hours for partial weeks
-// Also returns weekMonday (the actual Monday) for matching assignments
-function getWeeksInYear(year: number): Array<{ weekNum: number; start: Date; end: Date; weekMonday: Date; daysInWeek: number }> {
-  const weeks: Array<{ weekNum: number; start: Date; end: Date; weekMonday: Date; daysInWeek: number }> = [];
-
-  const jan1 = new Date(year, 0, 1);
-  const dec31 = new Date(year, 11, 31);
-
-  // Start from Jan 1, find its week's Monday
-  let weekMonday = getWeekStart(jan1);
-  let weekNum = 1;
-
-  while (weekMonday <= dec31) {
-    const weekSunday = new Date(weekMonday);
-    weekSunday.setDate(weekSunday.getDate() + 6);
-
-    // Clamp start to Jan 1 if week starts in previous year
-    const clampedStart = weekMonday < jan1 ? jan1 : weekMonday;
-    // Clamp end to Dec 31 if week ends in next year
-    const clampedEnd = weekSunday > dec31 ? dec31 : weekSunday;
-
-    // Calculate days in this week that fall within the year
-    const msPerDay = 24 * 60 * 60 * 1000;
-    const daysInWeek = Math.round((clampedEnd.getTime() - clampedStart.getTime()) / msPerDay) + 1;
-
-    weeks.push({
-      weekNum,
-      start: new Date(clampedStart),
-      end: new Date(clampedEnd),
-      weekMonday: new Date(weekMonday), // Store the actual Monday for matching
-      daysInWeek,
-    });
-
-    weekMonday.setDate(weekMonday.getDate() + 7);
-    weekNum++;
-
-    // Safety check
-    if (weekNum > 54) break;
-  }
-
-  return weeks;
-}
-
-// Format hours with one decimal
-function formatHours(minutes: number): string {
-  const hours = minutes / 60;
-  if (hours === 0) return "–";
-  return hours.toFixed(1).replace(/\.0$/, "");
-}
-
-// Sticky year-total cell: worked minus expected hours for the year.
-function YearlyDiffCell({ yearlyDiff }: { yearlyDiff: number | null }) {
-  let colorClass = "text-slate-500 dark:text-slate-400";
-  if (yearlyDiff !== null) {
-    if (yearlyDiff > 8) {
-      colorClass = "text-rose-600 dark:text-rose-400";
-    } else if (yearlyDiff < -8) {
-      colorClass = "text-amber-600 dark:text-amber-400";
-    } else if (Math.abs(yearlyDiff) <= 8 && yearlyDiff !== 0) {
-      colorClass = "text-emerald-600 dark:text-emerald-400";
-    }
-  }
+function Segmented<T extends string>({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: T;
+  options: Array<{ value: T; label: string }>;
+  onChange: (value: T) => void;
+}) {
   return (
-    <div
-      className={cx(
-        "sticky right-0 z-40 flex items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[10px] font-semibold dark:border-slate-600 dark:bg-slate-800",
-        colorClass,
-      )}
-      style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH, height: ROW_HEIGHT }}
-    >
-      {yearlyDiff !== null ? (yearlyDiff > 0 ? `+${yearlyDiff.toFixed(1)}` : yearlyDiff.toFixed(1)) : "–"}
+    <div role="group" aria-label={label} className="inline-flex rounded-full border border-slate-200 bg-slate-50 p-0.5 dark:border-slate-700 dark:bg-slate-800">
+      {options.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          aria-pressed={value === option.value}
+          onClick={() => onChange(option.value)}
+          className={cx(
+            "rounded-full px-3 py-1 text-xs font-medium",
+            value === option.value
+              ? "bg-white text-slate-900 shadow-sm dark:bg-slate-950 dark:text-slate-100"
+              : "text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-slate-100",
+          )}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }
@@ -118,118 +76,96 @@ export default function WorkingHoursOverviewModal({
   clinicians,
   assignments,
   weeklyTemplate,
+  scheduleRows,
+  isDark = false,
   timeZone,
 }: WorkingHoursOverviewModalProps) {
-  const currentYear = new Date().getFullYear();
-  const [selectedYear, setSelectedYear] = useState(currentYear);
-  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
-  const todayColumnRef = useRef<HTMLDivElement | null>(null);
+  const today = todayISO();
+  const currentYear = Number(today.slice(0, 4));
+  const [view, setView] = useState<View>("week");
+  const [year, setYear] = useState(currentYear);
+  const [weekIndex, setWeekIndex] = useState(() => Math.max(0, weekIndexOf(getWeeksInYear(currentYear), today)));
+  const [metric, setMetric] = useState<YearMetric>("hours");
+  const [sort, setSort] = useState<WeekSort>("list");
+  const yearScrollRef = useRef<HTMLDivElement | null>(null);
 
-  // Center the current-week column in the horizontal scroll area. The rAF
-  // lets a just-triggered re-render (open/year switch) mount the column
-  // first; refs are read inside the frame for the same reason.
-  const scrollToToday = () => {
-    window.requestAnimationFrame(() => {
-      const container = scrollContainerRef.current;
-      const todayCol = todayColumnRef.current;
-      if (!container || !todayCol) return;
-      const containerRect = container.getBoundingClientRect();
-      const todayRect = todayCol.getBoundingClientRect();
-      const scrollLeft = todayRect.left - containerRect.left + container.scrollLeft - containerRect.width / 2;
-      // Feature-detect scrollTo: jsdom (tests) doesn't implement it, and older
-      // Safari throws on the options object. Fall back to assigning scrollLeft.
-      if (typeof container.scrollTo === "function") {
-        container.scrollTo({ left: Math.max(0, scrollLeft), behavior: "auto" });
-      } else {
-        container.scrollLeft = Math.max(0, scrollLeft);
-      }
-    });
+  const goToToday = () => {
+    setYear(currentYear);
+    setWeekIndex(Math.max(0, weekIndexOf(getWeeksInYear(currentYear), today)));
   };
 
-  // Scroll to current week when opening (and after a year switch)
+  // Every opening starts at this week's week view.
   useEffect(() => {
     if (!open) return;
-    scrollToToday();
+    setView("week");
+    goToToday();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, selectedYear]);
+  }, [open]);
 
-  // Template slots by id (durations depend on the date: DST changes)
-  const slotById = useMemo(() => {
-    const map = new Map<string, TemplateSlot>();
+  const slotMinutesById = useMemo(() => slotMinutesFromTemplate(weeklyTemplate), [weeklyTemplate]);
+  // Real minutes of a shift on its date in the plan's zone (DST changes).
+  const minutesOf = useMemo(() => {
+    if (!timeZone) return undefined;
+    const slotById = new Map<string, TemplateSlot>();
     for (const location of weeklyTemplate?.locations ?? []) {
-      for (const slot of location.slots ?? []) map.set(slot.id, slot);
+      for (const slot of location.slots ?? []) slotById.set(slot.id, slot);
     }
-    return map;
-  }, [weeklyTemplate]);
-
-  // Get weeks for selected year
-  const weeks = useMemo(() => getWeeksInYear(selectedYear), [selectedYear]);
-
-  // Week index by the week's Monday (YYYY-MM-DD), for O(1) lookups
-  const weekIndexByMonday = useMemo(
-    () => new Map(weeks.map((w, i) => [toISODate(w.weekMonday), i] as const)),
-    [weeks],
+    return (rowId: string, dateISO: string) => {
+      const slot = slotById.get(rowId);
+      return slot ? getShiftMinutes(slot, dateISO, timeZone) : undefined;
+    };
+  }, [weeklyTemplate, timeZone]);
+  const data = useMemo(
+    () => (open ? buildWorkingHoursYear({ year, clinicians, assignments, slotMinutesById, minutesOf }) : null),
+    [open, year, clinicians, assignments, slotMinutesById, minutesOf],
   );
-
-  // Find current week index
-  const currentWeekIndex = useMemo(() => {
-    const today = new Date();
-    if (today.getFullYear() !== selectedYear) return -1;
-    return weekIndexByMonday.get(toISODate(getWeekStart(today))) ?? -1;
-  }, [weekIndexByMonday, selectedYear]);
-
-  // Calculate working hours per week for all clinicians. Single pass over
-  // all assignments (the page passes every year's assignments on every
-  // render), and nothing at all while the modal is closed.
-  const clinicianWeeklyHours = useMemo(() => {
-    const result = new Map<string, Map<number, number>>();
-    if (!open) return result;
-
-    for (const clinician of clinicians) {
-      result.set(clinician.id, new Map<number, number>());
+  const people = useMemo<HoursPerson[]>(
+    () =>
+      data
+        ? clinicians.map((clinician, index) => ({
+            id: clinician.id,
+            name: clinician.name,
+            initials: initialsOf(clinician.name),
+            tone: personTone(index, isDark),
+            hours: data.people[index],
+          }))
+        : [],
+    [data, clinicians, isDark],
+  );
+  const slotLabelById = useMemo(() => {
+    const labels = new Map<string, string>();
+    for (const row of scheduleRows ?? []) {
+      if (row.kind !== "class") continue;
+      const time = slotTimeLabel(row);
+      labels.set(row.id, [row.sectionName ?? row.name, time ? compactTimeLabel(time) : null].filter(Boolean).join(" "));
     }
+    return labels;
+  }, [scheduleRows]);
 
-    for (const assignment of assignments) {
-      // Skip pool assignments (they don't count as working hours)
-      if (assignment.rowId.startsWith("pool-")) continue;
-      const hoursMap = result.get(assignment.clinicianId);
-      if (!hoursMap) continue;
+  const weeks = data?.weeks ?? [];
+  const safeWeekIndex = Math.min(weekIndex, Math.max(0, weeks.length - 1));
+  const week = weeks[safeWeekIndex];
+  const currentWeekIndex = year === currentYear ? weekIndexOf(weeks, today) : -1;
 
-      // Parse as local midnight: bare "YYYY-MM-DD" parses as UTC, which
-      // shifts to the previous day in timezones west of UTC once the local
-      // getters below are applied.
-      const assignmentDate = new Date(`${assignment.dateISO}T00:00:00`);
-      if (assignmentDate.getFullYear() !== selectedYear) continue;
+  // Center today's week in the year view (after the view or year changed).
+  const centerCurrentWeek = () => {
+    window.requestAnimationFrame(() => {
+      const container = yearScrollRef.current;
+      const column = container?.querySelector<HTMLElement>('[data-current-week="true"]');
+      if (!container || !column) return;
+      const containerRect = container.getBoundingClientRect();
+      const columnRect = column.getBoundingClientRect();
+      const left = columnRect.left - containerRect.left + container.scrollLeft - containerRect.width / 2;
+      // jsdom has no scrollTo; older Safari rejects the options object.
+      if (typeof container.scrollTo === "function") container.scrollTo({ left: Math.max(0, left) });
+      else container.scrollLeft = Math.max(0, left);
+    });
+  };
+  useEffect(() => {
+    if (open && view === "year") centerCurrentWeek();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, view, year]);
 
-      // Find which week this assignment belongs to (use weekMonday for matching)
-      const weekIndex = weekIndexByMonday.get(toISODate(getWeekStart(assignmentDate)));
-      if (weekIndex === undefined) continue;
-
-      // Real duration of the slot on that date, default 8 hours
-      const slot = slotById.get(assignment.rowId);
-      const durationMinutes = slot ? getShiftMinutes(slot, assignment.dateISO, timeZone) : 8 * 60;
-
-      // Add to week total
-      hoursMap.set(weekIndex, (hoursMap.get(weekIndex) ?? 0) + durationMinutes);
-    }
-
-    return result;
-  }, [open, clinicians, assignments, weekIndexByMonday, selectedYear, slotById, timeZone]);
-
-  // Calculate yearly totals for all clinicians
-  const clinicianYearlyTotals = useMemo(() => {
-    const result = new Map<string, number>();
-    for (const [clinicianId, hoursMap] of clinicianWeeklyHours) {
-      let total = 0;
-      for (const minutes of hoursMap.values()) {
-        total += minutes;
-      }
-      result.set(clinicianId, total);
-    }
-    return result;
-  }, [clinicianWeeklyHours]);
-
-  // Handle escape key
   useEffect(() => {
     if (!open) return;
     const handleKey = (event: KeyboardEvent) => {
@@ -239,14 +175,21 @@ export default function WorkingHoursOverviewModal({
     return () => window.removeEventListener("keydown", handleKey);
   }, [open, onClose]);
 
-  if (!open) return null;
+  if (!open || !data || !week) return null;
 
-  const totalWidth = weeks.length * WEEK_WIDTH;
-
-  // Calculate total expected hours for the year (accounting for partial weeks)
-  const getTotalExpectedHours = (expectedWeeklyHours: number) => {
-    return weeks.reduce((sum, w) => sum + expectedWeeklyHours * (w.daysInWeek / 7), 0);
+  const stepWeek = (delta: -1 | 1) => {
+    const next = safeWeekIndex + delta;
+    if (next >= 0 && next < weeks.length) {
+      setWeekIndex(next);
+      return;
+    }
+    const nextYear = year + delta;
+    setYear(nextYear);
+    setWeekIndex(delta > 0 ? 0 : getWeeksInYear(nextYear).length - 1);
   };
+  const navLabel = view === "week" ? weekTitle(week) : String(year);
+  const navButton =
+    "grid h-7 w-7 place-items-center rounded-full text-slate-500 hover:bg-slate-100 hover:text-slate-800 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-slate-100";
 
   return createPortal(
     <div className="fixed inset-0 z-40">
@@ -256,377 +199,122 @@ export default function WorkingHoursOverviewModal({
         onClick={onClose}
         aria-label="Close"
       />
-      <div className="relative mx-auto h-full w-full max-w-screen-2xl px-4 py-6 sm:px-6">
-        <div className="flex h-full flex-col rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900">
-          {/* Header */}
-          <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-100 px-6 py-4 dark:border-slate-800">
+      <div className="relative mx-auto h-full w-full max-w-screen-2xl px-2 py-3 sm:px-6 sm:py-6">
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Working Hours Overview"
+          className="flex h-full flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl dark:border-slate-700 dark:bg-slate-900"
+        >
+          <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 px-6 pb-3 pt-4 dark:border-slate-800">
             <div>
-              <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-                Working Hours Overview
-              </div>
-              <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
-                Track working hours by week for all clinicians.
+              <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">Working Hours Overview</div>
+              <div className="mt-0.5 text-sm text-slate-600 dark:text-slate-300">
+                Planned hours against contract hours, per week and over the year.
               </div>
             </div>
-            <div className="flex items-center gap-3">
-              {/* Year selector */}
-              <div className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1 text-sm text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setSelectedYear((prev) => prev - 1)}
-                  className="rounded-full px-2 py-1 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"
-                  aria-label="Previous year"
-                >
-                  ‹
-                </button>
-                <span className="min-w-[48px] text-center font-semibold">{selectedYear}</span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedYear((prev) => prev + 1)}
-                  className="rounded-full px-2 py-1 text-xs font-semibold text-slate-500 hover:text-slate-700 dark:text-slate-300 dark:hover:text-slate-100"
-                  aria-label="Next year"
-                >
-                  ›
-                </button>
-              </div>
+            <button type="button" onClick={onClose} className={buttonPrimary.base}>
+              Close
+            </button>
+          </div>
 
+          <div className="flex flex-wrap items-center gap-3 border-b border-slate-100 px-6 py-2.5 dark:border-slate-800">
+            <Segmented<View>
+              label="View"
+              value={view}
+              onChange={setView}
+              options={[
+                { value: "week", label: "Week" },
+                { value: "year", label: "Year" },
+              ]}
+            />
+            <div className="flex items-center gap-1 rounded-full border border-slate-200 bg-white px-1 py-0.5 dark:border-slate-700 dark:bg-slate-900">
               <button
                 type="button"
-                onClick={() => {
-                  // Jump to today: switch back to the current year if needed
-                  // (the effect scrolls after the re-render) AND re-center
-                  // when the year is already right (no state change fires).
-                  setSelectedYear(currentYear);
-                  if (selectedYear === currentYear) scrollToToday();
-                }}
-                className={buttonSecondary.base}
+                className={navButton}
+                aria-label={view === "week" ? "Previous week" : "Previous year"}
+                onClick={() => (view === "week" ? stepWeek(-1) : setYear((value) => value - 1))}
               >
-                Today
+                ‹
               </button>
-              <button type="button" onClick={onClose} className={buttonPrimary.base}>
-                Close
+              <span className="min-w-[48px] px-1 text-center text-sm font-semibold tabular-nums text-slate-800 dark:text-slate-100" data-testid="hours-period">
+                {navLabel}
+              </span>
+              <button
+                type="button"
+                className={navButton}
+                aria-label={view === "week" ? "Next week" : "Next year"}
+                onClick={() => (view === "week" ? stepWeek(1) : setYear((value) => value + 1))}
+              >
+                ›
               </button>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                goToToday();
+                // Already at this year: no state change re-centers, so do it here.
+                if (view === "year" && year === currentYear) centerCurrentWeek();
+              }}
+              className={buttonSecondary.base}
+            >
+              Today
+            </button>
+            <div className="ml-auto">
+              {view === "week" ? (
+                <Segmented<WeekSort>
+                  label="Sort"
+                  value={sort}
+                  onChange={setSort}
+                  options={[
+                    { value: "list", label: "Team order" },
+                    { value: "difference", label: "Most under first" },
+                  ]}
+                />
+              ) : (
+                <Segmented<YearMetric>
+                  label="Show"
+                  value={metric}
+                  onChange={setMetric}
+                  options={(["hours", "difference", "balance"] as const).map((value) => ({
+                    value,
+                    label: YEAR_METRIC_LABEL[value],
+                  }))}
+                />
+              )}
             </div>
           </div>
 
-          {/* Content */}
-          <div className="min-h-0 flex-1 overflow-hidden">
-            <div ref={scrollContainerRef} className="h-full overflow-auto">
-              <div className="relative min-w-max">
-                {/* Header row with week numbers */}
-                <div className="sticky top-0 z-30 flex border-b border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900">
-                  <div
-                    className="sticky left-0 z-40 flex items-center border-r border-slate-200 bg-white px-3 dark:border-slate-700 dark:bg-slate-900"
-                    style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH }}
-                  >
-                    <span className="text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">
-                      Week
-                    </span>
-                  </div>
-                  <div className="flex" style={{ width: totalWidth }}>
-                    {weeks.map((week, index) => {
-                      const isCurrentWeek = index === currentWeekIndex;
-                      return (
-                        <div
-                          key={week.weekNum}
-                          ref={isCurrentWeek ? todayColumnRef : undefined}
-                          className={cx(
-                            "flex h-8 items-center justify-center border-r border-slate-100 text-[10px] font-semibold dark:border-slate-800",
-                            isCurrentWeek
-                              ? "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300"
-                              : "text-slate-500 dark:text-slate-400",
-                          )}
-                          style={{ width: WEEK_WIDTH }}
-                        >
-                          W{week.weekNum}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div
-                    className="sticky right-0 z-40 flex h-8 items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[10px] font-semibold text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
-                    style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH }}
-                  >
-                    Total
-                  </div>
-                </div>
+          {view === "week" ? (
+            <WorkingHoursWeekView
+              week={week}
+              team={data.team[week.index]}
+              people={people}
+              slotLabelById={slotLabelById}
+              sort={sort}
+              today={today}
+            />
+          ) : (
+            <WorkingHoursYearView
+              ref={yearScrollRef}
+              weeks={weeks}
+              team={data.team}
+              people={people}
+              metric={metric}
+              currentWeekIndex={currentWeekIndex}
+              onOpenWeek={(index) => {
+                setWeekIndex(index);
+                setView("week");
+              }}
+            />
+          )}
 
-                {/* Date range row */}
-                <div className="sticky top-8 z-30 flex border-b border-slate-200 bg-slate-50 dark:border-slate-700 dark:bg-slate-800/50">
-                  <div
-                    className="sticky left-0 z-40 flex items-center border-r border-slate-200 bg-slate-50 px-3 dark:border-slate-700 dark:bg-slate-800/50"
-                    style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH }}
-                  >
-                    <span className="text-[10px] text-slate-400 dark:text-slate-500">Date range</span>
-                  </div>
-                  <div className="flex" style={{ width: totalWidth }}>
-                    {weeks.map((week, index) => {
-                      const isCurrentWeek = index === currentWeekIndex;
-                      const startStr = `${week.start.getDate()}.${week.start.getMonth() + 1}`;
-                      const endStr = `${week.end.getDate()}.${week.end.getMonth() + 1}`;
-                      return (
-                        <div
-                          key={week.weekNum}
-                          className={cx(
-                            "flex h-5 items-center justify-center border-r border-slate-100 text-[8px] dark:border-slate-800",
-                            isCurrentWeek
-                              ? "bg-sky-50 text-sky-600 dark:bg-sky-900/30 dark:text-sky-400"
-                              : "text-slate-400 dark:text-slate-500",
-                          )}
-                          style={{ width: WEEK_WIDTH }}
-                        >
-                          {startStr}–{endStr}
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <div
-                    className="sticky right-0 z-40 flex h-5 items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[9px] text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400"
-                    style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH }}
-                  >
-                    {selectedYear}
-                  </div>
-                </div>
-
-                {/* Clinician sections */}
-                {clinicians.map((clinician, clinicianIndex) => {
-                  const hoursMap = clinicianWeeklyHours.get(clinician.id) ?? new Map<number, number>();
-                  const yearlyTotal = clinicianYearlyTotals.get(clinician.id) ?? 0;
-                  const expectedWeeklyHours = clinician.workingHoursPerWeek;
-                  const totalExpected = expectedWeeklyHours ? getTotalExpectedHours(expectedWeeklyHours) : null;
-                  const yearlyDiff = totalExpected !== null ? yearlyTotal / 60 - totalExpected : null;
-
-                  const isEvenSection = clinicianIndex % 2 === 0;
-                  const sectionBg = isEvenSection
-                    ? "bg-white dark:bg-slate-900"
-                    : "bg-slate-50/50 dark:bg-slate-800/20";
-                  // Sticky cells (name + cumulative columns) need an OPAQUE
-                  // version of the striped background: with the translucent
-                  // gray, week cells scrolling underneath bleed through.
-                  const stickyBg = isEvenSection
-                    ? "bg-white dark:bg-slate-900"
-                    : "bg-slate-50 dark:bg-[#121b2d]";
-
-                  return (
-                    <div key={clinician.id} className={cx("border-b-2 border-slate-200 dark:border-slate-700", sectionBg)}>
-                      {/* Clinician header row with hours worked */}
-                      <div className="flex border-b border-slate-100 dark:border-slate-800">
-                        <div
-                          className={cx(
-                            "sticky left-0 z-40 flex items-center justify-between gap-2 border-r border-slate-200 px-3 dark:border-slate-700",
-                            stickyBg,
-                          )}
-                          style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                        >
-                          <span className="truncate text-xs font-semibold text-slate-800 dark:text-slate-100">
-                            {clinician.name}
-                          </span>
-                          {expectedWeeklyHours && (
-                            <span className="shrink-0 text-[10px] text-slate-400 dark:text-slate-500">
-                              {expectedWeeklyHours}h/w
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex" style={{ width: totalWidth }}>
-                          {weeks.map((week, weekIndex) => {
-                            const minutes = hoursMap.get(weekIndex) ?? 0;
-                            const hours = minutes / 60;
-                            const isCurrentWeek = weekIndex === currentWeekIndex;
-
-                            // Determine color based on expected hours
-                            let colorClass = "text-slate-600 dark:text-slate-300";
-                            if (expectedWeeklyHours && hours > 0) {
-                              const fractionOfWeek = week.daysInWeek / 7;
-                              const weekExpected = expectedWeeklyHours * fractionOfWeek;
-                              const diff = hours - weekExpected;
-                              if (diff > 2) {
-                                colorClass = "text-rose-600 dark:text-rose-400 font-medium";
-                              } else if (diff < -2) {
-                                colorClass = "text-amber-600 dark:text-amber-400";
-                              } else if (Math.abs(diff) <= 2) {
-                                colorClass = "text-emerald-600 dark:text-emerald-400";
-                              }
-                            }
-
-                            return (
-                              <div
-                                key={week.weekNum}
-                                data-testid={`hours-${clinician.id}-w${week.weekNum}`}
-                                className={cx(
-                                  "flex items-center justify-center border-r border-slate-100 text-[11px] dark:border-slate-800",
-                                  isCurrentWeek && "bg-sky-50/70 dark:bg-sky-900/20",
-                                  colorClass,
-                                )}
-                                style={{ width: WEEK_WIDTH, height: ROW_HEIGHT }}
-                              >
-                                {formatHours(minutes)}
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div
-                          data-testid={`hours-${clinician.id}-total`}
-                          className="sticky right-0 z-40 flex items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[11px] font-semibold text-slate-700 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200"
-                          style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                        >
-                          {formatHours(yearlyTotal)}
-                        </div>
-                      </div>
-
-                      {/* Expected row (if contract hours set) */}
-                      {expectedWeeklyHours && (
-                        <div className="flex border-b border-slate-100 dark:border-slate-800">
-                          <div
-                            className={cx(
-                              "sticky left-0 z-40 flex items-center border-r border-slate-200 px-3 dark:border-slate-700",
-                              stickyBg,
-                            )}
-                            style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                          >
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500">Expected</span>
-                          </div>
-                          <div className="flex" style={{ width: totalWidth }}>
-                            {weeks.map((week, weekIndex) => {
-                              const isCurrentWeek = weekIndex === currentWeekIndex;
-                              const fractionOfWeek = week.daysInWeek / 7;
-                              const weekExpected = expectedWeeklyHours * fractionOfWeek;
-                              return (
-                                <div
-                                  key={week.weekNum}
-                                  className={cx(
-                                    "flex items-center justify-center border-r border-slate-100 text-[10px] text-slate-400 dark:border-slate-800 dark:text-slate-500",
-                                    isCurrentWeek && "bg-sky-50/50 dark:bg-sky-900/10",
-                                  )}
-                                  style={{ width: WEEK_WIDTH, height: ROW_HEIGHT }}
-                                >
-                                  {weekExpected === expectedWeeklyHours ? expectedWeeklyHours : weekExpected.toFixed(1)}
-                                </div>
-                              );
-                            })}
-                          </div>
-                          <div
-                            className="sticky right-0 z-40 flex items-center justify-center border-l-2 border-slate-300 bg-slate-100 text-[10px] text-slate-500 dark:border-slate-600 dark:bg-slate-800 dark:text-slate-400"
-                            style={{ width: TOTAL_COLUMN_WIDTH, minWidth: TOTAL_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                          >
-                            {totalExpected?.toFixed(0)}
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Difference row (if contract hours set) */}
-                      {expectedWeeklyHours && (
-                        <div className="flex border-b border-slate-100 dark:border-slate-800">
-                          <div
-                            className={cx(
-                              "sticky left-0 z-40 flex items-center border-r border-slate-200 px-3 dark:border-slate-700",
-                              stickyBg,
-                            )}
-                            style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                          >
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500">Difference</span>
-                          </div>
-                          <div className="flex" style={{ width: totalWidth }}>
-                            {weeks.map((week, weekIndex) => {
-                              const minutes = hoursMap.get(weekIndex) ?? 0;
-                              const hours = minutes / 60;
-                              const fractionOfWeek = week.daysInWeek / 7;
-                              const weekExpected = expectedWeeklyHours * fractionOfWeek;
-                              const diff = hours - weekExpected;
-                              const isCurrentWeek = weekIndex === currentWeekIndex;
-
-                              let colorClass = "text-slate-400 dark:text-slate-500";
-                              if (hours > 0) {
-                                if (diff > 2) {
-                                  colorClass = "text-rose-600 dark:text-rose-400";
-                                } else if (diff < -2) {
-                                  colorClass = "text-amber-600 dark:text-amber-400";
-                                } else {
-                                  colorClass = "text-emerald-600 dark:text-emerald-400";
-                                }
-                              }
-
-                              return (
-                                <div
-                                  key={week.weekNum}
-                                  className={cx(
-                                    "flex items-center justify-center border-r border-slate-100 text-[10px] dark:border-slate-800",
-                                    isCurrentWeek && "bg-sky-50/50 dark:bg-sky-900/10",
-                                    colorClass,
-                                  )}
-                                  style={{ width: WEEK_WIDTH, height: ROW_HEIGHT }}
-                                >
-                                  {hours === 0 ? "–" : (diff > 0 ? `+${diff.toFixed(1)}` : diff.toFixed(1))}
-                                </div>
-                              );
-                            })}
-                          </div>
-                          <YearlyDiffCell yearlyDiff={yearlyDiff} />
-                        </div>
-                      )}
-
-                      {/* Cumulative row (if contract hours set) */}
-                      {expectedWeeklyHours && (
-                        <div className="flex">
-                          <div
-                            className={cx(
-                              "sticky left-0 z-40 flex items-center border-r border-slate-200 px-3 dark:border-slate-700",
-                              stickyBg,
-                            )}
-                            style={{ width: LEFT_COLUMN_WIDTH, minWidth: LEFT_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                          >
-                            <span className="text-[10px] text-slate-400 dark:text-slate-500">Cumulative</span>
-                          </div>
-                          <div className="flex" style={{ width: totalWidth }}>
-                            {(() => {
-                              let cumulative = 0;
-                              return weeks.map((week, weekIndex) => {
-                                const minutes = hoursMap.get(weekIndex) ?? 0;
-                                const hours = minutes / 60;
-                                const fractionOfWeek = week.daysInWeek / 7;
-                                const weekExpected = expectedWeeklyHours * fractionOfWeek;
-                                cumulative += hours - weekExpected;
-                                const isCurrentWeek = weekIndex === currentWeekIndex;
-
-                                let colorClass = "text-slate-400 dark:text-slate-500";
-                                if (cumulative > 8) {
-                                  colorClass = "text-rose-600 dark:text-rose-400 font-medium";
-                                } else if (cumulative < -8) {
-                                  colorClass = "text-amber-600 dark:text-amber-400 font-medium";
-                                } else if (cumulative !== 0) {
-                                  colorClass = "text-slate-600 dark:text-slate-300";
-                                }
-
-                                return (
-                                  <div
-                                    key={week.weekNum}
-                                    className={cx(
-                                      "flex items-center justify-center border-r border-slate-100 text-[10px] dark:border-slate-800",
-                                      isCurrentWeek && "bg-sky-50/50 dark:bg-sky-900/10",
-                                      colorClass,
-                                    )}
-                                    style={{ width: WEEK_WIDTH, height: ROW_HEIGHT }}
-                                  >
-                                    {cumulative === 0 ? "–" : (cumulative > 0 ? `+${cumulative.toFixed(1)}` : cumulative.toFixed(1))}
-                                  </div>
-                                );
-                              });
-                            })()}
-                          </div>
-                          <YearlyDiffCell yearlyDiff={yearlyDiff} />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-
-                {/* Empty state if no clinicians */}
-                {clinicians.length === 0 && (
-                  <div className="flex h-32 items-center justify-center text-sm text-slate-400 dark:text-slate-500">
-                    No clinicians added yet.
-                  </div>
-                )}
-              </div>
-            </div>
+          <div className="flex flex-wrap items-center justify-between gap-x-6 gap-y-2 border-t border-slate-100 px-6 py-2.5 dark:border-slate-800">
+            <HoursLegend showUnplanned={view === "year"} />
+            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              A week counts once half of the team&rsquo;s target hours are planned. Vacation lowers the
+              target; on target = within the person&rsquo;s tolerance (default ± 5 h a week).
+            </p>
           </div>
         </div>
       </div>

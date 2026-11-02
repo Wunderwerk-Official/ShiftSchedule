@@ -13,8 +13,7 @@ from .db import _get_connection, _utcnow_iso
 from .models import AppState, Assignment
 from .snapshots import _write_auto_backup
 from .state import _load_state, _normalize_state, _save_state
-from .validation import validate_assignments
-from .constraint_policy import violation_key, is_new_or_worsened
+from .constraint_policy import new_violations
 
 
 def planning_fingerprint(state: AppState) -> str:
@@ -52,22 +51,57 @@ def _candidate(state, run):
 
 
 def _new_violations(state, baseline, combined, only_required):
-    check = lambda plan: validate_assignments(state, plan, only_fill_required=only_required).violations
-    baseline_context = {violation_key(v): v.context for v in check(baseline)}
-    return [asdict(v) for v in check(combined)
-            if is_new_or_worsened(v, baseline_context)]
+    """Dicts of new or worse violations (kept for callers and tests)."""
+    return [asdict(v) for v in new_violations(state, baseline, combined, only_fill_required=only_required)]
+
+
+def _agent_debug(run):
+    result = run.get("result") or {}
+    return (result.get("debugInfo") or {}).get("agent") or {}
+
+
+def cut_short(run):
+    """The run itself stopped early: aborted, or the agent ended on a time or
+    iteration budget, a provider failure or a refusal (any stopReason but
+    'completed' and 'partial'). 'partial' is no stop: the days it skipped or
+    left unchecked are listed per day (daysSkipped, daysIncomplete, pending
+    checks), and a day the model skipped that the repair and the final
+    checks completed is finished. Results without an agent block have no
+    stopReason. The frontend's runStoppedEarly uses the same rule."""
+    agent = _agent_debug(run)
+    return run.get("status") == "aborted" or agent.get("stopReason") not in (None, "completed", "partial")
+
+
+def _reported_open_slots(agent):
+    return [g for g in (agent.get("unsolved") or {}).get("open_slots", []) if g.get("dateISO")]
+
+
+def unfinished_dates(run):
+    """Days the run did not finish: skipped, incomplete, a required check
+    still pending, or open positions the run never finished checking (their
+    check ran out of time, or the run was cut short). Open positions alone do
+    not count: a run that completed every check can still leave positions
+    nobody may legally fill."""
+    agent = _agent_debug(run)
+    pending_checks = [t["dateISO"] for t in (agent.get("tasks") or {}).get("tasks", [])
+                      if t.get("kind") == "required_check" and t.get("status") not in ("complete", "unverified")
+                      and t.get("dateISO")]
+    dates = set(pending_checks + agent.get("daysSkipped", []) + agent.get("daysIncomplete", []))
+    open_dates = {g["dateISO"] for g in _reported_open_slots(agent)}
+    # An "unverified" check ran out of time at the final revision: harmless
+    # on a fully staffed day (no finding exists), but it proves nothing about
+    # that day's open positions. Coverage gaps are still caught by the apply
+    # gate's own gap computation.
+    dates |= open_dates & set(agent.get("daysUnverified", []))
+    if cut_short(run):
+        dates |= open_dates
+    return sorted(dates)
 
 
 def result_safety(run):
     result = run.get("result") or {}
-    agent = (result.get("debugInfo") or {}).get("agent") or {}
-    # "unverified" checks ran out of time at the final revision: no finding
-    # exists for them, so they do not make a day incomplete. Coverage gaps
-    # are still caught by the apply gate's own gap computation.
-    pending_checks = [t["dateISO"] for t in (agent.get("tasks") or {}).get("tasks", [])
-                      if t.get("kind") == "required_check" and t.get("status") not in ("complete", "unverified")
-                      and t.get("dateISO")]
-    dates = sorted(set(pending_checks + agent.get("daysSkipped", []) + agent.get("daysIncomplete", [])
+    agent = _agent_debug(run)
+    dates = sorted(set(unfinished_dates(run)
                        + [g["dateISO"] for g in agent.get("unsolved", {}).get("open_slots", [])]))
     empty_abort = run["status"] == "aborted" and not any(
         run["start_iso"] <= a.get("dateISO", "") <= run["end_iso"]
@@ -75,6 +109,25 @@ def result_safety(run):
         for a in result.get("assignments", [])
     )
     return empty_abort, dates
+
+
+def _partial_lead(run, gaps, missing, stopped):
+    """First sentence of the partial-draft prompt. Only a run that finished
+    every check is said to have finished, and the run log is named only for
+    exactly the gaps that run reported."""
+    if stopped:
+        state = f"{missing} required position(s) remain open" if missing else \
+            "every required position in the range is filled now"
+        return f"This draft is incomplete or was stopped; {state}."
+    agent = _agent_debug(run)
+    if not agent:  # CP-SAT or heuristic run: no closing report to point to
+        return f"{missing} required position(s) remain open in this draft."
+    reported = sorted((g["dateISO"], g.get("time"), g.get("missing")) for g in _reported_open_slots(agent))
+    if reported == sorted((g.dateISO, f"{g.start}-{g.end}", g.missing) for g in gaps):
+        return (f"The planner finished, but {missing} required position(s) remain open; "
+                "the run log lists each one.")
+    return (f"{missing} required position(s) remain open after applying; the calendar changed since "
+            "the run, so its log may list different ones.")
 
 
 def apply_stored_run(username, run_id, *, force=False, allow_partial=False, expected_revision=None,
@@ -92,7 +145,7 @@ def apply_stored_run(username, run_id, *, force=False, allow_partial=False, expe
         run = solver_runs._row_to_dict(row)
         if run["status"] not in solver_runs.APPLICABLE_STATUSES or not run.get("result"):
             raise HTTPException(409, f"Run is {run['status']} and has no applicable result.")
-        empty_abort, incomplete_dates = result_safety(run)
+        empty_abort, _listed_dates = result_safety(run)
         if empty_abort:
             raise HTTPException(409, detail={"code": "empty_result", "message":
                 "This run was stopped before it produced a plan. The existing calendar has been kept."})
@@ -129,17 +182,23 @@ def apply_stored_run(username, run_id, *, force=False, allow_partial=False, expe
         candidate_state = state.model_copy(update={"assignments": combined})
         gaps = open_slots(build_scoring_context(candidate_state, run["start_iso"],
                           run["end_iso"], only_fill_required=only_required), [])
-        incomplete_dates = sorted(set(incomplete_dates + [g.dateISO for g in gaps]))
+        # The gate's own gaps are authoritative for the calendar after
+        # applying; the run's stored open-slot dates may be stale (filled by
+        # hand since). Unfinished days need a look either way.
+        unfinished = unfinished_dates(run)
+        incomplete_dates = sorted(set(unfinished + [g.dateISO for g in gaps]))
         if not allow_partial and (run["status"] == "aborted" or incomplete_dates):
             dates = ", ".join(incomplete_dates[:12]) or "coverage not verified after interruption"
             if len(incomplete_dates) > 12:
                 dates += f", and {len(incomplete_dates) - 12} more days"
+            missing = sum(g.missing for g in gaps)
+            stopped = cut_short(run) or bool(unfinished)
             raise HTTPException(409, detail={"code": "partial_result", "message":
-                f"This draft is incomplete or was stopped. {sum(g.missing for g in gaps)} required "
-                f"position(s) remain open. Affected dates: {dates}. Applying replaces the entire "
-                f"requested range and removes {removed} existing assignment(s). "
-                "Apply this partial draft anyway?", "revision": state.revision,
-                "dates": incomplete_dates, "removed_assignments": removed})
+                f"{_partial_lead(run, gaps, missing, stopped)} Affected dates: {dates}. Applying replaces "
+                f"the entire requested range and removes {removed} existing assignment(s). "
+                + ("Apply this partial draft anyway?" if stopped else "Apply this draft with open positions?"),
+                "revision": state.revision,
+                "dates": incomplete_dates, "removed_assignments": removed, "stopped": stopped})
 
         _write_auto_backup(conn, username, state, name="Auto-backup before applying plan")
         state.assignments = combined
