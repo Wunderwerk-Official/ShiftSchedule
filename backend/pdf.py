@@ -1,6 +1,10 @@
 import json
 import logging
 import os
+import signal
+import threading
+import time
+from datetime import date, timedelta
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response
@@ -33,11 +37,65 @@ FRONTEND_BASE_URL = (
 # build is not installed but a system/pre-provisioned Chromium exists.
 PDF_CHROMIUM_EXECUTABLE = os.environ.get("PDF_CHROMIUM_EXECUTABLE", "").strip()
 
+# Time limit of a whole render (browser start, page load, PDF). page.pdf() has
+# no timeout of its own and the proxy waits an hour, so a runaway render would
+# hold the request (and slow the server) for as long as it takes.
+PDF_RENDER_TIMEOUT_SECONDS = float(os.environ.get("PDF_RENDER_TIMEOUT_SECONDS", "180"))
+# Page load and readiness each get at most this long (within the limit above).
+_PAGE_STEP_TIMEOUT_MS = 20000
+
 
 def _launch_chromium(playwright):
     if PDF_CHROMIUM_EXECUTABLE:
         return playwright.chromium.launch(executable_path=PDF_CHROMIUM_EXECUTABLE)
     return playwright.chromium.launch()
+
+
+def _browser_pid(browser) -> int:
+    info = browser.new_browser_cdp_session().send("SystemInfo.getProcessInfo")
+    return next(proc["id"] for proc in info["processInfo"] if proc["type"] == "browser")
+
+
+class _RenderDeadline:
+    """Kills the browser when the render runs past its time limit: the pending
+    Playwright call (page.pdf() included) then fails at once."""
+
+    def __init__(self, seconds: float):
+        self._end = time.monotonic() + seconds
+        self._timer: Optional[threading.Timer] = None
+        self.expired = False
+
+    def step_timeout_ms(self) -> float:
+        # At least 1 ms: Playwright reads a timeout of 0 as "no limit".
+        remaining_ms = (self._end - time.monotonic()) * 1000
+        return max(1.0, min(_PAGE_STEP_TIMEOUT_MS, remaining_ms))
+
+    def watch(self, browser_pid: int) -> None:
+        self._timer = threading.Timer(
+            max(0.0, self._end - time.monotonic()), self._kill, args=(browser_pid,),
+        )
+        self._timer.daemon = True
+        self._timer.start()
+
+    def _kill(self, browser_pid: int) -> None:
+        self.expired = True
+        try:
+            os.kill(browser_pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def cancel(self) -> None:
+        if self._timer is not None:
+            self._timer.cancel()
+
+
+def _week_start(start: str) -> date:
+    """Monday of the week containing `start`: the print pages show whole weeks."""
+    start_iso = _parse_date_input(start)
+    if not start_iso:
+        raise HTTPException(status_code=400, detail="Start date required.")
+    day = date.fromisoformat(start_iso)
+    return day - timedelta(days=day.weekday())
 
 
 def _export_snapshot(current_user: UserPublic, expected_revision: Optional[str]):
@@ -74,11 +132,13 @@ def _render_pdf(
     if portrait:
         print_path = f"{print_path}&layout=portrait"
     print_url = f"{FRONTEND_BASE_URL.rstrip('/')}{print_path}"
+    deadline = _RenderDeadline(PDF_RENDER_TIMEOUT_SECONDS)
 
     try:
         with sync_playwright() as playwright:
             browser = _launch_chromium(playwright)
             try:
+                deadline.watch(_browser_pid(browser))
                 # Viewport = the A4 page at 96 DPI in the chosen orientation.
                 viewport = (
                     {"width": _A4_SHORT_PX, "height": _A4_LONG_PX}
@@ -91,8 +151,10 @@ def _render_pdf(
                     "localStorage.setItem('authToken', %s);" % json.dumps(token)
                 )
                 page.emulate_media(media="print")
-                page.goto(print_url, wait_until="networkidle", timeout=20000)
-                page.wait_for_function("window.__PDF_READY__ === true", timeout=20000)
+                page.goto(print_url, wait_until="networkidle", timeout=deadline.step_timeout_ms())
+                page.wait_for_function(
+                    "window.__PDF_READY__ === true", timeout=deadline.step_timeout_ms(),
+                )
                 # Frontend already scales content to fit A4 printable area with margins,
                 # so we use scale=1.0 and no additional PDF margins
                 pdf_bytes = page.pdf(
@@ -103,11 +165,18 @@ def _render_pdf(
                     margin={"top": "0mm", "right": "0mm", "bottom": "0mm", "left": "0mm"},
                 )
             finally:
+                deadline.cancel()
                 browser.close()
     except PlaywrightTimeoutError as exc:
         logger.warning("PDF render timed out for %s", print_url)
         raise HTTPException(status_code=504, detail="PDF render timed out.") from exc
     except Exception as exc:
+        if deadline.expired:
+            logger.warning(
+                "PDF render for %s exceeded %s s; browser stopped",
+                print_url, PDF_RENDER_TIMEOUT_SECONDS,
+            )
+            raise HTTPException(status_code=504, detail="PDF render timed out.") from exc
         # HTTPException causes are not logged by FastAPI; keep the diagnosis.
         logger.exception("PDF render failed for %s", print_url)
         raise HTTPException(status_code=500, detail="PDF render failed.") from exc
@@ -128,11 +197,9 @@ def export_week_pdf(
     authorization: Optional[str] = Header(default=None),
     current_user: UserPublic = Depends(_get_current_user),
 ):
-    start_iso = _parse_date_input(start)
-    if not start_iso:
-        raise HTTPException(status_code=400, detail="Start date required.")
+    monday = _week_start(start)
     return _render_pdf(
-        f"/print/week?start={start_iso}", f"shift-planner-{start_iso}.pdf",
+        f"/print/week?start={monday}", f"shift-planner-{monday}.pdf",
         current_user, authorization, expected_revision, layout,
     )
 
@@ -146,10 +213,11 @@ def export_weeks_pdf(
     authorization: Optional[str] = Header(default=None),
     current_user: UserPublic = Depends(_get_current_user),
 ):
-    start_iso = _parse_date_input(start)
-    if not start_iso:
-        raise HTTPException(status_code=400, detail="Start date required.")
+    monday = _week_start(start)
+    # Named after the days it shows, like the app's download (Monday to Sunday).
+    last_sunday = monday + timedelta(days=7 * weeks - 1)
     return _render_pdf(
-        f"/print/weeks?start={start_iso}&weeks={weeks}", f"shift-planner-{start_iso}-{weeks}w.pdf",
+        f"/print/weeks?start={monday}&weeks={weeks}",
+        f"shift-planner-{monday}-to-{last_sunday}.pdf",
         current_user, authorization, expected_revision, layout,
     )
