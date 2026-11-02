@@ -1930,8 +1930,10 @@ class PlanToolExecutor:
         """Depth-1 rearrangement for the day's unfillable open slots: free a
         qualified clinician by unassigning ONE of their own working-copy
         assignments, put a substitute on the vacated slot, put the freed
-        clinician on the stuck slot. Only net-gain, fully gate-validated
-        batches are offered — the model applies them verbatim.
+        clinician on the stuck slot. Only fully gate-validated batches that
+        improve the plan are offered — a substitute covers the vacated slot,
+        or, without one, the vacated slot keeps its target or ranks lower in
+        the section order (v1.81) — and the model applies them verbatim.
 
         This is what a human planner does before declaring a hole
         unfillable: 'X could do it if Y took over X's afternoon.'"""

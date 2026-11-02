@@ -71,13 +71,18 @@ export default function HelpView() {
           <p>
             The AI plans the selected timeframe day by day: on-call slots first, then
             the sections in their order, every person with a contiguous block of work.
-            It fills required slots only. The section order is strict: a required slot
+            It fills required slots only. The order under Settings → Planning rules
+            &amp; AI → Section priority when short-staffed is strict: a required slot
             in a section higher in the list comes before any number of slots further
-            down, even if more slots stay open in total. If required slots stay open,
-            it then moves shifts between the days of the timeframe, filling the
+            down, even if more slots stay open in total. The on-call section counts at
+            its own place in that list: placed below other sections, its duties can
+            stay open so that those sections are staffed. If required slots stay open,
+            the AI then moves shifts between the days of the timeframe, filling the
             sections from the top of the list. Plan whole weeks together:
             days outside the timeframe stay as they are and keep using weekly hours.
-            Model and instructions are set in Settings → Planning rules &amp; AI.
+            The basic plan without AI (no key, budget used up, AI error) does not
+            follow the order. Model and instructions are set in Settings → Planning
+            rules &amp; AI.
           </p>
 
           <div className="mt-3 grid gap-3 md:grid-cols-2">

@@ -506,3 +506,33 @@ def test_rescue_in_distribute_all_mode_moves_a_person_off_a_slot_above_its_targe
     rescue = result["rescues"][0]
     assert rescue["substitute"] is None and rescue["leaves_open"] is None
     assert rescue["improves_best"]
+
+
+def test_two_sections_of_one_day_are_worked_top_section_first():
+    """Review of v1.81: across two ordinary sections the section rank
+    decides before scarcity and start time, in the tools, the open-slot list
+    and the direct strategy's digest."""
+    from backend.agent import direct
+    from backend.scoring import open_slots
+
+    clinicians = [make_clinician(f"c{i}", f"Person {i}", ["TOP", "LOW"], working_hours_per_week=40) for i in range(3)]
+    slots = [make_template_slot("LOW", block_id="LOW", start_time="08:00", end_time="12:00"),
+             make_template_slot("TOP", block_id="TOP", start_time="12:00", end_time="16:00")]
+    ex = executor(section_state(clinicians, slots, ["TOP", "LOW"]))
+    priorities = run(ex, "get_day_priorities", dateISO=MON)
+    assert [(e["section"], e["section_rank"]) for e in priorities["slots"]] == [("TOP", 1), ("LOW", 2)]
+    assert run(ex, "suggest_day_blocks", dateISO=MON)["section"] == "TOP"
+    assert [o.slot_id for o in open_slots(ex.ctx, [])] == ["TOP", "LOW"]
+    lines = direct.open_place_lines(ex)
+    assert "| TOP |" in lines[0] and "| rank 1 |" in lines[0] and "| rank 2 |" in lines[1]
+
+
+def test_rescue_never_moves_a_person_inside_one_section_without_a_substitute():
+    """A 2-move rescue only helps when the vacated slot ranks lower; inside
+    one section it would just move the gap."""
+    state = section_state([make_clinician("a", "Alice", ["A"], working_hours_per_week=40)],
+                          [make_template_slot("A1", block_id="A", start_time="08:00", end_time="12:00"),
+                           make_template_slot("A2", block_id="A", start_time="10:00", end_time="14:00")], ["A"])
+    ex = executor(state, [make_assignment("d1", "A1", MON, "a", source="solver")])
+    result = run(ex, "suggest_rescue_moves", dateISO=MON)
+    assert result["rescues"] == [] and result["no_rescue_found"]

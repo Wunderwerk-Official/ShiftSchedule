@@ -974,8 +974,9 @@ planner works, with four extra tools (`get_day_priorities`,
    of the WHOLE range first — duties bind rest days and weekly-hours
    budgets, so placed last they starve.
 2. **One fresh conversation per day**: slots are worked in PROCESSING
-   order (single-candidate slots, then on-call, then the template's slot
-   priority — never chronologically); `suggest_day_blocks` auto-selects
+   order (single-candidate slots, then on-call, then the section rank from
+   Settings → Section priority, strict since v1.81 — never
+   chronologically); `suggest_day_blocks` auto-selects
    the most urgent slot and returns pre-validated contiguous work blocks
    ("Anschlussverwendung") per candidate, with `overloaded=true` marking
    >16h days (a night duty stacked on a day duty is a last resort).
@@ -989,8 +990,9 @@ planner works, with four extra tools (`get_day_priorities`,
 3. **Rescue**: when a day's leftovers have `eligible_count 0`,
    `suggest_rescue_moves` searches depth-1 rearrangements of the agent's
    OWN placements (blocker out, substitute in, freed clinician onto the
-   stuck slot) as pre-validated net-gain batches before anything is
-   declared unfillable.
+   stuck slot) as pre-validated batches before anything is declared
+   unfillable; since v1.81 also without a substitute when the vacated slot
+   ranks lower in the section order (`leaves_open`).
 4. **Final review** (v1.40): once the day is complete,
    `suggest_balance_moves` re-reads it like a human planner — over-long
    days shed edge slots to less-loaded colleagues, mini-stint days
@@ -1068,7 +1070,7 @@ Inspection tools (both strategies):
 
 | Tool | What it measures | Key output fields |
 |---|---|---|
-| `get_plan_overview` | Whole-plan status: the lexicographic quality tiers, coverage, best snapshot so far | tiers (hard/open/short/soft/hours/bonus), open counts, violation counts by code |
+| `get_plan_overview` | Whole-plan status: the lexicographic quality tiers, coverage, best snapshot so far | tiers (hard/open by section order/open/short/soft/hours/bonus), the `section_order` legend, open counts, violation counts by code |
 | `get_violations` | Current violations of fixed context + working copy, filterable by severity/code | code, message, clinicianId, dateISO, `new` (blocks acceptance), `repairable`, `over_by_hours` (weekly) |
 | `list_open_slots` | Slot instances below required staffing | slot_key, section, date, time, missing (paginated) |
 | `list_candidates_for_slot` | Per-clinician legality for 1–8 slots against the CURRENT plan (exact apply gate) | eligible, reasons (violation codes), `week_over_cap_hours`, day_hours, adjacent_to_existing, week_hours, contract_hours, ytd_worked_pct, prefers_section, window_fit |
@@ -1088,9 +1090,9 @@ Day-by-day-only tools (the day pipeline):
 
 | Tool | What it measures | Key output fields |
 |---|---|---|
-| `get_day_priorities` | One day's unfilled slots in PROCESSING order (single-candidate first, then on-call, then template priority, scarcest first) | slot_key, section, time, missing, priority, on_call, eligible_count, eligible_preview (≤20 shown + more_open_slots) |
-| `suggest_day_blocks` | For one open slot (auto-selected when only dateISO is passed): up to 6 legal candidates, each with their best contiguous work block starting there (chain capped at the contract workday, ≤10h; a mandatory window only bounds it; a PREFERENCE window also steers the chain's position — past its edge only until the daily minimum is met). `single: true` = duty mode, no chaining | block (slot keys), block_hours, day_hours_after, meets_daily_minimum + `daily_min_hours`, overloaded (>16h), `window_fit` + `preferred_window` (wish fit of the whole block; sort tie-break after the daily minimum), week_hours(_max), ytd_worked_pct; `day_complete` + unfillable_slots when nothing fillable remains |
-| `suggest_rescue_moves` | Depth-1 rearrangement search for eligible_count-0 slots: free a qualified person by moving ONE own placement, substitute covers the vacated slot | ready-to-apply 3-move batches, truly_unfillable, not_searched (cap/time cut) |
+| `get_day_priorities` | One day's unfilled slots in PROCESSING order (single-candidate first, then on-call, then section rank, scarcest first) | slot_key, section, time, missing, section_rank (1 = top), on_call, eligible_count, eligible_preview (≤20 shown + more_open_slots) |
+| `suggest_day_blocks` | For one open slot (auto-selected when only dateISO is passed): up to 6 legal candidates, each with their best contiguous work block starting there (chain capped at the contract workday, ≤10h; a mandatory window only bounds it; a PREFERENCE window also steers the chain's position — past its edge only until the daily minimum is met). `single: true` = duty mode, no chaining | block (slot keys), block_hours, day_hours_after, meets_daily_minimum + `daily_min_hours`, overloaded (>16h), `window_fit` + `preferred_window` (wish fit of the whole block; classic sort: a block reaching an open slot of a section above the selected one first, then the daily minimum, then this), week_hours(_max), ytd_worked_pct; `day_complete` + unfillable_slots when nothing fillable remains |
+| `suggest_rescue_moves` | Depth-1 rearrangement search for eligible_count-0 slots: free a qualified person by moving ONE own placement, substitute covers the vacated slot | ready-to-apply 3-move batches; 2-move batches without a substitute when the vacated slot ranks lower (`leaves_open`, v1.81) or keeps its target (distribute-all); truly_unfillable, not_searched (cap/time cut) |
 | `suggest_balance_moves` | End-of-day review: over-long days (> preferred span +1h) and mini-stint days (below daily minimum), with pre-validated handovers that keep both days contiguous | offers (batch, donor/receiver hours before→after, `receiver_overshoot_hours` ≤1h tagged trade-offs), overlong_days, mini_stint_days, balanced flag |
 
 Long tool searches (rescue, balance) check the run's wall-clock deadline
@@ -3515,9 +3517,10 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   The gate (`improves_best`), the best snapshot and `restore_best` compare
   the tuple and need no change, so every part of the agent that decides by
   quality follows the strict order.
-- **Day loop**: `get_day_priorities`, `suggest_day_blocks`' auto-select and
-  the day digest order a day's slots by single candidate, on-call, then
-  `section_rank` (1 = top; the digest shows `rank N` instead of `prio N`).
+- **Day loop**: `get_day_priorities` and `suggest_day_blocks`' auto-select
+  order a day's slots by single candidate, on-call, then `section_rank` (1 =
+  top); the day digest (which does not know eligibility) by on-call, then
+  rank, and shows `rank N` instead of `prio N`.
   The per-slot `order_weight` they used is capped at 100, so with more than
   100 template slots the top sections tied, and it ranked the shifts of one
   section among each other. Classic candidates of `suggest_day_blocks` keep

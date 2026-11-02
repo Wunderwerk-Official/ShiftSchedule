@@ -296,8 +296,9 @@ export default function AutomatedPlanningPanel({
               Distribute-all stays available in the backend
               (only_fill_required=false) for when it returns. */}
           <div className="text-xs text-slate-400 dark:text-slate-500">
-            The AI plans each day like a human: on-call and priority slots
-            first, every person placed with a contiguous block of work.
+            The AI plans each day like a human: on-call slots first, then the
+            sections in their priority order (strict), every person placed with a
+            contiguous block of work.
             Model &amp; instructions: Settings → Planning rules &amp; AI.
           </div>
         </div>

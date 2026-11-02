@@ -448,6 +448,22 @@ def test_repair_note_does_not_claim_a_section_change_that_did_not_happen():
         "section did not change).")
 
 
+def test_strict_repair_reports_the_section_it_staffed_below_the_top():
+    """Review of v1.81: nobody is qualified for TOP; Pat moves up from LOW to
+    MID. The report and the note name MID, not the top section."""
+    state = strict_state(["top", "mid", "low"], [("slot-top-mon", "top", "mon", "08:00", "16:00"),
+                                                 ("slot-mid-tue", "mid", "tue", "08:00", "16:00"),
+                                                 ("slot-low-mon", "low", "mon", "08:00", "16:00")],
+                         [("pat", ["mid", "low"], 8, [])])
+    plan, report, executor = strict_repair(state, {("slot-low-mon", MON_W45, "pat")}, MON_W45, TUE_W45)
+    assert plan == {("slot-mid-tue", TUE_W45, "pat")}
+    assert (report["status"], report["section"]) == ("applied", "MID"), report
+    assert report["sections_changed"] == [["MID", 1, 0], ["LOW", 0, 1]]
+    assert cross_day.repair_note(report) == (
+        "Cross-day repair changed 2 assignment(s) across days to staff higher sections first "
+        "(2 -> 2 open; MID 1 -> 0, LOW 0 -> 1).")
+
+
 def test_section_vector_has_one_entry_per_section_and_sums_to_the_count():
     state = two_block_cor_state(friday_block_first=True)
     executor = greedy_executor(state)
