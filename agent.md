@@ -1002,11 +1002,12 @@ planner works, with four extra tools (`get_day_priorities`,
 5. **Cross-day coverage repair** (v1.80, `backend/agent/cross_day.py`):
    after the last day and before the final range review, when required
    places are still open and the model placed something, CP-SAT re-solves
-   the whole range from the current plan (fewest open required places,
-   then fewest changed assignments, at most 60) and applies the result
-   only through the gate (valid batch preview that improves the best
-   plan). It trades weekly hours between days of one ISO week, which no
-   per-day step can (see v1.80).
+   the whole range from the current plan (open required places section by
+   section from the top of the section order, strictly since v1.81, then
+   fewest changed assignments, at most 60) and applies the result only
+   through the gate (valid batch preview that improves the best plan). It
+   trades weekly hours between days of one ISO week, which no per-day step
+   can (see v1.80 and v1.81).
 6. **Zero-progress guard**: an empty day-by-day result never reaches the
    client — it falls back to a fresh heuristic draft
    (`AGENT_FALLBACK_SEED`).
@@ -3395,7 +3396,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   top slot and two lower ones open and the freed hours fit either the top
   slot or both lower ones, the repair fills the two; (c) the preference
   among equally full plans is a weighted sum, not strictly lexicographic
-  (two gaps one tier down can outweigh one gap at the top). Arena round 9
+  (two gaps one tier down can outweigh one gap at the top). (a)-(c) are done
+  in v1.81 (strict section order). Arena round 9
   ran before this rule.
 - **Merge review fixes** (four checks of the merge with main v1.74–v1.78):
   - Main reason per open slot: an absent person counts once, under the
@@ -3542,10 +3544,21 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   ("higher-ranked section left open" with the section when the vector got
   worse at its first differing entry); `priority_trade_down` and
   `missing_by_tier` are gone (the prefix rule contradicted the decision).
-  The report names the highest section staffed better (`section`); when the
-  total did not drop, the run note reads "Cross-day repair staffed X first
-  by changing N assignment(s) across days (a -> b open); the section order
-  comes before the count."
+  The report names the highest section staffed better (`section`) and every
+  section whose open count changed (`sections_changed`, top first); the run
+  note lists them ("Cross-day repair filled 1 more required position(s) by
+  changing 3 assignment(s) across days (2 -> 1 open; SENO 1 -> 0, ECHO 1 ->
+  0, COR 0 -> 1)."; when the total did not drop: "… changed N
+  assignment(s) across days to staff higher sections first (1 -> 2 open;
+  TOP 1 -> 0, LOW 0 -> 2)").
+- **Texts**: Settings' section priority help "If not every slot can be
+  filled, the AI staffs sections higher in this list first, even if that
+  leaves more slots open in total. A section counts at its first place in
+  the list."; Planning goals "Both keep all rules and fill required slots
+  first, strictly in the section priority order below."; "How the agent
+  plans" and the basic-plan notice ("It does not follow the section
+  priority.") say the same; the review prompt and the arena README's
+  decision rule follow the strict order.
 - **Resolved from v1.80's "Not done"**: a pure 1:1 trade upwards is an
   improvement; a higher section is staffed even when more positions stay
   open in total; the order is lexicographic, not a weighted sum.

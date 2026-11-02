@@ -64,7 +64,7 @@ const PLANNED_SHIFTS_DELETED =
 
 /** Helper text for the section priority order (Settings card and its dialog). */
 export const SECTION_PRIORITY_HELP =
-  "If not every slot can be filled, sections higher in this list are staffed first. Drag to change the order.";
+  "If not every slot can be filled, the AI staffs sections higher in this list first, even if that leaves more slots open in total. A section counts at its first place in the list. Drag to change the order.";
 
 // Tooltip of the Holiday day chip and column header.
 const HOLIDAY_DAY_TITLE = "Used instead of the weekday on every date in the Holidays list.";

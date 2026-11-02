@@ -462,7 +462,8 @@ export default function SettingsView({
                 </select>
               </label>
               <p className="text-xs text-slate-500 dark:text-slate-400">
-                Both fill required slots first and keep all rules. Classic then avoids short days
+                Both keep all rules and fill required slots first, strictly in the section priority
+                order below. Classic then avoids short days
                 and matches contract hours; Balanced also weighs fair weekend/night/on-call shares,
                 days off and fewer changes. On-call shares count only while “Rest days around
                 on-call duty” is on (that is where the on-call section is chosen).

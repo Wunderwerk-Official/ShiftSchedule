@@ -922,8 +922,9 @@ export default function SolverInfoModal({
                         and scarce slots are staffed first, every person is placed with a contiguous block
                         of work (no short stints, no 24-hour double duties), hours are balanced towards people
                         behind on their yearly target, and the free-text instructions from Settings → Planning rules &amp; AI
-                        are followed. The AI works with the plan data including names, and the hard rules
-                        can never be broken.
+                        are followed. When not every slot can be filled, sections higher in the section priority
+                        are staffed first, even if more slots stay open in total. The AI works with the plan data
+                        including names, and the hard rules can never be broken.
                       </p>
                       <p className="text-xs text-slate-500 dark:text-slate-400">
                         Longer date ranges or more people take more time. You can abort at any time and

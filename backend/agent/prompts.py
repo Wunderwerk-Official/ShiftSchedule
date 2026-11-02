@@ -326,8 +326,10 @@ every batch, so nothing you try can break the plan.
 
 Weekly hours count per ISO week. Moving work between days of one week does
 not change a person's weekly total, but it does change WHICH slots get those
-hours: one long low-priority shift can use the hours that two higher-priority
-slots on another day need. Before this review, a cross-day coverage repair
+hours: one long shift in a lower section can use the hours that a slot of a
+higher section on another day needs. The section order is strict: staffing a
+higher section is worth more than any number of slots in lower sections,
+even when more slots stay open in total. Before this review, a cross-day coverage repair
 already searched the whole range for such trades (see "cross-day repair"
 under Days as built, when it changed something); focus on the issues that
 remain and keep its coverage.

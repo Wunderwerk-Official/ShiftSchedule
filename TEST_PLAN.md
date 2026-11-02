@@ -306,7 +306,7 @@ npx playwright show-report
 - [x] `test_agent_tools.py`: processing order ranks one section once (`section_rank` 3, 2, 1, 1; the earlier start of section A first)
 - [x] `test_agent_quality_profile.py`: classic tuple of 7 fields starting `hard_violations_in_range, open_by_section_order, open_required_slots`; `QUALITY_VERSION` 4 in the overview
 
-**Frontend Tests**: `HelpView.test.tsx` (the strict rule in section 3).
+**Frontend Tests**: `HelpView.test.tsx` (the strict rule in section 3); the Settings help (`SECTION_PRIORITY_HELP`), the Planning goals text, "How the agent plans" and the basic-plan notice name the strict order; `test_cross_day_repair.py` pins the repair notes with the changed sections ("2 -> 1 open; SENO 1 -> 0, ECHO 1 -> 0, COR 0 -> 1"; "to staff higher sections first (1 -> 2 open; TOP 1 -> 0, LOW 0 -> 2)").
 
 ---
 

@@ -61,7 +61,8 @@ def first_difference(before, after) -> Optional[int]:
 
 def coverage_repair(executor, *, cancel_event, time_limit: float,
                     max_changes: int = MAX_CHANGES) -> dict:
-    """Fill more required positions by changing assignments across days.
+    """Staff more required positions, higher sections first (strictly), by
+    changing assignments across days.
 
     Returns a report: status ("applied", "complete", "no_improvement",
     "rejected", "no_time", "error"), open positions before/after, the number
@@ -155,6 +156,9 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
                   days=sorted({day for _slot, day, _cid in removed + added}),
                   # The highest-ranked section the repair staffed better.
                   section=ex.section_order[index] if index is not None else None,
+                  # [section, open before, open after], top first.
+                  sections_changed=[[ex.section_order[i], b, a]
+                                    for i, (b, a) in enumerate(zip(by_section_before, by_section_after)) if b != a],
                   quality_after=ex.quality_dict(ex.best_quality))
     return done("applied", solver_status=status)
 
@@ -164,9 +168,14 @@ def repair_note(report: Optional[dict]) -> Optional[str]:
     if not report or not report.get("applied"):
         return None
     before, after = int(report["open_before"]), int(report["open_after"])
-    changed = f"by changing {report['changes']} assignment(s) across days ({before} -> {after} open)"
+    sections = report.get("sections_changed") or []
+    shown = ", ".join(f"{name} {old} -> {new}" for name, old, new in sections[:4])
+    if len(sections) > 4:
+        shown += f" and {len(sections) - 4} more section(s)"
+    detail = f"{before} -> {after} open" + (f"; {shown}" if shown else "")
     if after < before:
-        return f"Cross-day repair filled {before - after} more required position(s) {changed}."
-    # Strict section order: a higher section staffed, even if more stay open.
-    section = report.get("section") or "a higher-ranked section"
-    return f"Cross-day repair staffed {section} first {changed}; the section order comes before the count."
+        return (f"Cross-day repair filled {before - after} more required position(s) by changing "
+                f"{report['changes']} assignment(s) across days ({detail}).")
+    # Strict section order: higher sections staffed, even if more stay open.
+    return (f"Cross-day repair changed {report['changes']} assignment(s) across days to staff "
+            f"higher sections first ({detail}).")

@@ -298,8 +298,11 @@ none the model skipped and the cross-day repair or the final audit filled; not a
 deployment or the 330-minute limit) and
 prompt_eval exited 0 (also no new hard violations, fixed context
 unchanged). Compare valid runs in this order: hard violations → open
-required slots → short days → soft-rule violations → working-hours
-deviation → preference fits; cost and duration only break ties.
+required slots section by section from the top of the section order
+(`quality_version` 4, v1.81: fewer open in a higher section wins, whatever
+the totals; reports up to version 3 ranked by the total) → short days →
+soft-rule violations → working-hours deviation → preference fits; cost and
+duration only break ties.
 
 Staged plan (`variant: baseline`, `strategy: day_by_day`,
 `implementation: deployed`, `scenario: base`, `provider: anthropic`):

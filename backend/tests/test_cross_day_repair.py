@@ -297,9 +297,10 @@ def test_strict_order_unstaffs_two_lower_slots_for_one_higher():
     assert (report["status"], report["open_before"], report["open_after"]) == ("applied", 1, 2), report
     assert report["section"] == "TOP"
     assert executor.quality_dict(executor.best_quality)["open_by_section_order"] == [0, 2]
+    assert report["sections_changed"] == [["TOP", 1, 0], ["LOW", 0, 2]]
     assert cross_day.repair_note(report) == (
-        "Cross-day repair staffed TOP first by changing 3 assignment(s) across days (1 -> 2 open); "
-        "the section order comes before the count.")
+        "Cross-day repair changed 3 assignment(s) across days to staff higher sections first "
+        "(1 -> 2 open; TOP 1 -> 0, LOW 0 -> 2).")
 
 
 def test_strict_order_gives_freed_hours_to_the_higher_slot():
@@ -399,7 +400,9 @@ def test_coverage_repair_fills_friday_and_keeps_fixed_history():
     assert identities(executor) == FRIDAY_PLAN
     assert executor.fixed_assignments == fixed_before
     assert executor.best_quality < before
-    assert "filled 1 more required position(s) by changing 3 assignment(s)" in cross_day.repair_note(report)
+    assert cross_day.repair_note(report) == (
+        "Cross-day repair filled 1 more required position(s) by changing 3 assignment(s) across days "
+        "(2 -> 1 open; SENO 1 -> 0, ECHO 1 -> 0, COR 0 -> 1).")
 
 
 def test_coverage_repair_has_nothing_to_do_on_a_complete_plan():

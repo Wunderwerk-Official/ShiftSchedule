@@ -157,7 +157,9 @@ class ScoringContext:
         ) = _build_slot_contexts_and_intervals(state)
 
         # Priority weight per slot: template order, same formula as
-        # solver._add_coverage_constraints.
+        # solver._add_coverage_constraints (classic optimizer and the balanced
+        # open_priority_points; per slot, capped at 100). Not the section
+        # rank: that is section_index_by_slot_id below.
         total_slots = len(slot_contexts)
         self.order_weight_by_slot_id: Dict[str, int] = {
             ctx["slot_id"]: min(100, max(1, total_slots - index))
