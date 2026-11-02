@@ -3,6 +3,7 @@ import { Buffer } from "node:buffer";
 import { expect, test } from "./fixtures";
 import { attachStepScreenshot } from "./utils/screenshots";
 import { fetchAuthToken, seedAuthToken } from "./utils/auth";
+import { applyNewestRun } from "./utils/run-inbox";
 
 const API_BASE = process.env.PLAYWRIGHT_API_URL ?? "http://localhost:8000";
 const UI_USERNAME = process.env.E2E_USERNAME ?? "testuser";
@@ -240,6 +241,18 @@ const weekStart = startOfWeek(today);
 const testDateISO = toISODate(weekStart);
 const slotRowId = slotRowIdForDate(classRowId, testDateISO);
 
+// "Run" no longer fills the calendar directly: the result waits in the run
+// inbox until it is applied (applyNewestRun). The fixture puts Dr. Test on the
+// Rest Day row on Monday, which blocks automatic planning for him that day
+// (v1.75), so the solver fills Tuesday and must leave Monday's shift open.
+const nextDayISO = (dateISO: string) => {
+  const d = new Date(`${dateISO}T12:00:00`);
+  d.setDate(d.getDate() + 1);
+  return toISODate(d);
+};
+const solverDateISO = nextDayISO(testDateISO);
+const solverSlotRowId = slotRowIdForDate(classRowId, solverDateISO);
+
 const loginViaUI = async (
   page: import("@playwright/test").Page,
   testInfo?: import("@playwright/test").TestInfo,
@@ -408,10 +421,15 @@ test.describe.serial("app flows", () => {
     await page.getByRole("button", { name: "Current week" }).click();
     await attachStepScreenshot(page, testInfo, "solver-before");
     await page.getByRole("button", { name: "Run", exact: true }).click();
+    await applyNewestRun(page);
     const shiftCell = page.locator(
-      `[data-schedule-cell=\"true\"][data-row-id=\"${slotRowId}\"][data-date-iso=\"${testDateISO}\"]`,
+      `[data-schedule-cell=\"true\"][data-row-id=\"${solverSlotRowId}\"][data-date-iso=\"${solverDateISO}\"]`,
     );
     await expect(shiftCell.getByText("Dr. Test")).toBeVisible();
+    const restDayShiftCell = page.locator(
+      `[data-schedule-cell=\"true\"][data-row-id=\"${slotRowId}\"][data-date-iso=\"${testDateISO}\"]`,
+    );
+    await expect(restDayShiftCell.getByText("Dr. Test")).toHaveCount(0);
     await attachStepScreenshot(page, testInfo, "solver-after");
   });
 
@@ -701,10 +719,15 @@ test.describe.serial("ui login flows", () => {
     await page.getByRole("button", { name: "Current week" }).click();
     await attachStepScreenshot(page, testInfo, "ui-login-solver-before");
     await page.getByRole("button", { name: "Run", exact: true }).click();
+    await applyNewestRun(page);
     const shiftCell = page.locator(
-      `[data-schedule-cell=\"true\"][data-row-id=\"${slotRowId}\"][data-date-iso=\"${testDateISO}\"]`,
+      `[data-schedule-cell=\"true\"][data-row-id=\"${solverSlotRowId}\"][data-date-iso=\"${solverDateISO}\"]`,
     );
     await expect(shiftCell.getByText("Dr. Test")).toBeVisible();
+    const restDayShiftCell = page.locator(
+      `[data-schedule-cell=\"true\"][data-row-id=\"${slotRowId}\"][data-date-iso=\"${testDateISO}\"]`,
+    );
+    await expect(restDayShiftCell.getByText("Dr. Test")).toHaveCount(0);
     await attachStepScreenshot(page, testInfo, "ui-login-solver-after");
   });
 
