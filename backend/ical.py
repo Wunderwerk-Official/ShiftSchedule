@@ -13,7 +13,12 @@ from .state import _parse_time_to_minutes
 
 MINUTES_PER_DAY = 24 * 60
 
-_GERMAN_LETTERS = {"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"}
+# German umlauts, then letters NFD does not split into base letter + mark
+# (same table as SLUG_LETTERS in src/lib/ical.ts).
+_GERMAN_LETTERS = {
+    "ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss",
+    "ø": "oe", "æ": "ae", "œ": "oe", "ł": "l", "đ": "d", "ð": "d", "þ": "th", "ı": "i",
+}
 
 
 def ical_calendar_name(person: Optional[Mapping[str, Any]] = None) -> str:

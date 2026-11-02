@@ -31,6 +31,7 @@ import CalendarPlaceholder from "../components/schedule/CalendarPlaceholder";
 import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
 import MyPlanView, { type TeamPlanTarget } from "../components/myPlan/MyPlanView";
 import Toast, { useToast } from "../components/myPlan/Toast";
+import CalendarTransitionOverlay from "../components/schedule/CalendarTransitionOverlay";
 import { parseISODate } from "../lib/myPlan";
 import { useUserPreferences } from "../lib/userPreferences";
 import { scrollToTeamAssignment } from "./scrollToTeamAssignment";
@@ -1818,6 +1819,14 @@ export default function WeeklySchedulePage({
   // hand-placed one leaves an automatic rest day).
   const handleMoveRestDay = ({ fromDateISO, toDateISO, assignmentId, clinicianId }: MoveRestDayArgs) => {
     const stored = findStoredRestDay(fromDateISO, assignmentId);
+    if (stored && isOnVacation(clinicianId, toDateISO)) {
+      // Vacation hides a rest day: the entry would vanish but stay stored.
+      const name = clinicians.find((item) => item.id === clinicianId)?.name ?? "This person";
+      const short = (dateISO: string) => formatWeekdayDate(new Date(`${dateISO}T00:00:00`), { withYear: false });
+      // "… on Tue 03.11." – the short date ends the sentence.
+      showTeamNotice(`${name} is on vacation on ${short(toDateISO)} The rest day stays on ${short(fromDateISO)}`);
+      return;
+    }
     if (!stored || onCallRestDays.get(fromDateISO)?.has(clinicianId)) {
       notifyAutomaticRestDay(clinicianId, fromDateISO);
     }
@@ -3414,24 +3423,12 @@ export default function WeeklySchedulePage({
       />
 
       {calendarTransition && (
-        <div className="fixed inset-0 z-[2000] flex flex-col items-center justify-center gap-3 bg-white/70 text-sm font-medium text-slate-700 dark:bg-slate-950/70 dark:text-slate-200">
-          <p role="status" aria-live="polite">
-            {pdfExporting ? pdfProgress ? formatPdfProgress(pdfProgress) : "Saving calendar for export…" : "Updating calendar…"}
-          </p>
-          {pdfExporting && pdfProgress ? (
-            <button
-              type="button"
-              onClick={() => pdfAbortRef.current?.abort()}
-              className={cx(
-                "rounded-full border border-slate-300 bg-white px-4 py-1.5 text-sm font-medium text-slate-900 shadow-sm",
-                "hover:bg-slate-50 active:bg-slate-100",
-                "dark:border-slate-700 dark:bg-slate-800 dark:text-slate-100 dark:hover:bg-slate-700",
-              )}
-            >
-              Cancel
-            </button>
-          ) : null}
-        </div>
+        <CalendarTransitionOverlay
+          message={
+            pdfExporting ? pdfProgress ? formatPdfProgress(pdfProgress) : "Saving calendar for export…" : "Updating calendar…"
+          }
+          onCancel={pdfExporting && pdfProgress ? () => pdfAbortRef.current?.abort() : undefined}
+        />
       )}
       {saveError && (
         <div role="alert" className="border-b border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">

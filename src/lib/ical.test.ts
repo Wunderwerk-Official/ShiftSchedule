@@ -159,6 +159,8 @@ describe("names", () => {
   it.each([
     ["Müller, Jörg; Dr.", "c1", "shift-planner-mueller-joerg-dr.ics"],
     ["Zoë Ångström", "c2", "shift-planner-zoe-angstroem.ics"],
+    ["Björn Ødegård", "c2", "shift-planner-bjoern-oedegard.ics"],
+    ["Zoë O'Brien-Łukasiewicz", "c2", "shift-planner-zoe-obrien-lukasiewicz.ics"],
     ["Anne-Sophie Lefèvre-Brückner", "c3", "shift-planner-anne-sophie-lefevre-brueckner.ics"],
     ["GROẞE Straße", "c4", "shift-planner-grosse-strasse.ics"],
     ["李小龍", "c5", "shift-planner-c5.ics"],

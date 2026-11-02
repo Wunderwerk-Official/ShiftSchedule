@@ -26,8 +26,8 @@ describe("holidayChangeConfirmation", () => {
       message:
         "12 shifts, 2 of them locked, no longer fit their day's plan and will be removed: " +
         "Thu 24.12.2026 (12 shifts). A holiday uses the template's Holiday column, every other " +
-        "day the columns of its weekday. An automatic backup of the calendar is saved in " +
-        "Calendar snapshots first.",
+        "day the columns of its weekday. The current calendar is saved in Calendar snapshots " +
+        "first; this automatic backup replaces the previous one.",
       confirmLabel: "Remove 12 shifts",
     });
   });

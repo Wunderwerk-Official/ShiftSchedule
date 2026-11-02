@@ -11,6 +11,8 @@ type RowLabelProps = {
   ink?: string;
   /** Stacked single-day layout: one lane of a class row in one label cell. */
   stacked?: StackedRowMeta;
+  /** Read-only grid (public page, print): no editing hints. */
+  readOnly?: boolean;
 };
 
 const LABEL_FONT = { fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' };
@@ -220,9 +222,10 @@ function StackedRowLabel({ meta, ink }: { meta: StackedRowMeta; ink?: string }) 
   );
 }
 
-export default function RowLabel({ row, ink, stacked }: RowLabelProps) {
+export default function RowLabel({ row, ink, stacked, readOnly = false }: RowLabelProps) {
   if (stacked) return <StackedRowLabel meta={stacked} ink={ink} />;
-  const showVacationNote = row.id === "pool-vacation";
+  // An editing hint: not on read-only grids (public page, print).
+  const showVacationNote = row.id === "pool-vacation" && !readOnly;
   const locationLabel = row.locationName ?? "";
   const rowLabel = row.rowBandLabel?.trim() ?? "";
   return (

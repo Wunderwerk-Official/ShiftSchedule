@@ -59,7 +59,7 @@ export function holidayChangeConfirmation(dropped: Assignment[]) {
     message:
       `${subject} ${verb} and will be removed: ${days.join(", ")}. ` +
       "A holiday uses the template's Holiday column, every other day the columns of its weekday. " +
-      "An automatic backup of the calendar is saved in Calendar snapshots first.",
+      "The current calendar is saved in Calendar snapshots first; this automatic backup replaces the previous one.",
     confirmLabel: `Remove ${shifts}`,
   };
 }

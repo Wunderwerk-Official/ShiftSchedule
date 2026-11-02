@@ -341,6 +341,27 @@ test("a hand-placed rest day moves to another day and leaves when dragged out; a
   expect(api.errors).toEqual([]);
 });
 
+test("a hand-placed rest day is not moved onto a vacation day (re-QA)", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    { id: "rest", rowId: "pool-rest-day", dateISO: "2026-01-05", clinicianId: FIRST, source: "manual" },
+  ];
+  state.clinicians[0].vacations = [{ id: "v1", startISO: "2026-01-06", endISO: "2026-01-06" }];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const restPill = page.locator(`[data-schedule-grid="true"] [data-assignment-key="pool-rest-day__2026-01-05__${FIRST}"]`);
+  await restPill.dragTo(
+    page.locator('[data-schedule-cell="true"][data-row-id="pool-rest-day"][data-date-iso="2026-01-06"]'),
+  );
+  // Vacation would hide it there: it stays where it was, and a notice says why.
+  await expect(page.getByRole("status").filter({ hasText: "is on vacation" })).toContainText(
+    "is on vacation on Tue 06.01. The rest day stays on Mon 05.01.",
+  );
+  await page.waitForTimeout(700);
+  expect(api.state().assignments.map((item) => `${item.rowId} ${item.dateISO}`)).toEqual(["pool-rest-day 2026-01-05"]);
+  await expect(restPill).toBeVisible();
+  expect(api.errors).toEqual([]);
+});
+
 test("a hand-placed rest day on an automatic one leaves it in its place, and the notice says why", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [
@@ -379,6 +400,10 @@ test("a vacation day ends only when its pill leaves the calendar", async ({ page
   await vacationPill("2026-01-05").dragTo(
     page.locator('[data-schedule-cell="true"][data-row-kind="class"][data-date-iso="2026-01-06"]').first(),
   );
+  // Onto its row label or a day header (inside the calendar, not a cell): nothing changes (re-QA).
+  const grid = page.locator('[data-schedule-grid="true"]');
+  await vacationPill("2026-01-05").dragTo(grid.getByText("Vacation", { exact: true }).first());
+  await vacationPill("2026-01-05").dragTo(grid.getByText(/^tue/i).first());
   await page.waitForTimeout(700);
   expect(vacations()).toEqual(["2026-01-05..2026-01-09"]);
   await expect(vacationPill("2026-01-05")).toBeVisible();

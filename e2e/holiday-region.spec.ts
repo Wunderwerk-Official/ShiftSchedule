@@ -170,7 +170,7 @@ test("loading another state's holidays asks before it removes the shifts that no
     "3 shifts, 2 of them locked, no longer fit their day's plan and will be removed: " +
       "Tue 06.01.2026 (1 shift), Wed 18.11.2026 (2 shifts).",
   );
-  await expect(dialog).toContainText("An automatic backup of the calendar is saved in Calendar snapshots first.");
+  await expect(dialog).toContainText("The current calendar is saved in Calendar snapshots first; this automatic backup replaces the previous one.");
   await dialog.getByRole("button", { name: "Cancel" }).click();
   await expect(dialog).toHaveCount(0);
   // Cancelled: the holidays and the shifts stay, nothing is backed up.

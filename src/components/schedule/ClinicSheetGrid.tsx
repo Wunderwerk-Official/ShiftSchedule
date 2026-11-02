@@ -537,8 +537,10 @@ export default function ClinicSheetGrid({
                           const isCell = target?.closest?.('[data-schedule-cell="true"]');
                           if (isCell) return;
                           e.preventDefault();
+                          // A Vacation name dropped on a header or label keeps
+                          // its day: vacation ends only outside the calendar.
                           const payload = readDragPayload(e.dataTransfer);
-                          if (payload) {
+                          if (payload && payload.rowId !== VACATION_POOL_ID) {
                             onRemoveAssignment?.(payload);
                           }
                           setDragging(null);

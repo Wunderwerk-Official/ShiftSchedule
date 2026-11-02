@@ -477,8 +477,10 @@ export default function ScheduleGrid({
                           if (isCell) return;
                           e.preventDefault();
                           // A malformed payload (e.g. a cross-tab drop) is ignored.
+                          // A Vacation pill dropped on a header, label or gap
+                          // keeps its day: vacation ends only outside the calendar.
                           const payload = readDragPayload(e.dataTransfer);
-                          if (payload && onRemoveAssignment) {
+                          if (payload && payload.rowId !== VACATION_POOL_ID && onRemoveAssignment) {
                             onRemoveAssignment(payload);
                           }
                           setDragging(null);
@@ -1025,7 +1027,7 @@ function RowSection({
                 : null),
           }}
         >
-          <RowLabel row={row} ink={labelTint?.ink} stacked={stackedMeta} />
+          <RowLabel row={row} ink={labelTint?.ink} stacked={stackedMeta} readOnly={readOnly} />
         </div>
       )}
       {row.kind === "pool"

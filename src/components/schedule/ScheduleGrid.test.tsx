@@ -940,6 +940,26 @@ describe("ScheduleGrid stacked times", () => {
     expect(onToggleAssignmentLock).toHaveBeenCalledWith(expect.objectContaining({ id: "a1", source: "manual" }));
   });
 
+  it("shows the vacation editing hint only on editable grids (re-QA)", () => {
+    const hint = "Drag people in or out to update vacations automatically.";
+    const props = {
+      leftHeaderTitle: "Week",
+      weekDays: [new Date(2026, 0, 5)],
+      rows: [{ id: "pool-vacation", name: "Vacation", kind: "pool" as const, dotColorClass: "bg-slate-200" }],
+      assignmentMap: new Map(),
+      getClinicianName: (id: string) => id,
+      getIsQualified: () => true,
+      getHasEligibleClasses: () => true,
+      onCellClick: vi.fn(),
+      onMoveWithinDay: vi.fn(),
+    };
+    const { unmount } = render(<ScheduleGrid {...props} />);
+    expect(screen.getByText(hint)).toBeInTheDocument();
+    unmount();
+    render(<ScheduleGrid {...props} readOnly />);
+    expect(screen.queryByText(hint)).toBeNull();
+  });
+
   it("shows no lock on read-only grids (print, public week)", () => {
     renderStacked({
       readOnly: true,

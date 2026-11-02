@@ -43,7 +43,7 @@ describe("useConfirmHolidayChange", () => {
     expect(dialog).toHaveTextContent(
       "2 shifts, 1 of them locked, no longer fit their day's plan and will be removed: Thu 24.12.2026 (2 shifts).",
     );
-    expect(dialog).toHaveTextContent("An automatic backup of the calendar is saved in Calendar snapshots first.");
+    expect(dialog).toHaveTextContent("The current calendar is saved in Calendar snapshots first; this automatic backup replaces the previous one.");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove 2 shifts" }));
     await expect(outcome).resolves.toBe(true);

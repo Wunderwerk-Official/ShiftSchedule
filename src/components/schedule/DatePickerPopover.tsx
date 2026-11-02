@@ -218,9 +218,14 @@ export default function DatePickerPopover({
           const weekDate = week.find((d) => d !== null);
           if (!weekDate) return null;
 
-          const isSelectedWeek = isSameWeek(weekDate, selectedDate);
-          const isHoveredWeek = hoveredWeek && isSameWeek(weekDate, hoveredWeek);
-          const isCurrentWeek = isSameWeek(weekDate, today);
+          // A month picker marks every row of the month, not one week.
+          const sameUnit = (a: Date, b: Date) =>
+            unit === "month"
+              ? a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth()
+              : isSameWeek(a, b);
+          const isSelectedWeek = sameUnit(weekDate, selectedDate);
+          const isHoveredWeek = hoveredWeek && sameUnit(weekDate, hoveredWeek);
+          const isCurrentWeek = sameUnit(weekDate, today);
 
           return (
             <button

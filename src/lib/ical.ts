@@ -20,7 +20,12 @@ export type ICalEvent = {
 
 export type ICalPerson = Pick<Clinician, "id" | "name">;
 
-const GERMAN_LETTERS: Record<string, string> = { ä: "ae", ö: "oe", ü: "ue", ß: "ss" };
+// German umlauts, then letters NFD does not split into base letter + mark
+// (same table as _GERMAN_LETTERS in backend/ical.py).
+const SLUG_LETTERS: Record<string, string> = {
+  ä: "ae", ö: "oe", ü: "ue", ß: "ss",
+  ø: "oe", æ: "ae", œ: "oe", ł: "l", đ: "d", ð: "d", þ: "th", ı: "i",
+};
 
 /** X-WR-CALNAME: "Shift Planner – All people" or "Shift Planner – <person>". */
 export function icalCalendarName(person?: ICalPerson): string {
@@ -30,7 +35,7 @@ export function icalCalendarName(person?: ICalPerson): string {
 function fileSlug(text: string): string {
   const ascii = text
     .toLowerCase()
-    .replaceAll(/[äöüß]/g, (letter) => GERMAN_LETTERS[letter])
+    .replaceAll(/[äöüßøæœłđðþı]/g, (letter) => SLUG_LETTERS[letter])
     // NFD splits other accented letters into base letter + mark; every
     // character still outside ASCII (marks, CJK, emoji) is dropped.
     .normalize("NFD")

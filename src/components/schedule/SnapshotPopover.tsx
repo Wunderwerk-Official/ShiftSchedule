@@ -283,15 +283,20 @@ export default function SnapshotPopover({
                           <>
                             <div className="flex items-center justify-between gap-2">
                               <div className="min-w-0">
-                                <div className="truncate text-xs font-medium text-slate-700 dark:text-slate-200">
+                                {/* The whole name wraps: automatic backups differ only
+                                    at the end ("… before holiday change"). */}
+                                <div
+                                  className="break-words text-xs font-medium text-slate-700 dark:text-slate-200"
+                                  title={snapshot.name}
+                                >
                                   {snapshot.name}
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 dark:text-slate-500">
                                   {snapshot.kind === "auto_backup" ? (
-                                    <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                                    <span className="rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
                                       Automatic
                                     </span>
                                   ) : null}
-                                </div>
-                                <div className="text-[10px] text-slate-400 dark:text-slate-500">
                                   {formatDate(snapshot.created_at)}
                                 </div>
                               </div>

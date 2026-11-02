@@ -29,6 +29,11 @@ describe("MonthNavigator picker", () => {
     expect(screen.getByText("Select a month")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "This month" })).toBeInTheDocument();
     expect(screen.queryByText("Select a week")).toBeNull();
+    // Every row of the month is marked as selected, not one week (re-QA).
+    const rowOf = (day: string) => screen.getByText(day).closest("button")!;
+    expect(rowOf("1").className).toContain("bg-sky-500");
+    expect(rowOf("15").className).toContain("bg-sky-500");
+    expect(rowOf("29").className).toContain("bg-sky-500");
     clickRowWithFirstOfMonth();
 
     expect(onGoToDate).toHaveBeenCalledTimes(1);

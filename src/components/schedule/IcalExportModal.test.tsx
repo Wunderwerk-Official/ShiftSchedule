@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import { ConfirmDialogProvider } from "../ui/ConfirmDialog";
@@ -86,6 +86,7 @@ describe("IcalExportModal PDF export", () => {
     expect(formatPdfProgress({ mode: "individual", current: 2, total: 5 })).toBe(
       "Exporting 2 of 5 weeks…",
     );
+    expect(formatPdfProgress({ mode: "individual", current: 1, total: 1 })).toBe("Exporting 1 of 1 week…");
   });
 
   it("never sends portrait when the option is not offered", () => {
@@ -119,7 +120,7 @@ describe("IcalExportModal iCal download", () => {
     fireEvent.click(checkbox);
     fireEvent.click(screen.getByRole("button", { name: "All people (one file)" }));
     expect(props.onDownloadAll).toHaveBeenLastCalledWith(expect.objectContaining({ includeUnpublished: true }));
-    fireEvent.click(screen.getAllByRole("button", { name: "Download" })[1]);
+    fireEvent.click(screen.getByRole("button", { name: "Download iCal file for Dr. A" }));
     expect(props.onDownloadClinician).toHaveBeenLastCalledWith(
       "c1",
       expect.objectContaining({ includeUnpublished: true }),
@@ -145,5 +146,30 @@ describe("IcalExportModal iCal subscription", () => {
     fireEvent.click(screen.getByRole("button", { name: "iCal" }));
     expect(screen.getByText(/Europe\/London, from the\s+holiday country/)).toBeInTheDocument();
     expect(screen.queryByText(/all-day/i)).toBeNull();
+  });
+});
+
+describe("IcalExportModal as a dialog (re-QA)", () => {
+  it("is a labelled modal dialog that takes focus and closes on Escape", () => {
+    const props = renderModal();
+    const dialog = screen.getByRole("dialog", { name: "Export" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("leaves Escape to the export overlay while a PDF is being created", () => {
+    const props = renderModal({ pdfExporting: true, pdfProgress: { mode: "combined", total: 2 } });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Export" }), { key: "Escape" });
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it("names every person's download button", () => {
+    renderModal({ clinicians: [{ id: "c1", name: "Dr. A" }, { id: "c2", name: "Dr. B" }] });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(screen.getByRole("button", { name: "Download iCal file for Dr. A" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download iCal file for Dr. B" })).toBeInTheDocument();
   });
 });
