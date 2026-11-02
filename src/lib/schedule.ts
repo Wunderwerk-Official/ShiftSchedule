@@ -1,6 +1,6 @@
 import { addDays, toISODate } from "./date";
 import type { SolverSettings } from "../api/client";
-import type { Assignment, Clinician } from "../api/client";
+import type { Assignment, Clinician, RestContextAssignment } from "../api/client";
 import type { ScheduleRow } from "./shiftRows";
 import { parseTimeToMinutes } from "./time";
 
@@ -83,6 +83,12 @@ export function buildRenderedAssignmentMap(
     solverSettings?: SolverSettings;
     /** Unused. Still accepted because existing callers pass it. */
     holidayDates?: Set<string>;
+    /**
+     * Shifts that are not in the map but can cause rest days in it (the
+     * public page's on-call shifts just outside its week). They only feed
+     * the on-call rest days; they are never rendered.
+     */
+    restContextAssignments?: ReadonlyArray<RestContextAssignment>;
   },
 ) {
   const scheduleRows = options?.scheduleRows ?? [];
@@ -133,6 +139,16 @@ export function buildRenderedAssignmentMap(
   const next = new Map<string, RenderedAssignment[]>();
   const assignedShiftRowsByDate = new Map<string, Map<string, Set<string>>>();
   const restDayAssignmentsByDate = new Map<string, Set<string>>();
+  const addAssignedShiftRow = (dateISO: string, clinicianId: string, rowId: string) => {
+    let dayShiftRows = assignedShiftRowsByDate.get(dateISO);
+    if (!dayShiftRows) {
+      dayShiftRows = new Map();
+      assignedShiftRowsByDate.set(dateISO, dayShiftRows);
+    }
+    const assignedRows = dayShiftRows.get(clinicianId) ?? new Set<string>();
+    assignedRows.add(rowId);
+    dayShiftRows.set(clinicianId, assignedRows);
+  };
 
   // Stored pool entries (Rest Day) keep their own ids, even when the clinician
   // also holds a slot that day: dragging the pill out of Rest Day removes the
@@ -156,16 +172,12 @@ export function buildRenderedAssignmentMap(
     }
 
     if (rowKind !== "class") continue;
-    let dayShiftRows = assignedShiftRowsByDate.get(dateISO);
-    if (!dayShiftRows) {
-      dayShiftRows = new Map();
-      assignedShiftRowsByDate.set(dateISO, dayShiftRows);
-    }
-    for (const item of filtered) {
-      const assignedRows = dayShiftRows.get(item.clinicianId) ?? new Set<string>();
-      assignedRows.add(rowId);
-      dayShiftRows.set(item.clinicianId, assignedRows);
-    }
+    for (const item of filtered) addAssignedShiftRow(dateISO, item.clinicianId, rowId);
+  }
+  for (const item of options?.restContextAssignments ?? []) {
+    if (rowKindOf(item.rowId) !== "class") continue;
+    if (vacationByDate.get(item.dateISO)?.has(item.clinicianId)) continue;
+    addAssignedShiftRow(item.dateISO, item.clinicianId, item.rowId);
   }
 
   const offByDate = new Map<string, Set<string>>();

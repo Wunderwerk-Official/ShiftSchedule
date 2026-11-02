@@ -243,6 +243,9 @@ export type WebPublishStatus = {
   token?: string;
 };
 
+/** An on-call shift outside a public week, reduced to who, when and where. */
+export type RestContextAssignment = Pick<Assignment, "clinicianId" | "dateISO" | "rowId">;
+
 export type PublicWebWeekResponse = {
   published: boolean;
   weekStartISO: string;
@@ -258,6 +261,13 @@ export type PublicWebWeekResponse = {
   holidays?: Holiday[];
   solverSettings?: SolverSettings;
   solverRules?: SolverRule[];
+  /**
+   * On-call shifts just outside the week, only for deriving the rest days
+   * they cause inside it (never shown).
+   */
+  restContextAssignments?: RestContextAssignment[];
+  /** The owner's Times choice for the team week; absent = side by side. */
+  teamTimeLayout?: TeamTimeLayout;
 };
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";

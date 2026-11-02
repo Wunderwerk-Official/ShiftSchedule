@@ -375,6 +375,37 @@ describe("buildRenderedAssignmentMap", () => {
     ).toEqual(["clin-1"]);
   });
 
+  it("derives rest days from context shifts outside the map without rendering them", () => {
+    const clinicians = [
+      makeClinicianWithVacation("clin-1"),
+      makeClinicianWithVacation("clin-2", "2026-01-04", "2026-01-04"),
+    ];
+    // The week starts on Monday 2026-01-05; the on-call shifts are on the
+    // Sunday before it (one of them during a vacation).
+    const displayDays = [new Date(2026, 0, 5), new Date(2026, 0, 6)];
+
+    const result = buildRenderedAssignmentMap(new Map(), clinicians, displayDays, {
+      scheduleRows,
+      solverSettings: {
+        enforceSameLocationPerDay: false,
+        onCallRestEnabled: true,
+        onCallRestClassId: "mri",
+        onCallRestDaysBefore: 0,
+        onCallRestDaysAfter: 1,
+        preferContinuousShifts: true,
+      },
+      restContextAssignments: [
+        { clinicianId: "clin-1", dateISO: "2026-01-04", rowId: "slot-a" },
+        { clinicianId: "clin-2", dateISO: "2026-01-04", rowId: "slot-a" },
+      ],
+    });
+
+    expect(
+      result.get(`${REST_DAY_POOL_ID}__2026-01-05`)?.map((a) => a.clinicianId),
+    ).toEqual(["clin-1"]);
+    expect(Array.from(result.keys())).toEqual([`${REST_DAY_POOL_ID}__2026-01-05`]);
+  });
+
   it("places clinician in rest day pool when on-call rest days are enabled", () => {
     const clinicians = [makeClinicianWithVacation("clin-1")];
     // Clinician is on-call on 2026-01-07

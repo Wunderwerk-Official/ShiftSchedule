@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import ClinicSheetGrid from "../components/schedule/ClinicSheetGrid";
+import MobileDayNavigator from "../components/schedule/MobileDayNavigator";
 import ScheduleGrid from "../components/schedule/ScheduleGrid";
 import WeekNavigator from "../components/schedule/WeekNavigator";
 import { getPublicWebWeek, type PublicWebWeekResponse } from "../api/client";
@@ -16,6 +17,7 @@ import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState } from "../lib/shiftRows";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -37,19 +39,25 @@ const parseISODate = (value: string | null) => {
 };
 
 export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
-  const initialStart = useMemo(() => {
+  // Phones show one day at a time, like the team calendar (and its sheet
+  // layout falls back to that day view there).
+  const isMobile = useMediaQuery("(max-width: 640px)");
+  const [anchorDate, setAnchorDate] = useState<Date>(() => {
     if (typeof window === "undefined") return new Date();
     const start = new URLSearchParams(window.location.search).get("start");
-    const parsed = parseISODate(start);
-    return startOfWeek(parsed ?? new Date(), 1);
-  }, []);
-  const [weekStartDate, setWeekStartDate] = useState<Date>(initialStart);
+    return parseISODate(start) ?? new Date();
+  });
+  const weekStartDate = useMemo(() => startOfWeek(anchorDate, 1), [anchorDate]);
   const weekStartISO = useMemo(() => toISODate(weekStartDate), [weekStartDate]);
   const weekDays = useMemo(
     () => Array.from({ length: 7 }, (_, i) => addDays(weekStartDate, i)),
     [weekStartDate],
   );
-  const weekEndISO = useMemo(() => toISODate(addDays(weekStartDate, 6)), [weekStartDate]);
+  const displayDays = useMemo(
+    () => (isMobile ? [anchorDate] : weekDays),
+    [isMobile, anchorDate, weekDays],
+  );
+  const urlStartISO = isMobile ? toISODate(anchorDate) : weekStartISO;
 
   const [data, setData] = useState<PublicWebWeekResponse | null>(null);
   const [status, setStatus] = useState<
@@ -59,9 +67,9 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
-    url.searchParams.set("start", weekStartISO);
+    url.searchParams.set("start", urlStartISO);
     window.history.replaceState({}, "", url);
-  }, [weekStartISO]);
+  }, [urlStartISO]);
 
   useEffect(() => {
     let alive = true;
@@ -134,12 +142,12 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
   const dayColumns = useMemo(
     () =>
       buildDayColumns(
-        weekDays,
+        displayDays,
         normalized?.weeklyTemplate,
         holidayDates,
         columnTimeMetaByKey,
       ),
-    [weekDays, normalized?.weeklyTemplate, holidayDates, columnTimeMetaByKey],
+    [displayDays, normalized?.weeklyTemplate, holidayDates, columnTimeMetaByKey],
   );
   const rowById = useMemo(
     () => new Map(scheduleRows.map((row) => [row.id, row])),
@@ -155,6 +163,8 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
         scheduleRows,
         solverSettings: normalized?.solverSettings ?? defaultSolverSettings,
         holidayDates,
+        // On-call shifts just outside the week: rest days only, never shown.
+        restContextAssignments: data?.published ? data.restContextAssignments : undefined,
       }),
     [
       assignmentMap,
@@ -163,6 +173,7 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
       scheduleRows,
       normalized?.solverSettings,
       holidayDates,
+      data,
     ],
   );
   const holidayNameByDate = useMemo(() => {
@@ -185,9 +196,11 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
   );
 
   // The publisher's layout choice travels with the public payload (and is
-  // sanitized by normalizeAppState), so shared links mirror their view.
+  // sanitized by normalizeAppState), so shared links mirror their view; so
+  // does their Times choice (side by side unless the payload says stacked).
   const isClinicSheet =
-    (normalized?.solverSettings?.scheduleLayout ?? "classic") === "clinicSheet";
+    (normalized?.solverSettings?.scheduleLayout ?? "classic") === "clinicSheet" && !isMobile;
+  const timeLayout = data?.teamTimeLayout === "stacked" ? "stacked" : "columns";
   const sheetDays = useMemo(
     () =>
       isClinicSheet
@@ -214,9 +227,9 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
     ],
   );
 
-  const handlePrevWeek = () => setWeekStartDate((prev) => addWeeks(prev, -1));
-  const handleNextWeek = () => setWeekStartDate((prev) => addWeeks(prev, 1));
-  const handleToday = () => setWeekStartDate(startOfWeek(new Date(), 1));
+  const handlePrevWeek = () => setAnchorDate((prev) => addWeeks(prev, -1));
+  const handleNextWeek = () => setAnchorDate((prev) => addWeeks(prev, 1));
+  const handleToday = () => setAnchorDate(new Date());
 
   return (
     <div className={cx("min-h-screen bg-slate-50 dark:bg-slate-950", theme === "dark" && "dark")}>
@@ -224,14 +237,23 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
         <div className="text-lg font-semibold text-slate-900 dark:text-slate-100">
           🩺 Shift Planner
         </div>
-        <WeekNavigator
-          variant="card"
-          rangeStart={weekDays[0]}
-          rangeEndInclusive={weekDays[6]}
-          onPrevWeek={handlePrevWeek}
-          onNextWeek={handleNextWeek}
-          onToday={handleToday}
-        />
+        {isMobile ? (
+          <MobileDayNavigator
+            date={anchorDate}
+            onPrevDay={() => setAnchorDate((prev) => addDays(prev, -1))}
+            onNextDay={() => setAnchorDate((prev) => addDays(prev, 1))}
+            onToday={handleToday}
+          />
+        ) : (
+          <WeekNavigator
+            variant="card"
+            rangeStart={weekDays[0]}
+            rangeEndInclusive={weekDays[6]}
+            onPrevWeek={handlePrevWeek}
+            onNextWeek={handleNextWeek}
+            onToday={handleToday}
+          />
+        )}
       </div>
 
       {status === "invalid" ? (
@@ -278,7 +300,7 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
         ) : (
         <ScheduleGrid
           leftHeaderTitle=""
-          weekDays={weekDays}
+          weekDays={displayDays}
           dayColumns={dayColumns}
           rows={calendarRows}
           assignmentMap={renderAssignmentMap}
@@ -290,6 +312,7 @@ export default function PublicWeekPage({ token, theme }: PublicWeekPageProps) {
           separatorBeforeRowIds={poolSeparatorId ? [poolSeparatorId] : []}
           minSlotsByRowId={normalized?.minSlotsByRowId ?? {}}
           slotOverridesByKey={normalized?.slotOverridesByKey ?? {}}
+          timeLayout={timeLayout}
           getClinicianName={(id) => clinicians.find((c) => c.id === id)?.name ?? "Unknown"}
           getHasEligibleClasses={(id) => {
             const clinician = clinicians.find((item) => item.id === id);

@@ -9,6 +9,9 @@ vi.mock("./api/client", async (importOriginal) => ({
 }));
 // The schedule page is heavy and irrelevant here; a marker shows it rendered.
 vi.mock("./pages/WeeklySchedulePage", () => ({ default: () => <div>schedule page</div> }));
+vi.mock("./pages/PublicWeekPage", () => ({
+  default: ({ token }: { token: string }) => <div>public page {token}</div>,
+}));
 
 import App from "./App";
 
@@ -16,6 +19,15 @@ describe("App startup auth check", () => {
   beforeEach(() => {
     getCurrentUser.mockReset();
     window.localStorage.setItem("authToken", "valid-token");
+    window.history.pushState({}, "", "/");
+  });
+
+  it("does not check the session on a public link", async () => {
+    window.localStorage.removeItem("authToken");
+    window.history.pushState({}, "", "/public/abc123?start=2026-01-05");
+    render(<App />);
+    expect(await screen.findByText("public page abc123")).toBeInTheDocument();
+    expect(getCurrentUser).not.toHaveBeenCalled();
   });
 
   it.each([
