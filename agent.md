@@ -3082,3 +3082,28 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   sort, uncounted week, navigation across years, year view cells and
   totals, metric switch, week header, time zones, close).
 - Deploy notes: frontend only, no schema or data change. Version 1.78 (78).
+
+## v1.79 — Calendar snapshots wait for the calendar
+
+- Until this user's calendar has loaded (`GET /v1/state` answered), the page
+  holds the built-in demo calendar (`src/data/mockData.ts`). Saving a named
+  snapshot in that moment stored the demo calendar under the typed name (the
+  server does not check snapshots against the calendar's revision); a
+  restore first saved the demo calendar, which the server refused (409), so
+  it failed with a misleading "changed in another tab" message.
+- `SnapshotPopover` has a `calendarLoading` prop (the page passes
+  `!hasLoaded || loadedUserId !== currentUser.username`): Save, Enter in the
+  name field and both Restore buttons wait, with the hint "Saving and
+  restoring are available once the calendar has loaded." in the panel and as
+  the buttons' tooltip. Rename and Delete stay available (they do not use the
+  calendar on screen). `handleSaveSnapshot` and `handleRestoreSnapshot`
+  refuse before loading as well ("Wait until the calendar has loaded before
+  saving / restoring a snapshot."), like import, PDF export and planning.
+- Tests: `SnapshotPopover.test.tsx` (waits while loading, hint and tooltip,
+  Rename stays available, saves once loaded), e2e `team-page.spec.ts`
+  ("Calendar snapshots wait until the calendar has loaded": `openCalendar`
+  takes a `stateGate` that holds back `GET /v1/state`). The same release
+  makes `openCalendar` wait for the mocked calendar instead of the demo grid
+  (see the Testing notes), which fixed a timing-dependent failure of the
+  "Stacked gives every section…" test.
+- Deploy notes: frontend only, no schema or data change. Version 1.79 (79).

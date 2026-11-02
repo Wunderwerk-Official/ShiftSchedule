@@ -2644,6 +2644,11 @@ export default function WeeklySchedulePage({
   };
 
   const handleSaveSnapshot = async (name: string) => {
+    // Until this user's calendar has loaded the screen holds the built-in demo
+    // calendar, which the snapshot would store (the popover waits too).
+    if (!hasLoaded || loadedUserId !== currentUser.username) {
+      throw new Error("Wait until the calendar has loaded before saving a snapshot.");
+    }
     const payload = buildCurrentStatePayload();
     if (!payload) {
       throw new Error(
@@ -2655,6 +2660,11 @@ export default function WeeklySchedulePage({
 
   // Flush pending edits and pause autosave while replacing calendar state.
   const handleRestoreSnapshot = async (snapshotId: string) => {
+    // A restore saves the calendar on screen first: the demo calendar until
+    // this user's has loaded.
+    if (!hasLoaded || loadedUserId !== currentUser.username) {
+      throw new Error("Wait until the calendar has loaded before restoring a snapshot.");
+    }
     pauseCalendarSaving();
     try {
       let saved: AppState | null = null;
@@ -3322,6 +3332,7 @@ export default function WeeklySchedulePage({
             onSaveSnapshot={handleSaveSnapshot}
             onRestoreSnapshot={handleRestoreSnapshot}
             restoreDisabled={autoPlanRunning}
+            calendarLoading={!hasLoaded || loadedUserId !== currentUser.username}
           />
         }
       />

@@ -43,7 +43,32 @@ const assignment = (
   ...extra,
 });
 
-async function openCalendar(page: Page, state: AppState, now: string) {
+/**
+ * The team grid shows the built-in demo calendar (src/data/mockData.ts) at
+ * once and swaps in the mocked one only when GET /v1/state has answered, so a
+ * visible grid is not enough: wait for a cell of the mocked template, or a
+ * test may read or click the demo calendar.
+ */
+async function waitForMockedCalendar(page: Page, state: AppState) {
+  const slotIds = state.weeklyTemplate!.locations.flatMap((location) => location.slots.map((slot) => slot.id));
+  await expect
+    .poll(
+      () =>
+        page
+          .locator('[data-schedule-cell="true"]')
+          .evaluateAll((cells, ids) => cells.some((cell) => ids.includes(cell.getAttribute("data-row-id") ?? "")), slotIds),
+      { message: "the mocked calendar replaces the built-in demo calendar" },
+    )
+    .toBe(true);
+}
+
+/** With a `stateGate`, GET /v1/state waits for it and the demo calendar is still shown on return. */
+async function openCalendar(
+  page: Page,
+  state: AppState,
+  now: string,
+  { stateGate }: { stateGate?: Promise<void> } = {},
+) {
   let current = { ...state, revision: "r0" } as AppState;
   const statePosts: AppState[] = [];
   const errors: string[] = [];
@@ -58,10 +83,11 @@ async function openCalendar(page: Page, state: AppState, now: string) {
   await page.route("**/auth/me", (route) =>
     route.fulfill({ json: { username: "test", role: "user", active: true } }),
   );
-  await page.route("**/v1/**", (route) => {
+  await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
     if (path.endsWith("/v1/state")) {
+      if (request.method() === "GET" && stateGate) await stateGate;
       if (request.method() === "POST") {
         statePosts.push(request.postDataJSON() as AppState);
         current = { ...request.postDataJSON(), revision: `r${statePosts.length}` };
@@ -77,20 +103,7 @@ async function openCalendar(page: Page, state: AppState, now: string) {
   });
   await page.goto("/");
   await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
-  // The team grid shows the built-in demo calendar (src/data/mockData.ts) at
-  // once and swaps in the mocked one only when GET /v1/state has answered, so
-  // a visible grid is not enough: wait for a cell of the mocked template, or
-  // a test may read or click the demo calendar.
-  const slotIds = state.weeklyTemplate!.locations.flatMap((location) => location.slots.map((slot) => slot.id));
-  await expect
-    .poll(
-      () =>
-        page
-          .locator('[data-schedule-cell="true"]')
-          .evaluateAll((cells, ids) => cells.some((cell) => ids.includes(cell.getAttribute("data-row-id") ?? "")), slotIds),
-      { message: "the mocked calendar replaces the built-in demo calendar" },
-    )
-    .toBe(true);
+  if (!stateGate) await waitForMockedCalendar(page, state);
   return { state: () => current, statePosts, errors, dialogs };
 }
 
@@ -376,6 +389,51 @@ test.describe("template above the column limit", () => {
     expect(api.statePosts).toEqual([]);
     expect(api.errors).toEqual([]);
   });
+});
+
+test("Calendar snapshots wait until the calendar has loaded (v1.79)", async ({ page }) => {
+  let releaseState!: () => void;
+  const stateGate = new Promise<void>((resolve) => (releaseState = resolve));
+  const state = structuredClone(defaultState);
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z", { stateGate });
+  const saved: { name: string; state: AppState }[] = [];
+  await page.route("**/v1/state/snapshots**", (route) => {
+    const at = "2026-01-04T10:00:00Z";
+    if (route.request().method() === "POST") {
+      saved.push(route.request().postDataJSON() as { name: string; state: AppState });
+      return route.fulfill({
+        status: 201,
+        json: { id: "snap-2", name: "Before the changes", kind: "named", created_at: at, updated_at: at, size_bytes: 1 },
+      });
+    }
+    return route.fulfill({
+      json: [{ id: "snap-1", name: "Good calendar", kind: "named", created_at: at, updated_at: at, size_bytes: 1 }],
+    });
+  });
+  const hint = page.getByText("Saving and restoring are available once the calendar has loaded.");
+  const save = page.getByRole("button", { name: "Save", exact: true });
+  const restore = page.getByRole("button", { name: "Restore", exact: true });
+
+  // The screen still holds the built-in demo calendar: it must not be saved,
+  // and a restore would save it first.
+  await page.getByRole("button", { name: "Calendar snapshots" }).click();
+  await expect(hint).toBeVisible();
+  await page.getByPlaceholder("Snapshot name").fill("Before the changes");
+  await expect(save).toBeDisabled();
+  await expect(restore).toBeDisabled();
+
+  releaseState();
+  await waitForMockedCalendar(page, state);
+  await expect(hint).toBeHidden();
+  await expect(restore).toBeEnabled();
+  await save.click();
+  await expect.poll(() => saved.length).toBe(1);
+  // The snapshot holds the loaded calendar, not the demo one.
+  expect(saved[0].name).toBe("Before the changes");
+  expect(saved[0].state.clinicians.map((clinician) => clinician.name)).toEqual(
+    state.clinicians.map((clinician) => clinician.name),
+  );
+  expect(api.errors).toEqual([]);
 });
 
 test("Reset → Unlocked shifts also removes planner entries on vacation days", async ({ page }) => {
