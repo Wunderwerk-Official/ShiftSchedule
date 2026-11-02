@@ -708,7 +708,10 @@ def validate_on_call_rest(
             for direction, count in (("before", rest_before), ("after", rest_after)):
                 for offset in range(1, count + 1):
                     delta = -offset if direction == "before" else offset
-                    day = (base + timedelta(days=delta)).date().isoformat()
+                    try:
+                        day = (base + timedelta(days=delta)).date().isoformat()
+                    except OverflowError:
+                        break  # past the first or last representable day: nothing is planned there
                     clashing = [
                         a
                         for a in by_date.get(day, [])

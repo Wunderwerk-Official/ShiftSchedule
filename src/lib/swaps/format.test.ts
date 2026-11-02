@@ -20,6 +20,7 @@ import {
   targetHighlightKeys,
   targetSummary,
   timeRange,
+  undoButtonLabel,
   undoToastMessage,
   unitLine,
   unitSummary,
@@ -231,6 +232,24 @@ describe("swap text helpers", () => {
     expect(swapToastMessage(record({ requesterName: "Eva One", partnerName: "Eva Two" }))).toBe(
       "Swapped: Eva One ⇄ Eva Two (Thu 19 / Sat 21 Nov)",
     );
+  });
+
+  it("names History's Undo buttons after the swap and its days, starting with the visible text", () => {
+    expect(undoButtonLabel(record(), false)).toBe("Undo swap of Dr. Anna Weber and Ben Ott (Thu 19 / Sat 21 Nov)");
+    expect(undoButtonLabel(record(), true)).toBe("Undoing swap of Dr. Anna Weber and Ben Ott (Thu 19 / Sat 21 Nov)");
+    expect(undoButtonLabel(record({ kind: "handover", take: [] }), false)).toBe(
+      "Undo hand-over from Dr. Anna Weber to Ben Ott (Thu 19 Nov)",
+    );
+    const cover = record({
+      kind: "cover",
+      requesterId: null,
+      requesterName: null,
+      give: [{ rowId: "ct-thu", dateISO: "2026-11-19", sectionName: "CT", start: "2026-11-19T08:00", end: "2026-11-19T16:00" }],
+      take: [],
+    });
+    expect(undoButtonLabel(cover, false)).toBe("Undo Ben Ott covering CT (Thu 19 Nov)");
+    // A record without its shifts still gets a name.
+    expect(undoButtonLabel(record({ take: [] }), false)).toBe("Undo swap of Dr. Anna Weber and Ben Ott");
   });
 
   it("labels consent, the primary button and the preview per mode", () => {

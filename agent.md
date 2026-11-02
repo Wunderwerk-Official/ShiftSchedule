@@ -2513,7 +2513,10 @@ server checking every option against all planning rules.
   cached. Apply and undo re-check the whole calendar without a context.
   `backend/tests/test_swap_property.py` asserts that both verdicts (and the
   warnings, pre-existing checks and solver-rule hits) agree on the arena
-  fixture, a dense plan and `rich_swap_state`.
+  fixture, a dense plan, `rich_swap_state` and `wide_swap_state` (on-call
+  rest of 3 and 7 days, a duty ending two days later, two locations, a
+  336 h stretch), with counters that the cases a margin under 7 days, a
+  cover slice without co-holders or a cut block would get wrong really occur.
 - **ValidationContext** (`backend/validation.py`): see 6.5; built once per
   search request, never cached across requests.
 - **Tables** (`backend/db.py`): `swap_requests` (one row per applied swap with
@@ -2538,13 +2541,29 @@ server checking every option against all planning rules.
   `notice_override_required` (`hoursLeft`), `plan_invalid` (normalization
   would change the result), `swap_invalid` (`violations`, `reasons`) and
   `warnings_unacknowledged` (`warnings`). Undo adds 404 `swap_not_found`,
-  409 `already_reverted` and `undo_conflict`.
+  409 `already_reverted` and `undo_conflict`. Apply re-checks everything a
+  hand-built request could forge: a swap whose two sides share a slot
+  instance is a 400 `invalid_request` (the search never pairs them); a Rest
+  Day move it did not detect, a hidden removal of anyone but the instance's
+  first hidden holder, a cover of a full slot or by one of its holders, and
+  a shift whose holder went on vacation are `swap_stale`.
 - **Working-time warnings** (swap-only, never a validator rule): rest under
   `minRestHours` between blocks, no free day after a night, a block longer
   than `maxBlockHours`. Only new ones count. Their ids are pure functions of
   the plan; the search computes them on the slice, apply recomputes them on
   the whole calendar and refuses with `warnings_unacknowledged` unless every
-  id is in `acknowledgedWarnings`; the row stores them.
+  id is in `acknowledgedWarnings`; the row stores them. A stretch can be
+  longer than any margin (two weeks of 24 h background duty), so for the
+  warnings each person's window widens until no block crosses its start and
+  none ends after its end (`SwapContext.whole_block_window` moves each edge a
+  day at a time, looking only at the items next to it); slice and calendar
+  then give the same ids and texts.
+- **Reasons.** A blocked option names one reason (`matching.ranked_reasons`).
+  A shift hidden by its holder's vacation still counts for the rules, so a
+  clash with it still blocks, but the reason says so and names the way out:
+  "On-call rest: Ben Ott's on-call on Fri 9 Jan is hidden by a vacation but
+  still counts. Find cover for it first." Unresolved references never show
+  a raw id ("A person of this swap is no longer in the plan.").
 - **Pre-existing problems.** The checks list says "no new …"; a check
   the two people already break in a touched week without the change making
   it worse is listed in `SwapOption.preexisting` and shown amber, never as a
@@ -2577,7 +2596,18 @@ server checking every option against all planning rules.
   undo bring back what the swap resolved (`applied_patch.resolved`, e.g. the
   vacation-hidden shift a cover removed or a week it brought under the
   limit), no worse than it was, because that existed before. History
-  computes `canUndo` and the reason live.
+  computes `canUndo` and the reason live. Undo is also refused
+  (`undo_conflict`, with the person and day) when it would leave someone with
+  a Rest Day and a visible shift on one day and it restores one of the two
+  (a person-day that held both before the swap, recorded in
+  `applied_patch.restWorkPairs`, may come back), and when a person of the
+  swap was deleted ("Anna Weber is no longer in the plan."). A refusal of
+  the gate reads "Undoing this swap would break a planning rule: …".
+- **Dates.** Requests name dates from 1900-01-01 to 2999-12-31 (else 422).
+  Shifts saved by hand near 9999-12-31 never make a search, apply or undo
+  fail: the minute axis reads a minute past that day as that day, the slice
+  window stays inside the date range, and `validate_on_call_rest` stops at
+  the last representable day.
 - **Time zone.** Shift times stay naive wall-clock minutes; only "started"
   and the notice period compare with now in the calendar time zone
   (`zoneinfo`, `tzdata==2026.6` in requirements so the Docker image has the
@@ -2593,7 +2623,25 @@ server checking every option against all planning rules.
   state. `targetFindings` show once, as amber notes under the target summary
   and beside the hand-over preview's checks. Toasts and the Rest Day move
   label use full names, since first names repeat in a team.
+- **Drawer focus and refusals.** Focus stays in the drawer when the drawer
+  itself takes it away (a busy or refused apply, a History Undo, Refresh,
+  Search again): busy buttons are `aria-disabled`, not `disabled`, and
+  `useFocusSafetyNet` moves focus that falls out to the History row, the
+  message on screen or a heading, scrolled into view; a press outside lets
+  focus go (the desktop drawer is non-modal). Both panels take focus on a
+  click on their text, so Escape keeps working. The phone sheet's Tab trap
+  also wraps from focus outside its controls (the heading, the sheet, a
+  History row after the last control). A preview that a refused apply
+  closes shows the new list from the top, with the refusal. A refused apply says the list was
+  refreshed, or the calendar reloaded, only once that happened (the page's
+  apply and undo rethrow `state_changed` with `detail.reloaded`); when its
+  new search fails, the preview closes and the list shows the error. A
+  blocked Whole day keeps its toggle. The Vacation Planner, Working Hours
+  and Export close the drawer first. Reveal on hover finds clinic sheet
+  names and keeps them right of the sticky row labels; below lg the grid
+  gets a 440 px run-out (`data-swap-drawer-open`, index.css) so its
+  right-hand days can scroll out from under the drawer.
 - Tests: backend `test_validation_context.py`, `test_constraint_policy.py`,
   `test_swap_blocks.py`, `test_swap_worktime.py`, `test_swap_policy.py`,
-  `test_swap_matching.py`, `test_swap_property.py` (about 7 s) and
+  `test_swap_matching.py`, `test_swap_property.py` (about 8 s) and
   `test_swap_endpoints.py`; fixtures in `backend/tests/swap_fixtures.py`.

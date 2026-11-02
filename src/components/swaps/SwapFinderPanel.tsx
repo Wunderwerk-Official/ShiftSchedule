@@ -73,24 +73,36 @@ export default function SwapFinderPanel(props: SwapFinderPanelProps) {
   // answer for another mode loads, the shown ones would describe the wrong change.
   const targetNotes = response && response.target.mode === mode ? response.targetFindings : [];
   const rowClass = cx("flex items-center gap-2 text-[13px]", TEXT_2, isMobile ? "min-h-11" : "min-h-8");
+  // A blocked whole day (one of its blocks started) keeps the toggle, the only
+  // way back to this shift alone. Rendered in one place, so it keeps focus.
+  const wholeDayToggle = target !== null && (target.blocked ? target.wholeDay : target.blocksOnDate > 1);
+  const wholeDayHintId = useId();
   return (
     <div className="flex flex-col gap-3 pb-4 pt-3">
       {target ? <TargetSummary target={target} notes={targetNotes} /> : null}
+      {wholeDayToggle ? (
+        <label className={rowClass}>
+          <input
+            type="checkbox"
+            checked={props.wholeDay}
+            aria-describedby={target.blocked ? wholeDayHintId : undefined}
+            onChange={(event) => props.onWholeDayChange(event.target.checked)}
+            className={checkboxClass}
+          />
+          Whole day ({target.blocksOnDate} blocks)
+        </label>
+      ) : null}
       {target?.blocked ? (
-        <p className="text-[13px] text-rose-700 dark:text-rose-300">{target.blocked.message}</p>
+        <>
+          <p className="text-[13px] text-rose-700 dark:text-rose-300">{target.blocked.message}</p>
+          {wholeDayToggle ? (
+            <p id={wholeDayHintId} className={cx("text-xs", TEXT_3)}>
+              Untick Whole day to search for this shift only.
+            </p>
+          ) : null}
+        </>
       ) : (
         <>
-          {target && target.blocksOnDate > 1 ? (
-            <label className={rowClass}>
-              <input
-                type="checkbox"
-                checked={props.wholeDay}
-                onChange={(event) => props.onWholeDayChange(event.target.checked)}
-                className={checkboxClass}
-              />
-              Whole day ({target.blocksOnDate} blocks)
-            </label>
-          ) : null}
           {target?.insideNotice && target.hoursUntilStart !== null ? (
             <p className="text-[13px] text-amber-800 dark:text-amber-200">
               Starts in {hoursText(target.hoursUntilStart)} h – inside the {hoursText(target.noticeHours)} h notice
@@ -119,7 +131,7 @@ export default function SwapFinderPanel(props: SwapFinderPanelProps) {
           {target ? <Filters {...props} target={target} rowClass={rowClass} /> : null}
           {props.stale ? <StaleHint onRefresh={props.onRefresh} /> : null}
           {props.notice ? (
-            <p role="alert" className={swapAlertClass}>
+            <p role="alert" tabIndex={-1} data-swap-alert="" className={swapAlertClass}>
               {props.notice}
             </p>
           ) : null}
@@ -293,7 +305,7 @@ function Results(props: SwapFinderPanelProps) {
   );
   if (props.errorMessage) {
     return (
-      <div role="alert" className={cx(swapAlertClass, "flex flex-col items-start gap-2")}>
+      <div role="alert" tabIndex={-1} data-swap-alert="" className={cx(swapAlertClass, "flex flex-col items-start gap-2")}>
         <span>{props.errorMessage}</span>
         <button type="button" onClick={props.onRefresh} className={cx(outlineButtonClass, "bg-white dark:bg-slate-900")}>
           Search again

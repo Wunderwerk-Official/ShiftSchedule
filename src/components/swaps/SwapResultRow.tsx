@@ -1,3 +1,4 @@
+import { useId } from "react";
 import { cx } from "../../lib/classNames";
 import type { PersonTone } from "../../lib/myPlan";
 import { unitLine, weekChange } from "../../lib/swaps/format";
@@ -41,6 +42,8 @@ type SwapResultRowProps = {
 export default function SwapResultRow({ option, mode, tone, onPreview, onHover }: SwapResultRowProps) {
   const blocked = option.group === "blocked";
   const line = detailLine(option, mode);
+  // One partner often has several options: the line tells their Preview buttons apart.
+  const lineId = useId();
   const notes = [...option.warnings, ...option.findings].map((entry) => entry.short).slice(0, 2);
   return (
     <li
@@ -54,7 +57,11 @@ export default function SwapResultRow({ option, mode, tone, onPreview, onHover }
       <Avatar name={option.partnerName} tone={tone} size="l" />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <span className={cx("truncate text-[13px] font-semibold leading-4", TEXT_1)}>{option.partnerName}</span>
-        {line ? <span className={cx("truncate text-xs tabular-nums", TEXT_2)}>{line}</span> : null}
+        {line ? (
+          <span id={lineId} className={cx("truncate text-xs tabular-nums", TEXT_2)}>
+            {line}
+          </span>
+        ) : null}
         {blocked ? (
           <span className="text-xs text-rose-700 dark:text-rose-300">{option.reason?.message}</span>
         ) : option.chips.length + notes.length > 0 ? (
@@ -77,6 +84,7 @@ export default function SwapResultRow({ option, mode, tone, onPreview, onHover }
           type="button"
           data-swap-preview="true"
           aria-label={PREVIEW_LABELS[mode](option.partnerName)}
+          aria-describedby={line ? lineId : undefined}
           onClick={() => onPreview(option.key)}
           className={cx(outlineButtonClass, "shrink-0")}
         >

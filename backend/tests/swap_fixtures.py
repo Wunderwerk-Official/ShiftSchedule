@@ -17,6 +17,7 @@ from backend.models import (
     Assignment,
     Clinician,
     Holiday,
+    PreferredWorkingTime,
     SolverRule,
     TemplateBlock,
     TemplateRowBand,
@@ -157,8 +158,12 @@ def arena_state() -> AppState:
     return AppState.model_validate(json.loads(FIXTURE.read_text())["state"])
 
 
-def chained_plan(state: AppState, start: date, days: int, seed: int) -> AppState:
-    """A dense plan in which people often hold touching shifts (multi-item blocks)."""
+def chained_plan(state: AppState, start: date, days: int, seed: int, *, fill: float = 1.0,
+                 exclude: Sequence[str] = ()) -> AppState:
+    """A dense plan in which people often hold touching shifts (multi-item blocks).
+    With ``fill`` below 1 each position stays empty with probability 1 - fill;
+    the ``exclude``d people get nothing. The defaults draw exactly the numbers
+    of the dense plan."""
     rng = random.Random(seed)
     lookup = _build_slot_lookup(state)
     section_of = _build_slot_section_map(state)
@@ -173,7 +178,10 @@ def chained_plan(state: AppState, start: date, days: int, seed: int) -> AppState
         rng.shuffle(day_slots)
         for s in day_slots:
             for _ in range(max(1, s.requiredSlots or 0)):
-                cands = [c for c in state.clinicians if section_of.get(s.id) in c.qualifiedClassIds]
+                if fill < 1.0 and rng.random() >= fill:
+                    continue
+                cands = [c for c in state.clinicians
+                         if section_of.get(s.id) in c.qualifiedClassIds and c.id not in exclude]
                 rng.shuffle(cands)
                 st, en, loc = lookup[s.id]
 
@@ -244,4 +252,103 @@ def rich_swap_state(seed: int = 7) -> AppState:
         SolverRule(id="rule-off-after-night-thu", name="Off after Thursday night",
                    ifShiftRowId="night-thu", dayDelta=1, thenType="off").model_dump()
     ]
+    return state
+
+
+# The fourth property dataset (wide_swap_state): rules that reach far from a
+# moved date, and a block longer than any margin.
+WIDE_SETTINGS: Dict[str, Any] = {
+    "enforceSameLocationPerDay": True,
+    "onCallRestDaysBefore": 3,
+    "onCallRestDaysAfter": 7,
+    "preferContinuousShifts": False,
+}
+# slot prefix -> (block, start, end, endDayOffset) at the second location
+NORTH_SHAPES = {
+    "north": ("block-day", "09:00", "17:00", 0),
+    "ward": ("block-ward", "08:00", "08:00", 1),  # 24 h, not on-call: no rest days around it
+    "long": ("block-night", "18:00", "06:00", 2),  # 36 h, ends two days after its date
+}
+WIDE_PLAN_START, WIDE_PLAN_DAYS = "2026-01-05", 21
+STRETCH_HOLDER, STRETCH_START, STRETCH_DAYS = "clin-e6", "2026-01-01", 14
+BEFORE_STRETCH_DAY = "2025-12-29"  # the Monday of the week the stretch starts in
+TOUCHING_STRETCH_DAY = "2026-01-15"  # the stretch ends Thu 15 Jan 08:00
+CROSSING_STRETCH_DAY = "2026-01-21"  # its ISO week's slice window starts inside the stretch
+WIDE_WHOLE_DAY = "2026-01-26"  # a Monday
+CAPACITY_DAY = "2026-01-27"  # a Tuesday
+REST_CALL_DAY, REST_CLASH_DAY = "2026-02-02", "2026-02-09"  # Mondays: the 7th rest day is in the next ISO week
+
+
+def _add_north_location(state: AppState) -> None:
+    """A second location (NORTH_SHAPES) and the Ward section of its 24 h duty."""
+    state.locations.append(make_location("loc-north", "North"))
+    state.rows.insert(len(SECTIONS), make_workplace_row("sec-ward", "Ward"))
+    template = state.weeklyTemplate
+    template.blocks.append(TemplateBlock(id="block-ward", sectionId="sec-ward"))
+    template.locations.append(WeeklyTemplateLocation(
+        locationId="loc-north",
+        rowBands=[TemplateRowBand(id="row-1", label="Row 1", order=1)],
+        colBands=[make_template_col_band(f"north-col-{dt}", "", 1, dt) for dt in DAY_TYPES],
+        slots=[make_template_slot(slot_id=f"{prefix}-{dt}", location_id="loc-north", col_band_id=f"north-col-{dt}",
+                                  block_id=block_id, start_time=start, end_time=end, end_day_offset=offset)
+               for dt in DAY_TYPES for prefix, (block_id, start, end, offset) in NORTH_SHAPES.items()],
+    ))
+
+
+def _weekday_slot(prefix: str, date_iso: str) -> str:
+    return f"{prefix}-{('mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun')[date.fromisoformat(date_iso).weekday()]}"
+
+
+def wide_swap_state(seed: int = 5) -> AppState:
+    """The property test's fourth dataset, where a narrow slice would fail:
+
+    - on-call rest 3 days before and 7 after, a 36 h duty that ends two days
+      after its date, two locations with enforceSameLocationPerDay and Clara's
+      mandatory 07:00–15:00 on Thursdays: rules that reach far from a moved date;
+    - preferContinuousShifts off, so a Whole-day unit can be valid: Dora works
+      early and night on WIDE_WHOLE_DAY;
+    - Eva Six (no contract hours) holds the 24 h ward duty every day from
+      STRETCH_START, one 336 h block, and works the night of the day it ends;
+      Eva Five (left out of the random plan) works CT before it in its first
+      week, on the day it ends and in the week after;
+    - Ben is on call on REST_CALL_DAY, and Eva Five works CT on REST_CLASH_DAY,
+      seven days later, at the far end of the slice margin;
+    - ct-tue on CAPACITY_DAY has target 2, held by Clara and by Ben, whose
+      vacation hides it: covering it without removing Ben overfills it.
+
+    A sparse plan of three weeks from WIDE_PLAN_START fills the rest.
+    """
+    clinicians = default_clinicians() + [
+        make_clinician(f"clin-e{n}", f"Eva {word}", list(ALL_SECTIONS) + ["sec-ward"],
+                       working_hours_per_week=None if n == 6 else 40)
+        for n, word in enumerate(("One", "Two", "Three", "Four", "Five", "Six"), start=1)
+    ]
+    for clinician in clinicians[:2]:  # Anna and Ben also take ward duties
+        clinician.qualifiedClassIds.append("sec-ward")
+    clara = next(c for c in clinicians if c.id == "clin-clara")
+    clara.preferredWorkingTimes = {"thu": PreferredWorkingTime(startTime="07:00", endTime="15:00",
+                                                               requirement="mandatory")}
+    base = make_swap_state(clinicians=clinicians, solver_settings=WIDE_SETTINGS,
+                           holidays=[Holiday(dateISO="2026-01-19", name="Holiday")],
+                           slot_overrides={f"ct-tue__{CAPACITY_DAY}": 1})
+    _add_north_location(base)
+    state = chained_plan(base, start=date.fromisoformat(WIDE_PLAN_START), days=WIDE_PLAN_DAYS, seed=seed,
+                         fill=0.45, exclude=(STRETCH_HOLDER, "clin-e5"))
+    stretch_start = date.fromisoformat(STRETCH_START)
+    stretch = [(stretch_start + timedelta(days=k)).isoformat() for k in range(STRETCH_DAYS)]
+    state.assignments += [asg(f"stretch-{k}", _weekday_slot("ward", day), day, STRETCH_HOLDER)
+                          for k, day in enumerate(stretch)] + [
+        asg("after-stretch", _weekday_slot("night", TOUCHING_STRETCH_DAY), TOUCHING_STRETCH_DAY, STRETCH_HOLDER),
+        asg("before-stretch", _weekday_slot("ct", BEFORE_STRETCH_DAY), BEFORE_STRETCH_DAY, "clin-e5"),
+        asg("touching-stretch", _weekday_slot("ct", TOUCHING_STRETCH_DAY), TOUCHING_STRETCH_DAY, "clin-e5"),
+        asg("crossing-stretch", _weekday_slot("ct", CROSSING_STRETCH_DAY), CROSSING_STRETCH_DAY, "clin-e5"),
+        asg("wide-day-early", "early-mon", WIDE_WHOLE_DAY, "clin-dora"),
+        asg("wide-day-night", "night-mon", WIDE_WHOLE_DAY, "clin-dora"),
+        asg("capacity-visible", "ct-tue", CAPACITY_DAY, "clin-clara"),
+        asg("capacity-hidden", "ct-tue", CAPACITY_DAY, "clin-ben"),
+        asg("rest-call", _weekday_slot("oncall", REST_CALL_DAY), REST_CALL_DAY, "clin-ben"),
+        asg("rest-clash", _weekday_slot("ct", REST_CLASH_DAY), REST_CLASH_DAY, "clin-e5"),
+    ]
+    ben = next(c for c in state.clinicians if c.id == "clin-ben")
+    ben.vacations.append(VacationRange(id="vac-ben-wide", startISO=CAPACITY_DAY, endISO=CAPACITY_DAY))
     return state

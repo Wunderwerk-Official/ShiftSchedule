@@ -12,14 +12,15 @@ import type {
   SwapOption,
   SwapRecord,
 } from "../../lib/swaps/types";
-import { SwapSaveBlockedError } from "../../pages/swapFlow";
+import { SwapSaveBlockedError, type SwapSearchResult } from "../../pages/swapFlow";
 import PlanIcon from "../myPlan/PlanIcons";
 import { TEXT_1, TEXT_3, segmentClass, segmentGroupClass } from "../myPlan/planChrome";
 import { SwapGlyph } from "./PillSwapButton";
 import SwapFinderPanel, { type SwapFilters } from "./SwapFinderPanel";
 import SwapHighlightStyle from "./SwapHighlightStyle";
 import SwapHistoryPanel from "./SwapHistoryPanel";
-import SwapPreview from "./SwapPreview";
+import SwapPreview, { type SwapRefusal } from "./SwapPreview";
+import { useFocusSafetyNet } from "./useFocusSafetyNet";
 
 // The swap assistant (SPEC §5.4–5.5): a drawer at the right edge on desktop
 // (no backdrop, the grid stays usable) and a full-height sheet on phones. It
@@ -35,7 +36,8 @@ export type SwapAssistantDrawerProps = {
   planToken: unknown;
   /** Changes after every apply and undo: the history loads again. */
   historyToken: number;
-  onSearch: (request: SwapCandidatesRequest) => Promise<SwapCandidatesResponse>;
+  /** The answer, and whether the calendar was reloaded before it was searched. */
+  onSearch: (request: SwapCandidatesRequest) => Promise<SwapSearchResult>;
   onApply: (request: SwapApplyRequest) => Promise<void>;
   onUndo: (swapId: string) => Promise<void>;
   onLoadHistory: () => Promise<SwapRecord[]>;
@@ -129,6 +131,10 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
   const requestSeq = useRef(0);
   const listScrollTop = useRef(0);
   const backFocusKey = useRef<string | null>(null);
+  // The refused apply that the next search follows: its message changes once the new list is in.
+  const pendingRefusal = useRef<SwapRefusal | null>(null);
+  // The plan the shown answer was searched on, when known at its start (see below).
+  const answerToken = useRef<{ token: unknown } | null>(null);
 
   const filtersKey = JSON.stringify(filters);
   const pickingDates = mode === "swap" && filters.range === "dates" && filters.dates.length === 0;
@@ -137,32 +143,46 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
     if (historyOnly) return;
     // A newer search (or "pick a date first") drops every older answer.
     const seq = ++requestSeq.current;
+    const refusal = pendingRefusal.current;
+    pendingRefusal.current = null;
+    // The old error goes at once: the list shows the progress of this search.
+    setError(null);
     if (pickingDates) return;
     setLoading(true);
     const timer = window.setTimeout(() => {
+      // The search saves and checks the plan on screen now; later edits make its answer stale.
+      const token = cb.current.planToken;
       cb.current.onSearch(searchRequest(target, mode, wholeDay, filters)).then(
-        (next) => {
+        ({ response: next, reloaded }) => {
           if (seq !== requestSeq.current) return;
+          answerToken.current = reloaded ? null : { token };
           setResponse(next);
-          setError(null);
           setLoading(false);
           // After a refresh the preview stays open while its option is still valid.
           setPreviewKey((key) => (previewableOption(next, key) ? key : null));
+          const refreshed = refusal?.refreshed?.(reloaded);
+          // Unless the planner moved on (Back, a filter) while it ran.
+          if (refusal && refreshed) setNotice((shown) => (shown === refusal.message ? refreshed : shown));
         },
         (err: unknown) => {
           if (seq !== requestSeq.current) return;
           setError(err);
           setLoading(false);
+          // A preview open meanwhile shows an option this search was to confirm:
+          // back to the list, which shows the error and "Search again".
+          setPreviewKey(null);
         },
       );
     }, SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [mode, wholeDay, filtersKey, refreshNonce]);
 
-  // The plan this list was made from: the token of the render that showed the
-  // answer. A reload inside the search (hydrated before the answer) is no change.
+  // The plan this list was made from: the one on screen when its search
+  // started, so an edit made while it ran counts as a change. After a reload
+  // inside the search (hydrated before the answer) it is the plan of the
+  // render that shows the answer.
   useLayoutEffect(() => {
-    setFetchedToken(planToken);
+    setFetchedToken(answerToken.current ? answerToken.current.token : planToken);
   }, [response]);
   const stale = response !== null && fetchedToken !== planToken;
 
@@ -204,18 +224,33 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
       body.scrollTop = 0;
       return;
     }
-    body.scrollTop = listScrollTop.current;
     const key = backFocusKey.current;
     backFocusKey.current = null;
+    // A preview that a refused apply closed (its option is gone, or the new
+    // search failed) shows the new list from the top, with the refusal.
+    body.scrollTop = key === null && notice !== null ? 0 : listScrollTop.current;
+    // Back: focus returns to the option's row. Focus that went down with the
+    // preview otherwise is the safety net's (it respects a press outside).
     const button = key
       ? body.querySelector<HTMLElement>(`[data-swap-option="${CSS.escape(key)}"] [data-swap-preview]`)
       : null;
-    if (button) {
-      button.focus({ preventScroll: true });
-    } else if (!panelRef.current?.contains(document.activeElement)) {
-      headingRef.current?.focus({ preventScroll: true });
-    }
+    button?.focus({ preventScroll: true });
   }, [previewOpen]);
+
+  // Focus the drawer took away goes to the History row it was in, else to the
+  // message on screen, else to the preview's or the drawer's heading.
+  const focusFallback = (lostPath: Element[]): HTMLElement | null => {
+    const shown = (element: Element | null | undefined): element is HTMLElement =>
+      element instanceof HTMLElement && element.isConnected && !element.closest("[hidden]");
+    const home = lostPath.find((element) => element.matches("[data-swap-focus-home]") && shown(element));
+    if (shown(home)) return home;
+    const body = bodyRef.current;
+    const alert = Array.from(body?.querySelectorAll("[data-swap-alert]") ?? []).find(shown);
+    if (alert) return alert;
+    const previewHeading = body?.querySelector("[data-swap-preview] h3");
+    return shown(previewHeading) ? previewHeading : headingRef.current;
+  };
+  useFocusSafetyNet(panelRef, focusFallback, isMobile);
 
   const refresh = () => {
     setNotice(null);
@@ -240,9 +275,11 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
   };
   // A refused apply: the message stays (in the preview, or above the list when
   // the option is gone after the refresh).
-  const onApplyError = (message: string, research: boolean) => {
-    setNotice(message);
-    if (research) setRefreshNonce((nonce) => nonce + 1);
+  const onApplyError = (refusal: SwapRefusal) => {
+    setNotice(refusal.message);
+    if (!refusal.research) return;
+    pendingRefusal.current = refusal;
+    setRefreshNonce((nonce) => nonce + 1);
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -260,10 +297,18 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
     const first = items[0];
     const last = items[items.length - 1];
     const active = document.activeElement;
-    if (event.shiftKey && (active === first || active === headingRef.current)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && active === last) {
+    if (!active) return;
+    // Focus may also sit on something that is no control: the heading, the
+    // panel itself (after a tap on its text), a message or a History row
+    // whose Undo is done. From before the first control (or around it)
+    // Shift+Tab would leave the sheet, and Tab from after the last one.
+    const control = (items as Element[]).includes(active);
+    if (event.shiftKey) {
+      if (active === first || (!control && active.compareDocumentPosition(first) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else if (active === last || (!control && active.compareDocumentPosition(last) & Node.DOCUMENT_POSITION_PRECEDING)) {
       event.preventDefault();
       first.focus();
     }
@@ -377,6 +422,7 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
                 publishedWeekStartISOs={props.publishedWeekStartISOs}
                 notice={notice}
                 stale={stale}
+                searching={loading}
                 onRefresh={refresh}
                 onApply={(request) => cb.current.onApply(request)}
                 onApplyError={onApplyError}
@@ -406,8 +452,10 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
           role="dialog"
           aria-modal="true"
           aria-labelledby={headingId}
+          // A tap on its text focuses the sheet, so Escape and the Tab trap keep working; it keeps its shape.
+          tabIndex={-1}
           onKeyDown={onKeyDown}
-          className="relative flex h-[calc(100dvh-12px)] flex-col rounded-t-2xl border-t border-slate-200 bg-white text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+          className="relative flex h-[calc(100dvh-12px)] flex-col rounded-t-2xl border-t border-slate-200 bg-white text-slate-900 focus:outline-none focus-visible:rounded-t-2xl focus-visible:shadow-none dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
         >
           <span aria-hidden="true" className="mx-auto mt-2 block h-1 w-9 shrink-0 rounded-full bg-slate-300 dark:bg-slate-600" />
           {content}
@@ -422,8 +470,10 @@ export default function SwapAssistantDrawer(props: SwapAssistantDrawerProps) {
       role="dialog"
       aria-modal="false"
       aria-labelledby={headingId}
+      // A click on its text focuses the drawer, so Escape keeps working; it keeps its shape.
+      tabIndex={-1}
       onKeyDown={onKeyDown}
-      className="fixed inset-y-0 right-0 z-[80] flex w-[440px] max-w-[100vw] flex-col border-l border-slate-200 bg-white text-slate-900 shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+      className="fixed inset-y-0 right-0 z-[80] flex w-[440px] max-w-[100vw] flex-col border-l border-slate-200 bg-white text-slate-900 shadow-xl focus:outline-none focus-visible:rounded-none focus-visible:shadow-xl dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
     >
       {content}
     </div>,

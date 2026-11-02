@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { Clinician } from "../../api/client";
 import { cx } from "../../lib/classNames";
 import { personTone } from "../../lib/myPlan";
-import { recordItemLine, stampLabel } from "../../lib/swaps/format";
+import { recordItemLine, stampLabel, undoButtonLabel } from "../../lib/swaps/format";
 import type { SwapMode, SwapRecord } from "../../lib/swaps/types";
 import { TEXT_1, TEXT_2, TEXT_3, outlineButtonClass } from "../myPlan/planChrome";
 import { Avatar } from "../myPlan/viewParts";
@@ -80,6 +80,8 @@ export default function SwapHistoryPanel(props: SwapHistoryPanelProps) {
   }, [props.refreshToken, retryNonce]);
 
   const undo = async (id: string) => {
+    // aria-disabled, not disabled, while one runs: the focused button keeps focus.
+    if (undoingId !== null) return;
     setUndoingId(id);
     setUndoErrors((errors) => {
       const rest = { ...errors };
@@ -118,7 +120,8 @@ export default function SwapHistoryPanel(props: SwapHistoryPanelProps) {
           const index = toneIndex.get(record.partnerId);
           const error = undoErrors[record.id];
           return (
-            <li key={record.id} className="flex flex-col gap-1 py-3">
+            // Focus comes back to the row when its Undo is gone (undone, or no longer possible).
+            <li key={record.id} tabIndex={-1} data-swap-focus-home="" className="flex flex-col gap-1 py-3">
               <div className="flex items-center gap-2">
                 <Avatar
                   name={record.partnerName}
@@ -143,9 +146,10 @@ export default function SwapHistoryPanel(props: SwapHistoryPanelProps) {
               {record.canUndo ? (
                 <button
                   type="button"
-                  disabled={undoingId !== null}
+                  aria-label={undoButtonLabel(record, undoingId === record.id)}
+                  aria-disabled={undoingId !== null || undefined}
                   onClick={() => void undo(record.id)}
-                  className={cx(outlineButtonClass, "mt-1 self-start disabled:opacity-60")}
+                  className={cx(outlineButtonClass, "mt-1 self-start aria-disabled:cursor-not-allowed aria-disabled:opacity-60")}
                 >
                   {undoingId === record.id ? "Undoing…" : "Undo"}
                 </button>

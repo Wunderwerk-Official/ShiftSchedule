@@ -1,4 +1,4 @@
-import { test, expect, type Locator, type Page } from "@playwright/test";
+import { test, expect, type Locator, type Page, type Route } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import type { AppState, Assignment } from "../src/api/client";
 import type {
@@ -15,9 +15,13 @@ import type {
 
 // The swap assistant on the real UI with a mocked API (SPEC §6.5): find a
 // swap from a pill, apply it and undo it from the toast; the S key; a refused
-// apply; an apply that another tab's save refuses; the phone sheet; cover from
-// the person list; the TopBar history; and the touch layout of the ⇄ button
-// next to the lock.
+// apply (also far down the list: its message is shown where focus went); an
+// apply that another tab's save refuses; what the page saves before a search
+// or an apply; the modals that close the drawer; Reveal on hover; the phone
+// sheet and its Tab trap; cover from the person list; the TopBar history and
+// its Undo (focus stays in the drawer, as after a refused apply); and the
+// touch layout of the ⇄ button next to the lock. The mocked server keeps one
+// calendar and checks revisions like the real one.
 
 const defaultState = JSON.parse(
   readFileSync(new URL("../backend/default_state.json", import.meta.url), "utf8"),
@@ -44,6 +48,7 @@ function slotId(dayType: string, sectionName: string): string {
 const THU_CT = slotId("thu", "CT");
 const FRI_MRI = slotId("fri", "MRI");
 const WED_CT = slotId("wed", "CT");
+const WED_MRI = slotId("wed", "MRI");
 // Monday 07:00 in Berlin: the page opens on 5–11 Jan, every shift starts > 48 h later.
 const NOW = "2026-01-05T06:00:00Z";
 
@@ -67,21 +72,51 @@ function calendarState(leonardoSource: "manual" | "solver" = "manual"): AppState
   return state;
 }
 
-/** The calendar the server saved after the apply: the moved shifts are locked. */
-function appliedState(mode: SwapMode): AppState {
+type Shift = Pick<Assignment, "rowId" | "dateISO" | "clinicianId">;
+const keyOf = (shift: Shift) => `${shift.rowId}__${shift.dateISO}__${shift.clinicianId}`;
+const GALILEO_WED: Shift = { rowId: WED_MRI, dateISO: "2026-01-07", clinicianId: FIRST };
+
+/** The calendar with a third shift that no swap moves: Galileo on Wed MRI. */
+function calendarWithGalileoWed(): AppState {
   const state = calendarState();
-  const [galileoThu, leonardoFri] = state.assignments;
+  state.assignments.push(assignment("galileo-wed", WED_MRI, "2026-01-07", FIRST));
+  return state;
+}
+
+/** The shifts a swap takes from their holders, and the locked ones it gives in their place. */
+function swapChanges(mode: SwapMode): { taken: Assignment[]; given: Assignment[] } {
+  const [galileoThu, leonardoFri] = calendarState().assignments;
   const locked = { locked: true } as const;
   const leonardoThu = assignment("swap-1-a", THU_CT, "2026-01-08", SECOND, locked);
   if (mode === "swap") {
-    state.assignments = [leonardoThu, assignment("swap-1-b", FRI_MRI, "2026-01-09", FIRST, locked)];
-  } else if (mode === "handover") {
-    state.assignments = [leonardoThu, leonardoFri];
-  } else {
-    state.assignments = [galileoThu, leonardoFri, assignment("swap-1-a", WED_CT, "2026-01-07", SECOND, locked)];
+    const galileoFri = assignment("swap-1-b", FRI_MRI, "2026-01-09", FIRST, locked);
+    return { taken: [galileoThu, leonardoFri], given: [leonardoThu, galileoFri] };
   }
-  return state;
+  if (mode === "handover") return { taken: [galileoThu], given: [leonardoThu] };
+  return { taken: [], given: [assignment("swap-1-a", WED_CT, "2026-01-07", SECOND, locked)] };
 }
+
+/** The server's calendar after it applied a swap: every other saved edit stays. */
+function withSwap(saved: AppState, mode: SwapMode): AppState {
+  const { taken, given } = swapChanges(mode);
+  const gone = new Set(taken.map(keyOf));
+  return { ...saved, assignments: [...saved.assignments.filter((item) => !gone.has(keyOf(item))), ...given] };
+}
+
+/** The server's calendar after it undid that swap: the shifts are back with their holders. */
+function withoutSwap(saved: AppState, mode: SwapMode): AppState {
+  const { taken, given } = swapChanges(mode);
+  const gone = new Set(given.map(keyOf));
+  return { ...saved, assignments: [...saved.assignments.filter((item) => !gone.has(keyOf(item))), ...taken] };
+}
+
+/** Who holds a slot on a day in a calendar. */
+const holdersOf = (state: AppState, rowId: string, dateISO: string) =>
+  state.assignments.filter((item) => item.rowId === rowId && item.dateISO === dateISO).map((item) => item.clinicianId);
+
+/** A shift's `locked` flag in a calendar (undefined: the default of its source). */
+const lockedIn = (state: AppState, shift: Shift) =>
+  state.assignments.find((item) => keyOf(item) === keyOf(shift))?.locked;
 
 // --- Swap API fixtures (SPEC §3) --------------------------------------------
 
@@ -249,12 +284,23 @@ function swapRecord(mode: SwapMode, status: "applied" | "reverted"): SwapRecord 
 
 // --- Page setup ---------------------------------------------------------------
 
-async function openCalendar(page: Page, state: AppState) {
+/** A POST /v1/state and the revision the server saved it as; null: refused (409 state_changed). */
+type StatePost = { body: AppState; revision: string | null };
+
+/**
+ * Opens the team plan on a mocked server that keeps one calendar. As on the
+ * real one, a save names the revision it replaces and is refused when the
+ * calendar was saved since. `clock: "manual"` installs fake page timers
+ * (page.clock) instead of only fixing the date.
+ */
+async function openCalendar(page: Page, state: AppState, options: { clock?: "manual" } = {}) {
   let current = { ...state, revision: "r0" } as AppState;
-  const statePosts: AppState[] = [];
+  let saves = 0;
+  const statePosts: StatePost[] = [];
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.clock.setFixedTime(new Date(NOW));
+  if (options.clock === "manual") await page.clock.install({ time: new Date(NOW) });
+  else await page.clock.setFixedTime(new Date(NOW));
   await page.addInitScript(() => localStorage.setItem("authToken", "test-token"));
   await page.route("**/auth/me", (route) =>
     route.fulfill({ json: { username: "test", role: "user", active: true } }),
@@ -264,8 +310,15 @@ async function openCalendar(page: Page, state: AppState) {
     const path = new URL(request.url()).pathname;
     if (path.endsWith("/v1/state")) {
       if (request.method() === "POST") {
-        statePosts.push(request.postDataJSON() as AppState);
-        current = { ...request.postDataJSON(), revision: `r${statePosts.length}` };
+        const body = request.postDataJSON() as AppState;
+        if (body.revision !== current.revision) {
+          statePosts.push({ body, revision: null });
+          const message = "The calendar changed in another tab or operation. Your changes were not saved.";
+          return route.fulfill({ status: 409, json: { detail: { code: "state_changed", message } } });
+        }
+        saves += 1;
+        current = { ...body, revision: `r${saves}` };
+        statePosts.push({ body, revision: current.revision ?? null });
       }
       return route.fulfill({ json: current });
     }
@@ -282,57 +335,84 @@ async function openCalendar(page: Page, state: AppState) {
   const saveElsewhere = () => {
     current = { ...current, revision: "r-other" };
   };
-  return { state: () => current, statePosts, errors, saveElsewhere };
+  /** An apply or undo changed the server's calendar: it now holds `next` as `revision`. */
+  const commit = (next: AppState, revision: string) => {
+    current = { ...next, revision };
+    return current;
+  };
+  return { state: () => current, statePosts, errors, saveElsewhere, commit };
 }
 
 type Calendar = Awaited<ReturnType<typeof openCalendar>>;
 
+/** Waits for the page's next save after its first `count`; the server must take it. */
+async function nextSave(api: Calendar, count: number): Promise<AppState> {
+  await expect.poll(() => api.statePosts.length).toBeGreaterThan(count);
+  const post = api.statePosts[count];
+  expect(post.revision, "the server refused the save").not.toBeNull();
+  return post.body;
+}
+
 /**
  * The swap endpoints. Registered after openCalendar: Playwright tries the
  * newest matching route first, and openCalendar's catch-all for /v1/ would
- * otherwise answer them.
+ * otherwise answer them. As on the server, each checks the revision the page
+ * sends against the calendar it holds; apply and undo change that calendar.
  */
 async function mockSwapApi(page: Page, api: Calendar, refuseApply?: object) {
+  // `savedRevision`: the revision the server held; `statePosts`: how many
+  // states the page had posted by then.
   const calls = {
-    candidates: [] as SwapCandidatesRequest[],
-    // `savedRevision`: the revision of the last POST /v1/state response;
-    // `statePosts`: how many states the page had posted by then.
+    candidates: [] as { body: SwapCandidatesRequest; statePosts: number }[],
     apply: [] as { body: SwapApplyRequest; savedRevision: string | null | undefined; statePosts: number }[],
-    undo: [] as { path: string; body: { expectedRevision: string }; savedRevision: string | null | undefined }[],
+    undo: [] as {
+      path: string;
+      body: { expectedRevision: string };
+      savedRevision: string | null | undefined;
+      statePosts: number;
+    }[],
     history: 0,
   };
   const pathIs = (suffix: RegExp) => (url: URL) => suffix.test(url.pathname);
+  const stateChanged = (route: Route) => {
+    const detail = { code: "state_changed", message: "The calendar changed.", revision: api.state().revision };
+    return route.fulfill({ status: 409, json: { detail } });
+  };
   await page.route(pathIs(/\/v1\/swaps\/candidates$/), (route) => {
     const body = route.request().postDataJSON() as SwapCandidatesRequest;
-    calls.candidates.push(body);
+    calls.candidates.push({ body, statePosts: api.statePosts.length });
+    if (body.expectedRevision && body.expectedRevision !== api.state().revision) return stateChanged(route);
     return route.fulfill({ json: candidates(body, api.state().revision ?? "r0") });
   });
+  let appliedMode: SwapMode = "swap";
+  // The history's one swap; as on the server, undone ones can no longer be undone.
+  let status: "applied" | "reverted" = "applied";
   await page.route(pathIs(/\/v1\/swaps\/apply$/), (route) => {
     const body = route.request().postDataJSON() as SwapApplyRequest;
     calls.apply.push({ body, savedRevision: api.state().revision, statePosts: api.statePosts.length });
-    // As on the server: a calendar saved since the page's revision refuses the apply.
-    if (body.expectedRevision !== api.state().revision) {
-      const detail = { code: "state_changed", message: "The calendar changed.", revision: api.state().revision };
-      return route.fulfill({ status: 409, json: { detail } });
-    }
+    if (body.expectedRevision !== api.state().revision) return stateChanged(route);
     if (refuseApply) return route.fulfill({ status: 409, json: { detail: refuseApply } });
-    return route.fulfill({
-      json: { swap: swapRecord(body.mode, "applied"), state: { ...appliedState(body.mode), revision: "rS" } },
-    });
+    appliedMode = body.mode;
+    status = "applied";
+    const state = api.commit(withSwap(api.state(), body.mode), "rS");
+    return route.fulfill({ json: { swap: swapRecord(body.mode, "applied"), state } });
   });
   await page.route(pathIs(/\/v1\/swaps\/[^/]+\/undo$/), (route) => {
+    const body = route.request().postDataJSON() as { expectedRevision: string };
     calls.undo.push({
       path: new URL(route.request().url()).pathname,
-      body: route.request().postDataJSON() as { expectedRevision: string },
+      body,
       savedRevision: api.state().revision,
+      statePosts: api.statePosts.length,
     });
-    return route.fulfill({
-      json: { swap: swapRecord("swap", "reverted"), state: { ...calendarState(), revision: "rU" } },
-    });
+    if (body.expectedRevision !== api.state().revision) return stateChanged(route);
+    status = "reverted";
+    const state = api.commit(withoutSwap(api.state(), appliedMode), "rU");
+    return route.fulfill({ json: { swap: swapRecord(appliedMode, "reverted"), state } });
   });
   await page.route(pathIs(/\/v1\/swaps\/history$/), (route) => {
     calls.history += 1;
-    return route.fulfill({ json: { swaps: [swapRecord("swap", "applied")] } });
+    return route.fulfill({ json: { swaps: [swapRecord(appliedMode, status)] } });
   });
   return calls;
 }
@@ -343,6 +423,8 @@ const galileoPill = (page: Page) => pillOf(page, THU_CT, "2026-01-08", FIRST);
 /** Anchored: a cell's accessible name contains its pills' button labels. */
 const findSwapIn = (pill: Locator) => pill.getByRole("button", { name: /^Find swap for / });
 const drawer = (page: Page) => page.getByRole("dialog");
+/** Chromium moves focus to <body> when it disables or removes the focused button. */
+const focusInDrawer = (page: Page) => page.evaluate(() => document.activeElement?.closest('[role="dialog"]') != null);
 
 /** Opens the drawer from Galileo's pill the way a mouse does: point at it, click ⇄. */
 async function findSwapForGalileo(page: Page) {
@@ -359,7 +441,7 @@ test("find a swap from a pill, apply it and undo it from the toast", async ({ pa
   await findSwapForGalileo(page);
   await expect(page.getByRole("heading", { name: "Find a swap" })).toBeVisible();
   await expect(page.getByText("Best matches (1)")).toBeVisible();
-  expect(calls.candidates).toEqual([
+  expect(calls.candidates.map(({ body }) => body)).toEqual([
     expect.objectContaining({
       mode: "swap",
       assignment: { assignmentId: "galileo-thu", rowId: THU_CT, dateISO: "2026-01-08", clinicianId: FIRST },
@@ -392,6 +474,10 @@ test("find a swap from a pill, apply it and undo it from the toast", async ({ pa
   // Focus moves to the shift's new holder.
   await expect(findSwapIn(leonardoThu)).toBeFocused();
   await expect(page.getByText(`Swapped: ${NAME[FIRST]} ⇄ ${NAME[SECOND]} (Thu 8 / Fri 9 Jan)`)).toBeVisible();
+  // The page took the applied calendar's revision: its next autosave saves the swap.
+  const afterApply = await nextSave(api, calls.apply[0].statePosts);
+  expect(holdersOf(afterApply, THU_CT, "2026-01-08")).toEqual([SECOND]);
+  expect(holdersOf(afterApply, FRI_MRI, "2026-01-09")).toEqual([FIRST]);
 
   await page.getByRole("button", { name: "Undo", exact: true }).click();
   await expect.poll(() => calls.undo.length).toBe(1);
@@ -400,6 +486,12 @@ test("find a swap from a pill, apply it and undo it from the toast", async ({ pa
   await expect(galileoPill(page)).toBeVisible();
   await expect(leonardoThu).toHaveCount(0);
   await expect(page.getByText(`Swap undone: ${NAME[FIRST]} ⇄ ${NAME[SECOND]} (Thu 8 / Fri 9 Jan)`)).toBeVisible();
+  // ...and after the undo the restored calendar.
+  const afterUndo = await nextSave(api, calls.undo[0].statePosts);
+  expect(holdersOf(afterUndo, THU_CT, "2026-01-08")).toEqual([FIRST]);
+  expect(holdersOf(afterUndo, FRI_MRI, "2026-01-09")).toEqual([SECOND]);
+  expect(api.statePosts.filter((post) => post.revision === null)).toEqual([]);
+  await expect(page.getByRole("button", { name: "Retry saving" })).toHaveCount(0);
   expect(api.errors).toEqual([]);
 });
 
@@ -436,6 +528,10 @@ test("a refused apply shows the reasons and searches again", async ({ page }) =>
   await expect(drawer(page).getByRole("alert")).toHaveText(`This swap no longer works: ${reason}`);
   await expect(page.getByRole("heading", { name: "Find a swap" })).toBeVisible();
   await expect.poll(() => calls.candidates.length).toBe(2);
+  // Focus never left the drawer while it applied and searched again, so Escape still closes it.
+  await expect.poll(() => focusInDrawer(page)).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toBeHidden();
   expect(api.errors).toEqual([]);
 });
 
@@ -476,6 +572,204 @@ test("another tab's save refuses a clean screen's apply: reload, search again, n
   expect(api.errors).toEqual([]);
 });
 
+test.describe("saving before a search or an apply", () => {
+  /**
+   * Opens the calendar with fake page timers and lets the load's autosave
+   * land. From then on the clock only moves when the test moves it, so an
+   * edit stays inside the autosave's 500 ms window.
+   */
+  async function openPaused(page: Page, state: AppState) {
+    const api = await openCalendar(page, state, { clock: "manual" });
+    const calls = await mockSwapApi(page, api);
+    // The grid shows the built-in calendar until the mocked one has loaded.
+    await expect(galileoPill(page)).toBeVisible();
+    await page.clock.pauseAt(new Date(Date.parse(NOW) + 60_000));
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(600);
+        return api.statePosts.length;
+      })
+      .toBeGreaterThan(0);
+    await nextSave(api, 0);
+    return { api, calls };
+  }
+  /** Past the drawer's 200 ms search debounce, short of the 500 ms autosave. */
+  const startSearch = (page: Page) => page.clock.runFor(250);
+  const toggleLock = async (pill: Locator) => {
+    await pill.hover();
+    await pill.getByRole("button", { name: /^Lock assignment for/ }).click();
+  };
+  const LEONARDO_FRI_SHIFT: Shift = { rowId: FRI_MRI, dateISO: "2026-01-09", clinicianId: SECOND };
+
+  test("a clean screen searches against its saved revision and saves nothing", async ({ page }) => {
+    const { api, calls } = await openPaused(page, calendarState());
+    const saved = api.statePosts.length;
+
+    await findSwapForGalileo(page);
+    await startSearch(page);
+    await expect(page.getByText("Best matches (1)")).toBeVisible();
+    expect(calls.candidates).toEqual([
+      { body: expect.objectContaining({ expectedRevision: api.statePosts[saved - 1].revision }), statePosts: saved },
+    ]);
+    await page.clock.runFor(1_000);
+    expect(api.statePosts).toHaveLength(saved);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("an edit inside the autosave window is saved before the search, which names that save", async ({ page }) => {
+    const { api, calls } = await openPaused(page, calendarState());
+    const saved = api.statePosts.length;
+    const leonardoFri = pillOf(page, FRI_MRI, "2026-01-09", SECOND);
+    await toggleLock(leonardoFri);
+    await expect(leonardoFri).toHaveAttribute("data-locked", "false");
+
+    await findSwapForGalileo(page);
+    await startSearch(page);
+    await expect(page.getByText("Best matches (1)")).toBeVisible();
+    const [search] = calls.candidates;
+    const saves = api.statePosts.slice(saved, search.statePosts);
+    expect(saves.map((post) => lockedIn(post.body, LEONARDO_FRI_SHIFT))).toEqual([false]);
+    expect(saves[0].revision).not.toBeNull();
+    expect(search.body.expectedRevision).toBe(saves[0].revision);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("a lock toggled just before Swap shifts is saved first and survives the apply", async ({ page }) => {
+    const { api, calls } = await openPaused(page, calendarWithGalileoWed());
+    await findSwapForGalileo(page);
+    await startSearch(page);
+    await page.getByRole("button", { name: `Preview swap with ${NAME[SECOND]}` }).click();
+    await page.getByLabel(`${NAME[SECOND]} agreed to this swap`).check();
+    const saved = api.statePosts.length;
+    // The desktop drawer is non-modal: a shift that the swap leaves alone is unlocked meanwhile.
+    const galileoWed = pillOf(page, WED_MRI, "2026-01-07", FIRST);
+    await toggleLock(galileoWed);
+    await expect(galileoWed).toHaveAttribute("data-locked", "false");
+
+    await page.getByRole("button", { name: "Swap shifts" }).click();
+    await expect(page.getByText(`Swapped: ${NAME[FIRST]} ⇄ ${NAME[SECOND]} (Thu 8 / Fri 9 Jan)`)).toBeVisible();
+    const [apply] = calls.apply;
+    const saves = api.statePosts.slice(saved, apply.statePosts);
+    expect(saves.map((post) => lockedIn(post.body, GALILEO_WED))).toEqual([false]);
+    expect(saves[0].revision).not.toBeNull();
+    expect(apply.body.expectedRevision).toBe(saves[0].revision);
+    // The server swapped on top of the saved edit, and the page shows both.
+    expect(lockedIn(api.state(), GALILEO_WED)).toBe(false);
+    await expect(pillOf(page, THU_CT, "2026-01-08", SECOND)).toBeVisible();
+    await expect(galileoWed).toHaveAttribute("data-locked", "false");
+
+    await page.clock.runFor(1_000);
+    const afterApply = await nextSave(api, apply.statePosts);
+    expect(lockedIn(afterApply, GALILEO_WED)).toBe(false);
+    expect(holdersOf(afterApply, THU_CT, "2026-01-08")).toEqual([SECOND]);
+    await expect(page.getByRole("button", { name: "Retry saving" })).toHaveCount(0);
+    expect(api.errors).toEqual([]);
+  });
+});
+
+test("the Vacation Planner, Working Hours and Export close the drawer before they open", async ({ page }) => {
+  const api = await openCalendar(page, calendarState());
+  await mockSwapApi(page, api);
+  const modals = [
+    ["Open Vacation Planner", "Year planner for clinician vacations."],
+    ["Open Working Hours", "Track working hours by week for all clinicians."],
+    ["Open Export", "Choose a format and configure your export."],
+  ] as const;
+  for (const [opener, subtitle] of modals) {
+    await findSwapForGalileo(page);
+    await expect(drawer(page)).toBeVisible();
+    // The desktop drawer is non-modal: the panels below the grid stay usable.
+    await page.getByRole("button", { name: opener }).click();
+    await expect(drawer(page)).toBeHidden();
+    await expect(page.getByText(subtitle)).toBeVisible();
+    // Nothing covers the modal's own Close button.
+    await page.getByRole("button", { name: "Close", exact: true }).last().click();
+    await expect(page.getByText(subtitle)).toBeHidden();
+  }
+  expect(api.errors).toEqual([]);
+});
+
+/**
+ * Whether all of a pill or clinic sheet name shows: the topmost element just
+ * inside both its ends is its own, not the drawer, a sticky label or nothing.
+ */
+function fullyShown(target: Locator): Promise<boolean> {
+  return target.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const y = (rect.top + rect.bottom) / 2;
+    return [rect.left + 2, rect.right - 2].every((x) => {
+      const hit = document.elementFromPoint(x, y);
+      return hit !== null && element.contains(hit);
+    });
+  });
+}
+
+/** Points at the drawer's first option; after 400 ms the page reveals its partner's shift. */
+const hoverFirstOption = (page: Page) => drawer(page).locator("li[data-swap-option]").first().hover();
+
+test("Reveal on hover finds a clinic sheet name and brings it out from under the row labels", async ({ page }) => {
+  const state = calendarState();
+  state.solverSettings = { ...state.solverSettings!, scheduleLayout: "clinicSheet" };
+  const api = await openCalendar(page, state);
+  await mockSwapApi(page, api);
+  const sheetName = (rowId: string, dateISO: string, clinicianId: string) =>
+    page.locator(`[data-sheet-assignment-key="${rowId}__${dateISO}__${clinicianId}"]`);
+  const galileo = sheetName(THU_CT, "2026-01-08", FIRST);
+  await galileo.hover();
+  await findSwapIn(galileo).click();
+  await expect(page.getByText("Best matches (1)")).toBeVisible();
+  const leonardo = sheetName(FRI_MRI, "2026-01-09", SECOND);
+  const sheetScroll = () => leonardo.evaluate((element) => element.closest(".calendar-scroll")!.scrollLeft);
+
+  // Leonardo's Friday shows at the sheet's right edge while its cell runs on out of view: nothing moves.
+  await leonardo.evaluate((element) => {
+    const scroller = element.closest(".calendar-scroll")!;
+    const left = element.getBoundingClientRect().right - (scroller.getBoundingClientRect().right - 10);
+    scroller.scrollBy({ left, behavior: "instant" });
+  });
+  expect(await fullyShown(leonardo)).toBe(true);
+  const shown = await sheetScroll();
+  await hoverFirstOption(page);
+  await page.waitForTimeout(1_000);
+  expect(await sheetScroll()).toBe(shown);
+
+  // Under the row labels it does not show: the reveal scrolls it out to their right.
+  await drawer(page).getByRole("heading", { name: "Find a swap" }).hover();
+  await leonardo.evaluate((element) => {
+    const labels = element.closest("[data-schedule-grid]")!.firstElementChild!.getBoundingClientRect();
+    const left = element.getBoundingClientRect().left - (labels.left + 20);
+    element.closest(".calendar-scroll")!.scrollBy({ left, behavior: "instant" });
+  });
+  expect(await fullyShown(leonardo)).toBe(false);
+  await hoverFirstOption(page);
+  await expect.poll(() => fullyShown(leonardo)).toBe(true);
+  expect(api.errors).toEqual([]);
+});
+
+test.describe("drawer over the grid", () => {
+  // Below lg the desktop drawer overlays the grid instead of narrowing the page.
+  test.use({ viewport: { width: 900, height: 800 } });
+
+  test("Reveal on hover scrolls the partner's pill out from under the drawer", async ({ page }) => {
+    const api = await openCalendar(page, calendarState());
+    await mockSwapApi(page, api);
+    const grid = page.locator('[data-schedule-grid="true"]');
+    await expect(galileoPill(page)).toBeVisible();
+    const before = (await grid.boundingBox())!;
+    await findSwapForGalileo(page);
+    await expect(page.getByText("Best matches (1)")).toBeVisible();
+    // The grid keeps its place and width, so Leonardo's Friday lies under the drawer.
+    const after = (await grid.boundingBox())!;
+    expect([after.x, after.width]).toEqual([before.x, before.width]);
+    const leonardoFri = pillOf(page, FRI_MRI, "2026-01-09", SECOND);
+    expect(await fullyShown(leonardoFri)).toBe(false);
+
+    await hoverFirstOption(page);
+    await expect.poll(() => fullyShown(leonardoFri)).toBe(true);
+    expect(api.errors).toEqual([]);
+  });
+});
+
 test("Find cover… in an open slot's person list searches for cover", async ({ page }) => {
   const api = await openCalendar(page, calendarState());
   const calls = await mockSwapApi(page, api);
@@ -486,7 +780,7 @@ test("Find cover… in an open slot's person list searches for cover", async ({ 
   await page.getByRole("button", { name: "Find cover for this slot" }).click();
   await expect(page.getByRole("heading", { name: "Find cover" })).toBeVisible();
   await expect.poll(() => calls.candidates.length).toBe(1);
-  expect(calls.candidates[0]).toMatchObject({
+  expect(calls.candidates[0].body).toMatchObject({
     mode: "cover",
     assignment: null,
     slot: { rowId: WED_CT, dateISO: "2026-01-07" },
@@ -515,6 +809,62 @@ test("the TopBar opens and closes the swap history", async ({ page }) => {
   expect(api.errors).toEqual([]);
 });
 
+test("Undo in the history keeps focus in the drawer, so Escape still closes it", async ({ page }) => {
+  const api = await openCalendar(page, calendarState());
+  const calls = await mockSwapApi(page, api);
+
+  await page.getByRole("button", { name: "Swap history" }).click();
+  await drawer(page).getByRole("button", { name: /^Undo swap of / }).click();
+  await expect.poll(() => calls.undo.length).toBe(1);
+  await expect(page.getByText(`Swap undone: ${NAME[FIRST]} ⇄ ${NAME[SECOND]} (Thu 8 / Fri 9 Jan)`)).toBeVisible();
+  // The reloaded row is undone and has no Undo any more: focus went to the row.
+  await expect(drawer(page).getByText("Undone", { exact: true })).toBeVisible();
+  await expect(drawer(page).getByRole("button", { name: /^Undo swap of / })).toHaveCount(0);
+  await expect.poll(() => focusInDrawer(page)).toBe(true);
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toBeHidden();
+  expect(api.errors).toEqual([]);
+});
+
+test("a refused apply far down the list shows its message in view, where focus is", async ({ page }) => {
+  const api = await openCalendar(page, calendarState());
+  const message = `${NAME[SECOND]}'s shift on Mon 11 Jan changed. Refresh and try again.`;
+  const calls = await mockSwapApi(page, api, { code: "swap_stale", message });
+  // 14 options with the same partner on Fri 9 to Sun 11 Jan; the new search no longer has the last one.
+  await page.route(/\/v1\/swaps\/candidates$/, (route) => {
+    const body = route.request().postDataJSON() as SwapCandidatesRequest;
+    calls.candidates.push({ body, statePosts: api.statePosts.length });
+    const answer = candidates(body, api.state().revision ?? "r0");
+    const option = answer.best[0];
+    const options = Array.from({ length: 14 }, (_, k): SwapOption => {
+      const dateISO = `2026-01-${String(9 + (k % 3)).padStart(2, "0")}`;
+      const take = { ...option.take!, startDateISO: dateISO, items: option.take!.items.map((item) => ({ ...item, dateISO })) };
+      return { ...option, key: `${SECOND}|option-${k}`, take, group: k < 3 ? "best" : "possible" };
+    }).slice(0, calls.candidates.length > 1 ? 13 : 14);
+    const best = options.filter((item) => item.group === "best");
+    const possible = options.filter((item) => item.group === "possible");
+    const totals = { best: best.length, possible: possible.length, blocked: 0 };
+    return route.fulfill({ json: { ...answer, best, possible, totals, checked: options.length } });
+  });
+
+  await findSwapForGalileo(page);
+  await expect(drawer(page).getByText("Also possible (11)")).toBeVisible();
+  const lastOption = drawer(page).locator(`[data-swap-option="${SECOND}|option-13"]`);
+  await lastOption.scrollIntoViewIfNeeded();
+  await lastOption.locator("[data-swap-preview]").click();
+  await page.getByLabel(`${NAME[SECOND]} agreed to this swap`).check();
+  await page.getByRole("button", { name: "Swap shifts" }).click();
+
+  // The option is gone after the new search: the list is back, from the top, with the refusal.
+  await expect(drawer(page).getByText("Also possible (10)")).toBeVisible();
+  const notice = drawer(page).getByRole("alert").filter({ hasText: message });
+  await expect(notice).toBeInViewport({ ratio: 1 });
+  await expect(notice).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(drawer(page)).toBeHidden();
+  expect(api.errors).toEqual([]);
+});
+
 test.describe("phone", () => {
   test.use({ viewport: { width: 390, height: 844 } });
 
@@ -528,7 +878,7 @@ test.describe("phone", () => {
     const sheet = drawer(page);
     await expect(sheet).toHaveAttribute("aria-modal", "true");
     await sheet.getByRole("button", { name: "Hand over", exact: true }).click();
-    await expect.poll(() => calls.candidates.map((request) => request.mode)).toEqual(["swap", "handover"]);
+    await expect.poll(() => calls.candidates.map(({ body }) => body.mode)).toEqual(["swap", "handover"]);
     await sheet.getByRole("button", { name: `Preview hand over to ${NAME[SECOND]}` }).click();
     await sheet.getByLabel(`${NAME[SECOND]} agreed to take this shift`).check();
     await sheet.getByRole("button", { name: "Hand over", exact: true }).click();
@@ -536,6 +886,27 @@ test.describe("phone", () => {
     await expect(sheet).toBeHidden();
     await expect(page.getByText(`Handed over: ${NAME[FIRST]} → ${NAME[SECOND]} (Thu 8 Jan)`)).toBeVisible();
     expect(calls.apply.map(({ body }) => [body.mode, body.take])).toEqual([["handover", null]]);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("after Undo in the history, Tab and Shift+Tab stay in the sheet", async ({ page }) => {
+    const api = await openCalendar(page, calendarState());
+    const calls = await mockSwapApi(page, api);
+    await page.getByRole("button", { name: "Swap history" }).click();
+    const sheet = drawer(page);
+    await sheet.getByRole("button", { name: /^Undo swap of / }).focus();
+    await page.keyboard.press("Enter");
+    await expect.poll(() => calls.undo.length).toBe(1);
+    // The undone row has no Undo any more; focus went to the row, after the sheet's last control.
+    await expect(sheet.getByText("Undone", { exact: true })).toBeVisible();
+    await expect(sheet.getByRole("button", { name: /^Undo swap of / })).toHaveCount(0);
+    await expect.poll(() => focusInDrawer(page)).toBe(true);
+    for (const key of ["Tab", "Tab", "Shift+Tab", "Shift+Tab", "Shift+Tab"]) {
+      await page.keyboard.press(key);
+      expect(await focusInDrawer(page), `focus after ${key}`).toBe(true);
+    }
+    await page.keyboard.press("Escape");
+    await expect(sheet).toBeHidden();
     expect(api.errors).toEqual([]);
   });
 });

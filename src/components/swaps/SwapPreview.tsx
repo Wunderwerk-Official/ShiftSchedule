@@ -72,16 +72,34 @@ function rememberApproverName(name: string) {
   }
 }
 
-/** The message after a refused apply, and whether the list must be searched again. */
-function refusal(err: unknown, partnerName: string): { message: string; research: boolean } {
+/** A refused apply as the drawer shows it. */
+export type SwapRefusal = {
+  /** Shown at once, and kept when the list cannot be searched again. */
+  message: string;
+  /** The list must be searched again. */
+  research: boolean;
+  /** The message once the new list is in; `reloaded`: that search reloaded the calendar first. */
+  refreshed?: (reloaded: boolean) => string;
+};
+
+const CHANGED_RELOADED = "The calendar changed in another tab. It was reloaded; check the options again.";
+
+/** The message after a refused apply; it claims a reload or a refresh only once it happened. */
+function refusal(err: unknown, partnerName: string): SwapRefusal {
   if (!(err instanceof SwapApiError)) {
     return { message: err instanceof Error ? err.message : "The swap could not be applied.", research: false };
   }
   switch (err.code) {
     case "state_changed":
-      return { message: "The calendar changed in another tab. It was reloaded; check the options again.", research: true };
+      // The page reloads the calendar on this refusal and reports whether that worked.
+      if (err.detail.reloaded === true) return { message: CHANGED_RELOADED, research: true };
+      return {
+        message: "The calendar changed in another tab. Reload the page, then check the options again.",
+        research: true,
+        refreshed: (reloaded) => (reloaded ? CHANGED_RELOADED : "The calendar changed in another tab. Check the options again."),
+      };
     case "swap_stale":
-      return { message: `${err.message} The list was refreshed.`, research: true };
+      return { message: err.message, research: true, refreshed: () => `${err.message} The list was refreshed.` };
     case "swap_invalid":
       return { message: `This swap no longer works: ${err.reasons.join(" ") || err.message}`, research: true };
     case "plan_invalid":
@@ -118,10 +136,12 @@ export type SwapPreviewProps = {
   notice: string | null;
   /** The plan changed since the options were checked. */
   stale: boolean;
+  /** The drawer checks the options again (after a refusal or Refresh): applying waits for that. */
+  searching: boolean;
   onRefresh: () => void;
   /** The page saves, applies and closes the drawer; a refusal rejects. */
   onApply: (request: SwapApplyRequest) => Promise<void>;
-  onApplyError: (message: string, research: boolean) => void;
+  onApplyError: (refusal: SwapRefusal) => void;
   onBack: () => void;
 };
 
@@ -132,8 +152,9 @@ export default function SwapPreview(props: SwapPreviewProps) {
   const [consent, setConsent] = useState(false);
   const [acknowledged, setAcknowledged] = useState<string[]>([]);
   const [overrideNotice, setOverrideNotice] = useState(false);
-  // The server found the swap inside the notice period although the list did not.
-  const [noticeDemanded, setNoticeDemanded] = useState(false);
+  // The server found the swap inside the notice period although the list did
+  // not; its hours are newer than the list's.
+  const [noticeDemanded, setNoticeDemanded] = useState<{ hoursLeft: number | null } | null>(null);
   // Rest-day moves start ticked; a refreshed option's new moves do too.
   const [skippedMoves, setSkippedMoves] = useState<string[]>([]);
   const [removeHidden, setRemoveHidden] = useState(true);
@@ -148,11 +169,12 @@ export default function SwapPreview(props: SwapPreviewProps) {
   }, []);
 
   const warnings = warningsOverride?.base === option.warnings ? warningsOverride.warnings : option.warnings;
-  const showNotice = option.insideNotice || target.insideNotice || noticeDemanded;
-  const hoursLeft = noticeHoursLeft(target, option);
+  const showNotice = option.insideNotice || target.insideNotice || noticeDemanded !== null;
+  const hoursLeft = noticeDemanded?.hoursLeft ?? noticeHoursLeft(target, option);
   const noticeStart = hoursLeft === null ? "Apply" : `Starts in ${hoursText(hoursLeft)} h – apply`;
-  const ready =
-    consent && warnings.every((warning) => acknowledged.includes(warning.id)) && (!showNotice || overrideNotice) && !busy;
+  const ready = consent && warnings.every((warning) => acknowledged.includes(warning.id)) && (!showNotice || overrideNotice);
+  // Unlike "not ready" this is aria-disabled, not disabled: the focused button keeps focus.
+  const waiting = busy || props.searching;
 
   const toneIndex = useMemo(
     () => new Map(props.clinicians.map((clinician, index) => [clinician.id, index])),
@@ -184,6 +206,7 @@ export default function SwapPreview(props: SwapPreviewProps) {
   ].sort((a, b) => a - b);
 
   const submit = async () => {
+    if (waiting) return;
     rememberApproverName(approverName.trim());
     setBusy(true);
     try {
@@ -199,13 +222,15 @@ export default function SwapPreview(props: SwapPreviewProps) {
         }),
       );
     } catch (err) {
-      if (err instanceof SwapApiError && err.code === "notice_override_required") setNoticeDemanded(true);
+      if (err instanceof SwapApiError && err.code === "notice_override_required") {
+        const { hoursLeft: serverHours } = err.detail;
+        setNoticeDemanded({ hoursLeft: typeof serverHours === "number" ? serverHours : null });
+      }
       if (err instanceof SwapApiError && err.code === "warnings_unacknowledged") {
         setWarningsOverride({ base: option.warnings, warnings: err.warnings });
         setAcknowledged([]);
       }
-      const { message, research } = refusal(err, option.partnerName);
-      props.onApplyError(message, research);
+      props.onApplyError(refusal(err, option.partnerName));
     } finally {
       setBusy(false);
     }
@@ -217,7 +242,7 @@ export default function SwapPreview(props: SwapPreviewProps) {
   const toggle = (list: string[], id: string, on: boolean) => (on ? [...list, id] : list.filter((entry) => entry !== id));
 
   return (
-    <div className="flex flex-col gap-4 pt-3">
+    <div data-swap-preview="" className="flex flex-col gap-4 pt-3">
       <h3
         ref={headingRef}
         tabIndex={-1}
@@ -421,10 +446,11 @@ export default function SwapPreview(props: SwapPreviewProps) {
 
       <div className="sticky bottom-0 -mx-4 flex flex-col gap-2 border-t border-slate-200 bg-white px-4 pb-[max(16px,env(safe-area-inset-bottom))] pt-3 dark:border-slate-700 dark:bg-slate-900">
         {props.notice ? (
-          <p role="alert" className={swapAlertClass}>
+          <p role="alert" tabIndex={-1} data-swap-alert="" className={swapAlertClass}>
             {props.notice}
           </p>
         ) : null}
+        {props.searching ? <p className={cx("text-xs", TEXT_3)}>Checking options…</p> : null}
         <div className={cx("flex gap-2", !isMobile && "justify-end")}>
           <button
             type="button"
@@ -436,8 +462,12 @@ export default function SwapPreview(props: SwapPreviewProps) {
           <button
             type="button"
             disabled={!ready}
+            aria-disabled={waiting || undefined}
             onClick={() => void submit()}
-            className={isMobile ? cx(solidButtonBaseClass, "h-12 flex-1 px-4 text-[15px]") : solidButtonClass}
+            className={cx(
+              isMobile ? cx(solidButtonBaseClass, "h-12 flex-1 px-4 text-[15px]") : solidButtonClass,
+              "aria-disabled:cursor-not-allowed aria-disabled:opacity-60",
+            )}
           >
             {busy ? "Applying…" : primaryLabel(mode)}
           </button>

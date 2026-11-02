@@ -9,6 +9,11 @@ cancel between baseline and candidate; the touched people's rules look at
 most seven days away; WEEKLY_HOURS sees whole weeks. The scoped verdict
 therefore equals the full-calendar verdict (test_swap_property.py checks it),
 and apply re-checks the full calendar anyway.
+
+Working-time warnings name whole work blocks, which can be longer than any
+margin (a holiday stretch of 24 h duties). Their slice widens each person's
+window until no block of theirs crosses its edges, so its warnings are the
+full calendar's.
 """
 
 from bisect import bisect_left, bisect_right
@@ -39,6 +44,8 @@ from ..validation import (
     VIOLATION_QUALIFICATION,
     VIOLATION_SAME_LOCATION,
     VIOLATION_SPLIT_SHIFT,
+    VIOLATION_UNKNOWN_CLINICIAN,
+    VIOLATION_UNKNOWN_SLOT,
     VIOLATION_VACATION,
     VIOLATION_WEEKLY_HOURS,
     Violation,
@@ -110,6 +117,7 @@ class SwapContext:
             default=0,
         )
         self._blocks: Dict[str, List[WorkBlock]] = {}
+        self._windows: Dict[Tuple[str, str, str], Tuple[str, str]] = {}
         self._ytd: Dict[str, Dict[str, int]] = {}
         self._row_names = {row.id: row.name for row in state.rows}
         self._location_names = {location.id: location.name for location in state.locations}
@@ -127,6 +135,52 @@ class SwapContext:
             items = visible_items(self.vctx, self.by_person.get(clinician_id, []))
             self._blocks[clinician_id] = build_blocks(items)
         return self._blocks[clinician_id]
+
+    def _around(self, clinician_id: str, edge: str) -> Tuple[int, Optional[int]]:
+        """(the latest end among the person's items dated before ``edge``, the
+        start of their first item dated ``edge`` or later). An item ends before
+        the midnight max_end_offset days after its date, so only the items that
+        close to ``edge`` count; without one the end is 0."""
+        day, reach_days = date.fromisoformat(edge), self.max_end_offset
+        near = visible_items(self.vctx, self.person_window(clinician_id, _shifted(day, -reach_days),
+                                                           _shifted(day, reach_days - 1)))
+        reach = 0
+        for item in near:
+            if item.date_iso >= edge:
+                return reach, item.abs_start
+            reach = max(reach, item.abs_end)
+        return reach, None
+
+    def _crosses(self, clinician_id: str, edge: str) -> bool:
+        """Whether a block of the person has items dated before ``edge`` and
+        from ``edge`` on: its first item from ``edge`` on starts by the latest
+        end of the items before."""
+        reach, start = self._around(clinician_id, edge)
+        return start is not None and start <= reach
+
+    def _ends_after(self, clinician_id: str, day: str) -> bool:
+        """Whether a block of the person with items dated ``day`` or earlier
+        ends after ``day``."""
+        next_day = _shifted(date.fromisoformat(day), 1)
+        reach, start = self._around(clinician_id, next_day)
+        return reach > abs_minute(next_day, 0) or (start is not None and start <= reach)
+
+    def whole_block_window(self, clinician_id: str, lo: str, hi: str) -> Tuple[str, str]:
+        """[lo, hi] widened until no block of the person has items dated on
+        both sides of lo, and none with items dated up to hi ends after hi.
+        Every block with an item in the window then lies in it whole, and so
+        does the shift that starts on the day one of them ends (no free day
+        after a night). The edges move a day at a time: every day between an
+        edge and the far end of the block it cuts is cut by that block too."""
+        key = (clinician_id, lo, hi)
+        if key not in self._windows:
+            first_day, last_day = date.min.isoformat(), date.max.isoformat()
+            while lo > first_day and self._crosses(clinician_id, lo):
+                lo = _shifted(date.fromisoformat(lo), -1)
+            while hi < last_day and self._ends_after(clinician_id, hi):
+                hi = _shifted(date.fromisoformat(hi), 1)
+            self._windows[key] = (lo, hi)
+        return self._windows[key]
 
     def clinician(self, clinician_id: str) -> Clinician:
         return self.vctx.clinicians_by_id[clinician_id]
@@ -369,6 +423,11 @@ def prefilter(ctx: SwapContext, plan: MovePlan) -> List[Tuple[str, str]]:
     return failures
 
 
+def _shifted(day: date, days: int) -> str:
+    """``day`` plus ``days``, kept inside the calendar's date range."""
+    return date.fromordinal(min(max(day.toordinal() + days, 1), date.max.toordinal())).isoformat()
+
+
 def slice_window(ctx: SwapContext, dates: Iterable[str]) -> Tuple[str, str]:
     """Whole ISO weeks of the dates, widened by every rule's reach (at least 7 days)."""
     settings = ctx.settings
@@ -376,9 +435,7 @@ def slice_window(ctx: SwapContext, dates: Iterable[str]) -> Tuple[str, str]:
                  ctx.max_end_offset + 1)
     ordered = sorted(dates)
     first, last = date.fromisoformat(ordered[0]), date.fromisoformat(ordered[-1])
-    lo = first - timedelta(days=first.weekday() + margin)
-    hi = last + timedelta(days=6 - last.weekday() + margin)
-    return lo.isoformat(), hi.isoformat()
+    return _shifted(first, -(first.weekday() + margin)), _shifted(last, 6 - last.weekday() + margin)
 
 
 def _slice(ctx: SwapContext, plan: MovePlan, lo: str, hi: str) -> List[Assignment]:
@@ -460,17 +517,30 @@ def _scoped_before(ctx: SwapContext, plan: MovePlan, scope: str) -> List[Assignm
     return slice_of(ctx, plan) if scope == "slice" else ctx.state.assignments
 
 
+def _warning_before(ctx: SwapContext, plan: MovePlan, scope: str) -> List[Assignment]:
+    """The assignments the warnings are computed on: on the slice, each
+    person's window widened to whole blocks. The change only touches the moved
+    dates, deep inside the window, so the blocks in it are whole after the
+    change too."""
+    if scope != "slice":
+        return ctx.state.assignments
+    lo, hi = slice_window(ctx, plan.moved_dates)
+    return [a for cid in sorted(plan.persons)
+            for a in ctx.person_window(cid, *ctx.whole_block_window(cid, lo, hi))]
+
+
 def plan_warnings(ctx: SwapContext, plan: MovePlan, *, scope: str) -> List[WorkWarning]:
     """New working-time warnings of the plan's people; ``scope`` is "slice"
-    (search) or "full" (apply). Their ids agree between the scopes."""
-    before = _scoped_before(ctx, plan, scope)
+    (search) or "full" (apply). Both scopes give the same warnings."""
+    before = _warning_before(ctx, plan, scope)
     return new_warnings(ctx.vctx, ctx.rules, before, apply_plan(before, plan), sorted(plan.persons),
                         _names(ctx, plan))
 
 
 def plan_kept_warnings(ctx: SwapContext, plan: MovePlan, *, scope: str) -> List[WorkWarning]:
-    """Working-time warnings the plan's people have before and after the change."""
-    before = _scoped_before(ctx, plan, scope)
+    """Working-time warnings the plan's people have before and after the change.
+    The slice gives those of the full calendar that lie in the window."""
+    before = _warning_before(ctx, plan, scope)
     return kept_warnings(ctx.vctx, ctx.rules, before, apply_plan(before, plan), sorted(plan.persons),
                          _names(ctx, plan))
 
@@ -687,6 +757,13 @@ def _shift(ctx: SwapContext, slot_id: str, date_iso: str) -> labels.Shift:
                         local_iso(begin + end - start))
 
 
+def _vacation_hidden(ctx: SwapContext, clinician_id: Optional[str], date_iso: str) -> bool:
+    """Whether the person's stored shifts on that day are hidden by a vacation:
+    the validators still count them, the grid shows their slot as open."""
+    clinician = ctx.vctx.clinicians_by_id.get(clinician_id) if clinician_id is not None else None
+    return clinician is not None and _is_on_vacation(clinician, date_iso)
+
+
 def _reason(ctx: SwapContext, v: Violation, new_items: Set[ItemKey]) -> Tuple[str, str]:
     name = ctx.name(v.clinician_id) if v.clinician_id is not None else ""
     details = v.context or {}
@@ -705,12 +782,22 @@ def _reason(ctx: SwapContext, v: Violation, new_items: Set[ItemKey]) -> Tuple[st
             return "overlap", labels.overlap_received(name, first, second)
         # Name the shift the person already works: the pair's other item when this one is new.
         shift = _shift(ctx, *(other if this_new else this))
+        if _vacation_hidden(ctx, v.clinician_id, shift.date_iso):
+            return "overlap", labels.hidden_overlap(name, shift.section, shift.date_iso, shift.start_local,
+                                                    shift.end_local)
         return "overlap", labels.overlap(name, shift.section, shift.date_iso, shift.start_local,
                                          shift.end_local)
     if v.code == VIOLATION_ON_CALL_REST:
         call_date = details.get("on_call_date", "")
         if (details.get("on_call_slot_id"), call_date, v.clinician_id) in new_items:
+            # The on-call is new; the clash is a stored shift unless it is new too.
+            if ((v.slot_id or "", day, v.clinician_id) not in new_items
+                    and _vacation_hidden(ctx, v.clinician_id, day)):
+                return "on_call_rest", labels.hidden_rest_clash(name, _slot_section_name(ctx, v.slot_id or ""),
+                                                                day)
             return "on_call_rest", labels.on_call_rest_works(name, day)
+        if _vacation_hidden(ctx, v.clinician_id, call_date):
+            return "on_call_rest", labels.hidden_on_call(name, call_date)
         return "on_call_rest", labels.on_call_rest_on_call(name, call_date)
     if v.code == VIOLATION_MANDATORY_WINDOW:
         return "mandatory_window", labels.mandatory_window(
@@ -724,6 +811,11 @@ def _reason(ctx: SwapContext, v: Violation, new_items: Set[ItemKey]) -> Tuple[st
                                                    details["max_minutes"])
     if v.code == VIOLATION_CAPACITY:
         return "capacity", labels.capacity(_slot_section_name(ctx, v.slot_id or ""), day)
+    # The reference checks run on the full calendar only; their messages name raw ids.
+    if v.code == VIOLATION_UNKNOWN_CLINICIAN:
+        return "unknown_person", labels.PERSON_GONE
+    if v.code == VIOLATION_UNKNOWN_SLOT:
+        return "unknown_slot", labels.unknown_slot(day)
     return "rule", v.message
 
 

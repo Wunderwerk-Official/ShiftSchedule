@@ -183,6 +183,22 @@
   overflow-y: hidden !important;
 }
 
+/* Below lg the desktop swap drawer (440 px) overlays the grid's right side.
+   A run-out as wide as the drawer after the grid lets the grid scroll its
+   right-hand days out from under it (Reveal on hover, or by hand); the grid
+   keeps its layout. */
+@media (max-width: 1023.98px) {
+  [data-swap-drawer-open="true"] [data-schedule-grid]::after {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 100%;
+    width: 440px;
+    height: 1px;
+    pointer-events: none;
+  }
+}
+
 @media print {
   @page {
     size: A4 landscape;

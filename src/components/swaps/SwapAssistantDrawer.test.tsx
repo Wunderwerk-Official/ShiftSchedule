@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SwapApiError, type Clinician } from "../../api/client";
 import type {
@@ -13,7 +14,7 @@ import type {
   SwapUnit,
   SwapWarning,
 } from "../../lib/swaps/types";
-import { SwapSaveBlockedError } from "../../pages/swapFlow";
+import { SwapSaveBlockedError, type SwapSearchResult } from "../../pages/swapFlow";
 import SwapAssistantDrawer, { type SwapAssistantDrawerProps } from "./SwapAssistantDrawer";
 import SwapHistoryButton from "./SwapHistoryButton";
 
@@ -247,6 +248,11 @@ const record = (overrides: Partial<SwapRecord>): SwapRecord => ({
 });
 
 const APPROVER_KEY = "shiftSchedule.swapApproverName";
+/** History's Undo button for the default record (visible text "Undo"). */
+const UNDO_ANNA_BEN = "Undo swap of Anna Weber and Ben Ott (Thu 19 / Sat 21 Nov)";
+
+/** A search's result as the page resolves it; `reloaded`: the page reloaded the calendar first. */
+const found = (answer: SwapCandidatesResponse, reloaded = false): SwapSearchResult => ({ response: answer, reloaded });
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -276,7 +282,7 @@ function renderDrawer(overrides: Partial<SwapAssistantDrawerProps> = {}) {
     planToken: {},
     historyToken: 0,
     // Every answer is a new object, as from the network.
-    onSearch: vi.fn(async () => ({ ...response })),
+    onSearch: vi.fn(async () => found({ ...response })),
     onApply: vi.fn().mockResolvedValue(undefined),
     onUndo: vi.fn().mockResolvedValue(undefined),
     onLoadHistory: vi.fn().mockResolvedValue([]),
@@ -289,6 +295,18 @@ function renderDrawer(overrides: Partial<SwapAssistantDrawerProps> = {}) {
 }
 
 const optionRow = (key: string) => document.querySelector(`[data-swap-option="${key}"]`) as HTMLElement;
+/** Elements with this text outside the hidden list (the preview replaces it). */
+const shownText = (text: string) => screen.queryAllByText(text).filter((element) => !element.closest("[hidden]"));
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
+    resolve = done;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
 
 async function openBenPreview(overrides: Partial<SwapAssistantDrawerProps> = {}) {
   const view = renderDrawer(overrides);
@@ -348,7 +366,7 @@ describe("SwapAssistantDrawer: search", () => {
     expect(props.onSearch).toHaveBeenLastCalledWith(expect.objectContaining({ mode: "handover" }));
     unmount();
 
-    const onSearch = vi.fn().mockResolvedValue(coverResponse);
+    const onSearch = vi.fn().mockResolvedValue(found(coverResponse));
     renderDrawer({ target: { kind: "slot", slot: { rowId: "ct-thu", dateISO: "2026-11-19" } }, onSearch });
     await settle();
     expect(onSearch).toHaveBeenCalledWith(
@@ -370,7 +388,7 @@ describe("SwapAssistantDrawer: search", () => {
     expect(props.onSearch).toHaveBeenCalledTimes(1);
     const fresh: SwapAssistantDrawerProps = {
       ...props,
-      onSearch: vi.fn().mockResolvedValue(response),
+      onSearch: vi.fn().mockResolvedValue(found(response)),
       onApply: vi.fn(),
       onUndo: vi.fn(),
       onLoadHistory: vi.fn(),
@@ -427,7 +445,7 @@ describe("SwapAssistantDrawer: search", () => {
       totals: { best: 0, possible: 0, blocked: 0 },
       checked: 0,
     };
-    renderDrawer({ onSearch: vi.fn().mockResolvedValue(blocked) });
+    renderDrawer({ onSearch: vi.fn().mockResolvedValue(found(blocked)) });
     await settle();
     expect(screen.getByText("Anna Weber · Thu 19 Nov · Night duty")).toBeInTheDocument();
     expect(screen.getByText(message, { selector: "p" })).toHaveClass("text-rose-700");
@@ -440,7 +458,7 @@ describe("SwapAssistantDrawer: search", () => {
     const onSearch = vi
       .fn()
       .mockRejectedValueOnce(new SwapSaveBlockedError("The calendar changed in another tab."))
-      .mockResolvedValue(response);
+      .mockResolvedValue(found(response));
     renderDrawer({ onSearch });
     await settle();
     const alert = screen.getByRole("alert");
@@ -473,6 +491,96 @@ describe("SwapAssistantDrawer: search", () => {
     expect(screen.queryByText("The plan changed since this list was made.")).toBeNull();
   });
 
+  it("marks an answer stale when the plan changed while it was searched", async () => {
+    const pending = deferred<SwapSearchResult>();
+    const onSearch = vi.fn(() => pending.promise);
+    const { props, rerender } = renderDrawer({ onSearch, planToken: { gen: 1 } });
+    await advance(250);
+    expect(onSearch).toHaveBeenCalledOnce();
+    // An edit in the grid while the server still checks the options.
+    rerender(<SwapAssistantDrawer {...props} planToken={{ gen: 2 }} />);
+    await act(async () => pending.resolve(found({ ...response })));
+    expect(screen.getByText("Best matches (1)")).toBeInTheDocument();
+    expect(screen.getByText("The plan changed since this list was made.")).toBeInTheDocument();
+  });
+
+  it("does not mark an answer stale for a reload inside its search", async () => {
+    const pending = deferred<SwapSearchResult>();
+    const onSearch = vi.fn(() => pending.promise);
+    const { props, rerender } = renderDrawer({ onSearch, planToken: { gen: 1 } });
+    await advance(250);
+    // The page hydrated the reloaded calendar before the answer, which was searched on it.
+    rerender(<SwapAssistantDrawer {...props} planToken={{ gen: 2 }} />);
+    await act(async () => pending.resolve(found({ ...response }, true)));
+    expect(screen.getByText("Best matches (1)")).toBeInTheDocument();
+    expect(screen.queryByText("The plan changed since this list was made.")).toBeNull();
+    rerender(<SwapAssistantDrawer {...props} planToken={{ gen: 3 }} />);
+    expect(screen.getByText("The plan changed since this list was made.")).toBeInTheDocument();
+  });
+
+  it("Search again drops the old error and shows the progress until the answer is in", async () => {
+    const retry = deferred<SwapSearchResult>();
+    const onSearch = vi.fn().mockRejectedValueOnce(new Error("Failed to fetch")).mockImplementationOnce(() => retry.promise);
+    renderDrawer({ onSearch });
+    await settle();
+    const again = within(screen.getByRole("alert")).getByRole("button", { name: "Search again" });
+    again.focus();
+    fireEvent.click(again);
+    await advance(250);
+    expect(onSearch).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("Checking options…")).toBeInTheDocument();
+    // Its button is gone: focus goes to the heading, not to <body>.
+    expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Find a swap" }));
+    await act(async () => retry.resolve(found({ ...response })));
+    expect(screen.getByText("Best matches (1)")).toBeInTheDocument();
+  });
+
+  it("keeps a blocking Whole day ticked and in place, so it can be unticked", async () => {
+    const twoBlocks: SwapCandidatesResponse = { ...response, target: { ...target, blocksOnDate: 2 } };
+    const dayStarted: SwapCandidatesResponse = {
+      ...twoBlocks,
+      target: { ...twoBlocks.target, wholeDay: true, blocked: { code: "started", message: "A shift of this day has already started." } },
+      checks: [],
+      best: [],
+      possible: [],
+      blocked: [],
+      totals: { best: 0, possible: 0, blocked: 0 },
+      checked: 0,
+    };
+    const onSearch = vi.fn(async (request: SwapCandidatesRequest) => found(request.wholeDay ? dayStarted : { ...twoBlocks }));
+    renderDrawer({ onSearch });
+    await settle();
+    const wholeDay = screen.getByRole("checkbox", { name: "Whole day (2 blocks)" });
+    wholeDay.focus();
+    fireEvent.click(wholeDay);
+    await settle();
+    expect(screen.getByText("A shift of this day has already started.", { selector: "p" })).toHaveClass("text-rose-700");
+    expect(screen.queryByRole("group", { name: "Mode" })).toBeNull();
+    // The same box, still focused, explains the way back.
+    expect(screen.getByRole("checkbox", { name: "Whole day (2 blocks)" })).toBe(wholeDay);
+    expect(wholeDay).toBeChecked();
+    expect(wholeDay).toHaveAccessibleDescription("Untick Whole day to search for this shift only.");
+    expect(document.activeElement).toBe(wholeDay);
+    fireEvent.click(wholeDay);
+    await settle();
+    expect(onSearch.mock.calls.map(([request]) => request.wholeDay)).toEqual([false, true, false]);
+    expect(screen.getByText("Best matches (1)")).toBeInTheDocument();
+    expect(wholeDay).not.toBeChecked();
+    expect(screen.queryByText("Untick Whole day to search for this shift only.")).toBeNull();
+  });
+
+  it("describes each Preview button by its option's line", async () => {
+    renderDrawer();
+    await settle();
+    expect(screen.getByRole("button", { name: "Preview swap with Carl Brandt" })).toHaveAccessibleDescription(
+      "Wed 18 Nov · CT · 08:00–16:00 · Mitte",
+    );
+    expect(screen.getByRole("button", { name: "Preview swap with Ben Ott" })).toHaveAccessibleDescription(
+      "Sat 21 Nov · CT · 08:00–16:00 · Mitte",
+    );
+  });
+
   it("keeps \"Not possible\" collapsed until opened; with nothing possible it shows the closest options", async () => {
     const { unmount } = renderDrawer();
     await settle();
@@ -486,7 +594,7 @@ describe("SwapAssistantDrawer: search", () => {
     unmount();
 
     const nothing = { ...response, best: [], possible: [], closest: [julia], totals: { best: 0, possible: 0, blocked: 14 } };
-    renderDrawer({ onSearch: vi.fn().mockResolvedValue(nothing) });
+    renderDrawer({ onSearch: vi.fn().mockResolvedValue(found(nothing)) });
     await settle();
     expect(screen.getByText("Nobody can take this shift without breaking a rule.")).toBeInTheDocument();
     expect(screen.getByText("Closest options")).toBeInTheDocument();
@@ -495,7 +603,7 @@ describe("SwapAssistantDrawer: search", () => {
 
   it("names the chosen partner when there was nothing to check", async () => {
     const empty = { ...response, best: [], possible: [], blocked: [], totals: { best: 0, possible: 0, blocked: 0 }, checked: 0 };
-    const onSearch = vi.fn().mockResolvedValue(empty);
+    const onSearch = vi.fn().mockResolvedValue(found(empty));
     renderDrawer({ onSearch });
     await settle();
     expect(screen.getByText("No one to check.")).toBeInTheDocument();
@@ -522,7 +630,9 @@ describe("SwapAssistantDrawer: search", () => {
       possible: [],
       totals: { ...response.totals, possible: 0 },
     };
-    const onSearch = vi.fn(async (request: SwapCandidatesRequest) => (request.mode === "handover" ? handover : { ...response }));
+    const onSearch = vi.fn(async (request: SwapCandidatesRequest) =>
+      found(request.mode === "handover" ? handover : { ...response }),
+    );
     renderDrawer({ onSearch });
     await settle();
     expect(screen.getByText("Best matches (1)")).toBeInTheDocument();
@@ -618,7 +728,7 @@ describe("SwapAssistantDrawer: preview", () => {
   it("requires the notice override inside the notice period, counting from the earlier shift", async () => {
     const inside = { ...ben, insideNotice: true, takeHoursUntilStart: 10, warnings: [] };
     const { props } = await openBenPreview({
-      onSearch: vi.fn().mockResolvedValue({ ...response, possible: [inside] }),
+      onSearch: vi.fn().mockResolvedValue(found({ ...response, possible: [inside] })),
     });
     fireEvent.click(screen.getByRole("checkbox", { name: "Ben Ott agreed to this swap" }));
     const apply = screen.getByRole("button", { name: "Swap shifts" });
@@ -632,7 +742,7 @@ describe("SwapAssistantDrawer: preview", () => {
   it("cover: the required hidden removal is ticked and locked, and sent", async () => {
     const { props } = renderDrawer({
       target: { kind: "slot", slot: { rowId: "ct-thu", dateISO: "2026-11-19" } },
-      onSearch: vi.fn().mockResolvedValue(coverResponse),
+      onSearch: vi.fn().mockResolvedValue(found(coverResponse)),
     });
     await settle();
     fireEvent.click(screen.getByRole("button", { name: "Preview Ben Ott covering" }));
@@ -707,7 +817,10 @@ describe("SwapAssistantDrawer: refused apply", () => {
 
   it("swap_stale: refreshes the list and returns to it when the option is gone", async () => {
     const stale = new SwapApiError("Ben Ott's shift on Sat 21 Nov changed. Refresh and try again.", 409, "swap_stale");
-    const onSearch = vi.fn().mockResolvedValueOnce(response).mockResolvedValue({ ...response, possible: [], totals: { ...response.totals, possible: 0 } });
+    const onSearch = vi
+      .fn()
+      .mockResolvedValueOnce(found(response))
+      .mockResolvedValue(found({ ...response, possible: [], totals: { ...response.totals, possible: 0 } }));
     await openBenPreview({ onSearch, onApply: vi.fn().mockRejectedValue(stale) });
     confirm();
     await settle();
@@ -726,12 +839,251 @@ describe("SwapAssistantDrawer: refused apply", () => {
     confirm();
     await settle();
     expect(screen.getByRole("alert")).toHaveTextContent(notice.message);
-    const override = screen.getByRole("checkbox", { name: /apply inside the 48 h notice period/ });
+    // The server's hours, newer than the list's 82.5 h.
+    const override = screen.getByRole("checkbox", { name: "Starts in 47 h – apply inside the 48 h notice period" });
     expect(screen.getByRole("button", { name: "Swap shifts" })).toBeDisabled();
     fireEvent.click(override);
     fireEvent.click(screen.getByRole("button", { name: "Swap shifts" }));
     await settle();
     expect(screen.getByRole("alert")).toHaveTextContent("Confirm that Ben Ott agreed.");
+  });
+
+  it("says the list was refreshed only once it was; while it is checked again the apply waits", async () => {
+    const stale = new SwapApiError("Ben Ott's shift on Sat 21 Nov changed. Refresh and try again.", 409, "swap_stale");
+    const onApply = vi.fn().mockRejectedValue(stale);
+    await openBenPreview({ onApply });
+    confirm();
+    await advance(0);
+    expect(screen.getByRole("alert")).toHaveTextContent(/^Ben Ott's shift on Sat 21 Nov changed\. Refresh and try again\.$/);
+    expect(shownText("Checking options…")).toHaveLength(1);
+    const apply = screen.getByRole("button", { name: "Swap shifts" });
+    expect(apply).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(apply);
+    await settle();
+    expect(onApply).toHaveBeenCalledOnce();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Ben Ott's shift on Sat 21 Nov changed. Refresh and try again. The list was refreshed.",
+    );
+    expect(shownText("Checking options…")).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Swap shifts" })).not.toHaveAttribute("aria-disabled");
+  });
+
+  it("a refused apply whose new search fails returns to the list with the error and claims no refresh", async () => {
+    const stale = new SwapApiError("Ben Ott's shift on Sat 21 Nov changed. Refresh and try again.", 409, "swap_stale");
+    const onSearch = vi
+      .fn()
+      .mockResolvedValueOnce(found({ ...response }))
+      .mockRejectedValue(new SwapSaveBlockedError("Failed to fetch"));
+    const { props } = await openBenPreview({ onSearch, onApply: vi.fn().mockRejectedValue(stale) });
+    confirm();
+    await settle();
+    expect(onSearch).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("heading", { name: "Swap Anna Weber ⇄ Ben Ott" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Swap shifts" })).toBeNull();
+    expect(screen.getAllByRole("alert").map((alert) => alert.textContent)).toEqual([
+      "Ben Ott's shift on Sat 21 Nov changed. Refresh and try again.",
+      "Failed to fetch Use Retry saving or Reload saved calendar at the top of the page, then search again.Search again",
+    ]);
+    expect(props.onApply).toHaveBeenCalledOnce();
+  });
+
+  it("a failing Refresh in the preview returns to the list with the error", async () => {
+    const gone = new SwapApiError("This shift no longer exists. Refresh the plan.", 409, "swap_stale");
+    const onSearch = vi.fn().mockResolvedValueOnce(found({ ...response })).mockRejectedValue(gone);
+    const { props, rerender } = await openBenPreview({ onSearch });
+    rerender(<SwapAssistantDrawer {...props} planToken={{}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await settle();
+    expect(screen.queryByRole("heading", { name: "Swap Anna Weber ⇄ Ben Ott" })).toBeNull();
+    expect(screen.getByRole("alert")).toHaveTextContent("This shift no longer exists. Refresh the plan.Search again");
+  });
+
+  it("state_changed: says the calendar was reloaded only when the page or the new search reloaded it", async () => {
+    const notReloaded = new SwapApiError("Changed.", 409, "state_changed", { revision: "r9", reloaded: false });
+    const onSearch = vi
+      .fn()
+      .mockResolvedValueOnce(found({ ...response }))
+      .mockResolvedValueOnce(found({ ...response }, true));
+    const { unmount } = await openBenPreview({ onSearch, onApply: vi.fn().mockRejectedValue(notReloaded) });
+    confirm();
+    await advance(0);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The calendar changed in another tab. Reload the page, then check the options again.",
+    );
+    await settle();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The calendar changed in another tab. It was reloaded; check the options again.",
+    );
+    expect(screen.getByRole("heading", { name: "Swap Anna Weber ⇄ Ben Ott" })).toBeInTheDocument();
+    unmount();
+
+    const reloaded = new SwapApiError("Changed.", 409, "state_changed", { revision: "r9", reloaded: true });
+    await openBenPreview({ onApply: vi.fn().mockRejectedValue(reloaded) });
+    confirm();
+    await advance(0);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "The calendar changed in another tab. It was reloaded; check the options again.",
+    );
+  });
+});
+
+describe("SwapAssistantDrawer: focus", () => {
+  const newer: SwapWarning = { ...restWarning, id: "rest:clin-ben:new", message: "Ben Ott: only 2.0 h rest between Fri 20 Nov 06:00 and Fri 20 Nov 08:00 (minimum 11 h)." };
+  const findHeading = () => screen.getByRole("heading", { name: "Find a swap" });
+
+  it("applying keeps focus on the button and ignores clicks; when a refusal disables it, focus goes to the message", async () => {
+    const refused = deferred<void>();
+    const onApply = vi.fn(() => refused.promise);
+    const { props } = await openBenPreview({ onApply });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Ben Ott agreed to this swap" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge" }));
+    const apply = screen.getByRole("button", { name: "Swap shifts" });
+    apply.focus();
+    fireEvent.click(apply);
+    // Busy: aria-disabled, not disabled (a disabled focused button drops focus to <body>).
+    expect(apply).toHaveTextContent("Applying…");
+    expect(apply).toHaveAttribute("aria-disabled", "true");
+    expect(apply).not.toBeDisabled();
+    expect(document.activeElement).toBe(apply);
+    fireEvent.click(apply);
+    expect(onApply).toHaveBeenCalledOnce();
+
+    const warned = new SwapApiError("Check the working-time warnings first.", 409, "warnings_unacknowledged", { warnings: [newer] });
+    await act(async () => refused.reject(warned));
+    await advance(0);
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("New warnings came up. Check them and try again.");
+    expect(apply).toBeDisabled();
+    expect(document.activeElement).toBe(alert);
+    fireEvent.keyDown(alert, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalledOnce();
+  });
+
+  // user-event clicks focus like a browser does. Real timers: Testing Library's
+  // async wrapper waits on a timer that only Jest's fake timers would advance.
+  it("closes on Escape after a click on the drawer's text, on desktop and phone", async () => {
+    vi.useRealTimers();
+    const user = userEvent.setup();
+    const summary = "Anna Weber · Thu 19 Nov · Night duty 20:00 → 08:00 · 12.0 h";
+    for (const isMobile of [false, true]) {
+      const { props, unmount } = renderDrawer({ isMobile });
+      await user.click(await screen.findByText(summary));
+      expect(document.activeElement).toBe(screen.getByRole("dialog"));
+      await user.keyboard("{Escape}");
+      expect(props.onClose).toHaveBeenCalledOnce();
+      unmount();
+    }
+  });
+
+  it("History: focus stays on Undo while it runs and when it fails; after an undo it goes to the row", async () => {
+    const refused = deferred<void>();
+    const failing = renderDrawer({
+      target: { kind: "history" },
+      onLoadHistory: vi.fn().mockResolvedValue([record({})]),
+      onUndo: vi.fn(() => refused.promise),
+    });
+    await settle();
+    const undo = screen.getByRole("button", { name: UNDO_ANNA_BEN });
+    undo.focus();
+    fireEvent.click(undo);
+    expect(undo).toHaveAccessibleName("Undoing swap of Anna Weber and Ben Ott (Thu 19 / Sat 21 Nov)");
+    expect(undo).toHaveAttribute("aria-disabled", "true");
+    expect(undo).not.toBeDisabled();
+    fireEvent.click(undo);
+    expect(failing.props.onUndo).toHaveBeenCalledOnce();
+    await act(async () => refused.reject(new Error("The shifts changed after the swap. Edit them in the plan.")));
+    await advance(0);
+    expect(screen.getByRole("alert")).toHaveTextContent("The shifts changed after the swap. Edit them in the plan.");
+    expect(document.activeElement).toBe(undo);
+    failing.unmount();
+
+    const onLoadHistory = vi
+      .fn()
+      .mockResolvedValueOnce([record({})])
+      .mockResolvedValue([record({ status: "reverted", canUndo: false, revertedAt: "2026-11-12T10:50:00+00:00" })]);
+    const { props, rerender } = renderDrawer({ target: { kind: "history" }, onLoadHistory });
+    await settle();
+    const again = screen.getByRole("button", { name: UNDO_ANNA_BEN });
+    again.focus();
+    fireEvent.click(again);
+    await advance(0);
+    // The page counts the undo: the history loads again, and the row has no Undo any more.
+    rerender(<SwapAssistantDrawer {...props} historyToken={1} />);
+    await settle();
+    expect(screen.queryByRole("button", { name: /^Undo/ })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByText("Anna Weber ⇄ Ben Ott").closest("li"));
+    fireEvent.keyDown(document.activeElement as HTMLElement, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalledOnce();
+  });
+
+  it("after Refresh the heading takes focus once the hint is gone", async () => {
+    const { props, rerender } = renderDrawer();
+    await settle();
+    rerender(<SwapAssistantDrawer {...props} planToken={{}} />);
+    const refreshButton = screen.getByRole("button", { name: "Refresh" });
+    refreshButton.focus();
+    fireEvent.click(refreshButton);
+    await settle();
+    expect(screen.queryByText("The plan changed since this list was made.")).toBeNull();
+    expect(document.activeElement).toBe(findHeading());
+  });
+
+  it("a refused apply whose option is gone after the new search focuses the message above the list", async () => {
+    const stale = new SwapApiError("Ben Ott's shift on Sat 21 Nov changed. Refresh and try again.", 409, "swap_stale");
+    const onSearch = vi
+      .fn()
+      .mockResolvedValueOnce(found(response))
+      .mockResolvedValue(found({ ...response, possible: [], totals: { ...response.totals, possible: 0 } }));
+    await openBenPreview({ onSearch, onApply: vi.fn().mockRejectedValue(stale) });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Ben Ott agreed to this swap" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Acknowledge" }));
+    const apply = screen.getByRole("button", { name: "Swap shifts" });
+    apply.focus();
+    fireEvent.click(apply);
+    await settle();
+    expect(screen.queryByRole("heading", { name: "Swap Anna Weber ⇄ Ben Ott" })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole("alert"));
+  });
+
+  it("keeps focus in the drawer when the phone sheet and the desktop drawer swap places", async () => {
+    const { props, rerender } = renderDrawer({ isMobile: true });
+    await settle();
+    screen.getByRole("button", { name: "Close" }).focus();
+    // The window grew past the phone width: a new panel element, new content.
+    rerender(<SwapAssistantDrawer {...props} isMobile={false} />);
+    await advance(0);
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "false");
+    expect(document.activeElement).toBe(findHeading());
+    rerender(<SwapAssistantDrawer {...props} isMobile />);
+    await advance(0);
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-modal", "true");
+    expect(screen.getByRole("dialog")).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it("does not pull focus back after a press outside the drawer", async () => {
+    vi.useRealTimers();
+    const user = userEvent.setup();
+    const grid = document.createElement("div");
+    grid.innerHTML = "<p>Mon 16 Nov</p><button type=\"button\">Lock</button>";
+    document.body.append(grid);
+    try {
+      const { props, rerender } = renderDrawer();
+      await screen.findByText("Best matches (1)");
+      for (const outside of [grid.querySelector("p")!, grid.querySelector("button")!]) {
+        rerender(<SwapAssistantDrawer {...props} planToken={{}} />);
+        const refreshButton = screen.getByRole("button", { name: "Refresh" });
+        refreshButton.focus();
+        // The hint goes once the new answer is in; meanwhile the planner clicks in the grid.
+        fireEvent.click(refreshButton);
+        await user.click(outside);
+        const focused = document.activeElement;
+        expect(focused).toBe(outside instanceof HTMLButtonElement ? outside : document.body);
+        await waitFor(() => expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull());
+        expect(document.activeElement).toBe(focused);
+      }
+    } finally {
+      grid.remove();
+    }
   });
 });
 
@@ -762,6 +1114,33 @@ describe("SwapAssistantDrawer: shell", () => {
     expect(document.activeElement).toBe(close);
     fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
     expect(document.activeElement).toBe(last);
+    // After a tap on its text the sheet itself has focus: Shift+Tab still stays inside.
+    const sheet = screen.getByRole("dialog");
+    sheet.focus();
+    expect(document.activeElement).toBe(sheet);
+    fireEvent.keyDown(sheet, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(last);
+  });
+
+  it("phone: Tab from a History row after the last control stays in the sheet", async () => {
+    // Focus lands on a row when its Undo is done; here the older row is undone already.
+    const undone = { id: "swp-0", status: "reverted", canUndo: false, revertedAt: "2026-11-12T10:50:00+00:00" } as const;
+    renderDrawer({ isMobile: true, onLoadHistory: vi.fn().mockResolvedValue([record({}), record(undone)]) });
+    await settle();
+    fireEvent.click(screen.getByRole("button", { name: "History" }));
+    await settle();
+    const [newer, older] = screen.getAllByText("Anna Weber ⇄ Ben Ott").map((title) => title.closest("li")!);
+    expect(within(newer).getByRole("button", { name: /^Undo swap of / })).toBeInTheDocument();
+    // Controls follow (the row's Undo) or come before: the browser's own Tab and Shift+Tab stay inside.
+    newer.focus();
+    fireEvent.keyDown(newer, { key: "Tab" });
+    expect(document.activeElement).toBe(newer);
+    older.focus();
+    fireEvent.keyDown(older, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(older);
+    // No control after the last row: Tab goes round to the first one.
+    fireEvent.keyDown(older, { key: "Tab" });
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Close" }));
   });
 
   it("History tab: lists swaps, undoes one, marks undone ones", async () => {
@@ -782,7 +1161,7 @@ describe("SwapAssistantDrawer: shell", () => {
     expect(screen.getAllByText(/^Applied .* · approved by K\. Berger$/)).toHaveLength(3);
     expect(screen.getByText("Undone")).toBeInTheDocument();
     expect(screen.getByText("Already started.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    fireEvent.click(screen.getByRole("button", { name: UNDO_ANNA_BEN }));
     await settle();
     expect(props.onUndo).toHaveBeenCalledWith("swp-1");
   });
@@ -791,7 +1170,7 @@ describe("SwapAssistantDrawer: shell", () => {
     const onUndo = vi.fn().mockRejectedValue(new Error("The shifts changed after the swap. Edit them in the plan."));
     renderDrawer({ target: { kind: "history" }, onLoadHistory: vi.fn().mockResolvedValue([record({})]), onUndo });
     await settle();
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    fireEvent.click(screen.getByRole("button", { name: UNDO_ANNA_BEN }));
     await settle();
     expect(screen.getByRole("alert")).toHaveTextContent("The shifts changed after the swap. Edit them in the plan.");
   });

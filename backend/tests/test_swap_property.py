@@ -1,20 +1,25 @@
 """Property: the search's two-person slice gives the full calendar's verdict.
 
-For random swaps, handovers and covers on three datasets, the scoped gate
+For random swaps, handovers and covers on four datasets, the scoped gate
 (slice, context, references skipped) must report exactly the new or worse
 violations of the apply gate (whole calendar, references checked), and the
-solver-rule hits must agree. For valid cases the working-time warnings and
-the pre-existing checks must agree between slice and calendar too.
+solver-rule hits must agree. For valid cases the working-time warnings (ids
+and texts) and the pre-existing checks must agree between slice and calendar
+too.
 
 Datasets: the arena fixture; a dense plan generated from its template where
-people often hold touching shifts; and rich_swap_state, which adds Rest Days,
-a vacation-hidden holder, a two-block day and a solver rule.
+people often hold touching shifts; rich_swap_state, which adds Rest Days, a
+vacation-hidden holder, a two-block day and a solver rule; and
+wide_swap_state, whose rules reach far beyond the moved weeks (on-call rest
+of 3 and 7 days, a duty ending two days later, two locations) and whose
+stretch of ward duties is longer than any margin. Counters make sure the
+cases a narrow or careless slice would get wrong really occur.
 """
 
 import random
 from collections import Counter
-from datetime import date, datetime, timezone
-from typing import Callable, Dict, Iterator, List, Optional, Tuple
+from datetime import date, datetime, timedelta, timezone
+from typing import Callable, Dict, Iterable, Iterator, List, Optional, Set, Tuple
 
 import pytest
 
@@ -34,11 +39,28 @@ from backend.swaps.matching import (
     prefilter,
     scoped_gate,
     scoped_new_violations,
+    slice_window,
     solver_rule_hits,
 )
 from backend.swaps.policy import SwapRules, open_slot
+from backend.swaps.worktime import WorkWarning, iso_week
+from backend.validation import VIOLATION_CAPACITY, VIOLATION_ON_CALL_REST
 
-from .swap_fixtures import BEN_VACATION_DAY, WHOLE_DAY, arena_state, chained_plan, rich_swap_state
+from .swap_fixtures import (
+    BEFORE_STRETCH_DAY,
+    BEN_VACATION_DAY,
+    CAPACITY_DAY,
+    CROSSING_STRETCH_DAY,
+    REST_CLASH_DAY,
+    STRETCH_HOLDER,
+    TOUCHING_STRETCH_DAY,
+    WHOLE_DAY,
+    WIDE_WHOLE_DAY,
+    arena_state,
+    chained_plan,
+    rich_swap_state,
+    wide_swap_state,
+)
 
 NOW = datetime(2025, 12, 1, tzinfo=timezone.utc)  # before every shift of every dataset
 RULES = SwapRules()
@@ -51,6 +73,7 @@ DATASETS: Dict[str, Callable[[], AppState]] = {
     "arena": arena_state,
     "chained": lambda: chained_plan(arena_state(), date(2026, 2, 2), 21, 3),
     "rich": rich_swap_state,
+    "wide": wide_swap_state,
 }
 
 
@@ -147,12 +170,58 @@ def _rich_extras(ctx: SwapContext, stats: Counter) -> Iterator[MovePlan]:
             yield plan_option(ctx, "handover", dora_day, partner)
 
 
+def _wide_extras(ctx: SwapContext, stats: Counter) -> Iterator[MovePlan]:
+    """The cases wide_swap_state is built for: covering the target-2 instance
+    with and without removing Ben's hidden entry (without it overfills the
+    slot), handing over Dora's two-block day, handing Eva Five's shifts before,
+    next to and after the long stretch to its holder, and Eva Five's shift
+    seven days after Ben's on-call to Ben."""
+    people = [c.id for c in ctx.state.clinicians]
+    info = open_slot(ctx.vctx, ctx.by_instance, "ct-tue", CAPACITY_DAY)
+    unit = instance_unit(ctx.vctx, "ct-tue", CAPACITY_DAY)
+    holders = {a.clinicianId for a in info.stored}
+    for partner in people:
+        if partner not in holders:
+            for removal in (info.hidden[0], None):
+                yield plan_option(ctx, "cover", unit, partner, cover=info, hidden_removal=removal)
+    dora_day = SwapUnit("clin-dora", tuple(blocks_on_date(ctx.blocks("clin-dora"), WIDE_WHOLE_DAY)))
+    for partner in people:
+        if partner != "clin-dora":
+            yield plan_option(ctx, "handover", dora_day, partner)
+
+    def eva_five(day: str) -> SwapUnit:
+        return SwapUnit("clin-e5", tuple(blocks_on_date(ctx.blocks("clin-e5"), day)))
+
+    for day in (BEFORE_STRETCH_DAY, TOUCHING_STRETCH_DAY, CROSSING_STRETCH_DAY):
+        yield plan_option(ctx, "handover", eva_five(day), STRETCH_HOLDER)
+    yield plan_option(ctx, "handover", eva_five(REST_CLASH_DAY), "clin-ben")
+
+
+def _days_outside(date_iso: str, weeks: Set[Tuple[int, int]]) -> int:
+    """Days between a date and the nearest of the ISO weeks (0 inside one)."""
+    day = date.fromisoformat(date_iso)
+    gaps = []
+    for year, week in weeks:
+        monday = date.fromisocalendar(year, week, 1)
+        sunday = monday + timedelta(days=6)
+        gaps.append(0 if monday <= day <= sunday else min(abs((day - monday).days), abs((day - sunday).days)))
+    return min(gaps)
+
+
+def _texts(warnings: Iterable[WorkWarning]) -> Set[Tuple[str, str, str]]:
+    return {(w.id, w.message, w.short) for w in warnings}
+
+
 def _check(ctx: SwapContext, plan: MovePlan, cache: BaselineCache, stats: Counter) -> None:
     state = ctx.state
     full = full_gate(state, plan)[0]
+    weeks = {iso_week(d) for d in plan.moved_dates}
     stats["rest-day move"] += bool(plan.rest_day_moves)
     stats["rest-day removal"] += bool(plan.rest_day_removals)
     stats["whole-day unit"] += len(plan.give.blocks) > 1
+    stats["on-call rest outside the moved weeks"] += any(
+        v.code == VIOLATION_ON_CALL_REST and _days_outside(v.context["on_call_date"], weeks) >= 2 for v in full)
+    stats["cover capacity"] += plan.mode == "cover" and any(v.code == VIOLATION_CAPACITY for v in full)
     if prefilter(ctx, plan):
         assert full, f"pre-filter failed but the calendar accepts {plan.mode} {plan.moved_dates}"
         stats[f"{plan.mode} invalid"] += 1
@@ -167,26 +236,47 @@ def _check(ctx: SwapContext, plan: MovePlan, cache: BaselineCache, stats: Counte
         stats[f"{plan.mode} invalid"] += 1
         return
     stats[f"{plan.mode} valid"] += 1
-    assert {w.id for w in plan_warnings(ctx, plan, scope="slice")} == {
-        w.id for w in plan_warnings(ctx, plan, scope="full")}
-    scoped = preexisting_checks(ctx, plan, scoped_gate(ctx, plan)[1],
-                                plan_kept_warnings(ctx, plan, scope="slice"))
+    stats["whole-day valid"] += len(plan.give.blocks) > 1
+    new = plan_warnings(ctx, plan, scope="slice")
+    assert _texts(new) == _texts(plan_warnings(ctx, plan, scope="full"))
+    # The slice sees the warnings of its window, each exactly as the calendar
+    # has it, and every one of the touched weeks.
+    kept, kept_full = plan_kept_warnings(ctx, plan, scope="slice"), plan_kept_warnings(ctx, plan, scope="full")
+    assert _texts(kept) <= _texts(kept_full)
+    assert _texts(w for w in kept_full if iso_week(w.date_iso) in weeks) <= _texts(kept)
+    lo, hi = slice_window(ctx, plan.moved_dates)
+    stats["long stretch new"] += any(w.code == "block_too_long" and w.date_iso < lo for w in new)
+    stats["long stretch kept"] += any(w.code == "block_too_long" and w.date_iso < lo for w in kept)
+    # A night warning's id ends with the day its block ends, which can lie beyond the window.
+    stats["night after a stretch"] += any(
+        w.code == "night_no_free_day" and w.id.rsplit(":", 1)[1] > hi and iso_week(w.date_iso) in weeks
+        for w in kept)
+    scoped = preexisting_checks(ctx, plan, scoped_gate(ctx, plan)[1], kept)
     carried = classify_violations(state, state.assignments, apply_plan(state.assignments, plan),
                                   only_fill_required=True)[1]
-    assert scoped == preexisting_checks(ctx, plan, carried, plan_kept_warnings(ctx, plan, scope="full"))
+    assert scoped == preexisting_checks(ctx, plan, carried, kept_full)
     stats["preexisting"] += bool(scoped)
 
 
+INGREDIENTS = {
+    "rich": ("rest-day move", "rest-day removal", "optional hidden removal", "whole-day unit",
+             "solver rule hit", "preexisting"),
+    # Each one fails the property under a slice that is too narrow, ignores
+    # the co-holders of a covered instance or cuts a long block.
+    "wide": ("on-call rest outside the moved weeks", "cover capacity", "whole-day valid", "long stretch new",
+             "long stretch kept", "night after a stretch", "preexisting"),
+}
+
+
 def _non_vacuous(name: str, stats: Counter) -> None:
-    if name != "rich":
+    if name not in INGREDIENTS:
         assert stats["swap valid"] + stats["handover valid"] >= 5, stats
         assert stats["swap invalid"] + stats["handover invalid"] >= 5, stats
         assert stats["cover valid"] >= 3, stats
         return
     for mode in ("swap", "handover", "cover"):
         assert stats[f"{mode} valid"] >= 1 and stats[f"{mode} invalid"] >= 1, stats
-    for ingredient in ("rest-day move", "rest-day removal", "optional hidden removal", "whole-day unit",
-                       "solver rule hit", "preexisting"):
+    for ingredient in INGREDIENTS[name]:
         assert stats[ingredient] >= 1, (ingredient, stats)
 
 
@@ -205,7 +295,8 @@ def test_scoped_verdict_equals_the_full_calendar_verdict(name: str):
         case_cache: BaselineCache = {}
         for plan in plans:
             _check(cover_ctx, plan, case_cache, stats)
-    if name == "rich":
-        for plan in _rich_extras(ctx, stats):
+    extras = {"rich": _rich_extras, "wide": _wide_extras}.get(name)
+    if extras is not None:
+        for plan in extras(ctx, stats):
             _check(ctx, plan, shared, stats)
     _non_vacuous(name, stats)

@@ -6,7 +6,7 @@ import re
 import sqlite3
 from collections import Counter
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Callable, Dict, List
 
 import pytest
@@ -17,10 +17,12 @@ import backend.swaps.apply as swap_apply
 from backend import solver_runs
 from backend.auth import _create_user, _delete_user, _get_current_user
 from backend.main import app
-from backend.models import AppState, Assignment, VacationRange
+from backend.models import AppState, Assignment, Clinician, VacationRange
 from backend.run_apply import planning_fingerprint
 from backend.state import _load_state, _normalize_state, _save_state
 from backend.swaps import policy, store
+from backend.swaps.blocks import slot_fingerprint
+from backend.validation import build_validation_context
 
 from .conftest import make_clinician
 from .swap_fixtures import (
@@ -39,6 +41,8 @@ from .swap_fixtures import (
 )
 
 USER = "swap-endpoint-test"
+OTHER = "swap-endpoint-other"
+WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 
 
 @pytest.fixture
@@ -140,6 +144,30 @@ def _multiset(assignments: List[Any]) -> Counter:
 
 def _held(state: Dict[str, Any]) -> set:
     return {(a["rowId"], a["dateISO"], a["clinicianId"]) for a in state["assignments"]}
+
+
+def _refused(client: TestClient, body: Dict[str, Any], status: int, code: str, message: str) -> Dict[str, Any]:
+    """An apply refused with ``code`` and ``message``: the stored calendar and
+    the swap tables stay as they were."""
+    before = _load_state(USER)
+    detail = _error(_apply(client, body, status), code)
+    assert detail["message"] == message
+    after = _load_state(USER)
+    assert after.revision == before.revision
+    assert _multiset(after.assignments) == _multiset(before.assignments)
+    assert _rows("swap_requests") == [] and _rows("swap_events") == []
+    return detail
+
+
+def _fp(row_id: str) -> str:
+    return slot_fingerprint(build_validation_context(_load_state(USER)), row_id)
+
+
+def _crafted(mode: str, revision: str, **fields: Any) -> Dict[str, Any]:
+    """An apply body built by hand, not from a preview."""
+    return {"mode": mode, "give": [], "take": None, "wholeDay": False, "slot": None, "partnerId": "clin-ben",
+            "restDayMoves": [], "removeHidden": None, "expectedRevision": revision, "consent": True,
+            "acknowledgedWarnings": [], **fields}
 
 
 NIGHT = asg("anna-night", "night-thu", THU, "clin-anna")
@@ -434,6 +462,24 @@ def test_working_time_warnings_need_an_acknowledgement(client):
     assert json.loads(_rows("swap_requests")[0]["acknowledged_warnings"]) == acknowledged
 
 
+def test_a_stretch_longer_than_the_search_window_is_acknowledged_once(client):
+    # Ben's background on-call every day from Mon 29 Dec, then Anna's Monday CT.
+    days = [date(2025, 12, 29) + timedelta(days=n) for n in range(14)]
+    calls = [asg(f"call-{n}", f"oncall-{WEEKDAY_KEYS[day.weekday()]}", day.isoformat(), "clin-ben")
+             for n, day in enumerate(days)]
+    clinicians = default_clinicians()
+    clinicians[1].workingHoursPerWeek = None
+    monday_ct = asg("anna-ct", "ct-mon", "2026-01-12", "clin-anna")
+    _seed(calls + [monday_ct], clinicians=clinicians, solver_settings={"onCallRestEnabled": False})
+    result = _find(client, monday_ct, "handover", partnerId="clin-ben")
+    option = _option(result, "clin-ben|-")
+    assert [(w["id"], w["message"]) for w in option["warnings"]] == [(
+        "long:clin-ben:2025-12-29T08:00:2026-01-12T16:00",
+        "Ben Ott: 344.0 h without a break, Mon 29 Dec 08:00 → Mon 12 Jan 16:00 (maximum 24 h).")]
+    swap = _apply(client, _apply_body(result, option))["swap"]
+    assert [w["id"] for w in swap["acknowledgedWarnings"]] == [option["warnings"][0]["id"]]
+
+
 def test_apply_refuses_requests_that_do_not_describe_one_swap(client):
     _seed([NIGHT, BEN_CT])
     result, option = _swap_option(client)
@@ -447,6 +493,101 @@ def test_apply_refuses_requests_that_do_not_describe_one_swap(client):
     ]:
         detail = _error(_apply(client, {**body, **changed}, 400), "invalid_request")
         assert detail["message"] == message
+
+
+# --- Crafted requests ---------------------------------------------------------
+# The preview never sends these, so apply refuses them itself: for a forged Rest
+# Day move or hidden removal no planning rule would.
+
+
+def _unlocked(assignment_id: str, slot: str, clinician_id: str) -> Assignment:
+    return asg(assignment_id, slot, THU, clinician_id, source="solver", locked=False)
+
+
+@pytest.mark.parametrize("assignments, target", [
+    # Anna's early and late form one block; Ben holds the second late (target 2).
+    ([_unlocked("anna-early", "early-thu", "clin-anna"), _unlocked("anna-late", "late-thu", "clin-anna"),
+      _unlocked("ben-late", "late-thu", "clin-ben")], "anna-early"),
+    ([_unlocked("anna-late", "late-thu", "clin-anna"), _unlocked("ben-late", "late-thu", "clin-ben")],
+     "anna-late"),
+], ids=["partial-share", "full-share"])
+def test_a_swap_whose_two_sides_share_a_slot_is_refused(client, assignments: List[Assignment], target: str):
+    revision = _seed(assignments, slot_overrides={f"late-thu__{THU}": 1})
+    result = _find(client, next(a for a in assignments if a.id == target), partnerId="clin-ben")
+    # The search skips the pair, as it would mean a hand-over of the rest, or nothing.
+    assert result["checked"] == 0
+    give = _item_refs(result["target"]["unit"])
+    take = [{"rowId": "late-thu", "dateISO": THU, "clinicianId": "clin-ben", "fp": _fp("late-thu")}]
+    _refused(client, _crafted("swap", revision, give=give, take=take), 400, "invalid_request",
+             "Both shifts are in the same slot. Choose another shift.")
+
+
+STALE_REST_DAY = "The Rest Day entries changed. Refresh and try again."
+
+
+@pytest.mark.parametrize("assignments, forged", [
+    # Dora's Saturday Rest Day has nothing to do with the hand-over.
+    ([asg("anna-ct", "ct-thu", THU, "clin-anna"), asg("dora-rest", "pool-rest-day", SAT, "clin-dora", locked=False)],
+     {"fromClinicianId": "clin-dora", "toClinicianId": "clin-ben", "dateISO": SAT}),
+    # A Rest Day follows the night from Anna to Ben, never the other way (Ben
+    # rests on Friday himself, so nothing moves at all).
+    ([NIGHT, asg("anna-rest", "pool-rest-day", FRI, "clin-anna", locked=False),
+      asg("ben-rest", "pool-rest-day", FRI, "clin-ben", locked=False)],
+     {"fromClinicianId": "clin-ben", "toClinicianId": "clin-anna", "dateISO": FRI}),
+], ids=["third-person", "reversed"])
+def test_a_rest_day_move_the_server_did_not_detect_is_refused(client, assignments: List[Assignment],
+                                                             forged: Dict[str, str]):
+    _seed(assignments)
+    result = _find(client, assignments[0], "handover", partnerId="clin-ben")
+    option = _option(result, "clin-ben|-")
+    assert forged not in option["restDayMoves"]
+    _refused(client, _apply_body(result, option, restDayMoves=option["restDayMoves"] + [forged]), 409,
+             "swap_stale", STALE_REST_DAY)
+
+
+def _away_thu(*clinician_ids: str) -> List[Clinician]:
+    return [c.model_copy(update={"vacations": [VacationRange(id="v", startISO=THU, endISO=THU)]})
+            if c.id in clinician_ids else c for c in default_clinicians()]
+
+
+@pytest.mark.parametrize("away, holders, named", [
+    # Clara's shift is visible: removeHidden never deletes a shift on the grid.
+    (("clin-anna",), ("clin-anna", "clin-clara"), "clin-clara"),
+    # Anna and Dora are both away; the cover removes the first hidden holder by name only.
+    (("clin-anna", "clin-dora"), ("clin-anna", "clin-dora"), "clin-dora"),
+], ids=["visible-holder", "second-hidden-holder"])
+def test_a_hidden_removal_of_anyone_but_the_first_hidden_holder_is_refused(client, away: tuple, holders: tuple,
+                                                                           named: str):
+    revision = _seed([asg(f"{cid}-ct", "ct-thu", THU, cid) for cid in holders], clinicians=_away_thu(*away),
+                     slot_overrides={f"ct-thu__{THU}": 1})
+    slot = {"rowId": "ct-thu", "dateISO": THU, "fp": _fp("ct-thu")}
+    _refused(client, _crafted("cover", revision, slot=slot, removeHidden={"clinicianId": named}), 409,
+             "swap_stale", "The hidden shift in this slot changed. Refresh and try again.")
+
+
+@pytest.mark.parametrize("holder, overrides, message", [
+    ("clin-clara", {}, "This slot is no longer open. Refresh and try again."),
+    ("clin-ben", {f"ct-thu__{THU}": 1}, "Ben Ott already works in this slot."),
+], ids=["full-slot", "partner-in-slot"])
+def test_a_cover_of_a_full_slot_or_by_one_of_its_holders_is_refused(client, holder: str, overrides: Dict[str, int],
+                                                                    message: str):
+    revision = _seed([asg("held", "ct-thu", THU, holder)], slot_overrides=overrides)
+    slot = {"rowId": "ct-thu", "dateISO": THU, "fp": _fp("ct-thu")}
+    _refused(client, _crafted("cover", revision, slot=slot), 409, "swap_stale", message)
+
+
+def test_a_shift_whose_holder_went_on_vacation_after_the_preview_is_refused(client):
+    anna_ct = asg("anna-ct", "ct-thu", THU, "clin-anna")
+    _seed([anna_ct])
+    result = _find(client, anna_ct, "handover", partnerId="clin-ben")
+
+    def vacation(state: AppState) -> None:
+        next(c for c in state.clinicians if c.id == "clin-anna").vacations.append(
+            VacationRange(id="v", startISO=THU, endISO=THU))
+
+    revision = _edit(vacation)
+    _refused(client, _apply_body(result, _option(result, "clin-ben|-"), expectedRevision=revision), 409,
+             "swap_stale", "Anna Weber is now on vacation on Thu 8 Jan. Refresh and try again.")
 
 
 # --- Undo and history ---------------------------------------------------------
@@ -523,6 +664,9 @@ def test_undo_brings_back_a_weekly_overload_the_swap_eased_but_never_a_worse_one
     revision = _edit(lambda state: state.assignments.append(asg("ben-sun", "early-sun", SUN, "clin-ben")))
     detail = _error(_undo(client, applied["swap"]["id"], revision, 409), "swap_invalid")
     assert detail["reasons"] == ["Ben Ott: week 2 would reach 53.0 h (limit 45.0 h)."]
+    # It is the undo, not the swap, that would break the rule.
+    assert detail["message"] == ("Undoing this swap would break a planning rule: "
+                                 "Ben Ott: week 2 would reach 53.0 h (limit 45.0 h).")
 
 
 def test_undo_is_refused_after_a_conflicting_edit_twice_or_for_unknown_swaps(client):
@@ -565,6 +709,94 @@ def test_undo_of_a_started_swap_is_refused(client, monkeypatch):
         "A swapped shift has already started; change it in the plan instead.")
     history = client.get("/v1/swaps/history").json()["swaps"]
     assert (history[0]["canUndo"], history[0]["undoBlockedReason"]) == (False, "Already started.")
+
+
+def _undo_refused(client: TestClient, swap_id: str, revision: str, reason: str, message: str) -> None:
+    """History shows ``reason`` instead of Undo, and undo is refused with ``message``,
+    changing nothing."""
+    (record,) = [s for s in client.get("/v1/swaps/history").json()["swaps"] if s["id"] == swap_id]
+    assert (record["canUndo"], record["undoBlockedReason"]) == (False, reason)
+    before = _multiset(_load_state(USER).assignments)
+    assert _error(_undo(client, swap_id, revision, 409), "undo_conflict")["message"] == message
+    assert _multiset(_load_state(USER).assignments) == before
+    assert [row["status"] for row in _rows("swap_requests") if row["id"] == swap_id] == ["applied"]
+
+
+def _hand_over(client: TestClient, a: Assignment) -> Dict[str, Any]:
+    result = _find(client, a, "handover", partnerId="clin-ben")
+    return _apply(client, _apply_body(result, _option(result, "clin-ben|-")))
+
+
+def _rest(assignment_id: str, date_iso: str, clinician_id: str) -> Assignment:
+    return asg(assignment_id, "pool-rest-day", date_iso, clinician_id, locked=False)
+
+
+@pytest.mark.parametrize("seeded, given, later, person_day", [
+    # The hand-over removed Ben's Thursday Rest Day; then Ben got the Thursday night by hand.
+    ([asg("anna-ct", "ct-thu", THU, "clin-anna"), _rest("ben-rest", THU, "clin-ben")], "anna-ct",
+     asg("ben-night", "night-thu", THU, "clin-ben"), "Ben Ott a Rest Day and a shift on Thu 8 Jan"),
+    # Anna's Friday Rest Day followed her night to Ben; then the free Anna got Friday's late shift.
+    ([NIGHT, _rest("anna-rest", FRI, "clin-anna")], "anna-night",
+     asg("anna-late", "late-fri", FRI, "clin-anna"), "Anna Weber a Rest Day and a shift on Fri 9 Jan"),
+    # Anna handed over her Thursday CT; then Thursday became her Rest Day by hand.
+    ([asg("anna-ct", "ct-thu", THU, "clin-anna")], "anna-ct", _rest("anna-rest", THU, "clin-anna"),
+     "Anna Weber a Rest Day and a shift on Thu 8 Jan"),
+], ids=["rest-day-back-onto-work", "rest-day-back-onto-work-of-the-giver", "shift-back-onto-rest-day"])
+def test_undo_never_leaves_someone_resting_and_working_on_one_day(client, seeded: List[Assignment], given: str,
+                                                                    later: Assignment, person_day: str):
+    _seed(seeded)
+    swap_id = _hand_over(client, next(a for a in seeded if a.id == given))["swap"]["id"]
+    revision = _edit(lambda state: state.assignments.append(later))
+    reason = f"Undo would give {person_day}."
+    _undo_refused(client, swap_id, revision, reason, f"{reason} Edit them in the plan.")
+
+
+def test_undo_after_a_cover_by_the_freed_giver_is_refused(client):
+    # Only the assistant: Anna's night goes to Ben with her Friday Rest Day,
+    # the now free Anna covers Friday's late shift, then the first swap is undone.
+    _seed([NIGHT, _rest("anna-rest", FRI, "clin-anna")])
+    first = _hand_over(client, NIGHT)["swap"]["id"]
+    cover = _search(client, {"mode": "cover", "slot": {"rowId": "late-fri", "dateISO": FRI}})
+    revision = _apply(client, _apply_body(cover, _option(cover, "clin-anna|-")))["state"]["revision"]
+    reason = "Undo would give Anna Weber a Rest Day and a shift on Fri 9 Jan."
+    _undo_refused(client, first, revision, reason, f"{reason} Edit them in the plan.")
+
+
+def test_undo_may_bring_back_a_rest_day_and_shift_that_were_there_before_the_swap(client):
+    _seed([asg("anna-ct", "ct-thu", THU, "clin-anna"), _rest("anna-rest", THU, "clin-anna")])
+    before = _load_state(USER).assignments
+    applied = _hand_over(client, asg("anna-ct", "ct-thu", THU, "clin-anna"))
+    assert json.loads(_rows("swap_requests")[0]["applied_patch"])["restWorkPairs"] == [["clin-anna", THU]]
+    assert applied["swap"]["canUndo"] is True
+    _undo(client, applied["swap"]["id"], applied["state"]["revision"])
+    assert _multiset(_load_state(USER).assignments) == _multiset(before)
+
+
+def _remove_person(clinician_id: str) -> Callable[[AppState], None]:
+    """What the page does when a person is deleted: they and all their shifts go."""
+    def change(state: AppState) -> None:
+        state.clinicians = [c for c in state.clinicians if c.id != clinician_id]
+        state.assignments = [a for a in state.assignments if a.clinicianId != clinician_id]
+    return change
+
+
+@pytest.mark.parametrize("cover, deleted, name", [
+    (False, "clin-anna", "Anna Weber"),  # the giver of a hand-over
+    (False, "clin-ben", "Ben Ott"),  # the partner, with the shift they got
+    (True, "clin-anna", "Anna Weber"),  # the hidden holder a cover removed
+], ids=["giver", "partner", "hidden-holder"])
+def test_a_swap_whose_person_was_deleted_cannot_be_undone(client, cover: bool, deleted: str, name: str):
+    anna_ct = asg("anna-ct", "ct-thu", THU, "clin-anna")
+    if cover:
+        _seed([anna_ct], clinicians=_anna_on_vacation_thu())
+        result = _search(client, {"mode": "cover", "slot": {"rowId": "ct-thu", "dateISO": THU}})
+        swap_id = _apply(client, _apply_body(result, _option(result, "clin-ben|-")))["swap"]["id"]
+    else:
+        _seed([anna_ct])
+        swap_id = _hand_over(client, anna_ct)["swap"]["id"]
+    revision = _edit(_remove_person(deleted))
+    _undo_refused(client, swap_id, revision, f"{name} is no longer in the plan.",
+                  f"{name} is no longer in the plan. This swap can't be undone.")
 
 
 def test_history_is_newest_first_and_pages_by_keyset(client):
@@ -624,3 +856,98 @@ def test_a_stored_run_after_a_swap_meets_the_changed_calendar(client):
     forced = client.post("/v1/solve/runs/run-1/apply", params={
         "force": True, "allow_partial": True, "expected_revision": swapped["revision"]})
     assert forced.status_code == 200, forced.text
+
+
+# --- Accounts -----------------------------------------------------------------
+
+
+def test_another_account_never_sees_or_undoes_a_swap(client):
+    owner = app.dependency_overrides[_get_current_user]
+    other = _create_user(OTHER, "swap-endpoint-password-2", "user")
+    applied = _applied_swap(client)
+    swap_id = applied["swap"]["id"]
+    _save_state(make_swap_state([NIGHT, BEN_CT]), OTHER)
+    other_revision = _load_state(OTHER).revision
+    app.dependency_overrides[_get_current_user] = lambda: other
+    try:
+        assert client.get("/v1/swaps/history").json() == {"swaps": []}
+        response = client.post(f"/v1/swaps/{swap_id}/undo", json={"expectedRevision": other_revision})
+        assert response.status_code == 404
+        assert response.json()["detail"] == {"code": "swap_not_found", "message": "Swap not found."}
+        assert _load_state(OTHER).revision == other_revision
+    finally:
+        app.dependency_overrides[_get_current_user] = owner
+    history = client.get("/v1/swaps/history").json()["swaps"]
+    assert [(s["id"], s["status"], s["canUndo"]) for s in history] == [(swap_id, "applied", True)]
+    assert [row["status"] for row in _rows("swap_requests")] == ["applied"]
+    assert _undo(client, swap_id, applied["state"]["revision"])["swap"]["status"] == "reverted"
+
+
+def test_the_store_reads_and_changes_only_the_callers_rows(client):
+    swap_id = _applied_swap(client)["swap"]["id"]
+    with closing(db._get_connection()) as conn, conn:
+        assert store.get_swap(conn, OTHER, swap_id) is None
+        assert store.get_swap(conn, USER, swap_id)["id"] == swap_id
+        assert store.list_swaps(conn, OTHER, limit=50, before=None, before_id=None) == []
+        assert [row["id"] for row in store.list_swaps(conn, USER, limit=50, before=None, before_id=None)] == [
+            swap_id]
+        store.mark_reverted(conn, OTHER, swap_id, reverted_at=store.iso_utc(NOW), reverted_by=f"user:{OTHER}",
+                            revision="other-revision", change_id="other-change")
+    (row,) = _rows("swap_requests")
+    assert (row["status"], row["reverted_at"], row["reverted_by"], row["reverted_revision"]) == (
+        "applied", None, None, None)
+
+
+# --- Dates at the edge of the range -------------------------------------------
+
+
+@pytest.mark.parametrize("path, body", [
+    ("/v1/swaps/candidates", {"mode": "cover", "slot": {"rowId": "ct-fri", "dateISO": "9999-12-31"}}),
+    ("/v1/swaps/candidates", {"mode": "cover", "slot": {"rowId": "ct-mon", "dateISO": "3000-01-06"}}),
+    ("/v1/swaps/candidates", {"mode": "handover", "assignment": {
+        "rowId": "ct-mon", "dateISO": "1899-12-25", "clinicianId": "clin-anna"}}),
+    ("/v1/swaps/candidates", {"mode": "swap", "assignment": _ref(NIGHT), "range": "dates",
+                              "dates": [FRI, "9999-12-31"]}),
+    ("/v1/swaps/apply", {"mode": "cover", "slot": {"rowId": "night-fri", "dateISO": "9999-12-31", "fp": "x"},
+                         "partnerId": "clin-ben", "expectedRevision": "r", "consent": True}),
+    ("/v1/swaps/apply", {"mode": "handover", "give": [{"rowId": "ct-mon", "dateISO": "0001-01-01",
+                                                       "clinicianId": "clin-anna", "fp": "x"}],
+                         "partnerId": "clin-ben", "expectedRevision": "r", "consent": True}),
+    ("/v1/swaps/apply", {"mode": "handover", "give": [{"rowId": "night-thu", "dateISO": THU,
+                                                       "clinicianId": "clin-anna", "fp": "x"}],
+                         "restDayMoves": [{"fromClinicianId": "clin-anna", "toClinicianId": "clin-ben",
+                                           "dateISO": "3000-01-01"}],
+                         "partnerId": "clin-ben", "expectedRevision": "r", "consent": True}),
+], ids=["cover-last-day", "cover-year-3000", "before-1900", "picked-date", "apply-cover", "apply-give",
+        "apply-rest-day-move"])
+def test_request_dates_outside_1900_to_2999_are_refused(client, path: str, body: Dict[str, Any]):
+    _seed([NIGHT, BEN_CT])
+    response = client.post(path, json=body)
+    assert response.status_code == 422, response.text
+    assert "dates must lie between 1900-01-01 and 2999-12-31" in response.text
+    assert _rows("swap_requests") == []
+
+
+def test_the_first_and_last_day_of_the_range_are_accepted(client):
+    _seed([])
+    for day in ("1900-01-01", "2999-12-31"):
+        response = client.post("/v1/swaps/candidates", json={"mode": "cover", "slot": {"rowId": "ct-mon",
+                                                                                       "dateISO": day}})
+        assert response.status_code == 200, response.text
+
+
+def test_far_future_shifts_in_the_calendar_never_break_a_swap(client):
+    # Saved by hand: Ben's night ends in year 10000; Dora's on-call rest days
+    # run past 9999-12-31. Neither may stop a swap of this year.
+    ct = asg("anna-ct", "ct-mon", "2026-01-12", "clin-anna")
+    _seed([ct, asg("far-night", "night-fri", "9999-12-31", "clin-ben"),
+           asg("far-call", "oncall-fri", "9999-12-31", "clin-dora")], solver_settings={"onCallRestDaysAfter": 3})
+    assert {a.id for a in _load_state(USER).assignments} == {"anna-ct", "far-night", "far-call"}
+    result = _find(client, ct, "handover")
+    option = _option(result, "clin-ben|-")
+    assert option["group"] == "best"
+    applied = _apply(client, _apply_body(result, option))
+    assert client.get("/v1/swaps/history").status_code == 200
+    _undo(client, applied["swap"]["id"], applied["state"]["revision"])
+    assert {(a.id, a.clinicianId) for a in _load_state(USER).assignments} == {
+        ("anna-ct", "clin-anna"), ("far-night", "clin-ben"), ("far-call", "clin-dora")}

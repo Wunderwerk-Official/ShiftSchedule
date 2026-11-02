@@ -18,6 +18,7 @@ from ..validation import ValidationContext, _is_on_vacation
 from . import labels
 
 MINUTES_PER_DAY = 1440
+_LAST_DAY = date.max.toordinal()
 
 
 def abs_minute(date_iso: str, minute: int) -> int:
@@ -25,7 +26,9 @@ def abs_minute(date_iso: str, minute: int) -> int:
 
 
 def date_of(abs_min: int) -> str:
-    return date.fromordinal(abs_min // MINUTES_PER_DAY).isoformat()
+    """The calendar day of a minute. A minute after 9999-12-31 (the end of an
+    overnight item stored on that day) reads as that day instead of failing."""
+    return date.fromordinal(min(abs_min // MINUTES_PER_DAY, _LAST_DAY)).isoformat()
 
 
 def local_iso(abs_min: int) -> str:

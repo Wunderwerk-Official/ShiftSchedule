@@ -8,10 +8,15 @@ from pydantic import AfterValidator, BaseModel, Field, model_validator
 from .policy import APPROVER_MAX_CHARS, MAX_PICKED_DATES, NOTE_MAX_CHARS
 
 DATE = r"^\d{4}-\d{2}-\d{2}$"
+# Requests name dates in this range; the minute axis and the search window
+# then never leave the calendar's date range.
+EARLIEST_DATE, LATEST_DATE = "1900-01-01", "2999-12-31"
 
 
 def _real_date(value: str) -> str:
     date.fromisoformat(value)  # 2026-02-30 matches DATE but is no date
+    if not EARLIEST_DATE <= value <= LATEST_DATE:
+        raise ValueError(f"dates must lie between {EARLIEST_DATE} and {LATEST_DATE}")
     return value
 
 

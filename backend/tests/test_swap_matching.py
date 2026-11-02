@@ -27,13 +27,16 @@ from backend.swaps.matching import (
     MovePlan,
     SwapContext,
     find_candidates,
+    plan_kept_warnings,
     plan_option,
+    plan_warnings,
     reason_for,
     scoped_gate,
+    slice_window,
 )
 from backend.swaps.policy import SwapRules, open_slot
 from backend.swaps.schemas import CandidatesRequest
-from backend.validation import ValidationReport
+from backend.validation import VIOLATION_UNKNOWN_CLINICIAN, VIOLATION_UNKNOWN_SLOT, ValidationReport, Violation
 
 from .conftest import make_clinician, make_template_slot
 from .swap_fixtures import (
@@ -154,6 +157,67 @@ def test_gate_reasons(assignments: List[Assignment], reason: tuple):
     (option,) = result["blocked"]
     assert (option["reason"]["code"], option["reason"]["message"]) == reason
     assert option["blockerCount"] >= 1
+
+
+def _ben_away(start: str, end: str) -> List[Clinician]:
+    clinicians = _people()
+    clinicians[1].vacations.append(VacationRange(id="v", startISO=start, endISO=end))
+    return clinicians
+
+
+HIDDEN_CASES = [
+    # Ben's vacation hides his stored shift (the grid shows its slot as open),
+    # but the rules still count it until cover replaces it.
+    pytest.param((MON, FRI), asg("hidden", "oncall-fri", FRI, "clin-ben"), asg("x", "ct-sat", SAT, "clin-anna"),
+                 ("on_call_rest", "On-call rest: Ben Ott's on-call on Fri 9 Jan is hidden by a vacation "
+                                  "but still counts. Find cover for it first."), id="hidden-on-call"),
+    pytest.param((MON, FRI), asg("hidden", "oncall-mon", MON, "clin-ben"),
+                 asg("x", "ct-sun", "2026-01-04", "clin-anna"),
+                 ("on_call_rest", "On-call rest: Ben Ott's on-call on Mon 5 Jan is hidden by a vacation "
+                                  "but still counts. Find cover for it first."), id="hidden-on-call-ahead"),
+    pytest.param((FRI, SUN), asg("hidden", "ct-fri", FRI, "clin-ben"), asg("x", "oncall-thu", THU, "clin-anna"),
+                 ("on_call_rest", "On-call rest: Ben Ott's CT on Fri 9 Jan is hidden by a vacation "
+                                  "but still counts. Find cover for it first."), id="hidden-rest-day-shift"),
+    pytest.param((MON, FRI), asg("hidden", "night-fri", FRI, "clin-ben"), asg("x", "early-sat", SAT, "clin-anna"),
+                 ("overlap", "Overlap: Ben Ott's Night duty on Fri 9 Jan (20:00 → 08:00) is hidden by a "
+                             "vacation but still counts. Find cover for it first."), id="hidden-overlap"),
+]
+
+
+@pytest.mark.parametrize("vacation, hidden, given, reason", HIDDEN_CASES)
+def test_a_conflict_with_a_vacation_hidden_shift_names_it_and_the_way_out(vacation: tuple, hidden: Assignment,
+                                                                          given: Assignment, reason: tuple):
+    result = _search(make_swap_state([hidden, given], clinicians=_ben_away(*vacation)), "x",
+                     partnerId="clin-ben")
+    (option,) = result["blocked"]
+    assert (option["reason"]["code"], option["reason"]["message"]) == reason
+    assert option["blockerCount"] == 1
+    # The same shift, not hidden, is worded as work.
+    visible = _search(make_swap_state([hidden, given]), "x", partnerId="clin-ben")
+    assert "hidden" not in _options(visible)[0]["reason"]["message"]
+
+
+def test_on_call_rest_reaching_into_the_next_iso_week_blocks():
+    # Three rest days after Ben's Friday on-call reach Monday's handover in the
+    # next ISO week, beyond a slice of only the moved week and the duty's spill.
+    state = make_swap_state([asg("call", "oncall-fri", FRI, "clin-ben"), asg("x", "ct-mon", NEXT_MON, "clin-anna")],
+                            solver_settings={"onCallRestDaysAfter": 3})
+    ben = _option(_search(state, "x"), "clin-ben|-")
+    assert ben["group"] == "blocked"
+    assert ben["reason"] == {"code": "on_call_rest", "message": "On-call rest: Ben Ott is on call on Fri 9 Jan."}
+
+
+def test_unresolved_references_get_readable_reasons():
+    ctx = SwapContext(make_swap_state(), RULES, NOW)
+    unknown_person = Violation(code=VIOLATION_UNKNOWN_CLINICIAN, message="Unknown clinician id: clin-gone",
+                               clinician_id="clin-gone", date_iso=THU, slot_id="ct-thu")
+    unknown_slot = Violation(code=VIOLATION_UNKNOWN_SLOT, message="Invalid slot reference: ct-thu on 2026-01-08",
+                             clinician_id="clin-ben", date_iso=THU, slot_id="ct-thu")
+    # The validators' own messages name raw ids; the partner's reason comes first.
+    assert matching.ranked_reasons(ctx, [unknown_person, unknown_slot], partner_id="clin-ben", new_items=set()) == [
+        ("unknown_slot", "A shift on Thu 8 Jan no longer matches the weekly template."),
+        ("unknown_person", "A person of this swap is no longer in the plan."),
+    ]
 
 
 def test_an_overlap_the_giver_receives_in_a_swap_names_both_shifts():
@@ -697,6 +761,87 @@ def test_a_moved_rest_day_is_not_removed_twice():
     assert sum(a is rest for a in plan.removed) == 1
     option = _option(_search(state, "x", "swap"), "clin-ben|ct-thu@2026-01-08")
     assert (len(option["restDayMoves"]), option["restDayRemovals"]) == (1, [])
+
+
+# --- Long stretches and the date range ----------------------------------------
+
+
+WEEKDAY_KEYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def _on_calls(clinician_id: str, first: str, days: int) -> List[Assignment]:
+    """24 h on-calls every day: one block of ``days`` days."""
+    dates = [date.fromisoformat(first) + timedelta(days=k) for k in range(days)]
+    return [asg(f"call-{k}", f"oncall-{WEEKDAY_KEYS[day.weekday()]}", day.isoformat(), clinician_id)
+            for k, day in enumerate(dates)]
+
+
+def _texts(warnings: Iterable[Any]) -> List[tuple]:
+    return sorted((w.id, w.message, w.short) for w in warnings)
+
+
+@pytest.mark.parametrize("calls, given, new_id, new_message", [
+    # Two weeks of background on-call up to Monday 08:00, then the handed-over
+    # CT: one block that starts long before the slice window.
+    (("2025-12-29", 14), asg("x", "ct-mon", NEXT_MON, "clin-anna"),
+     "long:clin-ben:2025-12-29T08:00:2026-01-12T16:00",
+     "Ben Ott: 344.0 h without a break, Mon 29 Dec 08:00 → Mon 12 Jan 16:00 (maximum 24 h)."),
+    # A night that runs into two weeks of on-call: the block ends long after it.
+    ((SAT, 14), asg("x", "night-fri", FRI, "clin-anna"),
+     "long:clin-ben:2026-01-09T20:00:2026-01-24T08:00",
+     "Ben Ott: 348.0 h without a break, Fri 9 Jan 20:00 → Sat 24 Jan 08:00 (maximum 24 h)."),
+], ids=["starts-before", "ends-after"])
+def test_the_warnings_of_a_stretch_longer_than_the_slice_window_are_the_calendars(
+        calls: tuple, given: Assignment, new_id: str, new_message: str):
+    # Without contract hours Ben's weeks of on-call are no weekly-hours block.
+    state = make_swap_state(_on_calls("clin-ben", *calls) + [given], clinicians=_ben_with(workingHoursPerWeek=None),
+                            solver_settings={"onCallRestEnabled": False})
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    lo, hi = slice_window(ctx, plan.moved_dates)
+    assert calls[0] < lo or hi < (date.fromisoformat(calls[0]) + timedelta(days=calls[1])).isoformat()
+    slice_new = plan_warnings(ctx, plan, scope="slice")
+    assert _texts(slice_new) == _texts(plan_warnings(ctx, plan, scope="full"))
+    assert [(w.id, w.message) for w in slice_new if w.code == "block_too_long"] == [(new_id, new_message)]
+    assert _texts(plan_kept_warnings(ctx, plan, scope="slice")) == _texts(
+        plan_kept_warnings(ctx, plan, scope="full"))
+    # The search shows the ids apply recomputes on the whole calendar.
+    ben = _option(_search(state, "x", partnerId="clin-ben"), "clin-ben|-")
+    assert [w["id"] for w in ben["warnings"]] == [w.id for w in slice_new]
+
+
+def test_a_stretch_that_ends_after_the_window_still_sees_the_shift_after_it():
+    # Anna's Tuesday night runs into Ben's two weeks of on-call, which end on
+    # Wed 21 Jan 08:00; Ben works late that day, so the night block has no free
+    # day after it. Both lie far beyond the slice window of 6 Jan.
+    shifts = [asg("x", "night-tue", TUE, "clin-anna"), asg("late", "late-wed", "2026-01-21", "clin-ben")]
+    state = make_swap_state(_on_calls("clin-ben", WED, 14) + shifts, clinicians=_ben_with(workingHoursPerWeek=None),
+                            solver_settings={"onCallRestEnabled": False})
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert slice_window(ctx, plan.moved_dates)[1] == "2026-01-18"
+    slice_new = plan_warnings(ctx, plan, scope="slice")
+    assert _texts(slice_new) == _texts(plan_warnings(ctx, plan, scope="full"))
+    assert [w.id for w in slice_new if w.code == "night_no_free_day"] == [
+        "night:clin-ben:2026-01-06T20:00:2026-01-21"]
+
+
+def test_an_untouched_stretch_across_the_window_edge_is_kept_as_the_calendar_has_it():
+    # Ben's on-calls from 1 to 14 Jan cross the window of a handover on Wed 21 Jan.
+    state = make_swap_state(_on_calls("clin-ben", "2026-01-01", 14) + [asg("x", "ct-wed", "2026-01-21", "clin-anna")],
+                            solver_settings={"onCallRestEnabled": False})
+    ctx = SwapContext(state, RULES, NOW)
+    plan = _plan(state, "handover", "x", "clin-ben")
+    assert slice_window(ctx, plan.moved_dates)[0] == "2026-01-12"
+    kept = plan_kept_warnings(ctx, plan, scope="slice")
+    assert [w.id for w in kept] == ["long:clin-ben:2026-01-01T08:00:2026-01-15T08:00"]
+    assert _texts(kept) == _texts(plan_kept_warnings(ctx, plan, scope="full"))
+
+
+def test_the_slice_window_stays_inside_the_date_range():
+    ctx = SwapContext(make_swap_state(), RULES, NOW)
+    assert slice_window(ctx, ["9999-12-31"]) == ("9999-12-20", "9999-12-31")
+    assert slice_window(ctx, ["0001-01-03"]) == ("0001-01-01", "0001-01-14")
 
 
 # --- Pre-existing problems ----------------------------------------------------

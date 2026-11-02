@@ -279,27 +279,47 @@ function focusAfterSwapDrawer(
   fallback?.focus();
 }
 
+/** Width of the clinic sheet's row labels, which stick to the grid's left edge (0 in the classic grid). */
+function stickyLabelWidth(element: HTMLElement): number {
+  // The top-left corner cell sticks with the labels.
+  const corner = element.closest("[data-schedule-grid]")?.firstElementChild;
+  if (!corner) return 0;
+  const { position, left } = window.getComputedStyle(corner);
+  return position === "sticky" && left !== "auto" ? corner.getBoundingClientRect().width : 0;
+}
+
 /**
- * Scroll a pill (else its cell) into view beside the open desktop drawer
- * (SPEC §5.4, Reveal on hover); never changes the week. Below lg the drawer
- * overlays the grid; from lg on the page keeps the drawer's width free, so a
- * pill scrolled sideways inside the grid can still end up in that strip.
+ * Scroll a pill or clinic sheet name (else its cell) into view beside the
+ * open desktop drawer (Reveal on hover); never changes the week.
+ * The visible part of the grid ends left of the drawer and, in the clinic
+ * sheet, starts right of the sticky row labels. From lg on the page keeps
+ * the drawer's width free; below lg the drawer overlays the grid, whose
+ * run-out (index.css) lets its right-hand days scroll out from under it.
  */
 function revealBesideSwapDrawer(key: string): void {
   // The key's cell part; rowIds may contain "__" (see extractDateFromAssignmentKey).
   const match = /__(\d{4}-\d{2}-\d{2})__/.exec(key);
+  const escaped = CSS.escape(key);
   const element =
-    document.querySelector<HTMLElement>(`[data-assignment-key="${CSS.escape(key)}"]`) ??
+    document.querySelector<HTMLElement>(`[data-assignment-key="${escaped}"]`) ??
+    document.querySelector<HTMLElement>(`[data-sheet-assignment-key="${escaped}"]`) ??
     (match ? document.querySelector<HTMLElement>(cellSelector(key.slice(0, match.index), match[1])) : null);
   if (!element) return;
+  const scroller = element.closest(".calendar-scroll")?.getBoundingClientRect();
+  const drawerLeft = window.innerWidth - SWAP_DRAWER_WIDTH;
+  const labels = stickyLabelWidth(element);
+  const left = Math.max(0, (scroller?.left ?? 0) + labels);
+  const right = Math.min(drawerLeft, scroller?.right ?? drawerLeft);
   const rect = element.getBoundingClientRect();
-  const visibleRight = window.innerWidth - SWAP_DRAWER_WIDTH;
-  if (rect.left >= 0 && rect.top >= 0 && rect.right <= visibleRight && rect.bottom <= window.innerHeight) return;
-  const drawerInset = window.innerWidth < 1024 ? SWAP_DRAWER_WIDTH : 0;
-  // scrollIntoView honours scroll margins: the pill stops left of the drawer.
-  element.style.scrollMarginRight = `${drawerInset + 16}px`;
+  if (rect.left >= left && rect.top >= 0 && rect.right <= right && rect.bottom <= window.innerHeight) return;
+  // The part of the grid's scroll box that lies under the drawer.
+  const covered = scroller ? Math.max(0, scroller.right - drawerLeft) : 0;
+  // scrollIntoView honours scroll margins: the pill stops right of the labels and left of the drawer.
+  element.style.scrollMarginLeft = `${labels + 8}px`;
+  element.style.scrollMarginRight = `${covered + 16}px`;
   element.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
   requestAnimationFrame(() => {
+    element.style.scrollMarginLeft = "";
     element.style.scrollMarginRight = "";
   });
 }
@@ -1189,6 +1209,8 @@ export default function WeeklySchedulePage({
   };
 
   const openExportModal = () => {
+    // The export modal (z-50) would open below the drawer.
+    closeSwap();
     setExportOpen(true);
     setIcalPublishError(null);
     setIcalPublishLoading(true);
@@ -1241,6 +1263,16 @@ export default function WeeklySchedulePage({
   const closeClinicianEditor = () => {
     setEditingClinicianId("");
     setEditingClinicianSection(null);
+  };
+
+  // Like the editor, these overviews (z-40) would open below the drawer.
+  const openVacationOverview = () => {
+    closeSwap();
+    setVacationOverviewOpen(true);
+  };
+  const openWorkingHoursOverview = () => {
+    closeSwap();
+    setWorkingHoursOverviewOpen(true);
   };
 
   const handlePublishSubscription = async () => {
@@ -2778,6 +2810,26 @@ export default function WeeklySchedulePage({
     }
   };
 
+  // A new token whenever a slice changes that the autosave saves. The edit
+  // generation and the autosave below both follow it, so they cannot drift.
+  const savedSlicesToken = useMemo(
+    () => ({}),
+    [
+      locations,
+      locationsEnabled,
+      rows,
+      clinicians,
+      assignmentMap,
+      minSlotsByRowId,
+      slotOverridesByKey,
+      holidays,
+      holidayCountry,
+      holidayYear,
+      publishedWeekStartISOs,
+      solverSettings,
+      weeklyTemplate,
+    ],
+  );
   // Whether the server holds what the screen shows, without a save per swap
   // search: a generation per change of a saved slice, and the newest one
   // known saved. Declared right before the autosave effect, so in one commit
@@ -2786,21 +2838,7 @@ export default function WeeklySchedulePage({
   const savedGenRef = useRef(-1);
   useEffect(() => {
     editGenRef.current += 1;
-  }, [
-    locations,
-    locationsEnabled,
-    rows,
-    clinicians,
-    assignmentMap,
-    minSlotsByRowId,
-    slotOverridesByKey,
-    holidays,
-    holidayCountry,
-    holidayYear,
-    publishedWeekStartISOs,
-    solverSettings,
-    weeklyTemplate,
-  ]);
+  }, [savedSlicesToken]);
 
   useEffect(() => {
     if (!hasLoaded || loadedUserId !== currentUser.username || calendarTransitionRef.current || saveError) return;
@@ -2822,26 +2860,7 @@ export default function WeeklySchedulePage({
     saveTimerRef.current = handle;
     return () => window.clearTimeout(handle);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    locations,
-    locationsEnabled,
-    rows,
-    clinicians,
-    assignmentMap,
-    minSlotsByRowId,
-    slotOverridesByKey,
-    holidays,
-    holidayCountry,
-    holidayYear,
-    publishedWeekStartISOs,
-    solverSettings,
-    weeklyTemplate,
-    hasLoaded,
-    currentUser.username,
-    loadedUserId,
-    calendarTransition,
-    saveError,
-  ]);
+  }, [savedSlicesToken, hasLoaded, currentUser.username, loadedUserId, calendarTransition, saveError]);
 
   // Swap assistant: saving, searching, applying and undoing (SPEC §5.4,
   // §5.7). Every callback the drawer gets keeps one identity for the page's
@@ -3618,6 +3637,8 @@ export default function WeeklySchedulePage({
         // Wide screens make room for the drawer; below lg it overlays the grid.
         desktopSwapDrawerOpen && "transition-[padding] duration-150 lg:pr-[440px]",
       )}
+      // Below lg the grid gets a run-out as wide as the drawer (index.css).
+      data-swap-drawer-open={desktopSwapDrawerOpen ? "true" : undefined}
     >
       <TopBar
         viewMode={viewMode}
@@ -3957,7 +3978,7 @@ export default function WeeklySchedulePage({
                     </div>
                     <button
                       type="button"
-                      onClick={() => setVacationOverviewOpen(true)}
+                      onClick={openVacationOverview}
                       className={cx(
                         "rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-normal text-slate-900 shadow-sm",
                         "hover:bg-slate-50 active:bg-slate-100",
@@ -3979,7 +4000,7 @@ export default function WeeklySchedulePage({
                     </div>
                     <button
                       type="button"
-                      onClick={() => setWorkingHoursOverviewOpen(true)}
+                      onClick={openWorkingHoursOverview}
                       className={cx(
                         "rounded-xl border border-slate-300 bg-white px-4 py-2 text-sm font-normal text-slate-900 shadow-sm",
                         "hover:bg-slate-50 active:bg-slate-100",

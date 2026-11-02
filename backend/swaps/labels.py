@@ -8,7 +8,7 @@ functions; texts without placeholders are constants.
 from __future__ import annotations
 
 from datetime import date
-from typing import TYPE_CHECKING, Dict, List, NamedTuple, Sequence
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional, Sequence
 
 from ..models import SolverSettings
 
@@ -91,6 +91,7 @@ CONSENT_REQUIRED = "Confirm that the colleague agreed to the swap."
 INVALID_SAME_PERSON = "Choose another person."
 INVALID_UNKNOWN_PERSON = "This person is not in the plan."
 INVALID_ITEMS = "These shifts do not belong to the chosen people. Refresh and try again."
+INVALID_SHARED_SLOT = "Both shifts are in the same slot. Choose another shift."
 STALE_GONE = "This shift no longer exists. Refresh the plan."
 STALE_SLOT = "This slot is no longer open. Refresh and try again."
 STALE_SLOT_TIMES = "This slot's times or place changed. Refresh and try again."
@@ -99,6 +100,7 @@ STALE_HIDDEN = "The hidden shift in this slot changed. Refresh and try again."
 STARTED = "This shift has already started and can't be swapped."
 PLAN_INVALID = "This swap no longer matches the weekly template or holidays. Refresh and try again."
 SWAP_INVALID_PREFIX = "This swap breaks a planning rule: "
+UNDO_INVALID_PREFIX = "Undoing this swap would break a planning rule: "
 WARNINGS_UNACK = "Check the working-time warnings first."
 UNDO_CONFLICT = "The shifts changed after the swap. Edit them in the plan."
 UNDO_STARTED = "A swapped shift has already started; change it in the plan instead."
@@ -114,6 +116,7 @@ TARGET_INACTIVE = "This slot does not exist on this day."
 UNDO_NOT_IN_PLAN = "Not in the current plan."
 UNDO_CHANGED = "The shifts changed after the swap."
 UNDO_ALREADY_STARTED = "Already started."
+PERSON_GONE = "A person of this swap is no longer in the plan."
 
 
 def stale_item(name: str, date_iso: str) -> str:
@@ -139,8 +142,32 @@ def target_hidden(name: str, date_iso: str) -> str:
 
 
 def swap_invalid(reasons: Sequence[str]) -> str:
-    """The 409 swap_invalid message: the prefix and the first three reasons."""
+    """The 409 swap_invalid message of an apply: the prefix and the first three reasons."""
     return SWAP_INVALID_PREFIX + " ".join(reasons[:3])
+
+
+def undo_invalid(reasons: Sequence[str]) -> str:
+    """The 409 swap_invalid message of an undo: the undo's own prefix, since
+    it is the undo that would break the rule."""
+    return UNDO_INVALID_PREFIX + " ".join(reasons[:3])
+
+
+def undo_person_gone(name: Optional[str]) -> str:
+    """History reason: a person of the swap was deleted from the plan."""
+    return f"{name} is no longer in the plan." if name else PERSON_GONE
+
+
+def undo_person_gone_conflict(name: Optional[str]) -> str:
+    return f"{undo_person_gone(name)} This swap can't be undone."
+
+
+def undo_rest_and_work(name: str, date_iso: str) -> str:
+    """History reason: undo would leave a person resting and working on one day."""
+    return f"Undo would give {name} a Rest Day and a shift on {day_label(date_iso)}."
+
+
+def undo_rest_and_work_conflict(name: str, date_iso: str) -> str:
+    return f"{undo_rest_and_work(name, date_iso)} Edit them in the plan."
 
 
 # --- Reasons for blocked options --------------------------------------------
@@ -181,6 +208,25 @@ def on_call_rest_on_call(name: str, date_iso: str) -> str:
     return f"On-call rest: {name} is on call on {day_label(date_iso)}."
 
 
+# A vacation hides a stored shift on the grid (its slot shows as open), but the
+# rules still count it until cover replaces it.
+_HIDDEN_WAY_OUT = "is hidden by a vacation but still counts. Find cover for it first."
+
+
+def hidden_on_call(name: str, date_iso: str) -> str:
+    return f"On-call rest: {name}'s on-call on {day_label(date_iso)} {_HIDDEN_WAY_OUT}"
+
+
+def hidden_rest_clash(name: str, section: str, date_iso: str) -> str:
+    """A received on-call's rest day holds a vacation-hidden shift."""
+    return f"On-call rest: {name}'s {section} on {day_label(date_iso)} {_HIDDEN_WAY_OUT}"
+
+
+def hidden_overlap(name: str, section: str, date_iso: str, start_local: str, end_local: str) -> str:
+    return (f"Overlap: {name}'s {section} on {day_label(date_iso)} "
+            f"({time_range(start_local, end_local)}) {_HIDDEN_WAY_OUT}")
+
+
 def mandatory_window(name: str, start_minute: int, end_minute: int, weekday_key: str) -> str:
     return (f"{name} must work within {window_range(start_minute, end_minute)} "
             f"on {weekday_plural(weekday_key)}.")
@@ -201,6 +247,10 @@ def weekly_hours(name: str, iso_week: int, assigned_minutes: int, max_minutes: i
 
 def capacity(section: str, date_iso: str) -> str:
     return f"{section} on {day_label(date_iso)} would be overfilled."
+
+
+def unknown_slot(date_iso: str) -> str:
+    return f"A shift on {day_label(date_iso)} no longer matches the weekly template."
 
 
 # --- Working-time warnings --------------------------------------------------

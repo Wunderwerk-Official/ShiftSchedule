@@ -12,6 +12,9 @@ import type {
 /** The screen could not be saved, so no search ran. */
 export class SwapSaveBlockedError extends Error {}
 
+/** A search's answer; `reloaded`: the calendar was reloaded from the server before the answer was searched. */
+export type SwapSearchResult = { response: SwapCandidatesResponse; reloaded: boolean };
+
 export type SwapSearchDeps = {
   /** Saves the screen when it has unsaved edits; sets the page's save error on failure. */
   sync: () => Promise<{ revision: string | null; gen: number }>;
@@ -28,7 +31,7 @@ export type SwapSearchDeps = {
 export async function runSwapSearch(
   deps: SwapSearchDeps,
   request: SwapCandidatesRequest,
-): Promise<SwapCandidatesResponse> {
+): Promise<SwapSearchResult> {
   let synced: { revision: string | null; gen: number };
   try {
     synced = await deps.sync();
@@ -36,10 +39,10 @@ export async function runSwapSearch(
     throw new SwapSaveBlockedError(err instanceof Error ? err.message : "Changes could not be saved.");
   }
   try {
-    return await deps.find({ ...request, expectedRevision: synced.revision });
+    return { response: await deps.find({ ...request, expectedRevision: synced.revision }), reloaded: false };
   } catch (err) {
     if (err instanceof SwapApiError && err.code === "state_changed" && (await deps.reloadIfUnchanged(synced.gen))) {
-      return deps.find({ ...request, expectedRevision: null });
+      return { response: await deps.find({ ...request, expectedRevision: null }), reloaded: true };
     }
     throw err;
   }
@@ -67,6 +70,7 @@ export type SwapFlowDeps = {
 
 const BUSY_MESSAGE = "The calendar is being updated. Try again in a moment.";
 const UNDO_RELOADED_MESSAGE = "The calendar changed in another tab. It was reloaded; undo again from History.";
+const UNDO_NOT_RELOADED_MESSAGE = "The calendar changed in another tab. Reload the page, then undo again from History.";
 
 /**
  * The revision an apply or undo is checked against. Unsaved edits (or an
@@ -84,6 +88,11 @@ async function syncedRevision(deps: SwapFlowDeps): Promise<string> {
   return (await deps.ensureSaved()).revision ?? "";
 }
 
+/**
+ * Sends an apply or undo. A state_changed refusal reloads the calendar and is
+ * rethrown with `detail.reloaded`, so its text can say whether the screen now
+ * shows the saved calendar.
+ */
 async function runCalendarChange(
   deps: SwapFlowDeps,
   send: (expectedRevision: string) => Promise<SwapApplyResponse>,
@@ -96,11 +105,14 @@ async function runCalendarChange(
     return result;
   } catch (err) {
     if (err instanceof SwapApiError && err.code === "state_changed") {
+      let reloaded = true;
       try {
         await deps.reload();
       } catch {
         // The refusal is what the planner needs to see; a failed reload keeps the screen.
+        reloaded = false;
       }
+      throw new SwapApiError(err.message, err.status, err.code, { ...err.detail, reloaded });
     }
     throw err;
   } finally {
@@ -114,13 +126,14 @@ export function runSwapApply(deps: SwapFlowDeps, request: SwapApplyRequest): Pro
   return runCalendarChange(deps, (expectedRevision) => deps.apply({ ...request, expectedRevision }));
 }
 
-/** Like runSwapApply for an undo; a reload after a conflict asks to undo again from History. */
+/** Like runSwapApply for an undo; after a conflict it asks to undo again from History. */
 export async function runSwapUndo(deps: SwapFlowDeps, swapId: string): Promise<SwapApplyResponse> {
   try {
     return await runCalendarChange(deps, (expectedRevision) => deps.undo(swapId, expectedRevision));
   } catch (err) {
     if (err instanceof SwapApiError && err.code === "state_changed") {
-      throw new SwapApiError(UNDO_RELOADED_MESSAGE, 409, "state_changed", err.detail);
+      const message = err.detail.reloaded === true ? UNDO_RELOADED_MESSAGE : UNDO_NOT_RELOADED_MESSAGE;
+      throw new SwapApiError(message, 409, "state_changed", err.detail);
     }
     throw err;
   }

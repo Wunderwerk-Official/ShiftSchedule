@@ -113,6 +113,20 @@ export function undoToastMessage(swap: SwapRecord): string {
   return `Cover undone: ${swap.partnerName} no longer covers ${swap.give[0].sectionName} (${days})`;
 }
 
+/**
+ * Name of History's Undo button: "Undo swap of Anna Weber and Ben Ott (Thu 19 /
+ * Sat 21 Nov)", "Undoing …" while it runs. It starts with the visible text.
+ */
+export function undoButtonLabel(swap: SwapRecord, running: boolean): string {
+  const verb = running ? "Undoing" : "Undo";
+  const giver = swap.requesterName ?? "";
+  const datable = swap.give.length > 0 && (swap.kind !== "swap" || swap.take.length > 0);
+  const days = datable ? ` (${swapDays(swap)})` : "";
+  if (swap.kind === "swap") return `${verb} swap of ${giver} and ${swap.partnerName}${days}`;
+  if (swap.kind === "handover") return `${verb} hand-over from ${giver} to ${swap.partnerName}${days}`;
+  return `${verb} ${swap.partnerName} covering ${swap.give[0]?.sectionName ?? "the slot"}${days}`;
+}
+
 export function consentLabel(mode: SwapMode, partnerName: string): string {
   return mode === "swap" ? `${partnerName} agreed to this swap` : `${partnerName} agreed to take this shift`;
 }

@@ -33,6 +33,7 @@ from .swap_fixtures import (
     FRI,
     MON,
     SAT,
+    NORTH_SHAPES,
     SLOT_SHAPES,
     SUN,
     THU,
@@ -42,6 +43,7 @@ from .swap_fixtures import (
     asg,
     make_swap_state,
     rich_swap_state,
+    wide_swap_state,
 )
 
 ON_CALL = SolverSettings(onCallRestEnabled=True, onCallRestClassId="sec-oncall")
@@ -70,6 +72,13 @@ def test_minute_axis_helpers_round_trip():
     assert date_of(start) == THU
     assert local_iso(start) == "2026-01-08T20:00"
     assert local_iso(start + 12 * 60) == "2026-01-09T08:00"
+
+
+def test_minute_axis_helpers_never_fail_past_the_last_day():
+    # A night stored on 9999-12-31 ends in year 10000, which no date can hold.
+    end = abs_minute("9999-12-31", 20 * 60) + 12 * 60
+    assert date_of(end - 1) == "9999-12-31"
+    assert local_iso(end) == "9999-12-31T08:00"
 
 
 def test_touching_shifts_form_one_block():
@@ -250,7 +259,10 @@ def _slots(state: AppState) -> List[dict]:
     return [slot.model_dump() for loc in state.weeklyTemplate.locations for slot in loc.slots]
 
 
-FIXTURE_STATES = {"every slot kind": _every_slot_kind_state, "rich": rich_swap_state}
+FIXTURE_STATES = {"every slot kind": _every_slot_kind_state, "rich": rich_swap_state, "wide": wide_swap_state}
+# Template slots per state: one per shape and day type, the wide one at two locations.
+SLOT_COUNTS = {"every slot kind": 8 * len(SLOT_SHAPES), "rich": 8 * len(SLOT_SHAPES),
+               "wide": 8 * (len(SLOT_SHAPES) + len(NORTH_SHAPES))}
 
 
 @pytest.mark.parametrize("name", sorted(FIXTURE_STATES))
@@ -259,7 +271,7 @@ def test_fixture_states_survive_normalization(name):
     normalized, _ = _normalize_state(state.model_copy(deep=True))
     assert normalized.assignments == state.assignments
     assert _slots(normalized) == _slots(state)
-    assert len(_slots(state)) == 8 * len(SLOT_SHAPES)
+    assert len(_slots(state)) == SLOT_COUNTS[name]
     assert normalized.slotOverridesByKey == state.slotOverridesByKey
     assert normalized.solverRules == state.solverRules
 

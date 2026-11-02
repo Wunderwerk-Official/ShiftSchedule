@@ -25,7 +25,7 @@ describe("runSwapSearch", () => {
   it("searches against the revision the sync reports", async () => {
     const find = vi.fn().mockResolvedValue(candidates);
     const deps = { sync: vi.fn().mockResolvedValue({ revision: "r1", gen: 3 }), find, reloadIfUnchanged: vi.fn() };
-    await expect(runSwapSearch(deps, request)).resolves.toBe(candidates);
+    await expect(runSwapSearch(deps, request)).resolves.toEqual({ response: candidates, reloaded: false });
     expect(find).toHaveBeenCalledWith({ ...request, expectedRevision: "r1" });
     expect(deps.reloadIfUnchanged).not.toHaveBeenCalled();
   });
@@ -43,7 +43,8 @@ describe("runSwapSearch", () => {
     const find = vi.fn().mockRejectedValueOnce(stateChanged()).mockResolvedValueOnce(candidates);
     const reloadIfUnchanged = vi.fn().mockResolvedValue(true);
     const deps = { sync: vi.fn().mockResolvedValue({ revision: "r1", gen: 7 }), find, reloadIfUnchanged };
-    await expect(runSwapSearch(deps, request)).resolves.toBe(candidates);
+    // Reported, so the drawer counts the reloaded plan as the one the list was made from.
+    await expect(runSwapSearch(deps, request)).resolves.toEqual({ response: candidates, reloaded: true });
     expect(reloadIfUnchanged).toHaveBeenCalledWith(7);
     expect(find.mock.calls.map(([sent]) => sent.expectedRevision)).toEqual(["r1", null]);
   });
@@ -127,26 +128,40 @@ describe("runSwapApply", () => {
     expect(calls).toEqual([]);
   });
 
-  it("reloads after a conflict, rethrows it and resumes", async () => {
-    const conflict = stateChanged();
-    const { deps, calls } = flowDeps({ apply: vi.fn().mockRejectedValue(conflict) });
-    await expect(runSwapApply(deps, applyRequest)).rejects.toBe(conflict);
+  it("reloads after a conflict, rethrows it marked as reloaded and resumes", async () => {
+    const { deps, calls } = flowDeps({ apply: vi.fn().mockRejectedValue(stateChanged()) });
+    const error = await runSwapApply(deps, applyRequest).catch((err: unknown) => err);
+    expect(error).toBeInstanceOf(SwapApiError);
+    expect(error).toMatchObject({
+      status: 409,
+      code: "state_changed",
+      message: "Changed elsewhere.",
+      detail: { revision: "r9", reloaded: true },
+    });
     expect(calls).toEqual(["pause", "ensureSaved", "reload", "resume"]);
   });
 
   it("on a clean screen, another tab's save is refused by the apply itself: reload, rethrow, resume", async () => {
-    const conflict = stateChanged();
-    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false, apply: vi.fn().mockRejectedValue(conflict) });
-    await expect(runSwapApply(deps, applyRequest)).rejects.toBe(conflict);
+    const { deps, calls } = flowDeps({ hasUnsavedEdits: () => false, apply: vi.fn().mockRejectedValue(stateChanged()) });
+    await expect(runSwapApply(deps, applyRequest)).rejects.toMatchObject({
+      code: "state_changed",
+      detail: { revision: "r9", reloaded: true },
+    });
     expect(deps.apply).toHaveBeenCalledWith({ ...applyRequest, expectedRevision: "r4" });
     expect(deps.ensureSaved).not.toHaveBeenCalled();
     expect(calls).toEqual(["pause", "flushSaves", "reload", "resume"]);
   });
 
-  it("keeps the refusal when the reload fails", async () => {
-    const conflict = stateChanged();
-    const { deps } = flowDeps({ apply: vi.fn().mockRejectedValue(conflict), reload: vi.fn().mockRejectedValue(new Error("offline")) });
-    await expect(runSwapApply(deps, applyRequest)).rejects.toBe(conflict);
+  it("keeps the refusal when the reload fails, marked as not reloaded", async () => {
+    const { deps } = flowDeps({
+      apply: vi.fn().mockRejectedValue(stateChanged()),
+      reload: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+    await expect(runSwapApply(deps, applyRequest)).rejects.toMatchObject({
+      code: "state_changed",
+      message: "Changed elsewhere.",
+      detail: { revision: "r9", reloaded: false },
+    });
     expect(deps.resume).toHaveBeenCalledOnce();
   });
 
@@ -200,9 +215,21 @@ describe("runSwapUndo", () => {
       status: 409,
       code: "state_changed",
       message: "The calendar changed in another tab. It was reloaded; undo again from History.",
-      detail: { revision: "r9" },
+      detail: { revision: "r9", reloaded: true },
     });
     expect(calls).toEqual(["pause", "flushSaves", "reload", "resume"]);
+  });
+
+  it("after a conflict whose reload fails asks to reload the page first", async () => {
+    const { deps } = flowDeps({
+      undo: vi.fn().mockRejectedValue(stateChanged()),
+      reload: vi.fn().mockRejectedValue(new Error("offline")),
+    });
+    await expect(runSwapUndo(deps, "swp-1")).rejects.toMatchObject({
+      code: "state_changed",
+      message: "The calendar changed in another tab. Reload the page, then undo again from History.",
+      detail: { revision: "r9", reloaded: false },
+    });
   });
 
   it("passes other refusals through unchanged", async () => {
