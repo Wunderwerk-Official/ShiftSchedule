@@ -376,7 +376,8 @@ export default function HelpView() {
             <li>
               When published, you get one link for{" "}
               <span className="font-medium">all people</span> and one link per person. Removing
-              a person from the plan ends their link.
+              a person from the plan ends their link; restoring a snapshot that brings them back
+              (for example the automatic backup) brings their link back too.
             </li>
           </ul>
           <p className="mt-2">

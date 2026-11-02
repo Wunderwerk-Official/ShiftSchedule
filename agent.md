@@ -369,7 +369,7 @@ Subscribable iCal feed (cryptic URL)
   - If empty, the feed is valid but has **zero** events.
 - Backend stores tokens in SQLite:
   - `ical_publications` (one token per user, all clinicians).
-  - `ical_clinician_publications` (one token per clinician per user; rows of people no longer in the plan are deleted on every state save since v1.78, so a reused id gets a new token).
+  - `ical_clinician_publications` (one token per clinician per user; since v1.78 the row of a person no longer in the plan is revoked (`revoked_at`) on every state save, so the link answers 404; a snapshot restore that brings the person back revives it, any other return under that id gets a new token).
   - `ical_formats(format TEXT PRIMARY KEY, since TEXT NOT NULL)` (v1.78): when this database first served the current event format (`'timed'`); part of the ETag and the Last-Modified floor, so subscribers refetch once after the switch. Not per account.
 - Public endpoint (no JWT): `GET /v1/ical/{token}.ics` (`HEAD` also answered since v1.64, with the same validators)
   - `Content-Disposition: inline; filename="shift-planner-all.ics"` or `filename="shift-planner-<transliterated person>.ics"` (v1.78; never the account name, no `filename*`); `X-WR-CALNAME` "Shift Planner – All people" / "Shift Planner – <person>"
@@ -3140,11 +3140,12 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   handler (`handleDownloadIcal`). Both iCal tabs name the time zone.
 - **Removed people.** A personal link whose person is no longer in the plan
   answers 404 (checked before the validators).
-  `publication._prune_clinician_publications` deletes the token rows of
+  `publication._prune_clinician_publications` revokes the token rows of
   people who are gone on every state save (one line in `state._save_state`)
   and in `_ensure_clinician_publications` (publish/status), so a reused
-  person id always gets a fresh token, and a snapshot restore that brings a
-  removed person back gives them a new link.
+  person id gets a fresh token (changed in the re-QA round: rows are revoked,
+  not deleted, and a snapshot restore revives the links of the people it
+  brings back; see below).
 - **Caching.**
   - Format switch: new table `ical_formats(format TEXT PRIMARY KEY, since
     TEXT NOT NULL)`. Schema setup in `backend/db.py` runs `INSERT OR IGNORE`
@@ -3582,6 +3583,78 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   status by its text; landscape print shows whole names where they fit, so
   the short-name test checks shortening in the portrait week.
 
+### Re-QA round (after the merge)
+
+A second QA run on the merged build re-checked all 47 original defects (all
+fixed) and the interplay of the packages. Its confirmed findings were fixed:
+
+- **Personal iCal links survive an undo.** `ical_clinician_publications` has
+  a new nullable column `revoked_at` (added on start in `db.py`). When a
+  person leaves the plan, `publication._prune_clinician_publications` sets
+  `revoked_at` instead of deleting the row; `_get_clinician_publication_by_token`
+  ignores revoked rows, so the link answers 404. A snapshot restore
+  (`snapshots.restore_snapshot`) calls `_revive_clinician_publications` for
+  the people it brings back, so undoing a Load copy (or restoring an older
+  snapshot) with the automatic backup keeps every subscribed calendar working.
+  Outside a restore, `_ensure_clinician_publications` gives a person whose row
+  is revoked a new token (the id may belong to someone else now). Pitfall:
+  never DELETE these rows on a state save again.
+- **Public readers clean stored data.** `get_public_web_week` (`web.py`) and
+  `download_ical` (`ical_routes.py`) run `_normalize_state` in memory (no
+  write-back), like GET /v1/state, so an entry with an impossible date stored
+  before v1.78 (e.g. a vacation "2026-01-00…") no longer hides a shift from
+  readers while the admin sees it. ETags still come from the stored blob.
+- **Unchanged calendars are not sent again.** `StateSaveQueue` remembers the
+  content (revision aside) of the last `save()` of its epoch
+  (`isQueued`, exported as `isStateSaveQueued`); cleared on `adopt`, on a
+  failed save and on `retry`. The page's autosave skips a calendar that is
+  already queued, so a refused import or holiday change in a stale tab no
+  longer reports lost edits the tab never made. Pitfall: compare against the
+  newest queued save, not the last confirmed one, or an edit undone while a
+  save is in flight would be lost.
+- **Names.** `teamTexts` skips the name without titles when it is another
+  person's bare name ("Dr. Anna Schmidt" keeps her title next to "Anna
+  Schmidt (OA)"). The section look (print, public page) wraps a last-level
+  label that still does not fit (`wrapLastLevel` in `AssignmentPill`) and
+  uses `justify-content: safe center`, so a long label never loses its first
+  letters ("ndreas S"). Clinic sheet names of several words wrap on screen
+  too (`[&>span]:whitespace-normal`), so "Andreas Schulz" and "Andrea Schulz"
+  are never both cut to "Andrea…". Search also maps ø = oe and å = aa.
+- **iCal.** The download no longer saves an empty file: `buildShiftCalendar`
+  returns `eventCount` and `unpublishedSkipped`; `handleDownloadIcal` returns
+  a notice ("Nothing was downloaded: the shifts in this range are in weeks
+  that are not published. Tick “Include unpublished weeks” …") that the
+  Export dialog shows (`role="status"`), cleared on open, on range change and
+  on the checkbox. File names also transliterate ø/æ/œ → oe/ae/oe, ł → l,
+  đ/ð → d, þ → th, ı → i (same table in `src/lib/ical.ts` and
+  `backend/ical.py`).
+- **Modals.** New `src/lib/useModalFocus.ts`: while a portal modal is open,
+  every other child of `<body>` is inert (already inert ones are left alone,
+  so modals nest), focus moves in and returns on close. The Export dialog is
+  a labelled `role="dialog"` with Escape (left to the overlay while a PDF
+  runs); the per-person buttons are named "Download iCal file for <name>" and
+  "Copy: subscription link for <name>". The calendar transition overlay is
+  now `src/components/schedule/CalendarTransitionOverlay.tsx`: a modal dialog
+  on a card (its text no longer runs into the Export dialog's fields), focus
+  on Cancel, Escape cancels.
+- **Calendar.** A hand-placed rest day is not moved onto a day the person is
+  on vacation (it would vanish but stay stored); a notice says "… is on
+  vacation on Tue 03.11. The rest day stays on Mon 02.11.". A Vacation pill
+  dropped on a day header, row label or gap keeps its day (both grids'
+  grid-level `onDrop`); vacation ends only outside the calendar. The month
+  picker (`DatePickerPopover unit="month"`) marks every row of the month.
+- **Texts.** Holiday changes fail with "The calendar could not be saved, so
+  the holidays were not changed." when a pending save of the tab failed (no
+  backup was tried); a refused holiday change no longer marks the valid date
+  field. The holiday dialog ends with "The current calendar is saved in
+  Calendar snapshots first; this automatic backup replaces the previous
+  one." "Exporting 1 of 1 week…". Snapshot names wrap (badge "Automatic" on
+  the date line, full name in the title). Read-only grids show no vacation
+  editing hint.
+- Stale e2e specs outside the CI list (`colband-explosion`, `app`,
+  `full-workflow`) were brought up to date (run inbox + Apply, current
+  dialogs, `minSlotsByRowId` in the fixture).
+
 ### Tests and deploy
 
 - Tests (TEST_PLAN.md §3.14): backend `test_ical.py`, `test_plan_timezone.py`,
@@ -3610,7 +3683,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   new optional env var `PDF_RENDER_TIMEOUT_SECONDS` (default 180, passed by
   the compose files); new DB table `ical_formats(format, since)`, created and
   filled on the first start, so every subscribed calendar refetches once
-  after the deploy and gets timed events. No other migration. On its first
+  after the deploy and gets timed events; new nullable column
+  `ical_clinician_publications.revoked_at` (added on start). No other
+  migration. On its first
   load a stored calendar loses entries with impossible dates and shifts of
   people no longer listed (re-saved once); a hand-placed Rest Day entry next
   to a shift on the same day now counts as a rule violation, so existing

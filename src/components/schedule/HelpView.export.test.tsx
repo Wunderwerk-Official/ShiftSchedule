@@ -12,7 +12,7 @@ it("describes timed iCal events in the plan's time zone (v1.78)", () => {
   expect(text).toContain("a shift across a daylight saving change lasts its real time: one hour longer in October, one hour shorter in March.");
   expect(text).not.toMatch(/11 or 13 hours/);
   expect(text).toContain("Downloads contain published weeks only; tick Include unpublished weeks to add drafts.");
-  expect(text).toContain("Removing a person from the plan ends their link.");
+  expect(text).toContain("Removing a person from the plan ends their link; restoring a snapshot that brings them back (for example the automatic backup) brings their link back too.");
   expect(text).not.toMatch(/all-day/i);
 });
 
