@@ -141,6 +141,11 @@ function AssignmentPillImpl({
   const lockInRow = !!onToggleLock && isLocked;
   const lockOnHover = !!onToggleLock && !isLocked;
   const [abbreviationLevel, setAbbreviationLevel] = useState(0);
+  // The section look: the last level still does not fit (a long team-unique
+  // label such as "Andreas S." next to "Andrea S." in the narrow portrait
+  // print columns). It then wraps onto a second line instead of being cut on
+  // both sides.
+  const [wrapLastLevel, setWrapLastLevel] = useState(false);
   // Bumped when the row width changes (person mode): measure again.
   const [layoutVersion, setLayoutVersion] = useState(0);
 
@@ -159,6 +164,7 @@ function AssignmentPillImpl({
 
     // Reset to full name first
     setAbbreviationLevel(0);
+    setWrapLastLevel(false);
     // lockInRow: locking a pill takes room for its lock, unlocking frees it.
   }, [name, levels, hasInitials, lockInRow]);
 
@@ -174,6 +180,7 @@ function AssignmentPillImpl({
       if (containerEl.clientWidth === lastWidth) return;
       lastWidth = containerEl.clientWidth;
       setAbbreviationLevel(0);
+      setWrapLastLevel(false);
       setLayoutVersion((version) => version + 1);
     });
     observer.observe(containerEl);
@@ -208,6 +215,8 @@ function AssignmentPillImpl({
       const isOverflowing = nameEl.scrollWidth > containerEl.clientWidth;
       if (isOverflowing && abbreviationLevel < NAME_LABEL_LEVELS - 1) {
         setAbbreviationLevel((prev) => prev + 1);
+      } else if (isOverflowing && abbreviationLevel === NAME_LABEL_LEVELS - 1) {
+        setWrapLastLevel(true);
       }
     });
 
@@ -328,7 +337,11 @@ function AssignmentPillImpl({
         <span
           ref={nameRef}
           className={cx(
-            personStyle ? "min-w-0 truncate" : "whitespace-nowrap text-center",
+            personStyle
+              ? "min-w-0 truncate"
+              : wrapLastLevel
+                ? "min-w-0 whitespace-normal break-words text-center leading-[12px]"
+                : "whitespace-nowrap text-center",
             initialsOnly && "sr-only",
           )}
         >

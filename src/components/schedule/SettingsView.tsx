@@ -131,6 +131,9 @@ export default function SettingsView({
   const [holidayError, setHolidayError] = useState<string | null>(null);
   const [holidayNotice, setHolidayNotice] = useState<string | null>(null);
   const [holidayInputError, setHolidayInputError] = useState<string | null>(null);
+  // Only a missing date or name marks the date field: a refused change (busy,
+  // failed backup) keeps a valid date unmarked.
+  const [holidayDateInvalid, setHolidayDateInvalid] = useState(false);
   const [holidayListError, setHolidayListError] = useState<string | null>(null);
   const [snapshotImportError, setSnapshotImportError] = useState<string | null>(null);
   const [snapshotImportResult, setSnapshotImportResult] =
@@ -993,9 +996,10 @@ export default function SettingsView({
                     onChange={(value) => {
                       setNewHolidayDate(value);
                       setHolidayInputError(null);
+                      setHolidayDateInvalid(false);
                     }}
                     placeholder="DD.MM.YYYY"
-                    hasError={!!holidayInputError}
+                    hasError={holidayDateInvalid}
                   />
                 </div>
                 <input
@@ -1017,9 +1021,11 @@ export default function SettingsView({
                       setHolidayInputError(
                         "Please select a date and enter a holiday name.",
                       );
+                      setHolidayDateInvalid(true);
                       return;
                     }
                     setHolidayInputError(null);
+                    setHolidayDateInvalid(false);
                     let added: boolean;
                     try {
                       added = await onAddHoliday({ dateISO: parsedDate, name: trimmedName });
@@ -1046,6 +1052,7 @@ export default function SettingsView({
                     setNewHolidayDate("");
                     setNewHolidayName("");
                     setHolidayInputError(null);
+                    setHolidayDateInvalid(false);
                   }}
                   className={buttonSecondary.base}
                 >

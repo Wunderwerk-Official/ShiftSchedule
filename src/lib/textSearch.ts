@@ -15,11 +15,13 @@ const LETTER_FOLDS: Record<string, string> = {
   "ð": "d",
   "þ": "th",
 };
-const GERMAN_UMLAUTS: Record<string, string> = { "ä": "ae", "ö": "oe", "ü": "ue" };
+// Usual transliterations: German umlauts and Scandinavian ø / å ("Sørensen" =
+// "Soerensen", "Ødegård" = "Oedegaard").
+const TRANSLITERATIONS: Record<string, string> = { "ä": "ae", "ö": "oe", "ü": "ue", "ø": "oe", "å": "aa" };
 
-function fold(text: string, germanUmlauts: boolean): string {
+function fold(text: string, transliterate: boolean): string {
   let folded = text.normalize("NFC").toLowerCase();
-  if (germanUmlauts) folded = folded.replace(/[äöü]/g, (letter) => GERMAN_UMLAUTS[letter]);
+  if (transliterate) folded = folded.replace(/[äöüøå]/g, (letter) => TRANSLITERATIONS[letter]);
   return folded
     .normalize("NFD")
     .replace(/\p{M}/gu, "")
@@ -36,8 +38,9 @@ export function normalizeForSearch(text: string): string {
 
 /**
  * Whether `text` contains every word of `query`, in any order, ignoring case
- * and accents. German umlauts also match their transliteration ("ü" = "ue"),
- * on either side. An empty query matches everything.
+ * and accents. German umlauts and Scandinavian ø / å also match their
+ * transliteration ("ü" = "ue", "ø" = "oe", "å" = "aa"), on either side. An
+ * empty query matches everything.
  */
 export function matchesSearch(text: string, query: string): boolean {
   const haystacks = [fold(text, false), fold(text, true)];

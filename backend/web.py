@@ -23,6 +23,7 @@ from .state import (
     _load_state_blob_and_updated_at,
     _normalize_week_start,
     _parse_date_input,
+    _normalize_state,
     _parse_iso_datetime,
     _parse_stored_state,
 )
@@ -200,7 +201,9 @@ def get_public_web_week(
     if _not_modified(if_none_match, if_modified_since, etag, last_modified):
         return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers=headers)
 
-    state = _parse_stored_state(state_payload)
+    # Cleaned like GET /v1/state (in memory only): entries with impossible
+    # dates stored before v1.78 must not hide shifts from readers.
+    state, _ = _normalize_state(_parse_stored_state(state_payload))
     published_weeks = set(state.publishedWeekStartISOs or [])
     if week_start_iso not in published_weeks:
         return Response(

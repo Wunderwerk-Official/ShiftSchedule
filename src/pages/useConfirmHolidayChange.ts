@@ -1,6 +1,10 @@
 import { createImportBackup, savedStateRevision, type AppState, type Assignment } from "../api/client";
 import { useConfirm } from "../components/ui/ConfirmDialog";
-import { HOLIDAY_BACKUP_FAILED_MESSAGE, holidayChangeConfirmation } from "../lib/holidayChange";
+import {
+  HOLIDAY_BACKUP_FAILED_MESSAGE,
+  HOLIDAY_SAVE_FAILED_MESSAGE,
+  holidayChangeConfirmation,
+} from "../lib/holidayChange";
 
 /**
  * Asks before a holiday change removes `dropped`, the shifts that no longer
@@ -25,11 +29,17 @@ export function useConfirmHolidayChange() {
  * elsewhere is refused (409) and the previous backup is kept.
  */
 export async function backupBeforeHolidayChange(current: AppState): Promise<void> {
+  const detailOf = (error: unknown) => (error instanceof Error && error.message ? ` (${error.message})` : "");
+  let expectedRevision: string | null | undefined;
   try {
-    const expectedRevision = await savedStateRevision();
+    // Waits for this tab's pending saves; throws when one of them failed.
+    expectedRevision = await savedStateRevision();
+  } catch (error) {
+    throw new Error(`${HOLIDAY_SAVE_FAILED_MESSAGE}${detailOf(error)}`);
+  }
+  try {
     await createImportBackup(current, { reason: "holiday_change", expectedRevision });
   } catch (error) {
-    const detail = error instanceof Error && error.message ? ` (${error.message})` : "";
-    throw new Error(`${HOLIDAY_BACKUP_FAILED_MESSAGE}${detail}`);
+    throw new Error(`${HOLIDAY_BACKUP_FAILED_MESSAGE}${detailOf(error)}`);
   }
 }

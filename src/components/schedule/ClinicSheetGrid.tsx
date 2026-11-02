@@ -335,9 +335,11 @@ export default function ClinicSheetGrid({
         className={cx(
           // Inline-size containment: a long name never widens the day
           // columns (they would all grow to it, and the printed sheet shrink
-          // to fit); it is cut off instead, the full name in the title. A
-          // PDF has no title: there a double name wraps at its hyphen.
-          "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px] [contain:inline-size] print:[&>span]:whitespace-normal",
+          // to fit). A name of several words wraps at a space or hyphen
+          // (screen and PDF), so the words that tell two people apart
+          // ("Andreas Schulz" / "Andrea Schulz") stay visible; only a single
+          // word that is still too wide is cut, the full name in the title.
+          "relative flex min-h-[24px] min-w-0 items-center px-0.5 text-[11px] leading-[24px] [contain:inline-size] [&>span]:whitespace-normal [&>span]:py-[3px] [&>span]:leading-[12px]",
           // Touch screens always show an unlocked name's lock: keep its room.
           hasLock && !isLocked && "[@media(hover:none)]:pr-5",
           textClass,

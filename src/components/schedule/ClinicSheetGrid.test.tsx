@@ -139,8 +139,10 @@ describe("ClinicSheetGrid", () => {
     expect(name.className).toContain("[contain:inline-size]");
     expect(name.querySelector(".truncate")).not.toBeNull();
     expect(name.getAttribute("title")).toBe("Anna Bergmann");
-    // A PDF has no title: a double name may wrap at its hyphen there.
-    expect(name.className).toContain("print:[&>span]:whitespace-normal");
+    // A name of several words wraps (screen and PDF), so "Andreas Schulz" and
+    // "Andrea Schulz" are never both cut to "Andrea…" (re-QA).
+    expect(name.className).toContain("[&>span]:whitespace-normal");
+    expect(name.className).not.toContain("print:[&>span]:whitespace-normal");
   });
 
   it("keeps day columns at a fixed width an ordinary surname fits", () => {

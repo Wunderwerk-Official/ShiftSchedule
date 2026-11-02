@@ -25,7 +25,13 @@ from .publication import (
     _token_exists,
     _ensure_clinician_publications,
 )
-from .state import _load_state, _load_state_blob_and_updated_at, _parse_iso_datetime
+from .state import (
+    _load_state,
+    _load_state_blob_and_updated_at,
+    _normalize_state,
+    _parse_iso_datetime,
+    _parse_stored_state,
+)
 
 router = APIRouter()
 
@@ -172,6 +178,9 @@ def download_ical(
     if _not_modified(if_none_match, if_modified_since, etag, last_modified):
         return Response(status_code=304, headers=headers)
 
+    # Cleaned like GET /v1/state (in memory only): entries with impossible
+    # dates stored before v1.78 must not hide shifts from subscribers.
+    app_state = _normalize_state(_parse_stored_state(app_state))[0].model_dump()
     ics = generate_ics(
         app_state,
         app_state.get("publishedWeekStartISOs") or [],

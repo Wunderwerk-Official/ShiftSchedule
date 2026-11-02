@@ -66,6 +66,14 @@ describe("matchesSearch", () => {
     expect(matchesSearch("Hans Mueller", "muell")).toBe(true);
   });
 
+  it("matches the Scandinavian transliterations of ø and å (re-QA)", () => {
+    expect(matchesSearch("Lars Sørensen", "soerensen")).toBe(true);
+    expect(matchesSearch("Lars Sørensen", "sorensen")).toBe(true);
+    expect(matchesSearch("Björn Ødegård", "oedegaard")).toBe(true);
+    expect(matchesSearch("Björn Ødegård", "odegard")).toBe(true);
+    expect(matchesSearch("Lars Soerensen", "sørensen")).toBe(true);
+  });
+
   it("matches everything for an empty or blank query and nothing unrelated", () => {
     expect(find("")).toHaveLength(roster.length);
     expect(find("   ")).toHaveLength(roster.length);

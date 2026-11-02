@@ -278,6 +278,8 @@ it("adds a holiday picked in the date picker", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(screen.getByText("Please select a date and enter a holiday name.")).toBeVisible();
   expect(props.onAddHoliday).not.toHaveBeenCalled();
+  // A missing date marks the date field.
+  expect(screen.getByRole("button", { name: "DD.MM.YYYY" }).className).toContain("border-rose-400");
 
   fireEvent.click(screen.getByRole("button", { name: "DD.MM.YYYY" }));
   const now = new Date();
@@ -306,6 +308,9 @@ it("keeps the new holiday's form when adding it is cancelled or fails", async ()
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(await screen.findByText("The backup could not be saved, so the holidays were not changed.")).toBeVisible();
   expect(screen.getByPlaceholderText("Holiday name")).toHaveValue("Clinic day");
+  // The date is valid: a refused change does not mark the date field (re-QA).
+  const datePicker = screen.getAllByRole("button").find((button) => /\d{2}\.\d{2}\.\d{4}/.test(button.textContent ?? ""));
+  expect(datePicker?.className).not.toContain("border-rose-400");
 });
 
 it("shows why a holiday could not be removed", async () => {

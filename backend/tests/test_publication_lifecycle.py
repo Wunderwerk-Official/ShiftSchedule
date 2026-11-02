@@ -303,3 +303,34 @@ def test_status_adds_link_for_new_clinician_and_keeps_existing_tokens():
     assert by_id[first.clinicians[0].clinicianId] == first.clinicians[0]
     assert "clin-new" in by_id
     assert ical_token(by_id["clin-new"]) not in {ical_token(first.all), ical_token(first.clinicians[0])}
+
+
+def test_public_readers_drop_stored_entries_with_impossible_dates():
+    """A vacation stored with an impossible date before v1.78 hid a real shift
+    from the public week and the iCal feeds (string comparison), while the
+    admin calendar (GET /v1/state cleans it) showed the shift."""
+    import json
+
+    _, web_status, ical_status = seed("Dr. A")
+    with closing(db._get_connection()) as conn:
+        blob = json.loads(conn.execute("SELECT data FROM app_state WHERE id = 'same'").fetchone()[0])
+        clinician_id = blob["assignments"][0]["clinicianId"]
+        person = next(c for c in blob["clinicians"] if c["id"] == clinician_id)
+        person["vacations"] = [{"id": "bad", "startISO": "2026-01-00", "endISO": "2026-01-10"}]
+        blob["holidays"].append({"dateISO": "2026-02-30", "name": "Broken"})
+        conn.execute("UPDATE app_state SET data = ? WHERE id = 'same'", (json.dumps(blob),))
+        conn.commit()
+
+    client = TestClient(app)
+    week = client.get(f"/v1/web/{web_status.token}/week?start={MON}").json()
+    assert [a["id"] for a in week["assignments"]] == ["saved"]
+    assert all(h["name"] != "Broken" for h in week["holidays"])
+    assert all(not c["vacations"] for c in week["clinicians"])
+    for link in (ical_status.all, ical_status.clinicians[0]):
+        feed = client.get(f"/v1/ical/{ical_token(link)}.ics")
+        assert feed.status_code == 200
+        assert "UID:saved@shiftschedule" in feed.text
+    # Nothing was written back by the readers.
+    with closing(db._get_connection()) as conn:
+        stored = json.loads(conn.execute("SELECT data FROM app_state WHERE id = 'same'").fetchone()[0])
+    assert stored == blob

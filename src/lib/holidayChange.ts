@@ -7,6 +7,10 @@ import { isProtectedAssignment } from "./assignmentPolicy";
 export const HOLIDAY_BACKUP_FAILED_MESSAGE =
   "The backup could not be saved, so the holidays were not changed.";
 
+/** A save of this tab that was still pending failed: no backup was attempted. */
+export const HOLIDAY_SAVE_FAILED_MESSAGE =
+  "The calendar could not be saved, so the holidays were not changed.";
+
 /** Refuses a holiday change while another one, a restore, an import or an applied plan is in progress. */
 export const HOLIDAY_CHANGE_BUSY_MESSAGE =
   "Another change to the calendar is in progress, so the holidays were not changed. Try again when it is done.";

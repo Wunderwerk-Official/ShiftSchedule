@@ -226,6 +226,23 @@ describe("buildNameLabels (team-wide)", () => {
     expect(schmidtke.levels[1]).toBe("Anna Schmidtke");
   });
 
+  it("keeps a title or degree when the name without it reads as another person (re-QA)", () => {
+    // Short labels drop notes in parentheses, so a bare "Anna Schmidt" would
+    // stand for "Anna Schmidt (OA)" too.
+    for (const titled of ["Dr. Anna Schmidt", "Anna Schmidt, MPH"]) {
+      const [withTitle, withNote] = labelsOf([titled, "Anna Schmidt (OA)"]);
+      expect(new Set(withTitle.levels.slice(1))).toEqual(new Set([titled]));
+      expect(withTitle.surname).toBe(titled);
+      expect(new Set(withNote.levels.slice(1))).toEqual(new Set(["Anna Schmidt (OA)"]));
+    }
+    const [prof] = labelsOf(["Prof. Dr. Jan Weber", "Jan Weber (AA)"]);
+    expect(prof.levels[4]).toBe("Prof. Dr. Jan Weber");
+    // Identical names still keep the full name.
+    const [first, second] = labelsOf(["Anna Schmidt", "Anna Schmidt"]);
+    expect(first.levels[4]).toBe("Anna Schmidt");
+    expect(second.levels[4]).toBe("Anna Schmidt");
+  });
+
   it("only lengthens the labels that collide", () => {
     const [anna, andreas, andrea, claire] = labelsOf(["Anna Schmidt", "Andreas Schulz", "Schulz, Andrea", "Claire Huber"]);
     expect(anna.levels[3]).toBe("A. Schm.");

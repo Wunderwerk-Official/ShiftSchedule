@@ -375,9 +375,18 @@ function uniqueTexts(lists: string[][]): string[] {
   }
 }
 
+// The bare name: given and family names without titles, nicknames or notes.
+// Short labels drop notes, so "Anna Schmidt" reads as "Anna Schmidt (OA)" too.
+function bareName(name: string): string {
+  const { given, family } = parsePersonName(name);
+  return fold([...given, family].filter(Boolean).join(" "));
+}
+
 // Each person's first candidate that stands for nobody else in the team:
 // "Mehmet Yi." could be Mehmet Yılmaz too, so Mehmet Yildirim reads "Mehmet
-// Yild.". Without one, the name without titles, then the name as entered.
+// Yild.". Without one, the name without titles, then the name as entered. The
+// name without titles is skipped while it is another person's bare name:
+// "Dr. Anna Schmidt" keeps her title next to "Anna Schmidt (OA)".
 function teamTexts(style: LabelStyle, names: readonly string[], folded: readonly FoldedName[]): string[] {
   const textsOf = (name: string, index: number): string[] => {
     // The people the first candidate could stand for: later ones only narrow it.
@@ -386,7 +395,11 @@ function teamTexts(style: LabelStyle, names: readonly string[], folded: readonly
       rivals ??= folded.filter((other, otherIndex) => otherIndex !== index && candidate.fits(other));
       if (!rivals.some(candidate.fits)) return [candidate.text];
     }
-    return [...new Set([displayName(name), name.trim()])];
+    const plain = displayName(name);
+    const readsAsOther = names.some(
+      (other, otherIndex) => otherIndex !== index && bareName(other) === fold(plain),
+    );
+    return [...new Set(readsAsOther ? [name.trim()] : [plain, name.trim()])];
   };
   return uniqueTexts(names.map(textsOf));
 }

@@ -79,7 +79,7 @@ describe("backupBeforeHolidayChange", () => {
   it("refuses the change when a queued save of this tab failed", async () => {
     vi.mocked(savedStateRevision).mockRejectedValue(new Error("Failed to save state: 500"));
     await expect(backupBeforeHolidayChange(current)).rejects.toThrow(
-      "The backup could not be saved, so the holidays were not changed. (Failed to save state: 500)",
+      "The calendar could not be saved, so the holidays were not changed. (Failed to save state: 500)",
     );
     expect(createImportBackup).not.toHaveBeenCalled();
   });

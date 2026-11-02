@@ -1,4 +1,4 @@
-import { render, within } from "@testing-library/react";
+import { render, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AssignmentPill from "./AssignmentPill";
 import { buildNameLabels, type PersonNameLabels } from "../../lib/personName";
@@ -127,5 +127,55 @@ describe("AssignmentPill with person colors", () => {
     // 66 - 24 = 42 px: "Jörg M." (42 px) fits; once "Müller, D." (QA).
     const name = renderPerson("Müller, Jörg; Dr.", 66);
     expect(name.textContent).toBe("Jörg M.");
+  });
+});
+
+describe("AssignmentPill in the section look (print, public page)", () => {
+  // The section look steps one level per frame while the name overflows its
+  // row: faked here as 6 px per character in a 38 px row (portrait print).
+  const undo: Array<() => void> = [];
+  beforeAll(() => {
+    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth")!;
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains("justify-center")) return 38;
+        return client.get!.call(this);
+      },
+    });
+    const scroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollWidth");
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.tagName === "SPAN") return Array.from(this.textContent ?? "").length * 6;
+        return 0;
+      },
+    });
+    undo.push(() => {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", client);
+      if (scroll) Object.defineProperty(HTMLElement.prototype, "scrollWidth", scroll);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+    });
+  });
+  afterAll(() => undo.forEach((step) => step()));
+
+  it("wraps a last-level label that still does not fit instead of cutting it on both sides (re-QA)", async () => {
+    const labels = buildNameLabels([
+      { id: "a", name: "Andreas Schulz" },
+      { id: "b", name: "Schulz, Andrea" },
+    ]).get("a")!;
+    const { container } = render(<AssignmentPill name="Andreas Schulz" labels={labels} />);
+    const name = () => container.querySelector("span.text-center") as HTMLElement;
+    await waitFor(() => expect(name().className).toContain("whitespace-normal"));
+    expect(name().textContent).toBe(labels.levels[4]);
+    expect(name().className).not.toContain("whitespace-nowrap");
+  });
+
+  it("keeps a label that fits on one line", async () => {
+    const { container } = render(<AssignmentPill name="Ida Ek" />);
+    const name = container.querySelector("span.text-center") as HTMLElement;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(name.textContent).toBe("Ida Ek");
+    expect(name.className).toContain("whitespace-nowrap");
   });
 });
