@@ -17,11 +17,16 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - AI planning drafts with explicit review and apply; CP-SAT and heuristic solvers also remain available through the API
 - Rule checks and an automatic backup before applying; incomplete drafts need confirmation
 - Revision-checked saving prevents older browser edits from overwriting newer calendar changes
-- PDF export (A4 landscape, or the compact week on A4 portrait) and public iCal subscription feeds (published weeks only)
+- PDF export: fast vector PDFs, A4 landscape (times side by side, whole names) or the compact week on A4 portrait, one sheet per week from Monday to Sunday, unpublished weeks marked as drafts; a running export can be cancelled
+- iCal: subscription feeds and downloads carry shift times (overnight shifts end the next morning) in the plan's time zone, which follows the holiday country; published weeks by default (a download can include unpublished weeks); a person's link ends when the person is removed
+- Public web link (read-only, published weeks): the owner's Times layout on desktop, one day at a time on phones, and the same rest days around on-call duty as the team plan
+- Short names on pills are unique within the team (also in PDFs and on the public page); person search ignores case, accents and word order
+- Shifts file export and import (checked before anything is replaced) and calendar snapshots, with an automatic backup before a restore, an import, a holiday change that removes shifts, or loading a copy of another account
+- The viewed week stays in the page address, so a reload or a shared link opens it
 
 ## Tech Stack
 - Frontend: React 18, TypeScript, Vite, Tailwind CSS
-- Backend: FastAPI, OR-Tools, SQLite (calendar state as one JSON row per account in `app_state`; users, publications, solver runs, run feedback, snapshots, change log, per-user preferences and agent settings/spend in their own tables)
+- Backend: FastAPI, OR-Tools, Playwright (server-side PDF), tzdata (time zones for iCal shift times), SQLite (calendar state as one JSON row per account in `app_state`; users, publications, the iCal event format marker, solver runs, run feedback, snapshots, change log, per-user preferences and agent settings/spend in their own tables)
 
 ## Local Development (Step-by-step)
 Prereqs:
@@ -40,6 +45,10 @@ export JWT_SECRET=<long-random-string>   # e.g. openssl rand -base64 48
 On first startup, the admin user is created if it doesn't already exist.
 If the admin already exists, the password is not overwritten unless you set
 `ADMIN_PASSWORD_RESET=true` to force a reset for local dev.
+
+Optional: `PDF_RENDER_TIMEOUT_SECONDS` (default 180) limits one server-side
+PDF render; a slower render is stopped and answers 504. See
+[DEPLOY.md](DEPLOY.md) for the server `.env`.
 
 1) Install backend deps (add `-r backend/requirements-dev.txt` for pytest)
 ```bash

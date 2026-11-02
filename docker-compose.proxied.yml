@@ -25,6 +25,8 @@ services:
       PUBLIC_BASE_URL: https://${DOMAIN}/api
       # Internal URL for PDF rendering (Playwright inside the backend).
       FRONTEND_BASE_URL: ${FRONTEND_INTERNAL_URL:-http://frontend}
+      # Limit of one PDF render in seconds (504 after it).
+      PDF_RENDER_TIMEOUT_SECONDS: ${PDF_RENDER_TIMEOUT_SECONDS:-180}
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       ADMIN_PASSWORD_RESET: ${ADMIN_PASSWORD_RESET:-}

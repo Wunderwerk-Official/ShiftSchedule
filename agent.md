@@ -42,6 +42,7 @@ Backend
 - OR-Tools CP-SAT
 - SQLite persistence (per-user JSON state rows)
 - Auth: python-jose (JWT), passlib (password hashing)
+- tzdata (v1.78: time zone data for the plan's time zone in iCal feeds)
 
 ---
 
@@ -54,13 +55,14 @@ Top bar
 - Responsive: stacks on small screens; avatar row moves below the main controls.
 
 Schedule card
-- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted); while this user's calendar is still loading, My plan shows `CalendarPlaceholder` instead (the team plan never waits); since v1.77 that card keeps the "Team | My plan" switch, so the way back to the team plan never waits for loading. The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
+- Since v1.64 the card header has an extra first row (`TeamPlanHeader`, classic grid and clinic sheet): "Team | My plan" switch on the left, "Times" on the right (classic grid only, since v1.65). Since v1.74 there is no start-page star and no saved "Views" menu: the calendar always opens in "Team" (page state, `usePlanScope`). The "Color by" switch is gone since v1.69: the classic team grid always colors people. In scope "My plan" the card shows `MyPlanView` and the planning panels below the calendar are hidden (kept mounted). Until this user's calendar has loaded, both scopes (and Settings) show `CalendarPlaceholder` instead, with no badges, Publish switch or planning panels (since v1.78; before, the team plan showed the demo calendar meanwhile); the card keeps the "Team | My plan" switch (v1.77) and offers "Reload saved calendar" when loading fails (`calendarReady`, see the v1.78 section). The person chevron in the My-plan header ends with "Not <name>? Change who you are" while the account is linked (v1.74). See the v1.64 and v1.74 sections at the end.
 - Since v1.65 the classic grid has two time layouts ("Times: Side by side | Stacked", per-user preference `teamTimeLayout`, default Stacked): Side by side gives every col band of a day its own column (the pre-v1.65 look); Stacked shows one column per day and the day's times as rows below each other, with the row band name and the time in the label column, so the whole week fits on screen. Since v1.66 stacked cells hold only the people (no section block or name; labels and cells carry the section color) and the PDF export offers this compact week on A4 portrait. Since v1.71 the team grid's label column carries the location color instead (print/public keep the section color). Since v1.73 a cell whose section differs from its lane's names it in a small tag (before a differing time). See the v1.65, v1.66, v1.71 and v1.73 sections at the end.
 - Week navigator lives inside the card header; range label uses DD.MM.YYYY (or DD.MM.YYYY – DD.MM.YYYY); Today button sits next to the arrows.
-- **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included. Click-outside detection closes the picker.
-- On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them).
-- Today is shown by circling the day number in the header.
-- Week starts Monday; weekend/holiday styling is header-only: weekend header light gray, holiday header light lavender; holiday name is a tiny purple label under the day.
+- **Week picker**: clicking on the date range label opens a custom calendar popover (not the native browser picker; `DatePickerPopover`, a non-modal `role="dialog"` named after its hint since v1.78). The calendar displays weeks as selectable rows—hovering highlights the entire week, and clicking any day navigates to the Monday of that week. A small calendar icon appears next to the date label. "Select a week" hint text and a "This week" button are included; the clinic sheet's `MonthNavigator` uses it with `unit="month"` ("Select a month" / "This month"). Click-outside detection closes the picker.
+- The viewed period is part of the address since v1.78 (`?week=YYYY-MM-DD`, `src/pages/weekParam.ts`): the Monday of the team week, the day in the phone day view and in My plan, the first of the month in the clinic sheet; the current period writes no parameter, so the bare address always opens the current week. See the v1.78 section.
+- On mobile, the schedule renders a single day with a day navigator (label between arrows, Today next to them; `src/components/schedule/MobileDayNavigator.tsx`, label "Mon 02.11.2026", shared with the public page since v1.78).
+- Today is shown by circling the day number in the header (screen only: printouts never mark today since v1.78).
+- Week starts Monday; weekend/holiday styling is header-only: weekend header light gray, holiday header light lavender (`#F3E8FF`; `#2E1F47` in dark mode since v1.78); holiday name is a tiny purple label under the day (clipped; the header's tooltip holds the full name).
 - Mobile: grid uses touch scrolling and slightly tighter paddings.
 - Calendar grid should not scroll vertically; it expands and the page scrolls. Horizontal scrolling remains.
 - Automated shift planning and Export are separate panels in the schedule view; Export panel opens the same modal as before.
@@ -68,7 +70,7 @@ Schedule card
 - Control row between section rows and pool rows with icon buttons:
   - Only necessary, Distribute all, Reset to free (week and per day), with tooltips.
 - Week publication uses a **Publish** toggle pill in the header, placed to the right of the Open Slots badge.
-- Rule violations badge sits next to Open Slots only when violations exist; click to see details and highlight the related pills (red).
+- Rule violations badge sits next to Open Slots only when violations exist; click to see details and highlight the related pills (red). Since v1.78 badges read "{n} open slot(s)", "{n} rule violation(s)", "{n} split shift(s)", and the on-call rest rule also checks the days just outside the week (listed in both weeks; the list stays on the week shown).
 - Split shifts badge: shows count of non-consecutive shifts (gaps between assignments for the same clinician on the same day). Hover badge to highlight all split shift pills; hover/click individual items in the popover to highlight specific pills with connection lines (same red styling as rule violations).
 
 Rows
@@ -83,14 +85,14 @@ Rows
 
 Cells
 - Each active class cell shows a small panel with the section name and time at the top; open slots and assignments render inside that panel.
-- Multiple clinician pills per cell, sorted by surname.
+- Multiple clinician pills per cell, sorted by the parsed family name (`sortAssignmentsBySurname` with `parsePersonName`, v1.78; before, the last word of the name).
 - Empty slots shown as gray dashed pills based on the template required count per day type (fallback to legacy min slots); plus/minus badges are gray; label is not bold.
-- Drag and drop is same-day only. A drop on another day, on an inactive cell or on a slot whose time clashes with another shift of the person REMOVES the assignment (no snap-back; known limitation), a drop on its own cell is a no-op, and a malformed drag payload (e.g. a cross-tab drop) is ignored (`readDragPayload` in `src/lib/clinicianSlotOptions.ts`, shared by both grids).
+- Drag and drop is same-day only, except that a hand-placed Rest Day entry dropped on another day's Rest Day cell moves there (v1.78, `onMoveRestDay`). A drop on another day, on an inactive cell or on a slot whose time clashes with another shift of the person REMOVES the assignment (no snap-back; known limitation), a drop on its own cell is a no-op, and a malformed drag payload (e.g. a cross-tab drop) is ignored (`readDragPayload` in `src/lib/clinicianSlotOptions.ts`, shared by both grids).
 - Drag/drop does not block rule-violating placements (same-day location mix, multiple shifts); solver enforces rules but manual overrides are allowed and shown in red. Overlap within the same day is blocked by drag/drop (uses time intervals).
-- Drag-to-remove: dragging a clinician pill outside the grid removes the assignment.
-- Dragging into or out of Vacation updates the clinician vacation ranges.
-- Clinician Picker: clicking an open slot shows a popover listing everyone (search field; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
-- While dragging, the other days are greyed out and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
+- Drag-to-remove: dragging a clinician pill outside the grid removes the assignment. Since v1.78 this also removes a hand-placed Rest Day entry; an automatic on-call rest pill (no stored entry) stays and a notice explains why ("Automatic rest day after on-call duty on Tue 03.11. …").
+- Dragging into or out of Vacation updates the clinician vacation ranges. Since v1.78 a vacation day ends only when its pill leaves the calendar (or goes into a free slot of the same day); a Vacation pill dropped on another day's cell or a slot that cannot take it changes nothing.
+- Clinician Picker: clicking an open slot shows a popover listing everyone (search field, ignoring case, accents and word order since v1.78 — `matchesSearch` in `src/lib/textSearch.ts`; people without any warning first, then by name); warnings: "Already in slot", "Not qualified", "On vacation", "Rest day", "Time conflict", "Different location" (`ClinicianPickerPopover.tsx`).
+- While dragging, the other days are greyed out (except their Rest Day cells while a Rest Day pill is dragged, v1.78) and same-day cells the clinician is qualified for and free for get an outline (`showQualified` in `ScheduleGrid.tsx`). Moving a person out of a slot that has no valid time (e.g. 20:00–08:00 without +1 day) to another slot on the same day is no longer blocked by that slot itself (v1.64).
 - Ineligible manual assignment is allowed, with a yellow warning icon.
 - No eligible sections shows a red warning icon.
 - Warning tooltips show only when hovering the icon itself.
@@ -101,13 +103,13 @@ Clinic sheet layout (Klinik-Monatslayout)
 - Faithful clone of a clinic's Excel "Arbeitsplan": the whole month as horizontal day blocks, Arial plain-text surnames (no pills), gray weekday headers (#C0C0C0), fully cyan weekend/holiday day blocks (#00CCFF), tinted row labels, medium/hair borders with spacer rows between location sections, absence pools at the bottom.
 - Each day block is 6 name columns: one colBand spans all 6; two colBands split 4+2 (assistants left, senior/OA area right, tinted with the slot's section color — Excel pink #FF99CC fallback); >2 colBands split evenly. Structure comes from the template (rowBands/colBands), not code — see `src/lib/clinicSheet.ts` (`buildMonthDays`, `buildClinicSheetModel`).
 - Renderer: `src/components/schedule/ClinicSheetGrid.tsx` + `MonthNavigator`; fully editable (click cell → clinician picker, same-day drag, drop-outside removes) via the shared logic in `src/lib/clinicianSlotOptions.ts` and the page's `handleAddAssignment`/`handleRemoveAssignment`/`handleMoveWithinDay`.
-- Month-scoped `buildRenderedAssignmentMap` (do NOT reuse the week-scoped map — pool synthesis is day-bound). Desktop only (mobile keeps the daily view); week-scoped badges and the Publish toggle are hidden in sheet mode; print/PDF/public pages always use the classic grid. The sheet stays paper-light in dark mode by design.
+- Month-scoped `buildRenderedAssignmentMap` (do NOT reuse the week-scoped map — pool synthesis is day-bound). Desktop only (mobile keeps the daily view); week-scoped badges and the Publish toggle are hidden in sheet mode; print/PDF and public pages render the sheet as well (the public page falls back to its one-day view on phones, v1.78). The sheet stays paper-light in dark mode by design.
 
 Pills
 - Team grid (since v1.69 always): person colors — fill, strong border, 20 px initials circle; the linked person ("That's me") gets an outline. Since v1.71 the palette has 20 colors in two tones (light fill + dark text, or saturated fill + white text), ordered so the first 12 fills differ by ≥ 15 ΔE00 (all 20 by ≥ 9). Print/public pages keep the section look (blue pill).
 - One lock per shift (v1.69, `AssignmentLockButton` inside `AssignmentPill`): locked = `isProtectedAssignment` (hand-placed/legacy, or a planner entry locked later). A locked pill shows its closed lock in the row (same 24 px height as every pill); an unlocked pill shows the open lock only on hover/focus at its right end, with the name fading out under it (`.pill-lock-reveal` / `.pill-lock-fade` in index.css, the fade only on devices that hover). Touch screens always show the open lock and keep room for it (`[@media(hover:none)]:pr-[22px]`), so nothing fades there. Clicking toggles via `toggleAssignmentLock`. Pools and read-only pages show no lock; a shift moved into the Rest Day row becomes a plain hand-made entry (its lock is dropped).
 - Compact blue pill, normal font weight; eligible hover highlight uses green background + green border (no extra thickness).
-- Name abbreviation: if a clinician's name doesn't fit, it is progressively abbreviated ("First Last" → "F. Last" → "F. L." → "FL"); full name shown on hover. Disambiguates when siblings would collide (e.g., "Da. Truhn" vs "D. Turner").
+- Name abbreviation (v1.78): names are parsed once (`parsePersonName` in `src/lib/personName.ts`: "Last, First", titles, particles), and `buildNameLabels(clinicians)` gives every person team-unique short forms ("First L." → "F. Last" → "F. L." → "FL", each fitting exactly one person of the team, e.g. "Mehmet Yild." / "Mehmet Yılm."), passed as `nameLabels` to `ScheduleGrid` / `ClinicSheetGrid` and as `labels` to `AssignmentPill`; full name shown on hover. Person pills cut "First L." with an ellipsis only while it stays distinct, else they show the unique "F. L."; the section look steps through the levels. The old per-cell disambiguation (`siblingNames`) is gone. See the v1.78 section.
 - Warning icons are small circular badges at top-right of the pill.
 - Drag preview uses the normal pill style (highlight removed).
 - Assignment pills show only the name; time is shown in the section block header or the column header (when consistent).
@@ -213,10 +215,11 @@ Holidays
 - Add holidays manually (since v1.74 saved with `source: "manual"`, shown with a small "added by hand" marker); list shows DD.MM.YYYY dates (the add panel uses the DD.MM.YYYY date picker; `parseHolidayDate` accepts only that form). `Holiday.source` is omitted from the stored JSON when unset (wrap `model_serializer`, like `holidayRegion` and `Location.color`) and is not a planning input.
 - Add Holiday button is a dashed, full-width button below the list and opens an inline add panel.
 - Holidays behave like weekends in solver + min slot logic and show in the calendar header.
+- A holiday change that would remove planned shifts asks first (v1.78): Add, Remove and Load go through `changeHolidays`; when shifts on the affected days no longer fit the day's plan (`findAssignmentsDroppedByHolidayChange`), a dialog lists the count, the locked ones and the days ("Remove N shifts" / Cancel), and confirming saves "Auto-backup before holiday change" first. One holiday change runs at a time. See the v1.78 section.
 
 Shifts file (formerly "Schedule snapshot")
-- "Download shifts file" exports every week's shifts as JSON (file name still `schedule-snapshot-*.json`); "Import shifts file…" asks "Replace all shifts with this file?" (confirm "Replace shifts") and replaces all shifts, locked ones too. Before saving, the calendar as shown is saved via `POST /v1/state/snapshots/import-backup` as "Auto-backup before shifts file import" (`saveShiftsFileImport` in `src/lib/shiftsFileImport.ts`); if that fails, nothing is imported ("The backup could not be saved, so nothing was imported."). The auto-backup slot is shared with the backups before a restore and before applying a plan: the newest wins.
-- Result line: "Imported N shifts. Skipped X shift(s) of people no longer listed and Y in slots that no longer exist. A backup of the previous calendar is in Calendar snapshots: “Auto-backup before shifts file import”." (both skipped numbers count shifts).
+- "Download shifts file" exports every week's shifts as JSON, named `shifts-YYYY-MM-DD.json` with the local date since v1.78 (`shiftsFileName`; old `schedule-snapshot-*.json` files still import, the name is ignored). "Import shifts file…" checks the file before asking (v1.78, `readShiftsFile` / `prepareShiftsImport` in `src/lib/shiftsFileImport.ts` via the SettingsView prop `onPrepareShiftsFileImport`): over 10 MB or more than 100,000 entries is refused, invalid entries are skipped and counted, duplicates kept once, and a file with no shifts for this calendar is refused ("This file contains no shifts for this calendar. Nothing was changed."). Only then it asks "Replace all N current shifts with M shifts from “<file>”?" (confirm "Replace shifts") and replaces all shifts, locked ones too. Before saving, the calendar as shown is saved via `POST /v1/state/snapshots/import-backup` as "Auto-backup before shifts file import" (`saveShiftsFileImport`; since v1.78 with this tab's `expectedRevision`, so a stale tab gets 409 and imports nothing); if that fails, nothing is imported ("The backup could not be saved, so nothing was imported."). The auto-backup slot is shared with the backups before a restore, before applying a plan, before a holiday change that removes shifts and before Load copy: the newest wins.
+- Result line: "Imported N shifts. Skipped X shift(s) of people no longer listed and Y in slots that no longer exist. A backup of the previous calendar is in Calendar snapshots: “Auto-backup before shifts file import”." (both skipped numbers count shifts; since v1.78 shifts dropped by the day's plan are split into "in slots that no longer exist", "on days that are now holidays" and "that no longer fit the day's plan").
 
 Database Health Check
 - Lives in the collapsed "Advanced" section at the very bottom of Settings (v1.74, helper "Read-only troubleshooting: …"); the check only mounts, and so only loads, when the section is opened.
@@ -251,7 +254,7 @@ Planning rules & AI (formerly "Solver Settings")
 - The on-call section dropdown only shows sections that exist as current template blocks.
 - Working hours tolerance is now per-clinician (see Clinician Editor); removed from global solver settings.
 - Rule violations are evaluated for the current week and surfaced in the header badge; affected pills are shown in red.
-- Violations include: rest-day conflicts, same-day location mismatches (when enforced), and overlapping shift times.
+- Violations include: rest-day conflicts (on-call rest rule, also across the week's edges since v1.78), a shift on a day with a hand-placed Rest Day entry (v1.78: "Scheduled on …, but that day is a rest day (Rest Day row)."), same-day location mismatches (when enforced), and overlapping shift times.
 - **Click-to-scroll for violations**: Clicking a rule violation in the popover scrolls the schedule grid to show the responsible assignment pill (smooth scroll to center).
 - **Click-to-scroll for split shifts**: Clicking a split shift item in the popover scrolls to and highlights the relevant pills with connection lines.
 - Automated planning runs the week solver over the selected date range in one call and shows an ETA based on the last run's per-day duration.
@@ -313,25 +316,27 @@ Vacation Overview
 - Clicking a clinician row opens the Clinician Editor modal scrolled to vacations.
 
 Admin user management
-- User export: admin can download a user state JSON (export includes metadata + AppState).
+- User export: admin can download a user state JSON (export includes metadata + AppState), named `schedule-export-<user>-<local date>.json` (v1.78).
 - User import: create user form accepts an export JSON to seed the new user's state.
+- Load copy: loads a copy of another user's calendar into the admin's own account. Since v1.78 the admin's stored calendar is saved first as "Auto-backup before loading a copy" (`createImportBackup(state, { reason: "load_copy", expectedRevision })`); if that is refused or fails, nothing is loaded.
 
 iCal (download + subscription feed)
 - The Export panel button opens a modal:
   - Primary tabs: **PDF**, **iCal**, **Web**.
   - iCal has a secondary toggle for **Subscription** (default) vs **Download**.
-  - Subscriptions include **only weeks marked Published** in the schedule view (week toggle above the grid).
+  - Subscriptions include **only weeks marked Published** in the schedule view (week toggle above the grid). Since v1.78 downloads do too, unless "Include unpublished weeks" is ticked; both tabs name the plan's time zone.
 
 PDF export (server-side, Playwright)
 - Print-only routes:
   - `/print/week?start=YYYY-MM-DD`
   - `/print/weeks?start=YYYY-MM-DD&weeks=N` (multiple pages in one PDF)
-- Print pages (`src/pages/PrintWeekPage.tsx`, `src/pages/PrintWeeksPage.tsx`) scale the full schedule table to fit one A4 landscape page using a fixed 6mm margin + safety factor; multi-week export waits for each page layout before `__PDF_READY__`.
+- Print pages (`src/pages/PrintWeekPage.tsx`, `src/pages/PrintWeeksPage.tsx`) scale the full schedule table to fit one A4 page using a fixed 6mm margin + safety factor; multi-week export waits for each page layout before `__PDF_READY__`. Since v1.78 every `.print-page` is exactly one sheet with `contain: strict` (`printPageStyle`; never rely on `break-inside`), unpublished weeks carry a "Draft – not published" box (`PrintWeekHeader.tsx`), and print CSS has no shadows (vector PDFs). See the v1.78 section.
 - Backend endpoints:
-  - `GET /v1/pdf/week?start=YYYY-MM-DD` (single week)
-  - `GET /v1/pdf/weeks?start=YYYY-MM-DD&weeks=N` (combined PDF)
+  - `GET /v1/pdf/week?start=YYYY-MM-DD` (single week; `shift-planner-<monday>.pdf`)
+  - `GET /v1/pdf/weeks?start=YYYY-MM-DD&weeks=N` (combined PDF; `shift-planner-<monday>-to-<last sunday>.pdf` since v1.78)
+  - Since v1.78 `start` is snapped to its Monday, and a whole render is limited by `PDF_RENDER_TIMEOUT_SECONDS` (default 180; then 504 "PDF render timed out.").
 - PDF render specifics:
-  - Always A4 landscape with background colors.
+  - A4 landscape with background colors (`layout=portrait` gives the compact week on A4 portrait, v1.66).
   - Content is top-aligned and horizontally centered within the printable area.
   - Auto-scale to fit the full table on the page (never scales up above 1x).
   - Margins are 6mm on all sides.
@@ -339,8 +344,8 @@ PDF export (server-side, Playwright)
   - Open Slots badge, Publish toggle, and Open Slot pills are hidden in PDF.
 - The print route sets `window.__PDF_READY__ = true` after data loads + two rAFs; backend waits for that signal.
 - Export UI:
-  - PDF tab accepts start week + number of weeks (max 55).
-  - User can choose **one combined PDF** or **individual files**.
+  - PDF tab accepts start week + number of weeks (max 55); since v1.78 the start snaps to its Monday.
+  - User can choose **one combined PDF** or **individual files**; since v1.78 the overlay shows "Creating PDF for N weeks…" / "Exporting k of N weeks…" and has Cancel (`AbortController`).
 - Env var `FRONTEND_BASE_URL` is used by the backend to reach the frontend for PDF rendering:
   - Domain setup: `https://$DOMAIN`
   - IP-only setup: `http://SERVER_IP`
@@ -353,7 +358,8 @@ iCal download (frontend-only)
   - A date range filter (Start/End) shown/entered as `DD.MM.YYYY` (empty = all dates)
 - Implementation details:
   - Only section assignments are exported (pool rows are ignored).
-  - Events are all-day (`DTSTART;VALUE=DATE` / `DTEND;VALUE=DATE`, DTEND exclusive). Since v1.64 DTEND is start + 1 + the slot's `endDayOffset` days (capped at +3), so an overnight duty also blocks the next day, as in the subscribed feed (`backend/ical.py`); before, the download always used start + 1.
+  - Events are timed since v1.78: `DTSTART` / `DTEND` in UTC, converted from the slot's wall-clock times in the plan's time zone (from `holidayCountry`, `src/lib/planTimeZone.ts`), `X-WR-TIMEZONE` in the header; an overnight shift ends at its end time on start + `endDayOffset`; a slot without usable times stays an all-day event on its start day. Events, UIDs (`<assignment id>@shiftschedule`), header and file names (`shift-planner-all.ics`, `shift-planner-<slug>.ics`) equal the subscribed feed's (`backend/ical.py`). (v1.64–v1.77: all-day events, DTEND = start + 1 + `endDayOffset` days.)
+  - Only published weeks unless "Include unpublished weeks" is ticked (v1.78).
   - Range parsing accepts `DD.MM.YYYY` (and also `YYYY-MM-DD`), swaps Start/End if reversed, and disables download on invalid input.
 - Files: `src/lib/ical.ts`, `src/components/schedule/IcalExportModal.tsx`, wiring in `src/pages/WeeklySchedulePage.tsx`.
 
@@ -363,9 +369,11 @@ Subscribable iCal feed (cryptic URL)
   - If empty, the feed is valid but has **zero** events.
 - Backend stores tokens in SQLite:
   - `ical_publications` (one token per user, all clinicians).
-  - `ical_clinician_publications` (one token per clinician per user).
+  - `ical_clinician_publications` (one token per clinician per user; rows of people no longer in the plan are deleted on every state save since v1.78, so a reused id gets a new token).
+  - `ical_formats(format TEXT PRIMARY KEY, since TEXT NOT NULL)` (v1.78): when this database first served the current event format (`'timed'`); part of the ETag and the Last-Modified floor, so subscribers refetch once after the switch. Not per account.
 - Public endpoint (no JWT): `GET /v1/ical/{token}.ics` (`HEAD` also answered since v1.64, with the same validators)
-  - `Content-Disposition: inline; filename="shift-planner-<owner>.ics"; filename*=UTF-8''…` — the plain `filename` falls back to `shift-planner.ics` when the account name is not printable ASCII (non-Latin-1 names used to cause a 500)
+  - `Content-Disposition: inline; filename="shift-planner-all.ics"` or `filename="shift-planner-<transliterated person>.ics"` (v1.78; never the account name, no `filename*`); `X-WR-CALNAME` "Shift Planner – All people" / "Shift Planner – <person>"
+  - Timed events in the plan's time zone (v1.78, see the iCal download notes above); a personal link of a person no longer in the plan answers 404
   - Returns `text/calendar; charset=utf-8`
   - Only section assignments are included (pool rows ignored)
   - Only weeks listed in `publishedWeekStartISOs` are included
@@ -375,8 +383,8 @@ Subscribable iCal feed (cryptic URL)
 
 Known issues / fixes
 - ICS clinician filter bug: avoid shadowing `clinician_id` in `backend/ical.py` (use a different loop variable for clinicians). Symptom was that every clinician link returned the same clinician’s events.
-  - All-day events; UID is stable (`assignment.id@shiftschedule`) so clients update instead of duplicating
-  - HTTP caching: sets `ETag` + `Last-Modified` and supports conditional GET (returns 304 when unchanged)
+  - Timed events since v1.78 (all-day before); UID is stable (`assignment.id@shiftschedule`) so clients update instead of duplicating
+  - HTTP caching: sets `ETag` + `Last-Modified` and supports conditional GET (returns 304 when unchanged); since v1.78 Last-Modified is withheld and If-Modified-Since ignored during the second of the last change
 - Authenticated endpoints (JWT required):
   - `GET /v1/ical/publish` (status, includes all + per-clinician URLs when published)
   - `POST /v1/ical/publish` (enable links; keeps existing tokens; idempotent since v1.64 — it no longer touches `updated_at`, so opening the Export modal does not reset subscribers' cache validators)
@@ -405,7 +413,8 @@ Public web view (share link)
   - `DELETE /v1/web/publish` (disable)
 - Public data endpoint: `GET /v1/web/{token}/week?start=YYYY-MM-DD`
   - Returns `published:false` if the week is not in `publishedWeekStartISOs`.
-  - When published: returns rows, clinicians, assignments (section rows only, within week), min slots, slot overrides, holidays.
+  - When published: returns rows, clinicians, assignments (section rows only, within week), min slots, slot overrides, holidays; since v1.78 also `restContextAssignments` (on-call shifts just outside the week that cause rest days in it, reduced to clinicianId/dateISO/rowId, only for the rest-day derivation) and `teamTimeLayout` (the owner's Times preference, part of the ETag).
+  - The page follows the owner's layout and Times on desktop (v1.78) and shows one day at a time on phones (always stacked, `MobileDayNavigator`; the URL `start` follows the day). The route never calls `/auth/me`.
   - Vacation override is applied (assignments hidden on vacation days).
   - HTTP caching: `ETag` + `Last-Modified` with conditional 304.
 - Export modal → **Web** tab:
@@ -626,9 +635,9 @@ Slot IDs
 ## 5) Scheduling Logic (Frontend)
 - Vacation override: for each date, if clinician is on vacation, they appear in Vacation pool and their section assignment is suppressed.
 - Multiple shifts per day are always allowed; time overlap detection prevents assigning the same clinician to overlapping shift intervals.
-- Rest Day Pool (pool-rest-day): if on-call rest days are enabled, clinicians assigned to the on-call section are placed into Rest Day on the configured days before/after (the Rest Day pool is always present after normalization; there is no fallback).
+- Rest Day Pool (pool-rest-day): if on-call rest days are enabled, clinicians assigned to the on-call section are placed into Rest Day on the configured days before/after (the Rest Day pool is always present after normalization; there is no fallback). Since v1.78 `buildOnCallRestDays` computes these days, and the computed pill is left out on a day the person holds a shift (the rule violation stays).
 - Assignments stored in a map (rowId + dateISO -> list of assignments); section rows use template slot ids.
-- Drag and drop only within the same day; manual overrides are allowed even if they violate solver rules.
+- Drag and drop only within the same day (a hand-placed Rest Day entry may move to another day's Rest Day cell, v1.78); manual overrides are allowed even if they violate solver rules.
 - Clicking a section slot cell increments the per-day slot override for that slot id (adds an "Open Slot"); remove via the minus badge.
 - Day type is `holiday` if the date is in holidays; otherwise it is the weekday. Holiday settings always override weekday settings.
 - Overlap checks use time intervals (start/end + endDayOffset); shift order is not used for overlap decisions. These checks feed solver constraints and UI violation detection.
@@ -1307,7 +1316,8 @@ State normalization on load
 - `locationsEnabled` is legacy; if false in older data, normalization keeps it false and maps slots to the default location.
 - Generates/normalizes `weeklyTemplate` v4; if missing, builds a default template from sections + sub-shifts (slot ids use legacy shiftRowIds).
 - Filters assignments + slot overrides to existing template slot ids (and pool rows).
-- Template slot assignment ids (e.g. `slot-1`) are preserved during normalization in both frontend and backend. Migrated day-type slot ids (`<section>::s2__mon`) are kept as they are (not remapped to `s1`, v1.64) and follow their date's day type when a holiday is added or removed (`_follow_date_day_type` / `followDateDayType`; dropped when the new day type has no such slot). A slot whose column already fits the date keeps its assignment even if its id suffix names another day (e.g. after it was dragged into another day's column). Slot-override keys with a stale sub-shift fall back to the class's fallback sub-shift deterministically.
+- Template slot assignment ids (e.g. `slot-1`) are preserved during normalization in both frontend and backend. Migrated day-type slot ids (`<section>::s2__mon`) are kept as they are (not remapped to `s1`, v1.64) and follow their date's day type when a holiday is added or removed (`_follow_date_day_type` / `followDateDayType`; dropped when the new day type has no such slot; since v1.78 the frontend asks before a holiday change that drops shifts and saves an auto-backup first, the rule itself is unchanged). A slot whose column already fits the date keeps its assignment even if its id suffix names another day (e.g. after it was dragged into another day's column). Slot-override keys with a stale sub-shift fall back to the class's fallback sub-shift deterministically.
+- Drops shifts with an impossible date or an unknown `clinicianId`, and holidays, vacations and published weeks with impossible dates (v1.78, `models.is_calendar_date`); requests carrying such dates get 422 instead, while stored blobs are parsed leniently via `state._parse_stored_state()`.
 - Ensures `solverSettings` defaults, clamps on-call rest day values, and fixes invalid on-call class ids.
 - Ensures the Rest Day pool exists (pool-rest-day); it is appended if missing.
 
@@ -1323,6 +1333,7 @@ Default state (clean database)
 - To modify the default state, edit `backend/default_state.json` directly.
 - Fallback: if the JSON file doesn't exist, an empty state with only Rest Day and Vacation pools is created.
 Table: `app_state` (id = username). Legacy row id `"state"` is migrated to `"jk"`. The table now also has an `updated_at` column which is bumped on every `POST /v1/state` save.
+Table: `ical_formats(format TEXT PRIMARY KEY, since TEXT NOT NULL)` (v1.78, `backend/db.py`): one row `('timed', <first start of v1.78 on this database>)`, written once with `INSERT OR IGNORE`; the iCal feeds use it as ETag part and Last-Modified floor. Deleting the row forces one refetch for all subscribers at the next start.
 
 Endpoints
 - `GET /health`
@@ -1340,7 +1351,7 @@ Endpoints
 - `GET /v1/solve/progress` (SSE stream for live solver updates; `Authorization: Bearer` header, no query token)
 - `GET /v1/state/health` (database health check)
 - `GET /v1/state/inspect/week` (database inspector)
-- `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots), `POST /v1/state/snapshots/import-backup` (auto-backup before a shifts file import)
+- `GET|POST /v1/state/snapshots`, `POST /v1/state/snapshots/{id}/restore`, `PATCH|DELETE /v1/state/snapshots/{id}` (calendar snapshots), `POST /v1/state/snapshots/import-backup` (auto-backup before a shifts file import; since v1.78 optional `reason` `shifts_file_import` | `holiday_change` | `load_copy` names it, and an optional `expectedRevision` that differs from the live revision gives 409 `state_changed`)
 - `GET /v1/me/preferences`, `PUT /v1/me/preferences` (per-user UI preferences for My plan; outside AppState, 32 KB body cap → 413)
 - `GET /v1/solve/runs`, `GET /v1/solve/runs/{id}`, `POST /v1/solve/runs/{id}/apply|discard|feedback` (run inbox)
 - `GET|PUT /v1/agent/settings`, `POST /v1/agent/chat-test`, `POST /v1/agent/model-check` (AI planning settings; `PUT /v1/agent/settings`, `chat-test` and `model-check` are admin only)
@@ -1511,7 +1522,8 @@ Frontend
 - `src/lib/stackedTeamLayout.ts` (v1.65: "Times: Stacked" — lanes per class row, one grid column per day, label meta; v1.76: lanes by section, then by time — `buildSectionLanes`)
 - `src/components/schedule/LocationColorPicker.tsx` (v1.64: location color swatch in the template builder; v1.71: Auto + 11 presets)
 - `src/lib/locationColors.ts` (v1.71: `resolveLocationColors` — picked color or the next free automatic one in location order; `autoLocationColor` for the picker)
-- `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while My plan waits for this user's calendar)
+- `src/components/schedule/ToggleSwitch.tsx`, `CalendarPlaceholder.tsx` (v1.64: shared settings toggle; placeholder while My plan waits for this user's calendar — since v1.78 for Team, My plan and Settings, with `loadFailed` / `onReload`)
+- v1.78: `src/lib/personName.ts` (name parser, team-unique short names `buildNameLabels`), `src/lib/textSearch.ts` (accent-insensitive person search), `src/lib/planTimeZone.ts` (plan time zone from the holiday country, wall clock → UTC), `src/lib/holidayChange.ts` + `src/pages/useConfirmHolidayChange.ts` (holiday change dialog and backup), `src/pages/weekParam.ts` (`?week=` in the address), `src/pages/PrintWeekHeader.tsx` (print header with draft marker), `src/components/schedule/MobileDayNavigator.tsx` (phone day navigator, team and public page), `src/lib/useMediaQuery.ts`
 - `src/components/ui/ConfirmDialog.tsx` (confirm dialog; Enter acts on the focused button)
 - `src/api/client.ts`
 - `src/lib/shiftRows.ts` (weeklyTemplate normalization, colBand safeguards, legacy shiftRowId helpers)
@@ -1555,7 +1567,8 @@ Backend
 - `backend/schedule_changes.py` (schedule change log, admin endpoint)
 - `backend/account_lifecycle.py` (account generation/identity checks)
 - `backend/request_logging.py` (redacted access logging)
-- `backend/ical.py` (ICS generation for subscription feeds)
+- `backend/ical.py` (ICS generation for subscription feeds; v1.78 timed events, `ical_calendar_name`, `ical_file_name`)
+- `backend/plan_timezone.py` (v1.78: plan time zone from the holiday country, mirrors `src/lib/planTimeZone.ts`)
 - `backend/requirements.txt`
 - `backend/schedule.db`
 
@@ -1567,8 +1580,8 @@ Database Inspector
 ## 12) Notes for New Agents
 - The calendar is the source of truth for edits; Settings manages section priority + min slots + pool names + clinician list.
 - Pool ids: Rest Day = `pool-rest-day`, Vacation = `pool-vacation`. Distribution Pool (`pool-not-allocated`) and Reserve Pool (`pool-manual`) were removed; state normalization auto-cleans them.
-- Keep drag restricted to same day; manual overrides are allowed even if they violate solver rules.
-- Mobile single-day view uses `useMediaQuery("(max-width: 640px)")` with `displayDays`; week-level calculations still use `fullWeekDays`.
+- Keep drag restricted to same day (only a hand-placed Rest Day entry moves to another day's Rest Day cell, v1.78); manual overrides are allowed even if they violate solver rules.
+- Mobile single-day view uses `useMediaQuery("(max-width: 640px)")` (`src/lib/useMediaQuery.ts` since v1.78) with `displayDays`; week-level calculations still use `fullWeekDays`.
 - `ScheduleGrid` supports variable day counts (dynamic `gridTemplateColumns`, last column determined by index).
 - Hover highlighting is desktop-only (no hover on mobile) and uses `AssignmentPill` `isHighlighted`.
 - HTML5 drag-and-drop does not work on mobile; touch DnD would require a new library or alternate UX.
@@ -1865,7 +1878,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   date on the left). Shifts are the person's section assignments with slot
   times; hours are the gross slot duration (8 h when a time is missing,
   `getSlotDurationMinutes`, also used by the working-hours overview) counted on
-  the start day, and overlapping own shifts count once. Overnight shifts
+  the start day, and overlapping own shifts count once (changed in v1.78: My
+  plan and the working-hours overview count real elapsed time in the plan's
+  time zone, so DST nights are an hour longer or shorter). Overnight shifts
   belong to their start day and are split at midnight (both parts share one
   shift id); a night that started the day before the range is loaded too.
   Vacation and rest days (exactly as the team grid shows them, including
@@ -1883,7 +1898,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   that date, scrolls to the person's pill and pulses it,
   `src/pages/scrollToTeamAssignment.ts`). Keyboard (outside inputs, no
   modifier, no open modal): T / W / M day, week, month · H today · O
-  orientation · P team plan · N / Shift+N next / previous shift · ? help toast.
+  orientation · P team plan · N / Shift+N next / previous shift · ? help toast
+  (changed in v1.78: also ignored inside any dialog, listbox, menu or popover,
+  modal or not; N / Shift+N still work inside the shift detail).
 - **"I am" link.** Without a linked clinician (or if it no longer exists) My
   plan shows "Who are you in the plan?" with an "I am" select and "That's
   me"; the choice is stored as `clinicianId` in the preferences. Viewing
@@ -1982,7 +1999,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   slot "x" always asks, and the block/row/column/location dialogs say that
   shifts planned in them, including past weeks, are deleted.
 - The local `.ics` download blocks the following day(s) for overnight shifts
-  (DTEND = start + 1 + `endDayOffset`, capped at +3), like the subscribed feed.
+  (DTEND = start + 1 + `endDayOffset`, capped at +3), like the subscribed feed
+  (changed in v1.78: both send timed events in the plan's time zone).
 - The month picker navigates to the clicked row's first day in the displayed
   month (before: the row's Monday, which jumped to the previous month).
 - AI budget field saves on blur/Enter only; an empty or invalid value restores
@@ -2003,11 +2021,14 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - Re-publishing iCal or web links no longer touches `updated_at`, so opening
   the Export modal does not reset subscribers' cache validators; the public
   feed answers `HEAD`; usernames outside Latin-1 no longer cause a 500 on the
-  feed (download filename falls back to `shift-planner.ics`).
+  feed (download filename falls back to `shift-planner.ics`; changed in v1.78:
+  the file name never contains the account name — `shift-planner-all.ics` or
+  the transliterated person's name).
 - Smaller UI fixes: rule-violation and split-shift popover items are
   clickable; on a phone the open-slots badge and those popovers switch the
   day view to the target day; dragging a person out of the Rest Day row
-  removes the stored entry; a same-day move out of a slot without a valid
+  removes the stored entry (by v1.77 this no longer worked for pool rows;
+  fixed again in v1.78); a same-day move out of a slot without a valid
   time is allowed; preferred working times keep the picked time and opening
   the editor no longer autosaves; Escape while renaming a snapshot only
   cancels the rename; "Copied ✓" only after a successful copy; an empty PDF
@@ -2078,8 +2099,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `_extract_bearer_token`; atomic `create_user`; self-disable/demote guard;
   `user_preferences` cleared on account deletion and a schema-introspection
   test checks every per-user table; iCal `Content-Disposition` with
-  `filename*`, `HEAD` route, idempotent `publish_ical`/`publish_web`, fast
-  path in `_fold_ical_line`, early return without published weeks; shared
+  `filename*` (dropped in v1.78 with the account name), `HEAD` route,
+  idempotent `publish_ical`/`publish_web`, fast path in `_fold_ical_line`, early return without published weeks; shared
   `_new_token`, `_compute_etag`/`_public_cache_headers`/`_not_modified`
   (ETags bit-identical, pinned by a test) and `_render_pdf`; PDF timeouts and
   render failures are logged; dead helpers/models removed
@@ -2208,8 +2229,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   the weekday night lane). Lanes without a slot on the visible days are left
   out; a row without any keeps one inactive lane.
 - **Nothing else changes.** `ScheduleGrid` gets `timeLayout` (default
-  `"columns"`, so print/public pages and tests keep the old grid) and builds
-  the stacked rows/columns with `buildStackedTeamLayout`; slot ids, cell
+  `"columns"`, so print pages and tests keep the old grid; changed in v1.78:
+  the public page passes the owner's Times layout, stacked on phones) and
+  builds the stacked rows/columns with `buildStackedTeamLayout`; slot ids, cell
   `data-row-id`/`data-date-iso`, assignment keys, drag & drop, the picker,
   open-slot/violation highlights and "Show in team plan" work unchanged.
   Slot lookups (intervals, row kinds, picker options) still use the source
@@ -2674,8 +2696,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   Stored `startViewDesktop` / `startViewMobile` are ignored (nothing could
   unset them any more), so the team plan no longer waits for the
   preferences (`scopeReady`, `START_VIEW_WAIT_MS` removed; `CalendarPlaceholder`
-  only covers My plan waiting for the calendar). `savedViews` and both start
-  views stay in `UserPreferences`, `normalizePreferences` and the backend,
+  only covers My plan waiting for the calendar; changed in v1.78: it covers
+  Team, My plan and Settings until the calendar has loaded). `savedViews` and
+  both start views stay in `UserPreferences`, `normalizePreferences` and the backend,
   unused, so stored data stays compatible.
 - Linked person: the "My plan" circle shows the initials of the person linked
   via "That's me". `PlanScopeSwitch` takes `meName`, so the own plan's segment
@@ -2782,8 +2805,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
     explains both.
 - Shifts file import with backup: `createImportBackup(state)` (client,
   `POST /v1/state/snapshots/import-backup`, 401 handling like
-  `createSnapshot`). `handleImportScheduleSnapshot` builds the on-screen
-  payload (`buildCurrentStatePayload()`), then `saveShiftsFileImport`
+  `createSnapshot`; changed in v1.78: `createImportBackup(state, { reason?,
+  expectedRevision? })`, and the file is checked before the question).
+  `handleImportScheduleSnapshot` builds the on-screen payload (`buildCurrentStatePayload()`), then `saveShiftsFileImport`
   (`src/lib/shiftsFileImport.ts`) saves the backup first and the imported
   calendar second; a failed backup throws "The backup could not be saved, so
   nothing was imported." without saving. The result carries `backupName`;
@@ -2981,7 +3005,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   tracks: as wide as their text when there is room; when seven 64 px days
   leave less (A4 portrait with long names) the row band and section columns
   wrap narrower — `overflow-wrap: anywhere`, so a word breaks only as a last
-  resort and the week never overflows the page. Team
+  resort and the week never overflows the page (changed in v1.78: in print
+  these labels are never narrower than their longest word, `print:min-w-min`,
+  and the page scales the week instead). Team
   grid: every label cell takes its row band's location shade (v1.71 colors
   and alternation unchanged); a faint line separates the row band column.
   Print, PDF and public pages (no location tints): row band cells neutral
@@ -3041,15 +3067,551 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 ## v1.77 — Team switch while My plan is loading
 
 - `src/components/schedule/CalendarPlaceholder.tsx` (shown in scope "My plan"
-  until this user's calendar is loaded, see the core UI notes) used to be an
+  until this user's calendar is loaded, see the core UI notes; since v1.78 in
+  Team and Settings too) used to be an
   empty card: the page had no "Team | My plan" switch until loading finished,
   so a slow load trapped the user in the empty My plan card. It now has the
   same frame and header position as `MyPlanView` and shows `PlanScopeSwitch`
   (scope "me", compact on phones) above a busy status "Loading calendar…"
   with a small spinner (still for `prefers-reduced-motion`). The switch shows
   no initials yet: the linked person is only known once the calendar is
-  loaded (until then the page holds the demo people). Props:
+  loaded (until then the page holds the demo people, which since v1.78 are
+  never shown). Props:
   `onScopeChange` (the page's `setPlanScope`), `isMobile`.
 - Tests: `CalendarPlaceholder.test.tsx` (switch usable and reports "team",
   busy status text, plain "My plan" label, compact on phones).
 - Deploy notes: frontend only, no schema or data change. Version 1.77 (77).
+
+## v1.78 — QA fixes: timed iCal events, holiday changes, PDF export, names, public page, imports, calendar UI
+
+- Fixes from a QA pass over the whole app, built as six packages (iCal,
+  holidays, PDF, names, public page and files, calendar UI) and merged with
+  a few integration changes (last group). Backend and frontend ship together.
+
+### iCal
+
+- **Timed events.** The download (`src/lib/ical.ts` `buildShiftCalendar` /
+  `buildICalendar`) and the subscription feed (`backend/ical.py::generate_ics`)
+  write `DTSTART` / `DTEND` as UTC date-times (`YYYYMMDDTHHMMSSZ`), converted
+  from the slot's wall-clock `startTime` / `endTime` / `endDayOffset`
+  (offset clamped to 0..3, read like `buildShiftInterval` in
+  `src/lib/schedule.ts`) in the plan's time zone; the calendar header has
+  `X-WR-TIMEZONE:<zone>`. An overnight shift ends at its end time on the
+  start date + `endDayOffset` (16:00–00:00 needs Ends = Next day and then
+  ends at midnight, without filling the next day); the all-day span of v1.64 (start + 1 + offset days) is gone. A
+  slot without usable times (missing, invalid, or end ≤ start) stays an
+  all-day event on its start day only (`DTEND` = next day). Times that do not
+  exist (spring gap) or exist twice (autumn) use the offset in force before
+  the change (`fold=0` in zoneinfo; the frontend mirrors it with an `Intl`
+  offset calculation); a shift with zero real length inside the gap has no
+  `DTEND`.
+- **Plan time zone = holiday country** (`backend/plan_timezone.py`
+  `plan_time_zone` / `wall_clock_to_utc`, mirrored by `src/lib/planTimeZone.ts`
+  `PLAN_TIME_ZONES` / `ZONE_FALLBACKS` / `DEFAULT_PLAN_TIME_ZONE` /
+  `planTimeZone` / `wallClockToUtc` / `elapsedMinutes`): CH Europe/Zurich,
+  DE Berlin, ES Madrid, FR Paris, GB London, IT Rome, LU Luxembourg, NL
+  Amsterdam, PL Warsaw, RO Bucharest, RU Moscow, UA Kyiv (Europe/Kiev where
+  the zone database lacks Kyiv); anything else Europe/Berlin.
+  `backend/tests/test_plan_timezone.py` parses the TS file and fails when the
+  maps or defaults differ. The backend loads zones from the new `tzdata`
+  requirement, so results do not depend on the image's zone files.
+- **Same events on both channels.** UID `<assignment id>@shiftschedule` (the
+  download used `@shift-planner`), SUMMARY `<section> (<block label>) -
+  <person>`, no DESCRIPTION (the download's "Person:" line is gone) and no
+  LOCATION, events ordered by date, start minute, UID; the same
+  `PRODID:-//ShiftSchedule//EN`, VERSION, CALSCALE, METHOD. The frontend now
+  folds at 75 UTF-8 octets without splitting a character (`foldLine`, the
+  algorithm of `_fold_ical_line`) and escapes TEXT in the backend's order
+  (CRLF, CR and LF become `\n`).
+- **Names without the account.** `X-WR-CALNAME` is "Shift Planner – All
+  people" or "Shift Planner – <person name>" (`ical_calendar_name` /
+  `icalCalendarName`). The feed sends `Content-Disposition: inline;
+  filename="shift-planner-all.ics"` or `"shift-planner-<slug>.ics"` (no
+  `filename*`, never the login name); downloads use the same names
+  (`ical_file_name` / `icalFileName`). Slug: lower case, ä/ö/ü/ß → ae/oe/ue/ss,
+  other accents stripped via NFD, remaining non-ASCII dropped, characters
+  outside `[A-Za-z0-9_-]` and whitespace removed, whitespace runs become `-`;
+  fallback the slugged person id, then `person` ("Müller, Jörg; Dr." →
+  `shift-planner-mueller-joerg-dr.ics`).
+- **Download scope.** Published weeks only by default, like the feed; the
+  Export dialog's Download tab has "Include unpublished weeks" (off, reset
+  whenever the dialog opens). `onDownloadAll` / `onDownloadClinician` take
+  `{startISO, endISO, includeUnpublished}`; the page's old iCal block is one
+  handler (`handleDownloadIcal`). Both iCal tabs name the time zone.
+- **Removed people.** A personal link whose person is no longer in the plan
+  answers 404 (checked before the validators).
+  `publication._prune_clinician_publications` deletes the token rows of
+  people who are gone on every state save (one line in `state._save_state`)
+  and in `_ensure_clinician_publications` (publish/status), so a reused
+  person id always gets a fresh token, and a snapshot restore that brings a
+  removed person back gives them a new link.
+- **Caching.**
+  - Format switch: new table `ical_formats(format TEXT PRIMARY KEY, since
+    TEXT NOT NULL)`. Schema setup in `backend/db.py` runs `INSERT OR IGNORE`
+    of `(ICAL_FORMAT = "timed", now)`, i.e. once, at the first start of v1.78
+    on that database; `ical_routes._ical_format_since` reads it in the same
+    snapshot as the calendar. The value is part of the feed ETag and a floor
+    for Last-Modified, so every subscribed calendar replaces its all-day
+    copy once, also clients that send only If-Modified-Since (deploys stop
+    the old container before the new one starts, so the moment is later than
+    any Last-Modified the all-day version sent). Restarts and extra workers
+    keep the value; deleting the row forces one refetch for all subscribers
+    at the next start. No account column, so account deletion leaves it.
+  - Same second: for the feeds and the public web week
+    (`publication._settled_last_modified`, used by `_public_cache_headers` /
+    `_not_modified`), Last-Modified is withheld and If-Modified-Since ignored
+    while the last change lies in the current second (`db._utcnow`); the
+    ETag still validates. Before, two saves within one second gave an
+    If-Modified-Since-only client a stale 304.
+- **Real durations in My plan.** `PlanShift.startsAt` / `endsAt` are real
+  instants (`wallClockToUtc` in the plan's zone). Shift, day and week hours,
+  counted overlaps (`withCountedHours`) and "Rest before" are real elapsed
+  time; `hours.getShiftMinutes` feeds the Working hours overview the same way.
+  The page computes `planZone = planTimeZone(holidayCountry)` and passes
+  `timeZone` to `MyPlanView` (`PlanSource.timeZone`),
+  `WorkingHoursOverviewModal` and `IcalExportModal`. A 16:00–08:00 night is
+  17 h on the October change night and 15 h in March. The "Next up"
+  countdown (`src/lib/myPlan/nextUp.ts::findNextShift`) uses `startsAt` /
+  `endsAt`, so it is right across DST changes and with the browser in another
+  zone (the My plan test harness pins the browser zone to the plan's); the
+  day words (today/tomorrow) and "Now hh:mm" still use the browser's clock.
+  `startMin` / `endMin` stay wall clock for display and layout. Solver hour
+  accounting (backend solvers, agent) and the frontend `solverStats` /
+  `ConstraintPulse` that mirror it stay wall clock (`getSlotDurationMinutes`).
+- Help §11 describes timed events in the plan's zone, the published-weeks
+  rule of the download and that removing a person ends their link; §12 says
+  hours are real time across DST changes (one hour more in October, one less
+  in March), the Next up countdown included.
+
+### Holidays and date validation
+
+- **A holiday change asks before it removes shifts.** A date that becomes or
+  stops being a holiday switches between the template's Holiday column and
+  its weekday's columns, so its planned shifts (locked ones too) no longer
+  fit and normalization drops them. Before, Add, Remove and "Load holidays
+  for <year>" deleted them silently, and the tab kept them in memory, so a
+  later holiday change brought them back. Every holiday writer (Add, Remove,
+  Load, also after a country/state switch) now goes through
+  `changeHolidays(update)` in `WeeklySchedulePage`.
+  `findAssignmentsDroppedByHolidayChange(state, nextHolidays)`
+  (`src/lib/shiftRows.ts`) reuses `normalizeAppState` to find the shifts
+  that would not survive (exact even with duplicate ids). With none, the
+  change applies as before. Otherwise `useConfirmHolidayChange`
+  (`src/pages/useConfirmHolidayChange.ts`) asks in the shared confirm dialog
+  (texts in `src/lib/holidayChange.ts`): the count, how many are locked, the
+  days ("Thu 24.12.2026 (12 shifts)", at most five, then "+N more days"),
+  buttons "Remove N shifts" / Cancel. Cancel changes and saves nothing.
+- **Confirm** runs `backupBeforeHolidayChange(current)` first:
+  `createImportBackup(current, { reason: "holiday_change", expectedRevision })`
+  with this tab's saved revision ("Auto-backup before holiday change"). If it
+  fails, or a stale tab is refused with 409, nothing changes and Settings
+  shows "The backup could not be saved, so the holidays were not changed.
+  (…)". Then the holidays are set and the assignment map is rebuilt from
+  `normalizeAppState` under the new holidays, so the screen equals what is
+  saved and a later change cannot bring the shifts back. The backend
+  normalize rule is unchanged.
+- **One change at a time.** `holidayChangePendingRef` is set from the dialog
+  until the change is applied, and the backup and the change run inside
+  `pauseCalendarSaving()` / `resumeCalendarSaving()` ("Updating calendar…"
+  covers the page, autosave paused), as for a shifts file import. A holiday
+  change during another one, or during a restore, shifts file import, applied
+  plan or PDF export (`calendarTransitionRef`), is refused with "Another
+  change to the calendar is in progress, so the holidays were not changed.
+  Try again when it is done." (`HOLIDAY_CHANGE_BUSY_MESSAGE`), e.g. a "Load
+  holidays" answer that arrives while another removal's dialog is open. If a
+  plan replaced the calendar while the dialog was open (a counter bumped in
+  `hydrateStateSlices`), the change is refused instead of removing shifts the
+  dialog did not count. Like the import, it is also refused before the
+  calendar has loaded, while a save failure is pending and while the template
+  is above the column limit.
+- Settings: the Add form stays open with the error when cancelled or failed;
+  remove errors show under the list; a cancelled load keeps the "unchanged
+  until you load" note. Help §8 explains the question and the backup; §10
+  lists "a holiday change that removes shifts" among the automatic backup
+  triggers.
+- **Impossible dates → 422.** `models.is_calendar_date` (exactly
+  `YYYY-MM-DD` and a real date) and the `CalendarDate` validator check
+  `Assignment.dateISO`, `Holiday.dateISO`, `VacationRange.startISO` /
+  `endISO`, `publishedWeekStartISOs` and the date in `slotOverridesByKey`
+  keys (`<slotId>__<YYYY-MM-DD>`) in every request body that carries an
+  AppState: `POST /v1/state`, snapshot create, restore `currentState`,
+  import-backup. The 422 names value and path (loc
+  `body.assignments.537.dateISO`, "'2026-02-30' is not a valid date
+  (YYYY-MM-DD)"); before, `POST /v1/state` failed with 500.
+- **Stored data is read leniently.** Stored blobs are parsed with
+  `state._parse_stored_state()` (validation context
+  `models.STORED_STATE_CONTEXT`, which skips the checks): `_load_state` (main
+  and legacy row), the `_save_state` revision check, `_parse_import_state`
+  (admin import of exports), `web.py` and snapshot restore. Pitfall: any new
+  code that reads a stored blob must use it; plain `AppState.model_validate`
+  fails on old invalid data.
+- **Normalization cleans up.** `_normalize_state` drops shifts with an
+  impossible date or an unknown `clinicianId`, and holidays, vacations and
+  published weeks with impossible dates, before any date parsing (it never
+  raises); GET persists the cleaned calendar. `state._is_valid_date_iso` was
+  replaced by the stricter `models.is_calendar_date`.
+
+### PDF export
+
+- **Every page shows its week.** `printPageStyle()` (`src/pages/printPage.ts`)
+  styles every `.print-page` of `PrintWeekPage` and `PrintWeeksPage`: exactly
+  one A4 sheet (px size floored), the margins as padding, `overflow: hidden`,
+  `contain: strict`, `break-after: page` except on the last page. Size
+  containment makes the page monolithic. The week inside is shrunk with
+  `transform: scale()`, and Chromium's page breaking sees the unscaled
+  height: before, with `break-inside: avoid`, a week taller than the sheet
+  was pushed to the next page and clipped there, so every page but the last
+  came out blank. Pitfall: do not rely on `break-inside` for print pages; a
+  fixed-height box, paint containment and `overflow: clip` do not help
+  (checked on Chromium 141 and 143), size containment and CSS zoom do.
+- **Fast vector PDFs.** `src/index.css` `@media print` removes every
+  `box-shadow` / `text-shadow` (rings are box-shadows, so they go too) and
+  prints `.stacked-off-cell` ("no slot") as a plain slate-200 fill without
+  hatching. Chromium's PDF writer rasterized every shadow and see-through
+  gradient into a page-sized image: a portrait week took about 10 minutes
+  and 180 MB, now about 2 s and under 200 KB, and PDFs contain no images.
+  Pitfall: never use shadows, filters or see-through gradients in print. The
+  global print rules also apply when a user prints any app page.
+- **Render limit** (`backend/pdf.py`): `PDF_RENDER_TIMEOUT_SECONDS`
+  (default 180) bounds a whole render (`_RenderDeadline`); page load and the
+  readiness wait each take at most min(20 s, remaining time). At the
+  deadline the browser is killed by its PID (read via CDP
+  `SystemInfo.getProcessInfo`), which ends a hanging `page.pdf()` (it has no
+  timeout of its own); the request answers 504 "PDF render timed out.".
+- **Weeks run Monday to Sunday.** The backend snaps `start` to its Monday
+  (`_week_start`) for the print route and the file name:
+  `/v1/pdf/week` → `shift-planner-<monday>.pdf`, `/v1/pdf/weeks` →
+  `shift-planner-<monday>-to-<last sunday>.pdf` (was `<start>-<n>w.pdf`; the
+  app ignores Content-Disposition, external scripts see the change). The
+  Export dialog snaps too, for the request and the downloaded name, in both
+  modes.
+- **Export UI.** Combined mode shows "Creating PDF for N weeks…", individual
+  mode "Exporting k of N weeks…" (`formatPdfProgress` and the `PdfProgress`
+  union exported by `IcalExportModal.tsx`; overlay and dialog share them).
+  While a PDF request runs, the full-screen overlay has Cancel: an
+  `AbortController` signal goes to `exportWeekPdf` / `exportWeeksPdf` (new
+  optional last argument), the overlay closes at once, and individual mode
+  keeps the files already downloaded and reports "k of N weeks downloaded.
+  Export cancelled." The running file is aborted, not awaited. Cancel is not
+  offered during the short "Saving calendar for export…" phase. The
+  synchronous endpoint keeps rendering an aborted request until it finishes
+  or hits the limit. The PDF tab says weeks run Monday to Sunday and
+  unpublished weeks print as drafts; Help §11 says the same and that an
+  export can be cancelled.
+- **Draft marker.** `src/pages/PrintWeekHeader.tsx` prints a "Draft – not
+  published" box in the page header when the week's Monday is not in
+  `publishedWeekStartISOs` (grid and clinic sheet, single and combined, all
+  layouts). Printouts never mark today (`print:border-transparent` /
+  `print:ring-0`); the screen keeps the highlight.
+- **Legible print.** `ScheduleGrid` takes `print` (print pages only). In the
+  side-by-side print week every day column is `minmax(min-content, 1fr)`: as
+  wide as its widest word (section and name words count too), the slot time
+  on one line (`print:whitespace-nowrap`), no fixed minimum (the screen keeps
+  120 px). Pill names wrap onto two lines instead of shortening to initials,
+  so every ordinary name prints in full (demo week median text about 6.4 pt,
+  was 4.55). The compact portrait week is unchanged: 64 px columns, names
+  shorten. The new `.print-wrap` class lets section, row band, location,
+  holiday and sheet labels wrap in print instead of being cut (a word breaks
+  only when it alone is too wide); stacked row band and section labels get
+  `print:min-w-min`, so they are never narrower than their longest word; the
+  grid root is `print:min-w-min`, so the page scales a wider week down
+  instead of clipping it. Very large calendars (4–5 time columns per day,
+  many row bands) stay near 5–5.6 pt in landscape; narrower columns would
+  wrap slot times.
+- **Clinic sheet.** The day column is at least 312 px on screen and in print
+  (`DAY_COLUMN_WIDTH`, six 52 px name columns; an eight-letter surname fits
+  one), and names (and the holiday line of the day header) have
+  `contain: inline-size`, so a long surname never widens the columns or
+  shrinks the printed sheet. `nameTracks()` lets names share their area's
+  free columns (the editable sheet's "+" marks count as items). In print a
+  double name wraps at its hyphen or space; only a single word that is still
+  too long is cut with an ellipsis (the full name stays in the title on
+  screen).
+
+### Names and search
+
+- **One parser** (`src/lib/personName.ts` `parsePersonName`): "Last, First",
+  "Last, First; Dr." / ", Dr.", leading and trailing titles (Dr. med./dent./
+  rer. nat., Prof. Dr., Prof. em., PD, Priv.-Doz., Dipl.-Med., MD, PhD, Jr.,
+  and Austrian, Czech, Italian and Spanish forms such as Dr.in, DDr.,
+  Mag./Mag.a, Univ.-Doz., MUDr., Dott./Dott.ssa, Dra.; Ing., Mag., doc.,
+  Mgr., Bc. only with their dot). Degrees after a comma that look like
+  abbreviations (MPH, FRCR, EDiR, M.A., B.Sc.) are titles when the part
+  before the comma is a whole name not written in capitals; otherwise the
+  comma means "Last, First" ("SCHMIDT, ANNA", "VAN DER BERG, JAN", "van
+  Berg, J."). Particles (von, van, de, zu, van der, …) and German noble
+  titles (Freiherr, Freifrau, Graf, …) belong to the family name; initials
+  and sorting use the main family name. Helpers: `displayName` (titles
+  dropped, given names first: "Jörg Müller"; nicknames in quotes after the
+  given names, notes in parentheses at the end: "Anna Schmidt (OA)"),
+  `givenNameOf`, `initialsOf`, `surnameSortKey`. `planChrome` re-exports the
+  first three, so initials circles, My plan's "Next up · Jörg", lane names
+  and the "Not <name>?" footer use the parser. Pitfall: the parser is
+  heuristic; a given or middle name that is also a particle (e.g. "Van")
+  joins the family name.
+- **Team-unique short names.** `buildNameLabels(clinicians)` returns
+  `Map<clinicianId, PersonNameLabels>`: `levels[0..4]` (full, "First L.",
+  "F. Last", "F. L.", "FL"), the clinic-sheet `surname` and `distinctLength`.
+  Every level is a form that fits exactly one person of the team: more
+  family-name letters first, then given-name letters, then the name without
+  titles, then the full name. Matching folds case and accents, so labels
+  never differ only by ı/i or an accent ("Mehmet Yild." / "Mehmet Yılm.").
+  Identical full names stay full; short forms leave noble titles out; a form
+  no shorter than the word is skipped ("Ida Ek", not "Ida E."). The
+  per-cell disambiguation (`siblingNames`) is gone.
+- **Wiring.** `WeeklySchedulePage`, `PrintWeekPage`, `PrintWeeksPage` (once,
+  shared by all weeks) and `PublicWeekPage` build the map with `useMemo` on
+  `clinicians` and pass it as the optional `nameLabels` prop of
+  `ScheduleGrid` and `ClinicSheetGrid`; `AssignmentPill` takes `labels` (the
+  person's `PersonNameLabels`) instead of `siblingNames`. Without
+  `nameLabels`, pills fall back to the person's own short forms with no team
+  uniqueness; all four pages pass it.
+- **Person pills** (team grid, both Times layouts) pick their level in one
+  pass (`personLevel`, canvas metrics or a per-character estimate): the full
+  name, "First L.", "First L." cut with an ellipsis if the cut still shows
+  `distinctLength` characters, else the team-unique "F. L." ("S. Wa." /
+  "S. We."); if even that does not fit, the cut "First L." stays, and below
+  30 px only the initials circle shows. The section look (print, public page)
+  still steps through levels 0 to 4.
+- **Clinic sheet** shows the team-unique surname ("J. Müller" only when
+  another person shares the surname, "Marion P." when the family name is
+  only an initial); cells sort by the parsed family name
+  (`sortAssignmentsBySurname`).
+- **Search** (`src/lib/textSearch.ts` `normalizeForSearch` /
+  `matchesSearch`): case and accents folded, ß→ss, ı/İ→i, ł→l, ø→o, æ→ae,
+  œ→oe, đ→d, apostrophes dropped, German ä/ö/ü = ae/oe/ue on both sides;
+  every query word must match, in any order ("jörg müller" finds "Müller,
+  Jörg; Dr.", "obrien" finds O'Brien). Used by `ClinicianPickerPopover` and
+  the My plan `PersonPicker`, the only name search fields. Help §4 explains
+  search and the short names.
+- Known limit: when no unique form fits and only a cut is possible, two cuts
+  can still read alike (not seen from 1024 px up); in A4 portrait the final
+  dot of "Andrea S." next to "Andreas S." can be clipped.
+
+### Public page, shifts file, backups, Load copy
+
+- **Public week payload** (`GET /v1/web/{token}/week`, published weeks
+  only) gains two fields:
+  - `restContextAssignments` (`web._rest_context_assignments`): only while
+    `onCallRestEnabled`; the on-call section's slot assignments from
+    `onCallRestDaysAfter` days before the week and `onCallRestDaysBefore`
+    days after it, published or not, none on vacation days, each reduced to
+    `{clinicianId, dateISO, rowId}`. `PublicWeekPage` passes them to
+    `buildRenderedAssignmentMap` (option `restContextAssignments`), which
+    uses them only for rest days (see Integration); they are never rendered
+    or counted. The public Rest Day row (team grid and clinic sheet) now
+    equals the admin's; before, rest days caused by on-call shifts in the
+    neighbouring weeks were missing.
+  - `teamTimeLayout`: the owner's Times preference from `user_preferences`
+    (default "stacked" like the backend model), part of the ETag; nothing
+    else of the preferences leaves. The public grid follows it on desktop and
+    uses side by side when the field is absent.
+- **Phone view** (≤ 640 px): one day at a time with the admin's day
+  navigator (Prev/Next/Today, day name visible); crossing a week boundary
+  loads that week, and the URL `start` follows the shown day. Always stacked,
+  even when the owner chose side by side (side by side overflowed a 390 px
+  screen and hid the day header and the Rest Day names); the clinic sheet
+  falls back to this day view, as on the admin page. `useMediaQuery` moved
+  to `src/lib/useMediaQuery.ts` (now guards a missing `window.matchMedia`),
+  the navigator to `src/components/schedule/MobileDayNavigator.tsx`.
+- `/public/<token>` never calls `/auth/me` (`App.tsx` skips `checkSession`
+  there), so no 401 appears in the console.
+- **Shifts file.** Downloads are named `shifts-YYYY-MM-DD.json` with the
+  local date (`shiftsFileName`); the admin user export is
+  `schedule-export-<user>-<local date>.json` (was the server's UTC date).
+  Import ignores the file name, so old `schedule-snapshot-*.json` files still
+  import. Import flow (`src/lib/shiftsFileImport.ts`; the SettingsView prop
+  `onImportScheduleSnapshot` became `onPrepareShiftsFileImport(payload)` →
+  `PreparedShiftsImport {currentCount, summary, apply()}`, wired in
+  `WeeklySchedulePage`):
+  1. A file over 10 MB (`MAX_SHIFTS_FILE_BYTES`) is refused before it is read.
+  2. `readShiftsFile`: more than 100,000 entries (`MAX_SHIFTS_FILE_ENTRIES`)
+     are refused; each entry needs a non-empty `clinicianId` and `rowId` and
+     a real `YYYY-MM-DD` date, `id` / `locked` / `source` correctly typed
+     when present, unknown fields dropped. Invalid entries are skipped and
+     counted; identical (person, slot, date) entries are kept once and the
+     repeats reported; missing or repeated ids get `as-import-N`.
+  3. `prepareShiftsImport`: with no importable shift left, "This file
+     contains no shifts for this calendar. Nothing was changed." (no backup,
+     no save).
+  4. Only then the question "Replace all N current shifts with M shifts from
+     “<file>”?", listing what is skipped (invalid entries, duplicates, shifts
+     "in slots that no longer exist", "on days that are now holidays", "that
+     no longer fit the day's plan") and that this automatic backup replaces
+     the previous one. The result line uses the same three groups (before, a
+     shift on a new holiday counted as "in slots that no longer exist").
+  5. `saveShiftsFileImport`: `savedStateRevision()`, then
+     `createImportBackup(state, { expectedRevision })`, then `saveState`.
+  Duplicates are removed on the import path only; the backend normalizer
+  still does not dedupe.
+- **Revision-safe backups.** `POST /v1/state/snapshots/import-backup` takes
+  an optional `expectedRevision`; when it differs from the live revision the
+  server answers 409 `{code: "state_changed"}` and writes nothing (without
+  the field: unchanged). `savedStateRevision()` (`src/api/client.ts`) waits
+  for this tab's queued saves and returns `StateSaveQueue.baseRevision`. The
+  import, holiday changes and Load copy pass it, so a stale tab no longer
+  overwrites the single auto-backup slot.
+- **Load copy** (Settings → Users, `AdminUsersPanel.handleLoadCopy`):
+  exports the other user's calendar, calls `savedStateRevision()`, fetches
+  the admin's own stored calendar and writes it with
+  `createImportBackup(state, { reason: "load_copy", expectedRevision })`
+  ("Auto-backup before loading a copy"), then saves the copy and reloads. If
+  the backup is refused or fails, nothing is loaded and the message says the
+  own schedule was not changed.
+- The restore confirmation (`SnapshotPopover`), the import question and the
+  Load copy dialog say that this automatic backup replaces the previous one
+  (there is one slot). Help §10 describes the checked import, the 10 MB
+  limit, the counts and the backup before Load copy; §11 says what the Web
+  link shows (the owner's layout and Times, the Rest Day row including rest
+  days from on-call shifts around the week, one day at a time on phones).
+
+### Calendar UI
+
+- **Rest Day row by drag.** A hand-placed (stored `pool-rest-day`) entry
+  dragged out of the calendar is removed (`handleRemoveAssignment`, which
+  used to return for every pool row); dropped on another day's Rest Day cell
+  it moves there (`onMoveRestDay` on `ScheduleGrid` and `ClinicSheetGrid`,
+  `MoveRestDayArgs` in `src/lib/clinicianSlotOptions.ts`, page
+  `handleMoveRestDay`). While a Rest Day pill is dragged, the other days'
+  Rest Day cells stay bright. Any other drop on another day still removes.
+  Automatic on-call rest pills (no stored entry) cannot be moved or removed:
+  dragging one shows a toast "Automatic rest day after/before on-call duty on
+  Tue 03.11. Change the on-call shift or the rest-day rule to change it." (the
+  My plan `Toast` / `useToast`, now also mounted by the page). Removing or
+  moving a stored entry on a day that is also an automatic rest day shows
+  the same notice, because the automatic pill stays.
+- **Vacation pills.** A vacation day ends only when its pill leaves the
+  calendar (drag out, `removeVacationDay`); dropping it on another day's cell
+  or on a slot that cannot take it changes nothing; dropping it into a free
+  slot of the same day still ends that vacation day and assigns the person.
+- **A shift wins over an automatic rest day.** New
+  `buildOnCallRestDays(assignmentMap, clinicians, {scheduleRows,
+  solverSettings})` (`src/lib/schedule.ts`) gives dateISO → clinicianId → the
+  on-call date (no rest from on-call on a vacation day, no rest day on a
+  vacation day). `buildRenderedAssignmentMap` uses it and leaves out the
+  computed Rest Day pill wherever the person holds a shift that day, so
+  nobody shows twice; this holds in the team grid, clinic sheet, My plan,
+  print and public pages. The rule violation stays, and the picker still
+  warns "Rest day" (`isOnRestDay` also reads `buildOnCallRestDays`).
+- **Rule violations.** The on-call rest rule looks across week edges
+  (`ruleAssignmentContext` reads the days just outside the week, for this
+  rule only): on call Sunday plus a shift Monday is listed in both weeks, and
+  picking it in the list or cycling with the badge stays on the week shown
+  (`violationTarget`). New violation: a stored Rest Day entry plus a shift on
+  the same day ("Scheduled on DD.MM.YYYY, but that day is a rest day (<Rest
+  Day row name> row)."); the rest pill turns red and stays draggable. The
+  clinic sheet, which has no violation list, underlines a name in red when
+  the person works on a rest day (on-call rule or Rest Day row), title
+  "<name> — scheduled on a rest day".
+- **Loading.** Until the calendar has loaded, Team, My plan and Settings
+  show `CalendarPlaceholder` (props `scope` = "team" | "me" | "settings",
+  `loadFailed`, `onReload`; region named "Team plan" / "My plan" /
+  "Settings"; the plan switch stays usable). No demo calendar, badges,
+  Publish switch or planning panels appear. A failed GET shows "The calendar
+  could not be loaded." with "Reload saved calendar" instead of a spinner,
+  and the error banner then omits its snapshot advice. Snapshot save and
+  restore throw "Wait until the calendar has loaded before …". User
+  management stays available below the Settings card (Load copy saves on the
+  server, then reloads). The page flag `myPlanDataReady` is now
+  `calendarReady`.
+- **Holiday headers.** The team day header has `title=<holiday name>` (the
+  label is clipped); holiday headers and the side-by-side location time
+  cells use `dark:bg-[#2E1F47]` in dark mode, the My plan holiday color
+  (light mode stays `#F3E8FF`).
+- **Texts.** Badges read "{n} open slot(s)", "{n} rule violation(s)", "{n}
+  split shift(s)" (lowercase, singular/plural). The phone day label is "Mon
+  02.11.2026" (`formatWeekdayDate` in `src/lib/date.ts`; "Tue 03.11." without
+  the year). `formatMonthLabel` is English ("December 2026"); the clinic sheet
+  model's `monthLabel` stays German on purpose (not rendered).
+  `DatePickerPopover` takes `unit` ("week" default; "month" from
+  `MonthNavigator`: "Select a month" / "This month") and is a non-modal
+  `role="dialog"` named "Select a week" / "Select a month". The Publish switch
+  is named "Publish week DD.MM.YYYY – DD.MM.YYYY".
+- **My plan shortcuts** (`usePlanShortcuts`) are ignored while focus is in an
+  editable element or inside any dialog, alertdialog, listbox, menu, menubar
+  or `[popover]`, modal or not (the date picker included). N / Shift+N still
+  step from inside the desktop shift detail (marked `data-shift-steps`).
+- **Viewed period in the address** (`src/pages/weekParam.ts`:
+  `readWeekParam`, `withWeekParam`, `useWeekParam`; `history.replaceState`,
+  no history entries): `?week=YYYY-MM-DD` holds the Monday for the desktop
+  team week, the day in the phone day view and while My plan is shown, and
+  the first of the month in the clinic sheet. The current period writes no
+  parameter, so the bare address always opens the current week and Today
+  clears it (deliberate: a bookmark, a home-screen icon or a tab reopened
+  days later must not pin an old week). It is written only once the
+  calendar has loaded (the layout comes from the calendar), restored on
+  reload or from a link; invalid values (also rolled-over ones such as
+  2026-02-30) are ignored. Print and public routes are unaffected; My plan
+  preferences are unchanged.
+- Help: §1 (week in the address), §3 Rest Day row (move or remove
+  hand-placed rest days; on-call rest days follow the on-call shift, a shift
+  on one is a rule violation; the clinic-sheet mark), §4 (end a vacation day
+  by dragging it out), §5 (the Rest Day greying exception).
+
+### Integration
+
+- **Backup requests take one options object**: client
+  `createImportBackup(state, { reason?: "shifts_file_import" |
+  "holiday_change" | "load_copy", expectedRevision? })`; backend
+  `SnapshotBackupRequest` has `reason` (`BackupReason`, default
+  `shifts_file_import`; other values give 422) and `expectedRevision`. Names
+  (`snapshots._BACKUP_NAME_BY_REASON`): "Auto-backup before shifts file
+  import", "Auto-backup before holiday change", "Auto-backup before loading
+  a copy" (new for Load copy). Holiday-change backups
+  (`backupBeforeHolidayChange`) and Load copy send this tab's saved revision
+  (`savedStateRevision`) like the import, so a stale tab is refused with 409
+  and the previous auto-backup is kept. The slot is still shared with the
+  backups before a restore and before applying a plan.
+- **One phone day navigator**: `src/components/schedule/MobileDayNavigator.tsx`
+  is used by the team page and the public page and shows "Mon 02.11.2026"
+  (`formatWeekdayDate`).
+- **Public rest days**: `buildRenderedAssignmentMap` merges
+  `restContextAssignments` into a copy of the assignment map that only
+  `buildOnCallRestDays` reads, so rest days from on-call shifts outside the
+  week appear on the public page; the computed rest pill is still hidden on
+  a day the person works.
+- **Export card text**: "Print weeks as PDF (drafts are marked), or share
+  published weeks as iCal and web links."
+- **API errors**: `throwWithDetail` (`src/api/client.ts`) shows the first
+  problem of a 422 validation response, e.g. "Failed to save state: 422:
+  Value error, … (assignments.3.dateISO)" (before: only "Failed to save
+  state: 422", e.g. for a tab opened before the deploy that still holds an
+  impossible date; a reload cleans it).
+- Two e2e tests follow the merged behaviour: the team notice live region
+  (`role="status"`) is always mounted, so the holiday backup test picks the
+  status by its text; landscape print shows whole names where they fit, so
+  the short-name test checks shortening in the portrait week.
+
+### Tests and deploy
+
+- Tests (TEST_PLAN.md §3.14): backend `test_ical.py`, `test_plan_timezone.py`,
+  `test_publication_caching.py`, `test_publication_lifecycle.py`,
+  `test_pdf_revision.py`, `test_state_routes.py`,
+  `test_state_normalization.py`, `test_snapshots.py`, `test_web.py`; Vitest
+  `src/lib/ical.test.ts`, `planTimeZone.test.ts`, `myPlan/hours.test.ts`,
+  `myPlan/rest.test.ts`, `shiftRows.test.ts`, `holidayChange.test.ts`,
+  `personName.test.ts`, `textSearch.test.ts`, `shiftsFileImport.test.ts`,
+  `schedule.test.ts`, `date.test.ts`, `stateSaveQueue.test.ts`,
+  `src/pages/useConfirmHolidayChange.test.tsx`, `weekParam.test.ts`,
+  `printPage.test.ts`, `PrintWeekPage.test.tsx`, `PrintWeeksPage.test.tsx`,
+  `PublicWeekPage.test.tsx`, `src/api/client.backup.test.ts`,
+  `client.importBackup.test.ts`, `client.pdf.test.ts`, `src/App.test.tsx`,
+  and the component tests of `ScheduleGrid`, `ClinicSheetGrid`,
+  `AssignmentPill` (`AssignmentPill.stepwise.test.tsx` renamed to
+  `AssignmentPill.noCanvas.test.tsx`), `ClinicianPickerPopover`,
+  `PersonPicker`, `IcalExportModal`, `HelpView` (+ `HelpView.export.test.tsx`),
+  `WorkingHoursOverviewModal`, `SettingsView`, `SnapshotPopover`,
+  `AdminUsersPanel`, `CalendarPlaceholder`, `MonthNavigator`, `MyPlanView`
+  and `MyPlanView.shortcuts`; e2e in the CI specs `agent-apply.spec.ts`,
+  `holiday-region.spec.ts`, `my-plan.spec.ts` and `team-page.spec.ts`.
+- Pitfall: `npm run check:tailwind` already exits 1 on v1.77 (nine findings
+  in files this release does not touch).
+- Deploy notes: new backend dependency `tzdata` (`backend/requirements.txt`);
+  new optional env var `PDF_RENDER_TIMEOUT_SECONDS` (default 180, passed by
+  the compose files); new DB table `ical_formats(format, since)`, created and
+  filled on the first start, so every subscribed calendar refetches once
+  after the deploy and gets timed events. No other migration. On its first
+  load a stored calendar loses entries with impossible dates and shifts of
+  people no longer listed (re-saved once); a hand-placed Rest Day entry next
+  to a shift on the same day now counts as a rule violation, so existing
+  calendars can show more violations. Version 1.78 (78).
