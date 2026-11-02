@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SolverUnsolvedOpenSlot } from "../api/client";
 import {
-  coverageExplanation, openSlotReasonSummary, ruleLabel, runEndedEarly, runReviewLine,
+  coverageExplanation, openSlotReasonSummary, ruleLabel, runEndedEarly, runReviewLine, runStateLabel,
 } from "./solverOutcome";
 
 const slot = (main: string | null, addable = 0): SolverUnsolvedOpenSlot => ({
@@ -94,5 +94,15 @@ describe("runReviewLine", () => {
   it("says nothing about applying once a run is applied or discarded", () => {
     expect(runReviewLine({ ...base, status: "applied", unfinished_dates: [] })).toBeNull();
     expect(runReviewLine({ ...base, status: "discarded", unfinished_dates: ["2026-11-06"] })).toBeNull();
+  });
+});
+
+describe("runStateLabel", () => {
+  it("says a stopped run stopped, although the harness reports workflow_finished on every exit", () => {
+    expect(runStateLabel("aborted", true)).toBe("stopped");
+    expect(runStateLabel("budget_exhausted", true)).toBe("stopped early: planning budget used up");
+    expect(runStateLabel("something_new", true)).toBe("stopped early (something_new)");
+    expect(runStateLabel("completed", true)).toBe("finished");
+    expect(runStateLabel(undefined, false)).toBe("in progress");
   });
 });

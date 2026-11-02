@@ -42,18 +42,35 @@ COLD_SLOTS = 12
 COLD_SECONDS = 2.0
 
 
+# A person away that day is away whatever else would block them: the
+# absence is their reason, not their weekly hours (a hand-placed rest day
+# often follows a heavy week, so both apply).
+ABSENCES = ("VACATION", "REST_DAY")
+
+
 def rule_label(code: str) -> str:
     return RULE_LABELS.get(code, code.lower().replace("_", " "))
 
 
-def _main_reason(qualified: int, addable: int, blocked: Counter) -> Optional[str]:
+def _rank(code: str) -> int:
+    order = list(RULE_LABELS)
+    return order.index(code) if code in order else len(order)
+
+
+def _primary_reason(codes) -> str:
+    """The one rule a blocked person counts under for the main reason."""
+    absent = [code for code in codes if code in ABSENCES]
+    return min(absent or codes, key=lambda code: (_rank(code), code))
+
+
+def _main_reason(qualified: int, addable: int, primary: Counter) -> Optional[str]:
+    """The rule most qualified people are blocked by (one rule per person,
+    see _primary_reason); ties in the RULE_LABELS order."""
     if addable:
         return None  # not a rule problem: someone can still be added
     if not qualified:
         return NO_QUALIFIED
-    order = list(RULE_LABELS)
-    return min(blocked, key=lambda code: (-blocked[code], order.index(code) if code in order else len(order), code),
-               default=None)
+    return min(primary, key=lambda code: (-primary[code], _rank(code), code), default=None)
 
 
 def open_slot_blockers(executor, gaps, *, max_slots: int = MAX_SLOTS,
@@ -72,6 +89,7 @@ def open_slot_blockers(executor, gaps, *, max_slots: int = MAX_SLOTS,
     for gap in gaps[:max_slots]:
         qualified = addable = on_slot = 0
         blocked: Counter = Counter()
+        primary: Counter = Counter()
         for clinician in executor.state.clinicians:
             if gap.section_id not in (clinician.qualifiedClassIds or []):
                 continue
@@ -85,13 +103,17 @@ def open_slot_blockers(executor, gaps, *, max_slots: int = MAX_SLOTS,
             codes = executor._direct_addition_codes(gap.slot_id, gap.dateISO, clinician.id)
             if not codes:
                 addable += 1
+                continue
             blocked.update(codes)
+            primary[_primary_reason(codes)] += 1
         out[gap.slot_key] = {
             "qualified": qualified,
             "on_slot": on_slot,
             "addable": addable,
-            "blocked_by": dict(sorted(blocked.items(), key=lambda kv: (-kv[1], kv[0]))),
-            "main": _main_reason(qualified, addable, blocked),
+            # Every rule that blocks someone, most people first (one person
+            # may count for several rules); ties in the RULE_LABELS order.
+            "blocked_by": dict(sorted(blocked.items(), key=lambda kv: (-kv[1], _rank(kv[0]), kv[0]))),
+            "main": _main_reason(qualified, addable, primary),
         }
     return out
 

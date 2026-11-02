@@ -83,6 +83,22 @@ export function coverageExplanation(slots: SolverUnsolvedOpenSlot[], endedEarly:
     : "The run log lists every open slot.";
 }
 
+const STOP_REASON_LABELS: Record<string, string> = {
+  aborted: "stopped",
+  budget_exhausted: "stopped early: planning budget used up",
+  provider_error: "stopped early: the model request failed",
+  partial: "ended with days not finished",
+  error: "stopped early: the model call failed",
+  refusal: "stopped early: the model refused",
+};
+
+/** The run-details "Run:" line. The harness reports workflow_finished on
+ *  every exit, so the stop reason decides whether it really finished. */
+export function runStateLabel(stopReason: string | undefined | null, workflowFinished: boolean): string {
+  if (stopReason && stopReason !== "completed") return STOP_REASON_LABELS[stopReason] ?? `stopped early (${stopReason})`;
+  return workflowFinished ? "finished" : "in progress";
+}
+
 /** Run-card line for a draft that needs a look before applying (applied or
  *  discarded runs need none). A run that finished every check but left
  *  positions open was not cut short. Older servers send no

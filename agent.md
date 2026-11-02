@@ -3330,6 +3330,41 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
     days and assignments the grid hides on vacation days (all stored
     assignments), like the gate.
   - Arena reports also hash `prompts.py` and `open_reasons.py`.
+- **Section order is binding for the repair** (admin decision after main's
+  v1.74 help text "If not every slot can be filled, sections higher in this
+  list are staffed first"). Before, the repair counted open positions only
+  (slot priority broke ties), so it could unstaff a top section's slot to
+  fill two lower ones on another day. Now, per section tier (the block's
+  position in `weeklyTemplate.blocks`, 0 = top; all slots of a section share
+  it on every day, unlike the per-slot order weight), the missing positions
+  of that tier and all higher tiers may not exceed those of the agent's plan
+  (`solver._add_priority_dominance`, prefix bounds on the repair's slack
+  variables; only placements the model can represent count, so the plan
+  being repaired always satisfies them). A gap may move to a lower-ranked
+  section or between days of one section, never to a higher-ranked one; the
+  admin's W45 case (COR is the lowest section) is unchanged. `coverage_repair`
+  checks the same rule on the solver's answer (`missing_by_tier`,
+  `priority_trade_down`) and refuses a violation (`rejected`, reason
+  "higher-ranked section left open", `section`). Not done: a pure 1:1 trade
+  upwards (same number of open positions, the higher section staffed) — the
+  repair is only applied when the quality tuple improves, and that tuple
+  has no priority term. Arena round 9 ran before this rule.
+- **Merge review fixes** (four checks of the merge with main v1.74–v1.78):
+  - Main reason per open slot: each blocked person counts under one rule,
+    absences first (vacation, then rest day), otherwise the rule order, so
+    a person on a Rest Day row date near their cap no longer makes the
+    banner say "weekly-hours limit"; `blocked_by` lists every rule, ties in
+    the rule order like the banner.
+  - Stopped runs: the toast says "Run stopped - review the best plan so far
+    in the run inbox."; the banner leads with "N required position(s) are
+    still open" instead of "could not be staffed"; the run details say
+    "Run: stopped" / "stopped early: …" from `stopReason` (the harness
+    reports `workflow_finished` on every exit).
+  - Help: the weekly-limit example reads "46/45 h in 2026-W45" for a 40 h
+    contract with 5 h tolerance; section 3 explains the repair across days,
+    the section order and why to plan whole weeks.
+  - `e2e/team-page.spec.ts` (main's v1.76 stacked labels): the label reads
+    poll instead of reading once (failed locally in 5 of 6 runs).
 - Tests: `test_cross_day_repair.py` (solver repair mode, gate,
   integration, magnitudes, direct strategy; merge: a Rest Day row entry is
   never filled by the repair, a reference placement without a variable is
@@ -3343,7 +3378,13 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   positions; unverified or cut-short runs; CP-SAT and changed-calendar
   wording; stale report applies without the question), `test_agent_tools.py`
   (week hours in the day roster, production row shape, the day prompt's
-  auto-select order); frontend `weeklyHours.test.ts`,
+  auto-select order); `test_cross_day_repair.py` (section order: no trade
+  down in the solver, a gap within one section moves, running-total check,
+  the gate refuses a trade-down answer, a day-by-day run keeps the top
+  section; the three trade-down tests fail without the bounds);
+  `test_agent_harness.py` (absence first for the main reason); frontend
+  `weeklyHours.test.ts`,
   `clinicianSlotOptions.test.ts`, `ClinicianPickerPopover.test.tsx`,
-  `solverOutcome.test.ts`, `SolverInfoModal.test.tsx` (run-card wording).
+  `solverOutcome.test.ts` (also the run-details state), `SolverInfoModal.test.tsx`
+  (run-card wording).
 - Deploy notes: no schema or data change. Version 1.79 (79).

@@ -263,9 +263,11 @@ test("Stacked gives every section of a row band its own lanes, named in the labe
   const labels = (kind: string) =>
     page.locator(`[data-stacked-label="${kind}"]`).evaluateAll((cells) => cells.map((cell) => cell.textContent));
 
-  expect(await labels("band")).toEqual(["MRI", "CT", "Sonography", "On call"]);
+  // Poll: the labels first render from the state before the mocked one is
+  // applied (a one-shot read failed locally in 5 of 6 runs).
+  await expect.poll(() => labels("band")).toEqual(["MRI", "CT", "Sonography", "On call"]);
   // CT row: its own section (named by the row), then Sonography, then CT Neuro.
-  expect(await labels("section")).toEqual(["", "MRI Neuro", "", "Sonography", "CT Neuro", "", ""]);
+  await expect.poll(() => labels("section")).toEqual(["", "MRI Neuro", "", "Sonography", "CT Neuro", "", ""]);
   const ctGroup = `group-${template.locations[0].locationId}__${moved.rowBandId}`;
   // Wednesday in the CT lane is hatched; the Sonography slot sits in its own lane.
   await expect(

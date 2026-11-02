@@ -696,6 +696,42 @@ def _collect_slot_contexts(state) -> List[Dict[str, Any]]:
     return contexts
 
 
+def section_tier_by_slot_id(state) -> Dict[str, int]:
+    """Priority tier of every template slot: its section block's position in
+    the template's block list (Settings: "If not every slot can be filled,
+    sections higher in this list are staffed first"; 0 = top). Slots of one
+    section share a tier on every day, unlike the per-slot order weight."""
+    return {ctx["slot_id"]: ctx["block_order"] for ctx in _collect_slot_contexts(state)}
+
+
+def _add_priority_dominance(model, slack_by_instance, reference, var_map, tier_by_slot_id) -> int:
+    """Repair mode: never trade a position of a higher-ranked section for
+    lower-ranked ones. For every tier, the missing positions of that tier
+    and all higher tiers may not exceed those of the plan being repaired
+    (counting only its placements the model can represent). A gap may move
+    to a lower-ranked section, never to a higher one; the plan being
+    repaired always satisfies this. Returns the number of tiers bounded."""
+    kept: Dict[Tuple[str, str], int] = {}
+    for (cid, date_iso, sid) in var_map:
+        if (sid, date_iso, cid) in reference:
+            kept[(sid, date_iso)] = kept.get((sid, date_iso), 0) + 1
+    lowest = len(tier_by_slot_id) + 1
+    slack_by_tier: Dict[int, List[Any]] = {}
+    reference_missing_by_tier: Dict[int, int] = {}
+    for (sid, date_iso), (slack, missing) in slack_by_instance.items():
+        tier = tier_by_slot_id.get(sid, lowest)
+        slack_by_tier.setdefault(tier, []).append(slack)
+        reference_missing_by_tier[tier] = (reference_missing_by_tier.get(tier, 0)
+                                           + max(0, missing - kept.get((sid, date_iso), 0)))
+    running: List[Any] = []
+    running_reference = 0
+    for tier in sorted(slack_by_tier):
+        running.extend(slack_by_tier[tier])
+        running_reference += reference_missing_by_tier[tier]
+        model.Add(sum(running) <= running_reference)
+    return len(slack_by_tier)
+
+
 def _build_date_context(
     payload: SolveRangeRequest, context_pad_days: int = 1
 ) -> Tuple[date, date, List[str], List[str], set[str], Dict[str, int]]:
@@ -1057,6 +1093,7 @@ def _add_coverage_constraints(
     var_map: Dict[Tuple[str, str, str], cp_model.IntVar],
     manual_assignments: Dict[Tuple[str, str], List[str]],
     raw_slack_out: Optional[List[Any]] = None,
+    slack_by_instance_out: Optional[Dict[Tuple[str, str], Tuple[Any, int]]] = None,
 ) -> Tuple[
     List[Any],
     List[Any],
@@ -1067,7 +1104,9 @@ def _add_coverage_constraints(
 
     ``raw_slack_out`` (optional) collects the unweighted missing-position
     variables, for objectives that count open positions like the agent's
-    quality tuple instead of weighting them by slot priority."""
+    quality tuple instead of weighting them by slot priority;
+    ``slack_by_instance_out`` (optional) maps (slot_id, date_iso) to that
+    variable and the instance's missing positions after fixed entries."""
     total_slots = len(slot_contexts)
     order_weight_by_slot_id: Dict[str, int] = {}
     total_required = 0
@@ -1158,6 +1197,8 @@ def _add_coverage_constraints(
         slack_terms.append(slack * order_weight)
         if raw_slack_out is not None:
             raw_slack_out.append(slack)
+        if slack_by_instance_out is not None:
+            slack_by_instance_out[(slot_id, date_iso)] = (slack, missing)
 
     return coverage_terms, slack_terms, total_required, order_weight_by_slot_id
 
@@ -2273,7 +2314,10 @@ def _solve_range_impl(
             identities, the plan to repair (cross-day coverage repair of the
             agent, backend/agent/cross_day.py). The plan is a solution hint and
             the objective becomes: fewest missing required positions first,
-            then fewest changes to that plan (slot priority only breaks ties).
+            then fewest changes to that plan (slot priority only breaks ties),
+            and no section may end up with more missing positions in its tier
+            and above than in that plan (_add_priority_dominance: a gap may
+            move to a lower-ranked section, never to a higher one).
             The state must hold only the fixed context, not the plan itself.
         repair_max_changes: Optional cap on changed assignments in repair mode.
 
@@ -2457,6 +2501,7 @@ def _solve_range_impl(
 
     repair_mode = repair_reference is not None
     raw_slack_vars: List[Any] = []
+    slack_by_instance: Dict[Tuple[str, str], Tuple[Any, int]] = {}
     coverage_terms, slack_terms, total_required, order_weight_by_slot_id = _add_coverage_constraints(
         model,
         payload,
@@ -2467,6 +2512,7 @@ def _solve_range_impl(
         var_map,
         manual_assignments,
         raw_slack_out=raw_slack_vars if repair_mode else None,
+        slack_by_instance_out=slack_by_instance if repair_mode else None,
     )
     timer.checkpoint("coverage_constraints")
 
@@ -2481,6 +2527,12 @@ def _solve_range_impl(
             repair_change_terms.append(1 - var if kept else var)
         if repair_max_changes is not None:
             model.Add(sum(repair_change_terms) <= max(0, int(repair_max_changes)))
+        # Section order is binding: more filled positions never at the
+        # expense of a higher-ranked section.
+        _add_priority_dominance(
+            model, slack_by_instance, reference, var_map,
+            {ctx["slot_id"]: ctx["block_order"] for ctx in slot_contexts},
+        )
 
     on_progress("phase", {"phase": "on_call_rest_days", "label": "Preparation (6/10): Setting up on-call rest rules..."})
     rest_day_conflicts, rest_boundary_conflict = _add_on_call_rest_constraints(

@@ -5,7 +5,7 @@ import { cx } from "../../lib/classNames";
 import { copyTextToClipboard } from "../../lib/clipboard";
 import { AGENT_MODEL_OPTIONS, estimateAgentCostUSD, formatCostUSD } from "../../lib/llmPricing";
 import { formatFeedDate } from "../../lib/agentActivity";
-import { heuristicFallbackNotice, runReviewLine } from "../../lib/solverOutcome";
+import { heuristicFallbackNotice, runReviewLine, runStateLabel } from "../../lib/solverOutcome";
 import {
   buildRunLog,
   downloadTextFile,
@@ -1153,7 +1153,7 @@ export default function SolverInfoModal({
                         <div className="mt-3 rounded-lg bg-white/70 p-3 text-xs dark:bg-slate-900/50">
                           <div className="font-medium">Result checks · plan {agent.completion.plan_revision}</div>
                           <ul className="mt-2 space-y-1">
-                            <li>Run: {agent.completion.workflow_finished ? "finished" : "in progress"}</li>
+                            <li>Run: {runStateLabel(agent.stopReason, agent.completion.workflow_finished)}</li>
                             <li>Required checks: {agent.completion.required_checks_complete
                               ? "complete"
                               : agent.completion.required_checks_unverified && agent.completion.required_checks_unverified === (agent.tasks?.tasks.filter(task => task.kind === "required_check" && task.status !== "complete").length ?? -1)

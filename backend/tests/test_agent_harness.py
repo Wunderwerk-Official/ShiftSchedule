@@ -1318,7 +1318,8 @@ def test_finalize_names_the_rules_that_block_an_open_slot():
         "main": "WEEKLY_HOURS",
     }
     line = next(n for n in result["notes"] if n.startswith("- open: ") and "Section B" in n)
-    assert line.endswith("(1 missing): 2 qualified; blocked by vacation 1, weekly-hours limit 1")
+    # Ties in the rule order, as in the banner.
+    assert line.endswith("(1 missing): 2 qualified; blocked by weekly-hours limit 1, vacation 1")
 
 
 def test_open_slot_reasons_are_bounded():
@@ -1365,6 +1366,32 @@ def test_open_slot_reasons_are_bounded():
     executor.current = {(f"s0", MON, "clin-1"): object()}
     result = open_slot_blockers(executor, gaps, max_slots=1)
     assert result[f"s0__{MON}"]["on_slot"] == 1 and result[f"s0__{MON}"]["qualified"] == 1
+
+
+def test_an_absent_person_counts_as_absent_for_the_main_reason():
+    """Review of the v1.79 merge: someone on a hand-placed rest day who is
+    also near their weekly cap must not make the banner blame weekly hours;
+    no tolerance or trade can bring them in that day."""
+    from backend.agent.open_reasons import blocker_text, open_slot_blockers
+
+    class _Gap:
+        slot_key, slot_id, dateISO, section_id = f"s0__{MON}", "s0", MON, "section-a"
+
+    class _Executor:
+        state = make_app_state(clinicians=[make_clinician("clin-1"), make_clinician("clin-2", "Bob")])
+        current, fixed_identity = {}, set()
+        codes = {"clin-1": ["REST_DAY", "WEEKLY_HOURS"], "clin-2": ["VACATION", "WEEKLY_HOURS"]}
+
+        def _direct_addition_codes(self, slot_id, date_iso, cid):
+            return self.codes[cid]
+
+    blockers = open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]
+    # Both away (vacation ranks before rest day); weekly hours still listed.
+    assert blockers["main"] == "VACATION"
+    assert blockers["blocked_by"] == {"WEEKLY_HOURS": 2, "VACATION": 1, "REST_DAY": 1}
+    assert blocker_text(blockers) == "2 qualified; blocked by weekly-hours limit 2, vacation 1, rest day 1"
+    _Executor.codes = {"clin-1": ["REST_DAY", "WEEKLY_HOURS"], "clin-2": ["OVERLAP"]}
+    assert open_slot_blockers(_Executor(), [_Gap()])[f"s0__{MON}"]["main"] == "REST_DAY"
 
 
 def test_frontend_rule_labels_follow_the_closing_report():

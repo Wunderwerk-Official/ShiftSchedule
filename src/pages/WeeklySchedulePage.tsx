@@ -459,6 +459,8 @@ export default function WeeklySchedulePage({
     dates: string[];
     /** Why: the main blocking rule per checked slot, or that the run ended early. */
     explanation: string;
+    /** Stopped, out of budget or partial: the positions were not all checked. */
+    endedEarly: boolean;
   } | null>(null);
   const [autoPlanRunning, setAutoPlanRunning] = useState(false);
   const [autoPlanElapsedMs, setAutoPlanElapsedMs] = useState(0);
@@ -1551,6 +1553,7 @@ export default function WeeklySchedulePage({
           count: openSlots.length,
           dates: [...new Set(openSlots.map((slot) => slot.dateISO))].sort(),
           explanation: coverageExplanation(openSlots, runEndedEarly(run.status, result?.debugInfo)),
+          endedEarly: runEndedEarly(run.status, result?.debugInfo),
         });
       }
       const warningNotes = (result?.notes ?? []).filter(
@@ -1574,7 +1577,9 @@ export default function WeeklySchedulePage({
       } else if (applicable) {
         setSolverInfoOpen(true);
         showSolverNoticeBriefly(
-          "Run finished - review the result in the run inbox and apply it.",
+          run.status === "aborted"
+            ? "Run stopped - review the best plan so far in the run inbox."
+            : "Run finished - review the result in the run inbox and apply it.",
           6000,
         );
       }
@@ -3603,8 +3608,8 @@ export default function WeeklySchedulePage({
                 <div className="flex flex-wrap items-start justify-between gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-sm dark:border-amber-700/60 dark:bg-amber-950/40 dark:text-amber-200">
                   <div className="min-w-0">
                     <span className="font-semibold">
-                      {coverageWarning.count} required position(s) could not be
-                      staffed
+                      {coverageWarning.count} required position(s){" "}
+                      {coverageWarning.endedEarly ? "are still open" : "could not be staffed"}
                     </span>{" "}
                     on{" "}
                     {coverageWarning.dates.slice(0, 8).join(", ")}

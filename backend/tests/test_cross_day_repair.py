@@ -70,12 +70,22 @@ def trap_state() -> AppState:
                     solverRules=[])
 
 
-def repair_with_solver(reference, seconds=20.0):
+def repair_with_solver(reference, seconds=20.0, state=None):
     payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=seconds)
     result = _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
-                               start_time=time.time(), state_override=trap_state(),
+                               start_time=time.time(), state_override=state or trap_state(),
                                repair_reference=reference)
     return {(a.rowId, a.dateISO, a.clinicianId) for a in result.assignments}
+
+
+def cor_first_state() -> AppState:
+    """The same people and slots, but Thursday's COR is the TOP section of the
+    list: trading it for the two Friday slots of lower sections fills one more
+    place, yet leaves the highest-ranked section open (v1.79: not allowed)."""
+    state = trap_state()
+    by_id = {block.id: block for block in state.weeklyTemplate.blocks}
+    state.weeklyTemplate.blocks = [by_id[b] for b in ("block-cor", "block-seno", "block-echo", "block-hist")]
+    return state
 
 
 def greedy_executor(state=None):
@@ -93,6 +103,56 @@ def identities(executor):
 
 def test_solver_repair_mode_moves_weekly_hours_to_the_higher_value_day():
     assert repair_with_solver({GREEDY_THURSDAY}) == FRIDAY_PLAN
+
+
+def test_solver_repair_never_trades_a_higher_section_for_lower_ones():
+    # Without the section order the solver returns FRIDAY_PLAN (2 of 3 filled).
+    assert repair_with_solver({GREEDY_THURSDAY}, state=cor_first_state()) == {GREEDY_THURSDAY}
+
+
+def test_solver_repair_moves_a_gap_within_one_section():
+    """Thursday or Friday of the same section is no priority question."""
+    state = cor_first_state()
+    for location in state.weeklyTemplate.locations:
+        for template_slot in location.slots:
+            if template_slot.id in ("slot-seno-fri", "slot-echo-fri"):
+                template_slot.blockId = "block-cor"
+    assert repair_with_solver({GREEDY_THURSDAY}, state=state) == FRIDAY_PLAN
+
+
+def test_priority_trade_down_compares_running_totals_from_the_top():
+    trade_down = cross_day.priority_trade_down
+    assert trade_down({3: 2}, {3: 1}) is None            # one gap fewer
+    assert trade_down({1: 2}, {3: 1}) is None            # gaps moved to a lower section
+    assert trade_down({1: 1, 2: 1}, {1: 1, 2: 1}) is None
+    assert trade_down({3: 2}, {0: 1}) == 0               # one top gap for two lower ones
+    assert trade_down({2: 1}, {1: 1}) == 1               # a gap moved up
+
+
+def test_coverage_repair_refuses_a_trade_down_from_the_solver(monkeypatch):
+    """The CP-SAT model is not the authority on the section order either."""
+    from backend.models import SolveRangeResponse, SolverDebugInfo
+
+    def trade_down(*_args, **_kwargs):
+        return SolveRangeResponse(
+            startISO=THU, endISO=FRI, notes=[],
+            assignments=[Assignment(id=f"x{i}", rowId=row, dateISO=FRI, clinicianId="laurain", source="solver")
+                         for i, row in enumerate(["slot-seno-fri", "slot-echo-fri"])],
+            debugInfo=SolverDebugInfo(timing={}, solver_status="FEASIBLE"))
+
+    monkeypatch.setattr("backend.solver._solve_range_impl", trade_down)
+    executor = greedy_executor(cor_first_state())
+    report = cross_day.coverage_repair(executor, cancel_event=threading.Event(), time_limit=20)
+    assert report["status"] == "rejected" and not report["applied"]
+    assert report["reason"] == "higher-ranked section left open" and report["section"] == "COR"
+    assert identities(executor) == {GREEDY_THURSDAY}
+
+
+def test_coverage_repair_keeps_a_top_section_staffed():
+    executor = greedy_executor(cor_first_state())
+    report = cross_day.coverage_repair(executor, cancel_event=threading.Event(), time_limit=20)
+    assert report["status"] == "no_improvement" and not report["applied"], report
+    assert identities(executor) == {GREEDY_THURSDAY}
 
 
 def test_solver_repair_mode_keeps_an_already_best_plan():
@@ -189,6 +249,19 @@ def test_day_by_day_runs_the_cross_day_repair_before_the_review():
     repair = result["debugInfo"]["agent"]["cross_day_repair"]
     assert repair["status"] == "applied" and repair["open_after"] == 1
     assert any(note.startswith("Cross-day repair filled 1 more required position") for note in result["notes"])
+
+
+def test_day_by_day_keeps_the_top_section_when_only_lower_ones_could_gain():
+    """End to end with COR on top: the repair finds nothing it may do, the
+    Thursday COR stays staffed and Friday's lower sections stay open."""
+    payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=600,
+                                agent_strategy="day_by_day")
+    result = agent_solve_range(payload, cor_first_state(), threading.Event(), lambda *_: None, time.time(),
+                               provider=ScriptedProvider(), config=AgentConfig(provider="mock", max_iterations=40))
+    plan = {(a["rowId"], a["dateISO"], a["clinicianId"]) for a in result["assignments"]}
+    assert GREEDY_THURSDAY in plan and not (FRIDAY_PLAN & plan)
+    repair = result["debugInfo"]["agent"]["cross_day_repair"]
+    assert repair["status"] == "no_improvement" and not repair["applied"]
 
 
 def test_blocked_candidates_keep_the_weekly_hours_magnitude():

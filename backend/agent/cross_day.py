@@ -14,6 +14,11 @@ changes the agent's plan as little as possible (repair mode), then applies
 the difference through the executor like any other proposal: the full gate
 must accept it AND the active quality tuple must improve, so a repair never
 trades away coverage, fixed entries or rule compliance.
+
+The section order is binding (Settings: "If not every slot can be filled,
+sections higher in this list are staffed first"): a repair may move a gap
+to a lower-ranked section, never to a higher one. The CP-SAT model bounds
+this per tier, and the result is checked again here before it is applied.
 """
 from __future__ import annotations
 
@@ -43,6 +48,32 @@ def open_positions(executor) -> int:
                for inst in executor.ctx.instances.values())
 
 
+def missing_by_tier(executor, working, tier_by_slot_id: Dict[str, int]) -> Dict[int, int]:
+    """Missing required positions per section tier (0 = top of the list)."""
+    counts = executor._counts_by_instance(working)
+    lowest = len(tier_by_slot_id) + 1
+    out: Dict[int, int] = {}
+    for inst in executor.ctx.instances.values():
+        missing = inst.target - counts.get(inst.slot_key, 0)
+        if missing > 0:
+            tier = tier_by_slot_id.get(inst.slot_id, lowest)
+            out[tier] = out.get(tier, 0) + missing
+    return out
+
+
+def priority_trade_down(before: Dict[int, int], after: Dict[int, int]) -> Optional[int]:
+    """The highest-ranked tier at which the repaired plan has more missing
+    positions in that tier and all higher ones than before, None when the
+    repair never trades a higher-ranked position for lower-ranked ones."""
+    running_before = running_after = 0
+    for tier in sorted(set(before) | set(after)):
+        running_before += before.get(tier, 0)
+        running_after += after.get(tier, 0)
+        if running_after > running_before:
+            return tier
+    return None
+
+
 def coverage_repair(executor, *, cancel_event, time_limit: float,
                     max_changes: int = MAX_CHANGES) -> dict:
     """Fill more required positions by changing assignments across days.
@@ -70,7 +101,7 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
     if cancel_event.is_set() or time_limit < MIN_SECONDS:
         return done("no_time")
 
-    from ..solver import _solve_range_impl
+    from ..solver import _solve_range_impl, section_tier_by_slot_id
 
     reference: Set[Tuple[str, str, str]] = {(a.rowId, a.dateISO, a.clinicianId) for a in working}
     payload = SolveRangeRequest(
@@ -118,6 +149,14 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
         rejected = preview.get("rejected") or preview.get("new_hard_violations") or []
         return done("rejected", reason=reason, solver_status=status, changes_proposed=len(moves),
                     sample=[str(item)[:160] for item in rejected[:3]])
+    # The CP-SAT model is not the authority on the section order either.
+    tiers = section_tier_by_slot_id(ex.state)
+    after_plan = [ex._make_assignment(slot, day, cid) for slot, day, cid in proposed]
+    trade_down = priority_trade_down(missing_by_tier(ex, working, tiers),
+                                     missing_by_tier(ex, after_plan, tiers))
+    if trade_down is not None:
+        return done("rejected", reason="higher-ranked section left open", solver_status=status,
+                    changes_proposed=len(moves), section=_tier_section(ex, trade_down))
     proposal = ex.workflow.propose(moves, next_tool=None, next_args={}, preview=preview)
     applied = ex.workflow.apply({"proposal_id": proposal.get("proposal_id")}) if proposal else {}
     if not applied.get("applied"):
@@ -127,6 +166,13 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
                   days=sorted({day for _slot, day, _cid in removed + added}),
                   quality_after=ex.quality_dict(ex.best_quality))
     return done("applied", solver_status=status)
+
+
+def _tier_section(executor, tier: int) -> Optional[str]:
+    blocks = (executor.state.weeklyTemplate.blocks or []) if executor.state.weeklyTemplate else []
+    if not 0 <= tier < len(blocks):
+        return None
+    return executor.section_names.get(blocks[tier].sectionId, blocks[tier].sectionId)
 
 
 def repair_note(report: Optional[dict]) -> Optional[str]:
