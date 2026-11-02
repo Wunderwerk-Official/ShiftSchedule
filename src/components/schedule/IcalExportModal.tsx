@@ -29,8 +29,9 @@ type IcalExportModalProps = {
   defaultPdfStartISO: string;
   /** The plan's time zone (from the holiday country); iCal event times are in it. */
   timeZone: string;
-  onDownloadAll: (options: IcalDownloadOptions) => void;
-  onDownloadClinician: (clinicianId: string, options: IcalDownloadOptions) => void;
+  /** Downloads the file, or returns why nothing was downloaded (shown in the dialog). */
+  onDownloadAll: (options: IcalDownloadOptions) => string | null | void;
+  onDownloadClinician: (clinicianId: string, options: IcalDownloadOptions) => string | null | void;
   publishStatus: IcalPublishStatus | null;
   publishLoading: boolean;
   publishError: string | null;
@@ -91,6 +92,7 @@ export default function IcalExportModal({
   const [startText, setStartText] = useState<string>("");
   const [endText, setEndText] = useState<string>("");
   const [includeUnpublished, setIncludeUnpublished] = useState(false);
+  const [downloadNotice, setDownloadNotice] = useState<string | null>(null);
   const [tab, setTab] = useState<"pdf" | "ical" | "web">("pdf");
   const [icalTab, setIcalTab] = useState<"download" | "subscribe">("subscribe");
   const [pdfStartText, setPdfStartText] = useState<string>("");
@@ -144,6 +146,7 @@ export default function IcalExportModal({
     setStartText(isoToEuropean(defaultStartISO));
     setEndText(isoToEuropean(defaultEndISO));
     setIncludeUnpublished(false);
+    setDownloadNotice(null);
     setPdfStartText(isoToEuropean(defaultPdfStartISO));
     setPdfWeeks(1);
     setPdfMode("combined");
@@ -160,6 +163,8 @@ export default function IcalExportModal({
     }
     return { startISO: start, endISO: end };
   }, [endText, startText]);
+  // A notice belongs to the range it was given for.
+  useEffect(() => setDownloadNotice(null), [range]);
 
   const validation = useMemo(() => {
     const parsedStart = parseDateInput(startText);
@@ -392,7 +397,10 @@ export default function IcalExportModal({
                   <input
                     type="checkbox"
                     checked={includeUnpublished}
-                    onChange={(event) => setIncludeUnpublished(event.target.checked)}
+                    onChange={(event) => {
+                      setIncludeUnpublished(event.target.checked);
+                      setDownloadNotice(null);
+                    }}
                     className="accent-sky-600"
                   />
                   Include unpublished weeks
@@ -645,7 +653,7 @@ export default function IcalExportModal({
                   </div>
                   <button
                     type="button"
-                    onClick={() => onDownloadAll({ ...range, includeUnpublished })}
+                    onClick={() => setDownloadNotice(onDownloadAll({ ...range, includeUnpublished }) || null)}
                     disabled={validation.hasError}
                     className={cx(
                       "inline-flex items-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900",
@@ -657,6 +665,15 @@ export default function IcalExportModal({
                     All people (one file)
                   </button>
                 </div>
+
+                {downloadNotice ? (
+                  <div
+                    role="status"
+                    className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100"
+                  >
+                    {downloadNotice}
+                  </div>
+                ) : null}
 
                 <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
                   <div className="bg-white px-4 py-2 text-xs font-semibold text-slate-500 dark:bg-slate-900 dark:text-slate-300">
@@ -675,7 +692,9 @@ export default function IcalExportModal({
                         </div>
                         <button
                           type="button"
-                          onClick={() => onDownloadClinician(clinician.id, { ...range, includeUnpublished })}
+                          onClick={() =>
+                            setDownloadNotice(onDownloadClinician(clinician.id, { ...range, includeUnpublished }) || null)
+                          }
                           disabled={validation.hasError}
                           className={cx(
                             "inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900",

@@ -314,7 +314,9 @@ function AssignmentPillImpl({
         className={cx(
           "pointer-events-none relative z-10 flex min-w-0 flex-1 select-none items-center gap-1 overflow-hidden",
           // Left-aligned in person mode: a centered row clips the initials.
-          personStyle ? "justify-start" : "justify-center",
+          // Section look: "safe" centering, so a name that still overflows
+          // (one long word) loses its end, never its first letters.
+          personStyle ? "justify-start" : "[justify-content:safe_center]",
           // The open lock of an unlocked pill appears over the row's end on
           // hover: the name fades out under it (index.css) instead of a box
           // on top. Touch screens keep room for it instead (padding above).

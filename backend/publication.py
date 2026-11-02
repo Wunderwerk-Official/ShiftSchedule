@@ -177,7 +177,7 @@ def _get_clinician_publication_by_token(token: str, *, connection) -> Optional[s
         """
         SELECT username, clinician_id, token, created_at, updated_at
         FROM ical_clinician_publications
-        WHERE token = ?
+        WHERE token = ? AND revoked_at IS NULL
         """,
         (token,),
     ).fetchone()
@@ -188,7 +188,7 @@ def _get_clinician_publications_for_user(
 ) -> Dict[str, Dict[str, Any]]:
     rows = conn.execute(
         """
-        SELECT clinician_id, token, created_at, updated_at
+        SELECT clinician_id, token, created_at, updated_at, revoked_at
         FROM ical_clinician_publications
         WHERE username = ?
         """,
@@ -202,17 +202,33 @@ def _prune_clinician_publications(
 ) -> None:
     """Revoke the personal links of people no longer in the plan.
 
-    Runs with every state save, so a person added later under a removed
-    person's id gets a new link instead of the old one.
+    Runs with every state save. A revoked link answers 404. A person added
+    later under a removed person's id gets a new link (see
+    _ensure_clinician_publications); only a snapshot restore, which brings the
+    same person back, revives the old one (_revive_clinician_publications).
     """
     keep = set(clinician_ids)
     rows = conn.execute(
-        "SELECT clinician_id FROM ical_clinician_publications WHERE username = ?",
+        "SELECT clinician_id FROM ical_clinician_publications WHERE username = ? AND revoked_at IS NULL",
         (username,),
     ).fetchall()
+    now = _utcnow_iso()
     conn.executemany(
-        "DELETE FROM ical_clinician_publications WHERE username = ? AND clinician_id = ?",
-        [(username, row[0]) for row in rows if row[0] not in keep],
+        "UPDATE ical_clinician_publications SET revoked_at = ? WHERE username = ? AND clinician_id = ?",
+        [(now, username, row[0]) for row in rows if row[0] not in keep],
+    )
+
+
+def _revive_clinician_publications(
+    conn: sqlite3.Connection, username: str, clinician_ids: Iterable[str]
+) -> None:
+    """A snapshot restore brings people back as they were: their revoked
+    personal links work again, so subscribed calendars keep updating (for
+    example after undoing a Load copy with its automatic backup)."""
+    conn.executemany(
+        "UPDATE ical_clinician_publications SET revoked_at = NULL"
+        " WHERE username = ? AND clinician_id = ? AND revoked_at IS NOT NULL",
+        [(username, clinician_id) for clinician_id in set(clinician_ids)],
     )
 
 
@@ -223,15 +239,18 @@ def _ensure_clinician_publications(
     _prune_clinician_publications(conn, username, (clinician.id for clinician in clinicians))
     existing = _get_clinician_publications_for_user(conn, username)
     for clinician in clinicians:
-        if clinician.id in existing:
+        row = existing.get(clinician.id)
+        if row and not row.get("revoked_at"):
             continue
+        # A revoked link of someone in the plan again (outside a restore): the
+        # id may now belong to another person, so the old link stays dead.
         token = _new_token(conn, _token_exists)
         conn.execute(
             """
-            INSERT INTO ical_clinician_publications (
-                username, clinician_id, token, created_at, updated_at
+            INSERT OR REPLACE INTO ical_clinician_publications (
+                username, clinician_id, token, created_at, updated_at, revoked_at
             )
-            VALUES (?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, NULL)
             """,
             (username, clinician.id, token, now, now),
         )
@@ -240,6 +259,7 @@ def _ensure_clinician_publications(
             "token": token,
             "created_at": now,
             "updated_at": now,
+            "revoked_at": None,
         }
     return existing
 

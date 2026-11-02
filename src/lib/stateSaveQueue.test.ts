@@ -89,3 +89,38 @@ describe("base revision", () => {
     expect(queue.baseRevision).toBe("r1");
   });
 });
+
+describe("unchanged calendar", () => {
+  it("knows the content of the last save, revision aside, until a load is adopted", async () => {
+    const queue = new StateSaveQueue<State>();
+    queue.adopt({ revision: "r0", value: 0 });
+    // Nothing sent since the load: a first save always goes out.
+    expect(queue.isQueued({ value: 0 })).toBe(false);
+    await queue.save({ value: 1 }, async () => ({ revision: "r1", value: 1 }));
+    expect(queue.isQueued({ value: 1, revision: "other" })).toBe(true);
+    expect(queue.isQueued({ value: 2 })).toBe(false);
+    queue.adopt({ revision: "r5", value: 1 });
+    expect(queue.isQueued({ value: 1 })).toBe(false);
+  });
+
+  it("compares with the newest queued save, so an edit undone while a save is in flight is still sent", async () => {
+    const queue = new StateSaveQueue<State>();
+    queue.adopt({ revision: "r0", value: 0 });
+    await queue.save({ value: 1 }, async () => ({ revision: "r1", value: 1 }));
+    const inFlight = deferred<State>();
+    const pending = queue.save({ value: 2 }, () => inFlight.promise);
+    expect(queue.isQueued({ value: 1 })).toBe(false);
+    expect(queue.isQueued({ value: 2 })).toBe(true);
+    inFlight.resolve({ revision: "r2", value: 2 });
+    await pending;
+  });
+
+  it("forgets the content after a failed save and after a retry", async () => {
+    const queue = new StateSaveQueue<State>();
+    queue.adopt({ revision: "r0", value: 0 });
+    await expect(queue.save({ value: 1 }, async () => { throw new Error("409"); })).rejects.toThrow("409");
+    expect(queue.isQueued({ value: 1 })).toBe(false);
+    queue.retry();
+    expect(queue.isQueued({ value: 1 })).toBe(false);
+  });
+});

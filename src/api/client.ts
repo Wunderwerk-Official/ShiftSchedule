@@ -549,6 +549,8 @@ export async function getState(): Promise<AppState> {
 
 const stateSaves = new StateSaveQueue<AppState>();
 export const adoptSavedState = (state: AppState) => stateSaves.adopt(state);
+/** Whether this exact calendar (revision aside) is the last one sent by this tab and nothing failed. */
+export const isStateSaveQueued = (state: AppState) => stateSaves.isQueued(state);
 export const flushStateSaves = () => stateSaves.drain();
 /** This tab's calendar revision once its queued saves have landed (throws when one failed). */
 export async function savedStateRevision(): Promise<string | null | undefined> {

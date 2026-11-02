@@ -95,6 +95,13 @@ def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # v1.78: a person's link is revoked (not deleted) when they leave the plan,
+    # so a snapshot restore that brings the same person back revives it.
+    clinician_link_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(ical_clinician_publications)")
+    }
+    if "revoked_at" not in clinician_link_columns:
+        conn.execute("ALTER TABLE ical_clinician_publications ADD COLUMN revoked_at TEXT NULL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS web_publications (

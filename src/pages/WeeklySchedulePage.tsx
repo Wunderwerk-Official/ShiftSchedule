@@ -46,6 +46,7 @@ import {
   getWebPublishStatus,
   getState,
   adoptSavedState,
+  isStateSaveQueued,
   flushStateSaves,
   retryStateSaves,
   savedStateRevision,
@@ -942,12 +943,20 @@ export default function WeeklySchedulePage({
 
   // The .ics download: the subscription feed's events (published weeks unless
   // the dialog includes unpublished ones), built in src/lib/ical.ts.
-  const handleDownloadIcal = (options: ShiftCalendarOptions) => {
+  // Returns a notice for the dialog instead of saving an empty file.
+  const handleDownloadIcal = (options: ShiftCalendarOptions): string | null => {
     const file = buildShiftCalendar(
       { assignments: toAssignments(), rowById, clinicians, publishedWeekStartISOs, holidayCountry },
       options,
     );
-    if (file) downloadTextFile(file.fileName, file.ics, "text/calendar;charset=utf-8");
+    if (!file) return "This person is no longer in the plan.";
+    if (file.eventCount === 0) {
+      return file.unpublishedSkipped > 0
+        ? "Nothing was downloaded: the shifts in this range are in weeks that are not published. Tick “Include unpublished weeks” to download them."
+        : "Nothing was downloaded: there are no shifts in this range.";
+    }
+    downloadTextFile(file.fileName, file.ics, "text/calendar;charset=utf-8");
+    return null;
   };
 
   const openExportModal = () => {
@@ -2690,6 +2699,10 @@ export default function WeeklySchedulePage({
       if (calendarTransitionRef.current) return;
       const normalized = buildCurrentStatePayload();
       if (!normalized) return;
+      // Already sent as it is (e.g. saving resumes after a refused import or
+      // holiday change in a tab whose calendar changed elsewhere): sending it
+      // again would only report a conflict for edits the tab never made.
+      if (isStateSaveQueued(normalized)) return;
       saveState(normalized).catch((err) => {
         setSaveError(err instanceof Error ? err.message : "Changes could not be saved.");
       });

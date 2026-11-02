@@ -178,24 +178,30 @@ export type ShiftCalendarOptions = {
 export function buildShiftCalendar(
   source: ShiftCalendarSource,
   options: ShiftCalendarOptions = {},
-): { fileName: string; ics: string } | null {
+): { fileName: string; ics: string; eventCount: number; unpublishedSkipped: number } | null {
   const clinicianById = new Map(source.clinicians.map((clinician) => [clinician.id, clinician]));
   const person = options.clinicianId ? clinicianById.get(options.clinicianId) : undefined;
   if (options.clinicianId && !person) return null;
   const publishedWeeks = new Set(source.publishedWeekStartISOs);
 
   const events: ICalEvent[] = [];
+  // Shifts left out only because their week is not published (the dialog
+  // then points to "Include unpublished weeks" instead of an empty file).
+  let unpublishedSkipped = 0;
   for (const assignment of source.assignments) {
     const { dateISO } = assignment;
     if (person && assignment.clinicianId !== person.id) continue;
     if (options.startISO && dateISO < options.startISO) continue;
     if (options.endISO && dateISO > options.endISO) continue;
-    if (!options.includeUnpublished && !publishedWeeks.has(weekStartISO(dateISO))) continue;
     const row = source.rowById.get(assignment.rowId);
     const clinician = clinicianById.get(assignment.clinicianId);
     if (!row || row.kind !== "class" || !clinician) continue;
     // Vacations override assignments everywhere (grid, web page, feed).
     if (clinician.vacations.some((vacation) => vacation.startISO <= dateISO && dateISO <= vacation.endISO)) {
+      continue;
+    }
+    if (!options.includeUnpublished && !publishedWeeks.has(weekStartISO(dateISO))) {
+      unpublishedSkipped += 1;
       continue;
     }
     const section = row.sectionName || row.sectionId || "Section";
@@ -212,6 +218,8 @@ export function buildShiftCalendar(
 
   return {
     fileName: icalFileName(person),
+    eventCount: events.length,
+    unpublishedSkipped,
     ics: buildICalendar({
       calendarName: icalCalendarName(person),
       timeZone: planTimeZone(source.holidayCountry),

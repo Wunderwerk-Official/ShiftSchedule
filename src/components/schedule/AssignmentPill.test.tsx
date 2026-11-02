@@ -139,7 +139,7 @@ describe("AssignmentPill in the section look (print, public page)", () => {
     Object.defineProperty(HTMLElement.prototype, "clientWidth", {
       configurable: true,
       get(this: HTMLElement) {
-        if (this.classList.contains("justify-center")) return 38;
+        if (this.classList.contains("[justify-content:safe_center]")) return 38;
         return client.get!.call(this);
       },
     });

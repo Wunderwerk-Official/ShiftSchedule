@@ -25,6 +25,7 @@ from .auth import _get_current_user
 from .account_lifecycle import authenticated_account_connection
 from .db import _utcnow_iso
 from .models import AppState, UserPublic
+from .publication import _revive_clinician_publications
 from .state import _load_state, _normalize_state, _parse_stored_state, _save_state
 
 router = APIRouter()
@@ -240,6 +241,7 @@ def restore_snapshot(
         normalized, _ = _normalize_state(restored)
         _write_auto_backup(conn, username, backup_basis)
         _save_state(normalized, username, connection=conn)
+        _revive_clinician_publications(conn, username, (c.id for c in normalized.clinicians))
     return normalized
 
 

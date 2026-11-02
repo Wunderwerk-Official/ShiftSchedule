@@ -229,6 +229,19 @@ describe("buildShiftCalendar", () => {
     ]);
   });
 
+  it("counts the events and the shifts left out only because their week is not published", () => {
+    const assignments = [assignment("pub", "day", "2026-11-08"), assignment("draft", "day", "2026-11-09")];
+    expect(calendar({ assignments })).toMatchObject({ eventCount: 1, unpublishedSkipped: 1 });
+    expect(calendar({ assignments }, { startISO: "2026-11-09" })).toMatchObject({
+      eventCount: 0,
+      unpublishedSkipped: 1,
+    });
+    expect(calendar({ assignments }, { startISO: "2026-11-09", includeUnpublished: true })).toMatchObject({
+      eventCount: 1,
+      unpublishedSkipped: 0,
+    });
+  });
+
   it("leaves out pool rows, vacation days, other people and dates outside the range", () => {
     const { ics } = calendar(
       {

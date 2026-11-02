@@ -194,7 +194,9 @@ def test_deleted_persons_link_is_revoked_and_a_reused_id_gets_a_new_one():
     state.assignments = []
     _save_state(state, "same")
     assert client.get(f"/v1/ical/{old_token}.ics").status_code == 404
-    assert publication_rows()["ical_clinician_publications"] == []
+    # Revoked, not deleted: a snapshot restore can bring the same person back.
+    [row] = publication_rows()["ical_clinician_publications"]
+    assert row["token"] == old_token and row["revoked_at"]
     state.clinicians.append(make_clinician(removed.id, name="New Hire"))
     _save_state(state, "same")
     status = ical_routes.get_ical_publication_status(REQUEST, user)
@@ -217,11 +219,14 @@ def test_publish_status_removes_leftover_tokens_of_removed_people():
     user, _, first = seed("Dr. A")
     with closing(db._get_connection()) as conn, conn:
         conn.execute(
-            "INSERT INTO ical_clinician_publications VALUES ('same', 'gone', 'leftover', 'x', 'x')"
+            "INSERT INTO ical_clinician_publications (username, clinician_id, token, created_at, updated_at)"
+            " VALUES ('same', 'gone', 'leftover', 'x', 'x')"
         )
     status = ical_routes.get_ical_publication_status(REQUEST, user)
     assert [link.clinicianId for link in status.clinicians] == [first.clinicians[0].clinicianId]
-    assert "gone" not in {row["clinician_id"] for row in publication_rows()["ical_clinician_publications"]}
+    rows = {row["clinician_id"]: row for row in publication_rows()["ical_clinician_publications"]}
+    assert rows["gone"]["revoked_at"]
+    assert TestClient(app).get("/v1/ical/leftover.ics").status_code == 404
 
 
 def test_ical_feed_answers_head_like_get(settled_clock):
@@ -334,3 +339,24 @@ def test_public_readers_drop_stored_entries_with_impossible_dates():
     with closing(db._get_connection()) as conn:
         stored = json.loads(conn.execute("SELECT data FROM app_state WHERE id = 'same'").fetchone()[0])
     assert stored == blob
+
+
+def test_restoring_a_snapshot_revives_the_links_of_the_people_it_brings_back():
+    """Load copy (or a restore of an older snapshot) removes people; undoing it
+    with the automatic backup must give their subscribers the same links."""
+    from backend import snapshots
+
+    user, _, first = seed("Dr. A")
+    old_token = ical_token(first.clinicians[0])
+    client = TestClient(app)
+    before = _load_state("same")
+    meta = snapshots.create_snapshot(snapshots.SnapshotCreateRequest(name="before", state=before), user)
+    # A Load copy: another calendar without this person replaces the own one.
+    _save_state(make_app_state(clinicians=[make_clinician("other", name="Someone Else")]), "same")
+    assert client.get(f"/v1/ical/{old_token}.ics").status_code == 404
+    snapshots.restore_snapshot(meta.id, snapshots.SnapshotRestoreRequest(), user)
+    feed = client.get(f"/v1/ical/{old_token}.ics")
+    assert feed.status_code == 200
+    assert "UID:saved@shiftschedule" in feed.text
+    status = ical_routes.get_ical_publication_status(REQUEST, user)
+    assert ical_token(status.clinicians[0]) == old_token

@@ -167,7 +167,7 @@ describe("ScheduleGrid", () => {
     expect(pill.classList).not.toContain("min-h-7");
     const name = screen.getByText("Dr. Alice");
     expect(name.className).toBe("whitespace-nowrap text-center");
-    expect(name.parentElement?.className).toContain("justify-center");
+    expect(name.parentElement?.className).toContain("[justify-content:safe_center]");
     expect(name.parentElement?.getAttribute("title")).toBeNull();
     expect(pill.getAttribute("title")).toBeNull();
     // The lock glyph, no initials circle (no inline-styled spans at all).

@@ -125,6 +125,18 @@ describe("IcalExportModal iCal download", () => {
       expect.objectContaining({ includeUnpublished: true }),
     );
   });
+
+  it("shows why nothing was downloaded instead of saving an empty file (re-QA)", () => {
+    const notice = "Nothing was downloaded: the shifts in this range are in weeks that are not published.";
+    renderModal({ clinicians: [{ id: "c1", name: "Dr. A" }], onDownloadAll: vi.fn(() => notice) });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByRole("button", { name: "All people (one file)" }));
+    expect(screen.getByRole("status")).toHaveTextContent(notice);
+    // Ticking the checkbox clears it.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include unpublished weeks" }));
+    expect(screen.queryByText(notice)).toBeNull();
+  });
 });
 
 describe("IcalExportModal iCal subscription", () => {
