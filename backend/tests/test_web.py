@@ -95,6 +95,28 @@ class TestWebWeekEndpoint:
         assert payload.get("solverRules", []) == []
         assert "Private" not in response.text
 
+    def test_calendar_stored_with_impossible_dates_still_renders(self, client, setup_web_publication):
+        """A calendar saved before dates were checked must not break the link."""
+        conn = _get_connection()
+        blob = json.loads(conn.execute(
+            "SELECT data FROM app_state WHERE id = ?", (setup_web_publication["username"],)
+        ).fetchone()[0])
+        blob["assignments"].append(
+            {"id": "bad", "rowId": "pool-rest-day", "dateISO": "garbage", "clinicianId": "clin-1"}
+        )
+        blob["holidays"].append({"dateISO": "2026-02-30", "name": "Broken"})
+        blob["clinicians"][0]["vacations"] = [{"id": "v", "startISO": "", "endISO": "2026-01-06"}]
+        conn.execute(
+            "UPDATE app_state SET data = ? WHERE id = ?",
+            (json.dumps(blob), setup_web_publication["username"]),
+        )
+        conn.commit()
+        conn.close()
+
+        response = client.get(f"/v1/web/{setup_web_publication['token']}/week?start=2026-01-05")
+        assert response.status_code == 200, response.text
+        assert response.json()["published"] is True
+
     def test_unpublished_week_returns_not_published(
         self, client: TestClient, setup_web_publication
     ) -> None:

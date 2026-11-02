@@ -285,3 +285,49 @@ def test_import_backup_works_at_the_named_snapshot_limit(temp_db):
         _create(client, f"named {index}", state)
     res = client.post("/v1/state/snapshots/import-backup", json={"state": state.model_dump()})
     assert res.status_code == 201, res.text
+
+
+def test_import_backup_before_a_holiday_change_is_named_after_it(temp_db):
+    from backend.snapshots import HOLIDAY_CHANGE_BACKUP_NAME, IMPORT_BACKUP_NAME
+
+    client = _client_as()
+    shown = _state_with_assignment("clin-1").model_dump()
+    res = client.post(
+        "/v1/state/snapshots/import-backup", json={"state": shown, "reason": "holiday_change"}
+    )
+    assert res.status_code == 201, res.text
+    assert res.json()["name"] == HOLIDAY_CHANGE_BACKUP_NAME == "Auto-backup before holiday change"
+    # Still the one reserved slot: a later import backup replaces it.
+    res = client.post("/v1/state/snapshots/import-backup", json={"state": shown})
+    assert [(s["kind"], s["name"]) for s in client.get("/v1/state/snapshots").json()] == [
+        ("auto_backup", IMPORT_BACKUP_NAME)
+    ]
+    # Only the known reasons name a backup.
+    res = client.post(
+        "/v1/state/snapshots/import-backup", json={"state": shown, "reason": "anything"}
+    )
+    assert res.status_code == 422
+
+
+def test_restore_of_a_snapshot_stored_with_impossible_dates_drops_them(temp_db):
+    import json
+
+    client = _client_as()
+    meta = _create(client, "old", _state_with_assignment("clin-1"))
+    # Snapshots saved before dates were checked can hold impossible ones.
+    conn = db._get_connection()
+    blob = json.loads(conn.execute(
+        "SELECT data FROM calendar_snapshots WHERE id = ?", (meta["id"],)
+    ).fetchone()["data"])
+    blob["assignments"].append(
+        {"id": "bad", "rowId": "pool-rest-day", "dateISO": "2026-02-30", "clinicianId": "clin-1"}
+    )
+    blob["holidays"].append({"dateISO": "garbage", "name": "Broken"})
+    conn.execute("UPDATE calendar_snapshots SET data = ? WHERE id = ?", (json.dumps(blob), meta["id"]))
+    conn.commit()
+    conn.close()
+
+    res = client.post(f"/v1/state/snapshots/{meta['id']}/restore", json={})
+    assert res.status_code == 200, res.text
+    assert [a["id"] for a in res.json()["assignments"]] == ["a1"]
+    assert all(h["name"] != "Broken" for h in res.json()["holidays"])
