@@ -19,7 +19,7 @@ ShiftSchedule is a weekly clinician scheduling app with a React + Vite frontend 
 - AI planning drafts with explicit review and apply; CP-SAT and heuristic solvers also remain available through the API
 - Rule checks and an automatic backup before applying; incomplete drafts need confirmation
 - Revision-checked saving prevents older browser edits from overwriting newer calendar changes
-- PDF export: fast vector PDFs, A4 landscape (times side by side, whole names) or the compact week on A4 portrait, one sheet per week from Monday to Sunday, unpublished weeks marked as drafts; a running export can be cancelled
+- PDF export in the team plan's colors (person colors and initials, location colors): fast vector PDFs, A4 landscape (times side by side, whole names) or the compact week on A4 portrait, one sheet per week from Monday to Sunday, unpublished weeks marked as drafts; a running export can be cancelled
 - iCal: subscription feeds and downloads carry shift times (overnight shifts end the next morning) in the plan's time zone, which follows the holiday country; published weeks by default (a download can include unpublished weeks); a person's link ends when the person is removed
 - Public web link (read-only, published weeks): the owner's Times layout on desktop, one day at a time on phones, and the same rest days around on-call duty as the team plan
 - Short names on pills are unique within the team (also in PDFs and on the public page); person search ignores case, accents and word order

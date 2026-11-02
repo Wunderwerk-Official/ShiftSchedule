@@ -29,7 +29,7 @@ import {
   slotTimeLabel,
   type StackedRowMeta,
 } from "../../lib/stackedTeamLayout";
-import AssignmentPill from "./AssignmentPill";
+import AssignmentPill, { printPersonPillWidth } from "./AssignmentPill";
 import EmptySlotPill from "./EmptySlotPill";
 import PlanIcon from "../myPlan/PlanIcons";
 import RowLabel, { STACKED_DIVIDER, StackedLabelCells, stackedDividerLevel } from "./RowLabel";
@@ -111,7 +111,7 @@ type ScheduleGridProps = {
   onRemoveAssignment?: (args: { rowId: string; dateISO: string; assignmentId: string; clinicianId: string }) => void;
   /** A Rest Day pill dropped on the Rest Day row of another day (other drops on another day remove). */
   onMoveRestDay?: (args: MoveRestDayArgs) => void;
-  /** Person colors of the team grid by clinician id (absent = section look: print and public pages). */
+  /** Person colors of the team grid (and its PDF) by clinician id (absent = section look: the public page). */
   personPillStyles?: Map<string, PersonPillStyle>;
   /** Short names by clinician id, unique in the whole team (lib/personName buildNameLabels). */
   nameLabels?: Map<string, PersonNameLabels>;
@@ -121,7 +121,7 @@ type ScheduleGridProps = {
    * Location colors by location id (team grid, v1.71): the label cells of a
    * location's row bands alternate between its two shades and its separator
    * row is a band in its strong color. Absent = section-colored labels in the
-   * stacked layout, plain ones side by side (print and public pages).
+   * stacked layout, plain ones side by side (the public page).
    */
   locationRowTints?: Map<string, LocationRowTint>;
   /**
@@ -306,7 +306,21 @@ export default function ScheduleGrid({
   const isSingleDay = uniqueDayCount === 1;
   // Stacked: day columns may shrink to 64 px (names abbreviate down to
   // initials), so the week fits next to the label, also on A4 portrait.
-  const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : 120;
+  // Print, stacked week with person colors: wide enough for a circle beside
+  // the team's longest "First L." label (as on screen), at most 140 px; the
+  // page scales the wider week down to fit A4.
+  const printPersonDayMin = useMemo(() => {
+    if (!print || !stacked || !personPillStyles || !nameLabels || typeof window === "undefined") return null;
+    const family = window.getComputedStyle(document.body).fontFamily || "sans-serif";
+    let widest = 0;
+    for (const labels of nameLabels.values()) {
+      widest = Math.max(widest, printPersonPillWidth(labels.levels[1], family));
+    }
+    // The stacked cell's padding (px-1) and border around the pill, plus a
+    // little slack for the rendered font.
+    return Math.min(140, Math.max(64, widest + 16));
+  }, [print, stacked, personPillStyles, nameLabels]);
+  const dayColumnMin = isSingleDay ? 140 : stacked ? (printPersonDayMin ?? 64) : 120;
   // Print, times side by side: a column is as wide as its widest word (a
   // slot's time on one line, a section or name word; names and labels wrap),
   // so the week shrinks no more than it must to fit A4 and no word is cut.
@@ -325,7 +339,11 @@ export default function ScheduleGrid({
       ? "minmax(112px, 168px)"
       : "minmax(96px, 140px)"
     : splitLabels
-      ? "repeat(3, auto)"
+      ? // Print with person colors: the labels keep their one-line width (up
+        // to their max width, as on screen) and the page scales the week.
+        printPersonDayMin
+        ? "repeat(3, max-content)"
+        : "repeat(3, auto)"
       : "max-content";
   const shiftIntervalsByRowId = useMemo(() => buildShiftIntervalsByRowId(rows), [rows]);
   const { assignedIntervalsByDate, unknownIntervalsByDate } = useMemo(
@@ -966,6 +984,7 @@ function RowSection({
         personStyle={personPillStyles?.get(assignment.clinicianId)}
         isMe={!!myClinicianId && assignment.clinicianId === myClinicianId}
         compact={!!stackedMeta}
+        print={print}
         showNoEligibilityWarning={!getHasEligibleClasses(assignment.clinicianId)}
         showIneligibleWarning={
           isClassRow && !getIsQualified(assignment.clinicianId, slotRowId)

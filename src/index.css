@@ -268,7 +268,9 @@
      its section's tint). */
   .stacked-off-cell,
   .dark .stacked-off-cell {
-    background-color: rgb(226 232 240);
+    /* The screen's light hatching as one solid tone (v1.83: lighter, as the
+       hatching reads on screen; still apart from a white open slot). */
+    background-color: rgb(238 242 246);
     background-image: none;
   }
   /* Labels wrap instead of being cut off: a PDF has no tooltips. A word

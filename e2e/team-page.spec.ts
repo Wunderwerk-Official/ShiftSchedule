@@ -243,8 +243,8 @@ test("printed short names stand for one person of the team (v1.82)", async ({ pa
   );
   const labelOf = (clinicianId: string) =>
     page
-      // The pill's name (one line, or wrapped when even its last level is too wide).
-      .locator(`[data-assignment-key$="__${clinicianId}"] span.text-center`)
+      // The pill's name (beside the circle, alone, or wrapped when even its last level is too wide).
+      .locator(`[data-assignment-key$="__${clinicianId}"] [data-pill-name]`)
       .first()
       .innerText();
   for (const layout of ["", "&layout=portrait"]) {

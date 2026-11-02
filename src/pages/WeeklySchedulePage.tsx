@@ -924,7 +924,8 @@ export default function WeeklySchedulePage({
   // linked person ("That's me") gets an outline. Since v1.71 the label column
   // is colored by location (its own color or an automatic one, alternating
   // shades per row band); side by side shows neutral section blocks.
-  // Print/public pages keep the section look.
+  // The print pages use the same colors (v1.83); the public page keeps the
+  // section look.
   const linkedClinicianIndex = prefs.clinicianId
     ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
     : -1;

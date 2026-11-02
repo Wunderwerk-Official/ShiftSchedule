@@ -14,6 +14,12 @@ import {
 import { addDays, addWeeks, formatRangeLabel, startOfWeek, toISODate } from "../lib/date";
 import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
 import { buildNameLabels, type PersonNameLabels } from "../lib/personName";
+import {
+  buildLocationRowTints,
+  buildPersonPillStyles,
+  type LocationRowTint,
+  type PersonPillStyle,
+} from "../components/schedule/teamColors";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState, type ScheduleRow } from "../lib/shiftRows";
@@ -54,6 +60,9 @@ type PrintableWeekProps = {
   clinicians: Clinician[];
   /** Short names unique in the team, shared by all weeks. */
   nameLabels: Map<string, PersonNameLabels>;
+  /** The team grid's colors (light theme), shared by all weeks. */
+  personPillStyles: Map<string, PersonPillStyle>;
+  locationRowTints: Map<string, LocationRowTint>;
   holidayDates: Set<string>;
   holidayNameByDate: Record<string, string>;
   weeklyTemplate?: WeeklyCalendarTemplate;
@@ -81,6 +90,8 @@ const PrintableWeek = ({
   assignmentMap,
   clinicians,
   nameLabels,
+  personPillStyles,
+  locationRowTints,
   holidayDates,
   holidayNameByDate,
   weeklyTemplate,
@@ -257,6 +268,8 @@ const PrintableWeek = ({
                 clinicians.find((c) => c.id === id)?.name ?? "Unknown"
               }
               nameLabels={nameLabels}
+              personPillStyles={personPillStyles}
+              locationRowTints={locationRowTints}
               getHasEligibleClasses={(id) => {
                 const clinician = clinicians.find((item) => item.id === id);
                 return clinician ? clinician.qualifiedClassIds.length > 0 : false;
@@ -360,6 +373,9 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
   );
   const rowById = useMemo(() => new Map(scheduleRows.map((row) => [row.id, row])), [scheduleRows]);
   const nameLabels = useMemo(() => buildNameLabels(clinicians), [clinicians]);
+  // The team grid's colors (light theme): person pills and location labels.
+  const personPillStyles = useMemo(() => buildPersonPillStyles(clinicians, false), [clinicians]);
+  const locationRowTints = useMemo(() => buildLocationRowTints(locations, false), [locations]);
 
   // Stable per-week arrays, so each PrintableWeek's memos (rendered assignment
   // map, columns, sheet model) do not recompute on every parent render.
@@ -490,6 +506,8 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
               assignmentMap={assignmentMap}
               clinicians={clinicians}
               nameLabels={nameLabels}
+              personPillStyles={personPillStyles}
+              locationRowTints={locationRowTints}
               holidayDates={holidayDates}
               holidayNameByDate={holidayNameByDate}
               weeklyTemplate={weeklyTemplate}

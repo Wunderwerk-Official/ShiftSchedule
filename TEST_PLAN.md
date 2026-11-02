@@ -385,6 +385,9 @@ npx playwright show-report
 
 ---
 
+
+**Frontend Tests (v1.83 PDF in the team plan's colors)**: `PrintWeekPage.test.tsx` (person colors on the pills and location shades in the label column, landscape and portrait; portrait day columns wider than 64 px and at most 140 px, labels `repeat(3, max-content)`), `AssignmentPill.test.tsx` ("AssignmentPill in print with person colors": colors and the initials circle beside the name; the circle gives way to a readable name in a narrow column, never initials alone). Manual: real PDFs of the demo, QA, edge-name and long-word states (1 and 2 weeks, both layouts) keep every row, 0 raster images.
+
 ## 4. Intentionally Not Covered
 
 The following areas are explicitly excluded from automated testing:
@@ -496,3 +499,4 @@ Areas identified for future test expansion:
 | 2026-11-02 | Claude | v1.82: QA fixes — timed iCal events in the plan's time zone (format switch per database, removed people's links, same-second caching, real DST durations in My plan), holiday changes confirmed with a backup, impossible dates rejected with 422, complete and fast PDFs with draft marker, Monday file names and Cancel, team-unique short names and accent-insensitive search, public page rest days / Times layout / phone day view, checked shifts file import and revision-safe backups (Load copy included), rest days by drag, loading card for all scopes, week in the address (§3.14) |
 | 2026-11-02 | Claude | v1.82 re-QA round: soft-revoked personal iCal links revived on restore, public readers clean stored data, unchanged calendars not re-sent, modal Export dialog and progress overlay, rest day not moved onto vacation, vacation kept on header drops, names wrap instead of being cut, stale non-CI e2e specs updated |
 | 2026-11-02 | Claude | v1.82 merged onto v1.78–v1.81: Working hours count real time across DST (`minutesOf`); swap-assistant and snapshot-wait e2e expect the Team loading card while loading; phone day label "Thu 08.01.2026" |
+| 2026-11-02 | Claude | v1.83: PDF in the team plan's colors (person pills with initials, location label shades); portrait day columns sized for a circle beside the name |

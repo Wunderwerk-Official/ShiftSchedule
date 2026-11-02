@@ -293,3 +293,65 @@ describe("AssignmentPill find swap", () => {
     expect(pill.classList).toContain("[@media(hover:none)]:pr-[22px]");
   });
 });
+
+describe("AssignmentPill in print with person colors (v1.83)", () => {
+  // The section-look fakes of the block above are gone here: fake a 120 px
+  // or a 40 px row and 6 px per character, the circle 16 px wide.
+  const undo: Array<() => void> = [];
+  let row = 120;
+  beforeAll(() => {
+    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth")!;
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains("justify-start") || this.classList.contains("[justify-content:safe_center]")) return row;
+        return client.get!.call(this);
+      },
+    });
+    const offset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth")!;
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains("h-4")) return 16;
+        return offset.get!.call(this);
+      },
+    });
+    const scroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollWidth");
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.tagName === "SPAN") return Array.from(this.textContent ?? "").length * 6;
+        return 0;
+      },
+    });
+    undo.push(() => {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", client);
+      Object.defineProperty(HTMLElement.prototype, "offsetWidth", offset);
+      if (scroll) Object.defineProperty(HTMLElement.prototype, "scrollWidth", scroll);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+    });
+  });
+  afterAll(() => undo.forEach((step) => step()));
+
+  it("keeps the web look: colors and the initials circle beside the name", async () => {
+    row = 120;
+    const { container } = render(<AssignmentPill name="Sarah Neumann" personStyle={personStyle} print />);
+    const pill = container.querySelector('[data-assignment-pill="true"]') as HTMLElement;
+    expect(pill.style.backgroundColor).not.toBe("");
+    // 13 characters (78 px) + 16 px circle + 4 px gap fit in 120 px.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(within(container).getByText("SN")).toBeInTheDocument();
+    expect(within(container).getByText("Sarah Neumann")).toBeInTheDocument();
+  });
+
+  it("lets the circle give way to a readable name where the column is narrow", async () => {
+    row = 40;
+    const { container } = render(<AssignmentPill name="Sarah Neumann" personStyle={personStyle} print />);
+    await waitFor(() => expect(within(container).queryByText("SN")).toBeNull());
+    const pill = container.querySelector('[data-assignment-pill="true"]') as HTMLElement;
+    // Still the person's colors; the name (short form) shows, never initials alone.
+    expect(pill.style.backgroundColor).not.toBe("");
+    const name = container.querySelector("span.text-center") as HTMLElement;
+    expect(name.textContent?.length).toBeGreaterThan(2);
+  });
+});

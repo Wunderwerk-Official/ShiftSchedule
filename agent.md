@@ -4512,3 +4512,44 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
   people no longer listed (re-saved once); a hand-placed Rest Day entry next
   to a shift on the same day now counts as a rule violation, so existing
   calendars can show more violations. Version 1.82 (82).
+
+## v1.83 — PDF in the team plan's colors
+
+- **Why.** The PDF used the section look (sky-blue pills, section-colored
+  labels) while the team plan on screen shows each person's color and
+  initials and the locations' colors (asked for with a screenshot of the
+  stacked week).
+- **What.** `PrintWeekPage` and `PrintWeeksPage` build `buildPersonPillStyles`
+  and `buildLocationRowTints` (light theme) like the team page and pass them
+  to `ScheduleGrid`, so cells are neutral, the people carry the hue and the
+  label column carries the location shades and bands, as on screen.
+- **Pills in print** (`AssignmentPill` prop `print`, set by `ScheduleGrid`'s
+  `print`): with person colors the pill keeps fill, border and a 16 px
+  initials circle (20 px on screen) while the full name or "First L." fits
+  beside it, measured one level per frame like the section look. Where it
+  does not fit, the circle gives way and the name steps through its short
+  forms and wraps (font shrink) like the section look; there is never an
+  initials-only pill on paper. The screen's person look (canvas measurement,
+  initials-only fallback, middle cut) is unchanged.
+- **Portrait week** (stacked): the day columns get room for a circle beside
+  the team's longest "First L." label (`printPersonPillWidth`, at most
+  140 px) and the three label columns keep their one-line width
+  (`repeat(3, max-content)`, bounded by the labels' max widths); the page
+  scales the wider week down (`watchPrintContentSize`). Text on the demo
+  week: about 6.2 pt for names (was larger, without circles). Landscape
+  keeps its widest-word columns; the circles cost a little width (median
+  text 5.8 pt on the demo week, 6.4 pt before).
+- `whenPrintLayoutSettles` now waits 12 stable frames (the circle phase adds
+  two steps to the name ladder).
+- A day without a slot prints in a lighter solid tone (`rgb(238 242 246)`,
+  was slate-200), closer to the screen's light hatching; open slots stay
+  white. The pill's name span carries `data-pill-name` (test hook).
+- The clinic sheet PDF and the public page keep their own looks.
+- Tests: `PrintWeekPage.test.tsx` (person colors and location labels in
+  both layouts; portrait day columns and one-line labels),
+  `AssignmentPill.test.tsx` (print with person colors: circle beside the
+  name, circle gives way in a narrow column). Checked with real PDFs: demo,
+  QA, edge-name and long-word states, 1 and 2 weeks, both layouts: all rows
+  present, 0 raster images.
+- Deploy notes: frontend only, no schema or data change. Version 1.83 (83).
+

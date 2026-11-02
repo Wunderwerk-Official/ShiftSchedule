@@ -25,11 +25,22 @@ const PERSON_INITIALS_ONLY = NAME_LABEL_LEVELS;
  */
 const PERSON_MIN_NAME_PX = 30;
 
+/**
+ * Print with person colors: width of a pill showing `label` beside its 16 px
+ * initials circle (border, padding, circle and gap around the 11 px text).
+ * The portrait week makes its day columns this wide for the team's
+ * "First L." labels, so the PDF looks like the team grid on screen.
+ */
+export function printPersonPillWidth(label: string, fontFamily: string): number {
+  const text = measureText(label, `400 11px ${fontFamily}`) ?? Array.from(label).length * 6.4;
+  return Math.ceil(text) + 2 + 2 + 16 + 4 + 4;
+}
+
 // Text widths via a shared canvas: lets the person-colored pill pick its
 // abbreviation in one pass instead of one re-render per level. Null where
 // canvas text metrics are unavailable (jsdom).
 let measureContext: CanvasRenderingContext2D | null | undefined;
-function measureText(text: string, font: string): number | null {
+export function measureText(text: string, font: string): number | null {
   if (measureContext === undefined) {
     const jsdom = typeof navigator !== "undefined" && navigator.userAgent.includes("jsdom");
     measureContext = jsdom ? null : (document.createElement("canvas").getContext("2d") ?? null);
@@ -145,6 +156,14 @@ type AssignmentPillProps = {
    * be narrow, so the name is measured again whenever the pill's width changes.
    */
   compact?: boolean;
+  /**
+   * Print pages (PDF): with person colors the pill keeps the web look (fill,
+   * border, initials circle) as long as the name fits beside the circle;
+   * where it does not (the narrow portrait week), the circle gives way to
+   * the name, which then steps through its short forms and wraps like the
+   * section look. There is no hover on paper, so the name always shows.
+   */
+  print?: boolean;
 };
 
 function AssignmentPillImpl({
@@ -168,12 +187,17 @@ function AssignmentPillImpl({
   personStyle,
   isMe = false,
   compact = false,
+  print = false,
 }: AssignmentPillProps) {
   // Abbreviation logic: measure if name fits, progressively abbreviate if not
   const nameRef = useRef<HTMLSpanElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const initialsRef = useRef<HTMLSpanElement>(null);
-  const hasInitials = Boolean(personStyle);
+  // Print with person colors: measured like the section look (one level per
+  // frame), the circle shown while the name fits beside it.
+  const printPerson = print && Boolean(personStyle);
+  // The screen's person look (canvas measurement, initials-only fallback).
+  const hasInitials = Boolean(personStyle) && !printPerson;
   // A locked pill's lock takes room in the row (the name abbreviates next to
   // it); an unlocked pill's lock only appears on hover and takes none.
   const lockInRow = !!onToggleLock && isLocked;
@@ -187,6 +211,8 @@ function AssignmentPillImpl({
   // Font size of a wrapped label whose longest word is wider than the pill:
   // smaller (down to 8 px) so words wrap at spaces instead of splitting.
   const [wrapFontPx, setWrapFontPx] = useState<number | null>(null);
+  // Print with person colors: false once the name no longer fits beside the circle.
+  const [printCircle, setPrintCircle] = useState(true);
   // Person colors: a middle cut that keeps the distinguishing end (middleCut).
   const [personCut, setPersonCut] = useState<string | null>(null);
   // Bumped when the row width changes (person mode): measure again.
@@ -209,6 +235,7 @@ function AssignmentPillImpl({
     setAbbreviationLevel(0);
     setWrapLastLevel(false);
     setWrapFontPx(null);
+    setPrintCircle(true);
     // lockInRow: locking a pill takes room for its lock, unlocking frees it.
   }, [name, levels, hasInitials, lockInRow]);
 
@@ -226,6 +253,7 @@ function AssignmentPillImpl({
       setAbbreviationLevel(0);
       setWrapLastLevel(false);
       setWrapFontPx(null);
+      setPrintCircle(true);
       setLayoutVersion((version) => version + 1);
     });
     observer.observe(containerEl);
@@ -263,7 +291,19 @@ function AssignmentPillImpl({
     // Use requestAnimationFrame to ensure layout is computed
     const rafId = requestAnimationFrame(() => {
       // A locked pill's lock sits next to the row, so the row is already narrower.
-      const isOverflowing = nameEl.scrollWidth > containerEl.clientWidth;
+      const circleRoom = printPerson && printCircle ? (initialsRef.current?.offsetWidth ?? 0) + 4 : 0;
+      const isOverflowing = nameEl.scrollWidth + circleRoom > containerEl.clientWidth;
+      if (printPerson && printCircle) {
+        // Beside the circle: the full name, then "First L."; then the circle
+        // gives way and the name starts over with the whole width.
+        if (!isOverflowing) return;
+        if (abbreviationLevel < 1) setAbbreviationLevel(1);
+        else {
+          setPrintCircle(false);
+          setAbbreviationLevel(0);
+        }
+        return;
+      }
       if (isOverflowing && abbreviationLevel < NAME_LABEL_LEVELS - 1) {
         setAbbreviationLevel((prev) => prev + 1);
       } else if (
@@ -283,7 +323,7 @@ function AssignmentPillImpl({
     return () => cancelAnimationFrame(rafId);
     // A lock in the row changes the room for the name (also at level 0, where
     // the reset above changes no state).
-  }, [displayName, abbreviationLevel, hasInitials, layoutVersion, lockInRow, wrapLastLevel]);
+  }, [displayName, abbreviationLevel, hasInitials, layoutVersion, lockInRow, wrapLastLevel, printPerson, printCircle]);
 
   const isAbbreviated = abbreviationLevel > 0;
   const showHighlight = isHighlighted && !isDragging;
@@ -318,9 +358,10 @@ function AssignmentPillImpl({
   // SPEC C5.13: 1 px border, 20 px initials circle 3 px from the edge (same
   // 24 px height as the section pill). The lock of a locked pill sits in the
   // row and brings its own spacing, so the pill keeps only a small padding.
+  const showCircle = Boolean(personStyle) && (!printPerson || printCircle);
   const paddingClass = cx(
-    personStyle ? "py-px pl-0.5" : "py-0.5 pl-1.5",
-    lockInRow ? "pr-px" : "pr-1.5",
+    personStyle ? (showCircle ? "py-px pl-0.5" : "py-0.5 pl-1") : "py-0.5 pl-1.5",
+    lockInRow ? "pr-px" : personStyle && !showCircle ? "pr-1" : "pr-1.5",
     // Touch screens have no hover, so an unlocked pill always shows its lock
     // (and its ⇄ button): keep their room there, and the name is measured
     // beside them, not under them. A locked pill makes that room with a row
@@ -380,7 +421,7 @@ function AssignmentPillImpl({
           // Left-aligned in person mode: a centered row clips the initials.
           // Section look: "safe" centering, so a name that still overflows
           // (one long word) loses its end, never its first letters.
-          personStyle ? "justify-start" : "[justify-content:safe_center]",
+          showCircle ? "justify-start" : "[justify-content:safe_center]",
           // The open lock of an unlocked pill (and the ⇄ button) appears over
           // the row's end on hover: the name fades out under it (index.css)
           // instead of a box on top. Touch screens keep room for them instead
@@ -392,11 +433,15 @@ function AssignmentPillImpl({
             : lockOnHover && "pill-lock-fade",
         )}
       >
-        {personStyle ? (
+        {personStyle && showCircle ? (
           <span
             ref={initialsRef}
             aria-hidden="true"
-            className="grid h-5 w-5 shrink-0 place-items-center rounded-full text-[11px] font-semibold leading-none"
+            className={cx(
+              "grid shrink-0 place-items-center rounded-full font-semibold leading-none",
+              // Print: a smaller circle, so the name keeps more of the narrow paper columns.
+              printPerson ? "h-4 w-4 text-[9px]" : "h-5 w-5 text-[11px]",
+            )}
             style={{
               backgroundColor: personStyle.color.strong,
               color: personStyle.color.onStrong,
@@ -407,10 +452,13 @@ function AssignmentPillImpl({
         ) : null}
         <span
           ref={nameRef}
+          data-pill-name="true"
           className={cx(
-            personStyle
+            personStyle && !printPerson
               ? "min-w-0 truncate"
-              : wrapLastLevel
+              : printPerson && printCircle
+                ? "min-w-0 whitespace-nowrap"
+                : wrapLastLevel
                 ? "min-w-0 whitespace-normal break-words text-center leading-[12px]"
                 : "whitespace-nowrap text-center",
             initialsOnly && "sr-only",
@@ -525,6 +573,7 @@ function arePillPropsEqual(
     prev.personStyle?.initials === next.personStyle?.initials &&
     prev.isMe === next.isMe &&
     prev.compact === next.compact &&
+    prev.print === next.print &&
     prev.labels === next.labels
   );
 }

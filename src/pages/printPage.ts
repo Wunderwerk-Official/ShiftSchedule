@@ -98,12 +98,12 @@ export const unscaledSize = (content: HTMLElement) => ({
 
 /**
  * Calls `onSettled` once every print content box (`data-print-content`) has
- * kept its size and scale for `frames` animation frames: the pills step
+ * kept its size and scale for `frames` animation frames (12): the pills step
  * through their abbreviation levels one per frame and may wrap at the end,
  * and the page re-fits after that. The PDF must not be taken before.
  * Returns a cancel function.
  */
-export function whenPrintLayoutSettles(onSettled: () => void, frames = 8): () => void {
+export function whenPrintLayoutSettles(onSettled: () => void, frames = 12): () => void {
   let last = "";
   let stable = 0;
   let frame = 0;

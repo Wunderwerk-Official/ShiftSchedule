@@ -61,3 +61,41 @@ describe("PrintWeekPage layout", () => {
     expect(screen.queryByText("Draft – not published")).toBeNull();
   });
 });
+
+describe("PrintWeekPage colors (v1.83)", () => {
+  afterEach(() => window.history.pushState({}, "", "/"));
+
+  const withShift = () => {
+    const state = printTestState();
+    const slot = state.weeklyTemplate!.locations[0].slots[0];
+    return {
+      ...state,
+      assignments: [{ id: "a1", rowId: slot.id, dateISO: "2026-01-05", clinicianId: state.clinicians[0].id }],
+    };
+  };
+
+  it.each(["", "&layout=portrait"])("prints the team grid's person colors and location labels%s", async (layout) => {
+    vi.mocked(getState).mockResolvedValueOnce(withShift());
+    await renderAt(`?start=2026-01-05${layout}`);
+    const pill = await waitFor(() => {
+      const element = document.querySelector('[data-assignment-pill="true"]') as HTMLElement | null;
+      expect(element).not.toBeNull();
+      return element!;
+    });
+    // Person colors: the pill's own fill and border, as on screen.
+    expect(pill.style.backgroundColor).not.toBe("");
+    expect(pill.style.borderColor).not.toBe("");
+    // The label column carries the location's shades.
+    expect(document.querySelector("[data-label-shade]")).not.toBeNull();
+  });
+
+  it("keeps the portrait labels on one line and sizes the days for a circle beside the name", async () => {
+    vi.mocked(getState).mockResolvedValueOnce(withShift());
+    await renderAt("?start=2026-01-05&layout=portrait");
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    expect(grid.style.gridTemplateColumns).toContain("repeat(3, max-content)");
+    const dayMin = Number(/repeat\(7, minmax\((\d+)px/.exec(grid.style.gridTemplateColumns)?.[1]);
+    expect(dayMin).toBeGreaterThan(64);
+    expect(dayMin).toBeLessThanOrEqual(140);
+  });
+});
