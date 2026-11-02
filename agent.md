@@ -2201,7 +2201,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   at most one slot per day type per lane. The day type with the most slots
   opens the lanes in column order; the other days join them by the same time
   and section, then the same time, then the nearest start on the clock
-  (00:00 is next to 22:00). Matching on time,
+  (00:00 is next to 22:00; since v1.76 only among lanes whose shift overlaps
+  the slot's, else it opens a lane of its own). Matching on time,
   not on the col band order, matters because the template numbers each day's
   columns on its own (a weekend with "Day | Night" puts its night shift into
   the weekday night lane). Lanes without a slot on the visible days are left
@@ -2239,7 +2240,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   (`.stacked-off-cell`, so it never reads as an empty slot, also in print); a
   qualified drop target gets an inset ring. A cell writes only a time other
   than its lane's (compact "08:00–20:00", wrapping after the dash in narrow
-  columns); a cell of another section than the
+  columns; since v1.76 a quiet clock + time note under the people, no chip);
+  a cell of another section than the
   lane's gets a small corner mark (no text; replaced by a tag in v1.73, and
   impossible since v1.76, where a lane holds one section); its section and
   time are in its tooltip.
@@ -2254,8 +2256,9 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   `otherSections` are gone (a lane holds one section) and the label is three
   cells (row band | section | time).
 - **Narrower columns.** Stacked day columns may shrink to 64 px, so seven
-  days fit next to even the widest label (about 290 px; about 315 px with the
-  v1.76 three-column label) on A4 portrait; names
+  days fit next to even the widest label (about 290 px; since v1.76 the
+  three label columns are `auto` tracks that wrap narrower instead) on A4
+  portrait; names
   abbreviate (down to initials). `AssignmentPill` `compact`: an unfixed solver
   pill shows its fix button only on hover or keyboard focus (always on touch
   screens) and keeps no room for it; a fixed pill keeps the button. Compact
@@ -2629,7 +2632,8 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   correct "Not qualified" for people who only have IRM tout ZK looked like
   a bug.
 - **Now** such a cell names its section in a quiet tag at its top, in the
-  style of the own-time tag (`STACKED_CELL_TAG` in `ScheduleGrid.tsx`,
+  style of the own-time tag (`STACKED_CELL_TAG` in `ScheduleGrid.tsx`; since
+  v1.76 `STACKED_OWN_TIME`, a plain note under the people,
   `data-other-section`), before a differing time; the corner mark is gone.
   Cells of the lane's own section are unchanged; the label's "+N" and the
   cell tooltip stay. Print and the portrait PDF use the same grid, so the
@@ -2930,10 +2934,20 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
 - **Lanes by section** (`src/lib/stackedTeamLayout.ts::buildSectionLanes`,
   pure): a class row's slots are grouped by section (`sectionId`, else
   `sectionName` / `name`) and each section is split by `buildTimeLanes`
-  (same time first, then the nearest start). Two slots of one section on the
-  same day get two lanes; a variant of the section with another time (e.g.
-  Saturday 08:00–13:00 next to weekday 07:30–13:00) stays in the section's
-  lane and its cell shows its own time.
+  (same time first, then the nearest start among the lanes whose shift
+  overlaps the slot's — on the clock, so a 00:00 Saturday night overlaps a
+  22:00 weekday night; touching ends like 07:30–13:00 / 13:00–16:00 do not
+  overlap). Two slots of one section on the same day get two lanes; a
+  variant of the section with another time that overlaps it (e.g. Saturday
+  08:00–13:00 next to weekday 07:30–13:00, a shorter Friday) stays in the
+  section's lane and its cell shows its own time. A section's separate time
+  blocks on different days get a lane each, hatched on the other days: the
+  user's IRM cardio HK (Mon and Thu 07:30–13:00, Wed 13:00–16:00 and
+  16:00–19:00) has three lanes. Without the overlap rule Wednesday (the
+  busiest day) opened the 13:00 and 16:00 lanes and Monday's 07:30 joined the
+  13:00 lane by the nearest start, so the row read "07:30–13:00" while its
+  Wednesday cell held the afternoon shift under an in-cell time tag — the
+  same misreading as the old section tag.
 - **Lane order** is computed from all of the row's slots, not only the
   visible days, so it and the lane ids (`${row.id}__t${n}`, or `row.id` when
   one lane is on screen) are the same in every week: sections by their
@@ -2951,15 +2965,23 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   untitled lane would read as the section above), and so is a later lane
   without a time. `sectionName` / `sectionColor` are now exact for the lane.
 - **Label design** (`RowLabel.tsx::StackedLabelCells`). In the stacked week
-  the label column is three grid columns (`repeat(3, max-content)` in
+  the label column is three grid columns (`repeat(3, auto)` in
   `ScheduleGrid`, `splitLabels`): row band | section | time. The row band
   cell spans all visible lanes of its row (`grid-row: span groupSpan`), the
   section cell all lanes of its section (`span sectionSpan`), the time cell is
   per lane — merged cells, so the label reads location band → row band →
   section → its times. Grid auto-placement puts later lanes' cells next to
   the spans (no explicit rows; separators only come before a row's first
-  lane). Row band: bold capitals, up to three lines at 84 px; section: up to
-  two lines at 112 px; time: tabular digits, right-aligned, one column. Team
+  lane). Row band: bold capitals, at most 128 px wide (room for one long word
+  such as HINTERGRUNDDIENST), up to three lines or one per lane; section: at
+  most 112 px (160 px from `lg`), up to four lines or two per lane plus one
+  (`WebkitLineClamp` from `groupSpan` / `sectionSpan`, so a spanning cell
+  uses its height instead of an ellipsis); time: tabular digits,
+  right-aligned, one column. The three label columns are `repeat(3, auto)`
+  tracks: as wide as their text when there is room; when seven 64 px days
+  leave less (A4 portrait with long names) the row band and section columns
+  wrap narrower — `overflow-wrap: anywhere`, so a word breaks only as a last
+  resort and the week never overflows the page. Team
   grid: every label cell takes its row band's location shade (v1.71 colors
   and alternation unchanged); a faint line separates the row band column.
   Print, PDF and public pages (no location tints): row band cells neutral
@@ -2968,34 +2990,50 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   section is in an sr-only span and in the time cell's tooltip ("IRM neuro
   HK · 16:00–19:00"). The top-left header and the pool row labels span the
   three columns. A single-day view (phone) keeps one label cell per lane
-  (`StackedRowLabel`: row band on the row's first lane, section on its first
-  lane, time).
+  (`StackedRowLabel`: row band on the row's first lane, then section and
+  time on every lane — a later lane of one section in a quieter
+  `opacity-75` — since there is no spanning section cell; only a section
+  named like its row band stays unnamed on its first section, as in the
+  week).
 - **Dividers** (`STACKED_DIVIDER` in `RowLabel.tsx`, bottom borders in
   see-through ink so a line looks the same on white, hatched, section-tinted
   and location-colored cells): a hairline between the lanes of a section, a
   line between sections, a stronger line between rows (row bands). Spanning
   label cells end with their last lane's level, and with none before the
   pools separator.
-- **Cells.** The in-cell section tag (`data-other-section`) is gone; the
-  own-time tag (`data-own-time`, `STACKED_CELL_TAG`), the tooltip (section ·
-  time) and the hatched days without a slot stay.
-- **Width.** The widest label is about 315 px (row band 17 + 84, section
-  14 + 112, time 86); on A4 portrait (764 px in print media) seven 64 px day
-  columns still fit. The demo of the user's plan: label 286 px, days 68 px.
-- **More rows.** Mon–Sun lanes: arena `fixture_complex.json` 33 → 39 (14
-  class rows), `default_state.json` 7 → 7, the user's demo plan 13 → 24.
+- **Cells.** The in-cell section tag (`data-other-section`) is gone. A time
+  other than the lane's (only an overlapping variant now, e.g. Saturday
+  08:00–13:00 in the 07:30–13:00 lane) is no longer a grey chip at the top
+  of the cell, the look users took for a row label: it is a quiet note under
+  the people — clock glyph (`PlanIcon` "clock") and the compact time in
+  10 px slate-500 tabular digits, no background or ring
+  (`STACKED_OWN_TIME`, `data-own-time`). The tooltip (section · time) and
+  the hatched days without a slot stay.
+- **Width.** At most about 405 px on wide screens (row band 17 + 128,
+  section 14 + 160, time 86). On A4 portrait (764 px in print media) seven
+  64 px days leave 316 px; the auto tracks fit the label into that (the
+  user's demo plan: row band 130, section 99, time 86 px; days 64 px), and
+  with very long names (HINTERGRUNDDIENST and "interventionnelle" in one
+  plan) the row band and section columns share the room and wrap.
+- **More rows.** Mon–Sun lanes: arena `fixture_complex.json` 33 → 40 (14
+  class rows), `default_state.json` 7 → 7, the user's demo plan 13 → 27.
 - Unchanged: side by side, the clinic sheet, the v1.71 colors, person pills,
   slot ids, assignment keys and cell `data-*` attributes, so drag & drop, the
   picker, highlights and "Show in team plan" work as before.
-- Help → "Times: Stacked" rewritten (one workplace per row, line weights, no
-  "+N"). README feature line updated.
-- Tests: `src/lib/stackedTeamLayout.test.ts` (`buildSectionLanes`; layout
-  meta, spans, stable ids and order), `ScheduleGrid.test.tsx` (three label
-  columns and spans, divider levels, single-day label, no section tag, tints,
-  screen-reader section, location shades), `HelpView.test.tsx`,
+- Help → "Times: Stacked" rewritten (one workplace and time block per row,
+  line weights, the clock note for a day's own time, no "+N"). README
+  feature line updated.
+- Tests: `src/lib/stackedTeamLayout.test.ts` (`buildTimeLanes`: a slot
+  that overlaps no free lane opens its own; `buildSectionLanes`: the
+  rotating cardio pattern gives three lanes without a differing time; layout
+  meta, spans, stable ids and order — also when a hidden day or a holiday
+  decides the order), `ScheduleGrid.test.tsx` (three label columns and
+  spans, the pool row label spans all three, divider levels, single-day
+  label names every lane, no section tag, own time as a note under the
+  people, tints, screen-reader section, location shades), `HelpView.test.tsx`,
   `e2e/team-page.spec.ts` ("Stacked gives every section of a row band its
   own lanes"); the column counts in `team-page.spec.ts`,
   `PrintWeekPage.test.tsx` and `PrintWeeksPage.test.tsx` now read the day
   columns (`repeat(N, minmax`), since the stacked grid starts with
-  `repeat(3, max-content)`.
+  `repeat(3, auto)`.
 - Deploy notes: frontend only, no schema or data change. Version 1.76 (76).

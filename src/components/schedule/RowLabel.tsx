@@ -16,8 +16,9 @@ type RowLabelProps = {
 const LABEL_FONT = { fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' };
 
 // Stacked label text, shared by the week (three cells) and the single day
-// (one cell). Row band: bold capitals; section: medium, up to two lines;
-// time: tabular digits, so every time has the same width and they line up.
+// (one cell). Row band: bold capitals; section: medium, up to two lines (the
+// week's spanning cells allow more, see StackedLabelCells); time: tabular
+// digits, so every time has the same width and they line up.
 const BAND_TEXT =
   "line-clamp-3 break-words text-[11px] font-semibold uppercase leading-4 tracking-wide text-slate-800 dark:text-slate-50";
 const SECTION_TEXT =
@@ -88,6 +89,11 @@ export function StackedLabelCells({
       ? "stacked-label-tint"
       : "bg-white dark:bg-slate-900";
   const shade = tint?.background;
+  // A spanning cell has the height of all its lanes: long names wrap onto
+  // more lines there instead of being cut off (a row band three at least,
+  // one per lane; a section four at least, two per lane and one more).
+  const bandLines = Math.max(3, meta.groupSpan ?? 1);
+  const sectionLines = Math.max(4, 2 * (meta.sectionSpan ?? 1) + 1);
   // A later lane of a section shows only its time; screen readers still
   // hear which section it belongs to.
   const hiddenSection = !meta.isFirstInSection && meta.title ? meta.title : undefined;
@@ -108,9 +114,13 @@ export function StackedLabelCells({
           }}
         >
           <span
-            className={cx(BAND_TEXT, "max-w-[84px]")}
+            // Room for one long word (BEREITSCHAFT, HINTERGRUNDDIENST). A word
+            // breaks only as a last resort: when the grid's auto label
+            // columns must give way (A4 portrait with long names), which
+            // overflow-wrap: anywhere allows instead of an overflowing week.
+            className={cx(BAND_TEXT, "max-w-[128px] [overflow-wrap:anywhere]")}
             title={meta.groupLabel}
-            style={{ ...LABEL_FONT, ...inkStyle }}
+            style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: bandLines }}
           >
             {meta.groupLabel}
           </span>
@@ -125,9 +135,9 @@ export function StackedLabelCells({
         >
           {meta.title ? (
             <span
-              className={cx(SECTION_TEXT, "max-w-[112px]")}
+              className={cx(SECTION_TEXT, "max-w-[112px] [overflow-wrap:anywhere] lg:max-w-[160px]")}
               title={meta.title}
-              style={{ ...LABEL_FONT, ...inkStyle }}
+              style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: sectionLines }}
             >
               {meta.title}
             </span>
@@ -166,12 +176,13 @@ export function StackedLabelCells({
 }
 
 // Stacked single day (phone, one day on screen): one label cell per lane —
-// row band name (first lane), the section (its first lane) and the time,
-// right-aligned when there is room.
+// row band name (first lane), the section and the time, right-aligned when
+// there is room. Without the week's spanning section cell every lane names
+// its section (a later lane of the same section a little quieter), so no
+// label is just a time.
 function StackedRowLabel({ meta, ink }: { meta: StackedRowMeta; ink?: string }) {
   const inkStyle: CSSProperties | undefined = ink ? { color: ink } : undefined;
-  const section = meta.isFirstInSection || !meta.timeLabel ? meta.title : undefined;
-  const hiddenSection = !section && meta.title ? meta.title : undefined;
+  const section = meta.title;
   return (
     <div
       className="flex h-full flex-col justify-center gap-0.5 px-2.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3 sm:px-3"
@@ -184,11 +195,14 @@ function StackedRowLabel({ meta, ink }: { meta: StackedRowMeta; ink?: string }) 
           </span>
         ) : null}
         {section ? (
-          <span className={SECTION_TEXT} title={section} style={inkStyle}>
+          <span
+            className={cx(SECTION_TEXT, !meta.isFirstInSection && "opacity-75")}
+            title={section}
+            style={inkStyle}
+          >
             {section}
           </span>
         ) : null}
-        {hiddenSection ? <span className="sr-only">{hiddenSection}</span> : null}
       </div>
       {meta.timeLabel ? (
         <span className={cx(TIME_TEXT, "shrink-0")} style={{ ...LABEL_FONT, ...inkStyle }}>

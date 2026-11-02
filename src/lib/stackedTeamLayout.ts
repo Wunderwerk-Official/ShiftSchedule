@@ -1,5 +1,5 @@
 import type { DayColumn } from "./calendarView";
-import { buildShiftInterval, formatTimeRangeLabel } from "./schedule";
+import { buildShiftInterval, formatTimeRangeLabel, intervalsOverlap, type TimeRange } from "./schedule";
 import type { ScheduleRow } from "./shiftRows";
 
 // "Times: Stacked" team layout (compact week, like a "plan for all"): the
@@ -64,6 +64,23 @@ const startDistance = (a: number | undefined, b: number | undefined) => {
   return Math.min(distance, MINUTES_PER_DAY - distance);
 };
 
+/**
+ * Whether two shifts overlap on the clock, whatever day each starts (a
+ * 00:00–08:00 Saturday night shift overlaps a 22:00–06:00 weekday one).
+ * Shifts that only touch (07:30–13:00 and 13:00–16:00) do not overlap; a
+ * shift without a valid time overlaps anything, so it still finds a lane.
+ */
+const overlapsOnClock = (a: TimeRange | null, b: TimeRange | null) => {
+  if (!a || !b) return true;
+  // Shifts last at most four days (end day offset 0–3): shifting one by up
+  // to four days covers every way they can meet.
+  for (let days = -4; days <= 4; days += 1) {
+    const shift = days * MINUTES_PER_DAY;
+    if (intervalsOverlap(a, { start: b.start + shift, end: b.end + shift })) return true;
+  }
+  return false;
+};
+
 /** Most frequent value; on a tie the one that reached that count first. */
 const mostCommon = (values: string[]): string | undefined => {
   const counts = new Map<string, number>();
@@ -95,16 +112,27 @@ export const compactTimeLabel = (label: string) => label.replace(" - ", "–");
 
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
-type Lane = { time?: string; section?: string; start?: number; slots: ScheduleRow[] };
+type Lane = {
+  time?: string;
+  section?: string;
+  /** The opening slot's shift: a slot of another time joins only if it overlaps it. */
+  interval: TimeRange | null;
+  slots: ScheduleRow[];
+};
 
 /**
  * Splits slots into time lanes, at most one slot per day type each (since
- * v1.76 called per section by buildSectionLanes). The day type with the most slots opens the lanes in column order; the
- * other days join them by the same time and section, then by the same time,
- * then by the nearest start — so a weekend with fewer columns still puts its
- * night shift into the night lane, and a shorter Friday shift stays in its
- * lane (its cell shows its own time). Matching on time, not on the column
- * number, matters because the template numbers each day's columns on its own.
+ * v1.76 called per section by buildSectionLanes). The day type with the most
+ * slots opens the lanes in column order; the other days join them by the same
+ * time and section, then by the same time, then by the nearest start among
+ * the lanes whose shift overlaps theirs — so a weekend with fewer columns
+ * still puts its night shift into the night lane, and a shorter Friday shift
+ * or a Saturday 08:00–13:00 next to 07:30–13:00 stays in its lane (its cell
+ * shows its own time). A slot that overlaps no free lane opens a lane of its
+ * own (the other days are hatched there): a section's morning shift on one
+ * day and its afternoon shift on another (07:30–13:00 / 13:00–16:00) never
+ * share a lane. Matching on time, not on the column number, matters because
+ * the template numbers each day's columns on its own.
  */
 export function buildTimeLanes(slots: ScheduleRow[]): ScheduleRow[][] {
   const byDay = new Map<string, ScheduleRow[]>();
@@ -123,7 +151,7 @@ export function buildTimeLanes(slots: ScheduleRow[]): ScheduleRow[][] {
       slot,
       time: slotTimeLabel(slot),
       section: slot.sectionId ?? slot.sectionName,
-      start: buildShiftInterval(slot)?.start,
+      interval: buildShiftInterval(slot),
     }));
     const free = new Set(lanes.map((_, index) => index));
     const placed = new Map<ScheduleRow, number>();
@@ -145,7 +173,8 @@ export function buildTimeLanes(slots: ScheduleRow[]): ScheduleRow[][] {
       let best = -1;
       let bestDistance = Infinity;
       for (const index of free) {
-        const distance = startDistance(fact.start, lanes[index].start);
+        if (!overlapsOnClock(fact.interval, lanes[index].interval)) continue;
+        const distance = startDistance(fact.interval?.start, lanes[index].interval?.start);
         // Ties keep the earlier lane (indexes run in lane order).
         if (distance < bestDistance) {
           best = index;
@@ -156,7 +185,7 @@ export function buildTimeLanes(slots: ScheduleRow[]): ScheduleRow[][] {
         take(fact.slot, best);
         continue;
       }
-      lanes.push({ time: fact.time, section: fact.section, start: fact.start, slots: [] });
+      lanes.push({ time: fact.time, section: fact.section, interval: fact.interval, slots: [] });
       placed.set(fact.slot, lanes.length - 1);
     }
     for (const [slot, index] of placed) lanes[index].slots.push(slot);
@@ -176,10 +205,12 @@ export type SectionLane = {
 /**
  * Splits a class row's slots into lanes that never mix sections: the slots
  * are grouped by section, and each section is split into time lanes by
- * buildTimeLanes (same time first, then the nearest start — a weekend
- * variant with another time stays in its section's lane and its cell shows
- * its own time). The order depends only on the row's slots, not on the days
- * on screen, so it is the same in every week:
+ * buildTimeLanes (same time first, then the nearest overlapping start — a
+ * weekend variant with another time stays in its section's lane and its cell
+ * shows its own time, while a section's separate time blocks, e.g. a morning
+ * on Monday and an afternoon on Wednesday, get a lane each). The order
+ * depends only on the row's slots, not on the days on screen, so it is the
+ * same in every week:
  * - sections by their earliest start, then by their first slot in template
  *   column order (Mon column 1, Mon column 2, …, Tue column 1, …), then by
  *   name;

@@ -108,6 +108,18 @@ describe("buildTimeLanes", () => {
     expect(ids(lanes)).toEqual([["mon-late"], ["mon-night", "sat-night"]]);
   });
 
+  it("opens a lane of its own for a slot that overlaps no free lane, however near its start", () => {
+    const lanes = buildTimeLanes([
+      slot("wed-pm", { dayType: "wed", startTime: "13:00", endTime: "16:00" }),
+      slot("wed-eve", { dayType: "wed", colBandOrder: 2, startTime: "16:00", endTime: "19:00" }),
+      // Touches the 13:00 lane only: a lane of its own.
+      slot("mon-am", { startTime: "07:30", endTime: "13:00" }),
+      // Overlaps the 13:00 lane: joins it (its cell shows its own time).
+      slot("fri-pm", { dayType: "fri", startTime: "12:00", endTime: "15:00" }),
+    ]);
+    expect(ids(lanes)).toEqual([["wed-pm", "fri-pm"], ["wed-eve"], ["mon-am"]]);
+  });
+
   it("gives two slots of one day their own lanes, also without valid times", () => {
     const lanes = buildTimeLanes([
       slot("a", { startTime: undefined }),
@@ -139,13 +151,33 @@ describe("buildSectionLanes", () => {
     for (const lane of result) {
       expect(new Set(lane.slots.map((s) => s.sectionId))).toEqual(new Set([`sec-${lane.sectionName}`]));
     }
-    // Before v1.76 Monday's Neuro and Tuesday's Prostate shared the 13:00 lane.
+    // Before v1.76 Monday's Neuro and Tuesday's Prostate shared the 13:00
+    // lane. Prostate's morning (Tue) and afternoon (Wed) do not overlap: a
+    // lane each, hatched on the other day.
     expect(lanes(rotating)).toEqual([
       "Cardio: mon-1 wed-1",
-      "Prostate: tue-1 wed-2",
+      "Prostate: tue-1",
+      "Prostate: wed-2",
       "Neuro: mon-2 tue-2",
       "Neuro: mon-3",
     ]);
+  });
+
+  it("gives a section's separate time blocks on different days a lane each, so no cell differs from its lane's time", () => {
+    // The user's IRM cardio HK: Monday and Thursday mornings, Wednesday
+    // afternoon and evening. Wednesday opens the lanes; Monday's 07:30 must
+    // not join the 13:00 lane by the nearest start (they only touch).
+    const cardio = [
+      slot("mon-1", { ...sec("Cardio"), startTime: "07:30", endTime: "13:00" }),
+      slot("wed-2", { ...sec("Cardio"), dayType: "wed", colBandOrder: 2, startTime: "13:00", endTime: "16:00" }),
+      slot("wed-3", { ...sec("Cardio"), dayType: "wed", colBandOrder: 3, startTime: "16:00", endTime: "19:00" }),
+      slot("thu-1", { ...sec("Cardio"), dayType: "thu", startTime: "07:30", endTime: "13:00" }),
+    ];
+    const result = buildSectionLanes(cardio);
+    expect(lanes(cardio)).toEqual(["Cardio: mon-1 thu-1", "Cardio: wed-2", "Cardio: wed-3"]);
+    for (const lane of result) {
+      expect(new Set(lane.slots.map((s) => `${s.startTime}-${s.endTime}`)).size).toBe(1);
+    }
   });
 
   it("orders sections by earliest start, then first slot in column order, then name", () => {
@@ -225,8 +257,10 @@ describe("buildStackedTeamLayout", () => {
     slot("ct-tue-late", { dayType: "tue", colBandOrder: 2, startTime: "14:00", endTime: "20:00" }),
     // A Saturday-only night band: hidden in a Monday–Tuesday view.
     slot("ct-sat-night", { dayType: "sat", colBandOrder: 3, startTime: "22:00", endTime: "07:00", endDayOffset: 1 }),
-    slot("ct-sat-a", { dayType: "sat", startTime: "06:00", endTime: "07:00" }),
-    slot("ct-sat-b", { dayType: "sat", colBandOrder: 2, startTime: "13:00", endTime: "14:00" }),
+    // Saturday has the most slots and opens the lanes; the weekdays join the
+    // Saturday shifts their own overlap.
+    slot("ct-sat-a", { dayType: "sat", startTime: "06:00", endTime: "12:00" }),
+    slot("ct-sat-b", { dayType: "sat", colBandOrder: 2, startTime: "13:00", endTime: "21:00" }),
     // Another row band whose second column holds another section.
     slot("mr-mon", { rowBandId: "rb-mr", rowBandLabel: "MR", sectionId: "sec-mr", sectionName: "MR", name: "MR" }),
     slot("mr-mon-senior", {
@@ -360,6 +394,30 @@ describe("buildStackedTeamLayout", () => {
     ]);
     // One lane on screen: the row keeps its own id.
     expect(lanesOn([column("2026-01-06", "tue", 1, 0)])).toEqual([[ctGroup, ["tue-pro"]]]);
+  });
+
+  it("orders lanes by all of a row's slots, so a hidden day keeps the order and ids of the visible lanes", () => {
+    const a = { sectionId: "sec-a", sectionName: "A", name: "A" };
+    const slots = [
+      slot("mon-a", { ...a, startTime: "09:00", endTime: "12:00" }),
+      // Saturday gives A the earliest start (06:00): A stays above B in a
+      // week without Saturday too, although B starts first on Monday.
+      slot("sat-a", { ...a, dayType: "sat", startTime: "06:00", endTime: "10:00" }),
+      slot("mon-b", { colBandOrder: 2, sectionId: "sec-b", sectionName: "B", name: "B", startTime: "08:00", endTime: "12:00" }),
+    ];
+    const lanesOn = (cols: DayColumn[]) =>
+      buildStackedTeamLayout(buildCalendarRows(slots), cols).rows.map((row) => [
+        row.id,
+        row.slotRows?.map((s) => s.id),
+      ]);
+    const expected = [
+      [`${ctGroup}__t1`, ["mon-a", "sat-a"]],
+      [`${ctGroup}__t2`, ["mon-b"]],
+    ];
+    expect(lanesOn([...columns, column("2026-01-10", "sat", 1, 4)])).toEqual(expected);
+    expect(lanesOn(columns)).toEqual(expected);
+    // A holiday week: Saturday's date is a holiday (day type "holiday").
+    expect(lanesOn([...columns, column("2026-01-10", "holiday", 1, 4)])).toEqual(expected);
   });
 
   it("counts the visible lanes of a row and of each section for the spanning label cells", () => {

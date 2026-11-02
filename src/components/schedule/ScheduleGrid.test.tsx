@@ -552,10 +552,12 @@ describe("ScheduleGrid stacked times", () => {
     ),
   };
 
+  const restDay: ScheduleRow = { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" };
+
   it("splits the label into row band, section and time columns; band and section cells span their lanes", () => {
-    renderStacked({ rows: [rotating] });
+    renderStacked({ rows: [rotating, restDay] });
     const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
-    expect(grid.style.gridTemplateColumns.startsWith("repeat(3, max-content) repeat(2,")).toBe(true);
+    expect(grid.style.gridTemplateColumns.startsWith("repeat(3, auto) repeat(2,")).toBe(true);
     // One row band cell over the row's three lanes, one section cell per section.
     expect(labelCells("band").map((c) => [c.textContent, c.style.gridRow])).toEqual([["CT", "span 3"]]);
     expect(labelCells("section").map((c) => [c.textContent, c.style.gridRow])).toEqual([
@@ -570,6 +572,13 @@ describe("ScheduleGrid stacked times", () => {
     ]);
     // The empty top-left header and the pool rows span all three.
     expect((grid.firstElementChild as HTMLElement).style.gridColumn).toBe("span 3");
+    // The pool row's label is one cell over the three label columns and its
+    // first day cell follows it directly (no shift under section or time).
+    const restMonday = cell("pool-rest-day", MON);
+    const restLabel = restMonday.previousElementSibling as HTMLElement;
+    expect(restLabel.textContent).toBe("Rest Day");
+    expect(restLabel.style.gridColumn).toBe("span 3");
+    expect(restMonday.nextElementSibling).toBe(cell("pool-rest-day", TUE));
   });
 
   it("draws a hairline between the lanes of a section, a line between sections, a stronger one between rows", () => {
@@ -605,10 +614,37 @@ describe("ScheduleGrid stacked times", () => {
     expect(screen.queryByText("MR prostate")).toBeNull();
   });
 
-  it("shows a cell's own time only where it differs from its row", () => {
-    renderStacked();
-    expect(within(cell("ct-tue-late", TUE)).getByText("14:00–20:00")).toBeTruthy();
+  it("names the section on every lane in a single-day view, also on a later lane of one section", () => {
+    renderStacked({
+      rows: [{ ...groupRow, rowBandLabel: "Imaging" }],
+      weekDays: [new Date(2026, 0, 5)],
+      dayColumns: dayColumns.slice(0, 2),
+    });
+    // Both CT lanes (07:00 and 14:00) name CT; the later one a little quieter.
+    const names = screen.getAllByText("CT", { selector: "span" });
+    expect(names).toHaveLength(2);
+    expect(names[0].className).not.toContain("opacity-75");
+    expect(names[1].className).toContain("opacity-75");
+    expect(document.querySelector(".sr-only")).toBeNull();
+  });
+
+  it("shows a cell's own time only where it differs from its row, as a quiet note under the people", () => {
+    renderStacked({
+      assignmentMap: new Map([
+        ...assignmentMap,
+        [`ct-tue-late__${TUE}`, [{ id: "a2", rowId: "ct-tue-late", dateISO: TUE, clinicianId: "y" }]],
+      ]),
+    });
+    const tue = cell("ct-tue-late", TUE);
+    expect(within(tue).getByText("14:00–20:00")).toBeTruthy();
     expect(within(cell("ct-mon-late", MON)).queryByText("14:00–22:00")).toBeNull();
+    // Not a chip above the pills (it was taken for a row label): plain text
+    // with a clock, after the person.
+    const note = tue.querySelector<HTMLElement>("[data-own-time]")!;
+    expect(note.className).not.toMatch(/rounded|ring|bg-/);
+    expect(note.querySelector("svg")).not.toBeNull();
+    const pill = tue.querySelector('[data-assignment-pill="true"]')!;
+    expect(pill.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("never mixes sections in a lane: no section tag in a cell, the label names it", () => {

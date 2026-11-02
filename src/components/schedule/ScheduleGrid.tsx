@@ -24,6 +24,7 @@ import {
 } from "../../lib/stackedTeamLayout";
 import AssignmentPill from "./AssignmentPill";
 import EmptySlotPill from "./EmptySlotPill";
+import PlanIcon from "../myPlan/PlanIcons";
 import RowLabel, { STACKED_DIVIDER, StackedLabelCells, stackedDividerLevel } from "./RowLabel";
 import { labelShade, type LocationRowTint, type PersonPillStyle } from "./teamColors";
 import ClinicianPickerPopover from "./ClinicianPickerPopover";
@@ -37,9 +38,11 @@ import type {
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { getContrastTextColor } from "../../lib/shiftRows";
 
-// Stacked cells: the quiet tag for a time other than the lane's.
-const STACKED_CELL_TAG =
-  "max-w-full break-words rounded-md bg-slate-900/[0.05] px-1.5 py-0.5 text-[10px] font-semibold leading-3 text-slate-600 ring-1 ring-inset ring-slate-900/[0.07] dark:bg-white/[0.07] dark:text-slate-300 dark:ring-white/10";
+// Stacked cells: a time other than the lane's, as a quiet note under the
+// people (clock + time, no chip), so it reads as a detail of the slot and
+// not as a heading or a row label.
+const STACKED_OWN_TIME =
+  "mt-1 flex max-w-full items-center gap-1 text-[10px] font-medium leading-3 tabular-nums text-slate-500 dark:text-slate-400";
 
 type ScheduleGridProps = {
   leftHeaderTitle: string;
@@ -267,20 +270,22 @@ export default function ScheduleGrid({
   const todayISO = toISODate(new Date());
   const isSingleDay = uniqueDayCount === 1;
   // Stacked: day columns may shrink to 64 px (names abbreviate down to
-  // initials), so the week fits next to even the widest label (~315 px: row
-  // band, section and time columns at their widest), also
-  // on A4 portrait.
+  // initials), so the week fits next to the label, also on A4 portrait.
   const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : 120;
   // Stacked week: the label column is three columns (row band | section |
   // time), so names and times line up and a row band or section cell can span
-  // its lanes. A single day (phone) keeps one label cell per lane.
+  // its lanes. A single day (phone) keeps one label cell per lane. The three
+  // are `auto` tracks: as wide as their text when there is room; when seven
+  // 64 px days leave less (A4 portrait with long names), the row band and
+  // section columns wrap their text narrower instead of pushing the week out
+  // of the page.
   const splitLabels = !!stacked && !isSingleDay;
   const leftColumn = isSingleDay
     ? stacked
       ? "minmax(112px, 168px)"
       : "minmax(96px, 140px)"
     : splitLabels
-      ? "repeat(3, max-content)"
+      ? "repeat(3, auto)"
       : "max-content";
   const shiftIntervalsByRowId = useMemo(() => buildShiftIntervalsByRowId(rows), [rows]);
   const { assignedIntervalsByDate, unknownIntervalsByDate } = useMemo(
@@ -1265,17 +1270,16 @@ function RowSection({
                   stackedTime && stackedTime !== stackedMeta.timeLabel ? stackedTime : null;
                 return (
                   <>
+                    <div className="flex flex-col gap-1">{cellContent}</div>
                     {ownTime ? (
-                      // A quiet tag with room below it, so it does not crowd
-                      // the first pill or its "me" outline. It wraps in narrow
+                      // Below the people, so the first line of a cell is
+                      // always a person or "Open". The time wraps in narrow
                       // columns (after the dash) instead of cutting off.
-                      <div className="mb-1.5 flex flex-wrap gap-1">
-                        <span data-own-time="true" className={cx(STACKED_CELL_TAG, "tabular-nums")}>
-                          {compactTimeLabel(ownTime)}
-                        </span>
+                      <div data-own-time="true" className={STACKED_OWN_TIME}>
+                        <PlanIcon name="clock" className="h-2.5 w-2.5 shrink-0" />
+                        <span className="min-w-0 break-words">{compactTimeLabel(ownTime)}</span>
                       </div>
                     ) : null}
-                    <div className="flex flex-col gap-1">{cellContent}</div>
                   </>
                 );
               }

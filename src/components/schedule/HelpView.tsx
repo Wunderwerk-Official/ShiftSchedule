@@ -365,11 +365,13 @@ export default function HelpView() {
               grid) shows one column per day and a day&rsquo;s times as rows below each other.
               The left column reads from left to right: the row (MR, CT, …) in its
               location&rsquo;s color, its workplaces, and each workplace&rsquo;s times, lined up
-              in one column. A row of the plan never mixes workplaces: a workplace that runs only
-              on some days has its own row, hatched on the days without it. Thicker lines
-              separate the rows (MR, CT, …), thinner ones the workplaces, the finest the times of
-              one workplace. The cells show only the people (names shorten to initials in narrow
-              columns); a cell names its own time only where it differs from its row.{" "}
+              in one column. A row of the plan never mixes workplaces, nor separate times of one
+              workplace: a workplace or time that runs only on some days has its own row, hatched
+              on the days without it. Thicker lines separate the rows (MR, CT, …), thinner ones
+              the workplaces, the finest the times of one workplace. The cells show only the
+              people (names shorten to initials in narrow columns); where a day runs a little
+              differently from its row (say 08:00&ndash;13:00 on Saturday in a 07:30&ndash;13:00
+              row), a small clock under the names gives that day&rsquo;s time.{" "}
               <span className="font-medium">Side by side</span> gives every time of a day its
               own column, as before.
             </li>
