@@ -133,8 +133,8 @@ def create_import_backup(
         ):
             raise HTTPException(status_code=409, detail={
                 "code": "state_changed",
-                "message": "The calendar changed in another tab or operation. Nothing was replaced "
-                           "and the automatic backup was kept. Reload the current calendar and try again.",
+                "message": "The calendar changed in another tab or operation. "
+                           "Reload the current calendar and try again.",
             })
         _write_auto_backup(conn, current_user.username, payload.state, name=IMPORT_BACKUP_NAME)
         row = conn.execute(
