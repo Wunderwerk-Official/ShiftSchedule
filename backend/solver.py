@@ -739,12 +739,19 @@ def _repair_tiers(model, slack_by_instance, reference, var_map, tier_by_slot_id,
     for (cid, date_iso, sid) in var_map:
         if (sid, date_iso, cid) in reference:
             kept[(sid, date_iso)] = kept.get((sid, date_iso), 0) + 1
+    vars_by_instance: Dict[Tuple[str, str], List[Any]] = {}
+    for (cid, date_iso, sid), var in var_map.items():
+        vars_by_instance.setdefault((sid, date_iso), []).append(var)
     lowest = max(tier_by_slot_id.values(), default=-1) + 1
     by_tier: Dict[int, Dict[str, Any]] = {}
     for (sid, date_iso), (slack, missing, has_vars) in slack_by_instance.items():
         tier = tier_by_slot_id.get(sid, lowest)
-        entry = by_tier.setdefault(tier, {"tier": tier, "slacks": [], "reference": 0, "upper": 0, "lower": 0})
+        entry = by_tier.setdefault(tier, {"tier": tier, "slacks": [], "instances": [], "reference": 0,
+                                          "upper": 0, "lower": 0})
         entry["slacks"].append(slack)
+        # (missing, variables) per instance: a plan's real open count, as
+        # slack outside a stage's objective may sit above it.
+        entry["instances"].append((missing, vars_by_instance.get((sid, date_iso), [])))
         entry["reference"] += max(0, missing - kept.get((sid, date_iso), 0))
         entry["upper"] += missing
         if not has_vars:
@@ -785,6 +792,13 @@ def _lexicographic_window(tiers: List[Dict[str, Any]], start: int, bound: int = 
     return end
 
 
+def _tier_open(tier: Dict[str, Any], value) -> int:
+    """A tier's open positions in the plan given by ``value`` (variable ->
+    0/1), counted from the assignments, never from the slack variables."""
+    return sum(max(0, missing - sum(value(var) for var in variables))
+               for missing, variables in tier["instances"])
+
+
 def _count_windows(tiers: List[Dict[str, Any]]) -> int:
     """How many stages _lexicographic_window would cut ``tiers`` into."""
     count, index = 0, 0
@@ -818,6 +832,8 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
     incumbent = {tier["tier"]: tier["reference"] for tier in tiers}
     hint: Optional[List[int]] = None  # complete: one value per model variable
 
+    statuses: List[int] = []
+
     def run(seconds: float, objective=None, fix_to_hint: bool = False):
         if objective is not None:
             model.Minimize(objective)
@@ -845,13 +861,20 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
         finally:
             finished.set()
             watcher.join(timeout=1.0)
+        statuses.append(result)
         return solver, result
 
     def take(solver) -> None:
         nonlocal hint
         hint = list(solver.ResponseProto().solution)
         for tier in tiers:
-            incumbent[tier["tier"]] = solver.Value(tier["open"])
+            incumbent[tier["tier"]] = _tier_open(tier, solver.Value)
+        # A complete hint with tight slack: the counted values, not whatever
+        # slack the solver left on tiers outside its objective.
+        for tier in tiers:
+            for slack, (missing, variables) in zip(tier["slacks"], tier["instances"]):
+                hint[slack.Index()] = max(0, missing - sum(solver.Value(var) for var in variables))
+            hint[tier["open"].Index()] = incumbent[tier["tier"]]
 
     # Complete the plan into a hint of every variable (slack, auxiliaries):
     # a partial hint lets the first solution start elsewhere.
@@ -893,7 +916,7 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
             stage = {"tiers": len(window), "status": solver.StatusName(result),
                      "seconds": round(time.time() - started, 2)}
             if result in (cp_model.OPTIMAL, cp_model.FEASIBLE):
-                found = [solver.Value(t["open"]) for t in window]
+                found = [_tier_open(t, solver.Value) for t in window]
                 if found <= current:  # never a worse plan than the stage started from
                     take(solver)
                     best_solver, best_result = solver, result
@@ -907,7 +930,7 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
 
     if cancel_event.is_set() or callback.was_aborted:
         return {"solver": best_solver, "result": best_result, "optimal": False, "stages": stages,
-                "aborted": True}
+                "aborted": True, "infeasible": False}
     left = deadline - time.time()
     if left >= 0.5 and change_terms:
         started = time.time()
@@ -920,8 +943,13 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
             optimal = False
     elif change_terms:
         optimal = False
-    return {"solver": best_solver, "result": best_result, "optimal": optimal and best_solver is not None,
-            "stages": stages, "aborted": False}
+    aborted = cancel_event.is_set() or callback.was_aborted
+    return {"solver": best_solver, "result": best_result,
+            "optimal": optimal and best_solver is not None and not aborted,
+            "stages": stages, "aborted": aborted,
+            # No plan at all and a stage proved it: the plan being repaired
+            # cannot be represented (v1.80 reported INFEASIBLE as well).
+            "infeasible": best_solver is None and cp_model.INFEASIBLE in statuses}
 
 
 def _build_date_context(
@@ -2974,11 +3002,13 @@ def _solve_range_impl(
         if repair_search["solver"] is not None:
             solver, result = repair_search["solver"], repair_search["result"]
         else:
-            result = cp_model.UNKNOWN
+            result = cp_model.INFEASIBLE if repair_search["infeasible"] else cp_model.UNKNOWN
         stage_count = sum(1 for stage in repair_search["stages"] if "status" in stage)
+        skipped = sum(1 for stage in repair_search["stages"] if stage.get("skipped"))
         notes.append(
             f"Repair search: {len(repair_tiers)} section tier(s) in {stage_count} stage(s), "
-            f"{'every stage optimal' if repair_search['optimal'] else 'not every stage proven optimal'}."
+            f"{'every stage optimal' if repair_search['optimal'] else 'not every stage proven optimal'}"
+            + (f", {skipped} stage(s) skipped for lack of time." if skipped else ".")
         )
         if repair_search["aborted"]:
             solution_callback.was_aborted = True

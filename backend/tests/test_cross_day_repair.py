@@ -354,6 +354,100 @@ def test_strict_repair_spends_a_short_budget_on_the_top_sections_first():
     assert result.debugInfo.solver_status == "OPTIMAL"
 
 
+def test_lexicographic_weights_are_exact_and_windows_stay_in_bound():
+    """Brute force: within a window, the weighted objective orders every pair
+    of open-count vectors (each tier between its lower and upper bound)
+    exactly like the strict section order."""
+    import itertools
+    import random
+
+    from backend.solver import REPAIR_LEX_BOUND, _lexicographic_weights, _lexicographic_window
+
+    rng = random.Random(7)
+    for _ in range(200):
+        group = []
+        for _tier in range(rng.randint(1, 4)):
+            lower = rng.randint(0, 2)
+            group.append({"lower": lower, "upper": lower + rng.randint(0, 3)})
+        weights, largest = _lexicographic_weights(group)
+        vectors = list(itertools.product(*[range(t["lower"], t["upper"] + 1) for t in group]))
+        assert largest == max(sum(w * v for w, v in zip(weights, vector)) for vector in vectors)
+        for a, b in itertools.combinations(vectors, 2):
+            weighted_a, weighted_b = (sum(w * v for w, v in zip(weights, x)) for x in (a, b))
+            assert (weighted_a < weighted_b) == (a < b) and (weighted_a == weighted_b) == (a == b)
+    tiers = [{"lower": 0, "upper": 60} for _ in range(30)]
+    index = 0
+    while index < len(tiers):
+        end = _lexicographic_window(tiers, index)
+        assert end > index
+        assert end - index == 1 or _lexicographic_weights(tiers[index:end])[1] <= REPAIR_LEX_BOUND
+        index = end
+
+
+class _StuckSolver:
+    """A CP-SAT stand-in whose every solve hangs until StopSearch, or
+    returns ``status`` at once."""
+    status = None
+
+    def __init__(self):
+        import types
+        self.parameters = types.SimpleNamespace()
+        self._stopped = threading.Event()
+
+    def Solve(self, model, callback=None):
+        from ortools.sat.python import cp_model
+        if self.status is not None:
+            return self.status
+        self._stopped.wait(20)
+        return cp_model.UNKNOWN
+
+    def StopSearch(self):
+        self._stopped.set()
+
+    def StatusName(self, status=None):
+        from ortools.sat.python import cp_model
+        return {cp_model.INFEASIBLE: "INFEASIBLE"}.get(status, "UNKNOWN")
+
+
+def test_strict_repair_stops_a_running_stage_on_cancel(monkeypatch):
+    """The watcher stops a stage that would otherwise run to its time
+    limit (v1.80 stopped only at the next solution)."""
+    import backend.solver as solver_mod
+
+    monkeypatch.setattr(solver_mod.cp_model, "CpSolver", _StuckSolver)
+    cancel = threading.Event()
+    threading.Timer(0.3, cancel.set).start()
+    payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=30)
+    began = time.time()
+    result = _solve_range_impl(payload, None, cancel_event=cancel, on_progress=lambda *_: None,
+                               start_time=time.time(), state_override=trap_state(),
+                               repair_reference={GREEDY_THURSDAY}, repair_max_changes=cross_day.MAX_CHANGES)
+    assert time.time() - began < 3
+    assert result.debugInfo.solver_status == "ABORTED"
+
+
+def test_strict_repair_reports_an_infeasible_model_as_infeasible(monkeypatch):
+    import backend.solver as solver_mod
+    from ortools.sat.python import cp_model
+
+    monkeypatch.setattr(_StuckSolver, "status", cp_model.INFEASIBLE)
+    monkeypatch.setattr(solver_mod.cp_model, "CpSolver", _StuckSolver)
+    payload = SolveRangeRequest(startISO=THU, endISO=FRI, only_fill_required=True, timeout_seconds=30)
+    result = _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
+                               start_time=time.time(), state_override=trap_state(),
+                               repair_reference={GREEDY_THURSDAY}, repair_max_changes=cross_day.MAX_CHANGES)
+    assert result.debugInfo.solver_status == "INFEASIBLE" and result.assignments == []
+
+
+def test_repair_note_does_not_claim_a_section_change_that_did_not_happen():
+    """Review of v1.81: a repair the gate accepts for a later tier (e.g. a
+    broken rule repaired) leaves the section vector as it was."""
+    report = {"applied": True, "open_before": 1, "open_after": 1, "changes": 2, "sections_changed": []}
+    assert cross_day.repair_note(report) == (
+        "Cross-day repair changed 2 assignment(s) across days (1 -> 1 open; the open positions per "
+        "section did not change).")
+
+
 def test_section_vector_has_one_entry_per_section_and_sums_to_the_count():
     state = two_block_cor_state(friday_block_first=True)
     executor = greedy_executor(state)

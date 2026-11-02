@@ -176,6 +176,10 @@ def repair_note(report: Optional[dict]) -> Optional[str]:
     if after < before:
         return (f"Cross-day repair filled {before - after} more required position(s) by changing "
                 f"{report['changes']} assignment(s) across days ({detail}).")
+    if not sections:
+        # Accepted for a later quality tier (e.g. a broken rule repaired).
+        return (f"Cross-day repair changed {report['changes']} assignment(s) across days ({before} -> "
+                f"{after} open; the open positions per section did not change).")
     # Strict section order: higher sections staffed, even if more stay open.
     return (f"Cross-day repair changed {report['changes']} assignment(s) across days to staff "
             f"higher sections first ({detail}).")
