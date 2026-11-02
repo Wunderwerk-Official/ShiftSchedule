@@ -1,6 +1,7 @@
 // Accent-insensitive text search for people's names: "muller" and "mueller"
 // find "Müller", "Jorg" and "joerg" find "Jörg", "lukasiewicz" finds
-// "Łukasiewicz". Used by every person search field.
+// "Łukasiewicz", "obrien" finds "O'Brien", "jörg müller" finds "Müller,
+// Jörg". Used by every person search field.
 
 // Letters that Unicode does not decompose into a base letter plus a mark.
 const LETTER_FOLDS: Record<string, string> = {
@@ -23,26 +24,28 @@ function fold(text: string, germanUmlauts: boolean): string {
     .normalize("NFD")
     .replace(/\p{M}/gu, "")
     .replace(/[ßıłøæœđðþ]/g, (letter) => LETTER_FOLDS[letter])
+    .replace(/['’ʼ`´]/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
 
-/** "Zoë Łukasiewicz" → "zoe lukasiewicz": case and accents folded, "ß" → "ss", "ı" → "i", … */
+/** "Zoë O'Brien" → "zoe obrien": case, accents and apostrophes folded, "ß" → "ss", "ı" → "i", … */
 export function normalizeForSearch(text: string): string {
   return fold(text, false);
 }
 
 /**
- * Whether `text` contains `query`, ignoring case and accents. German umlauts
- * also match their transliteration ("ü" = "ue"), on either side. An empty
- * query matches everything.
+ * Whether `text` contains every word of `query`, in any order, ignoring case
+ * and accents. German umlauts also match their transliteration ("ü" = "ue"),
+ * on either side. An empty query matches everything.
  */
 export function matchesSearch(text: string, query: string): boolean {
-  const needles = new Set([fold(query, false), fold(query, true)]);
-  if (needles.has("")) return true;
   const haystacks = [fold(text, false), fold(text, true)];
-  for (const needle of needles) {
-    if (haystacks.some((haystack) => haystack.includes(needle))) return true;
-  }
-  return false;
+  return query
+    .split(/\s+/)
+    .every((word) =>
+      [fold(word, false), fold(word, true)].some((needle) =>
+        haystacks.some((haystack) => haystack.includes(needle)),
+      ),
+    );
 }

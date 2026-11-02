@@ -17,7 +17,8 @@ const find = (query: string) => roster.filter((name) => matchesSearch(name, quer
 
 describe("normalizeForSearch", () => {
   it("folds case, accents and letters without a decomposition", () => {
-    expect(normalizeForSearch("Zoë O'Brien-Łukasiewicz")).toBe("zoe o'brien-lukasiewicz");
+    expect(normalizeForSearch("Zoë O'Brien-Łukasiewicz")).toBe("zoe obrien-lukasiewicz");
+    expect(normalizeForSearch("D’Angelo")).toBe("dangelo");
     expect(normalizeForSearch("  Weiß   Straße ")).toBe("weiss strasse");
     expect(normalizeForSearch("Yılmaz İnce")).toBe("yilmaz ince");
     expect(normalizeForSearch("Ødegård Æsa Œhler Đukić")).toBe("odegard aesa oehler dukic");
@@ -49,6 +50,13 @@ describe("matchesSearch", () => {
     ["aesa", "Æsa Œhler"],
     ["oehler", "Æsa Œhler"],
     ["dukic", "Đorđe Đukić"],
+    ["obrien", "Zoë O'Brien-Łukasiewicz"],
+    // Words in any order: the given-first name the app shows (review).
+    ["jörg müller", "Müller, Jörg; Dr."],
+    ["jorg muller", "Müller, Jörg; Dr."],
+    ["muller jorg", "Müller, Jörg; Dr."],
+    ["Müller, J", "Müller, Jörg; Dr."],
+    ["zoe lukas", "Zoë O'Brien-Łukasiewicz"],
   ])("'%s' finds '%s'", (query, name) => {
     expect(find(query)).toEqual([name]);
   });
@@ -62,5 +70,6 @@ describe("matchesSearch", () => {
     expect(find("")).toHaveLength(roster.length);
     expect(find("   ")).toHaveLength(roster.length);
     expect(find("xyz")).toEqual([]);
+    expect(find("jörg xyz")).toEqual([]);
   });
 });

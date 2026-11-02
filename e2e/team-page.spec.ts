@@ -227,6 +227,45 @@ test("printed short names stand for one person of the team (v1.78)", async ({ pa
   }
 });
 
+test("team grid pills never show two people under one visible name (v1.78)", async ({ page }) => {
+  // Person colors cut a long "First L." with an ellipsis: "Sophie Wa." and
+  // "Sophie We." would both read "Sophie…", so those two show "S. Wa." /
+  // "S. We." where the full label does not fit.
+  const state = structuredClone(defaultState);
+  state.clinicians[0].name = "Sophie Wagner";
+  state.clinicians[1].name = "Sophie Weber";
+  state.assignments = [
+    assignment("ct", "mon", "CT", FIRST),
+    assignment("mri", "mon", "MRI", SECOND),
+    assignment("sono", "mon", "Sonography", FIRST, { locked: true }),
+    assignment("ctn", "mon", "CT Neuro", SECOND, { locked: true }),
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const shown = () =>
+    page.$$eval("[data-assignment-pill] span.min-w-0", (spans) =>
+      spans.map((span) => {
+        const text = span.textContent ?? "";
+        if (span.classList.contains("sr-only")) return { text, visible: "" };
+        // What the ellipsis leaves: the text up to the row's right edge.
+        const cut = span.scrollWidth > span.clientWidth + 1;
+        return { text, visible: cut ? `${text}…(cut)` : text };
+      }),
+    );
+  const times = page.getByRole("group", { name: "Times" });
+  for (const layout of ["Side by side", "Stacked"]) {
+    await times.getByRole("button", { name: layout }).click();
+    await page.waitForTimeout(300);
+    const pills = await shown();
+    expect(pills).toHaveLength(4);
+    for (const pill of pills) {
+      // Each pill shows a label of its own in full: the team-unique
+      // "Sophie Wa." where it fits, "S. Wa." where it does not.
+      expect(pill.visible, layout).toMatch(/^(Sophie Wagner|Sophie Weber|Sophie Wa\.|Sophie We\.|S\. Wa\.|S\. We\.)$/);
+    }
+  }
+  expect(api.errors).toEqual([]);
+});
+
 test("a locked shift moved into the Rest Day row becomes a plain rest day entry (v1.69)", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [assignment("ct", "mon", "CT", FIRST, { source: "solver", locked: true })];

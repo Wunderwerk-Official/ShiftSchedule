@@ -4,10 +4,10 @@ import AssignmentPill from "./AssignmentPill";
 import { buildPersonPillStyles } from "./teamColors";
 
 // Person colors without canvas text metrics (jsdom's own user agent, no
-// canvas mock): the pill falls back to the stepwise check, one level per
-// frame. Kept apart from AssignmentPill.test.tsx because the pill caches its
-// canvas context per module. Layout is faked: 6 px per character, a 20 px
-// initials circle and a name row of `rowWidth` px.
+// canvas mock): the pill estimates text widths from the rendered name's width
+// per character. Kept apart from AssignmentPill.test.tsx because the pill
+// caches its canvas context per module. Layout is faked: 6 px per character,
+// a 20 px initials circle and a name row of `rowWidth` px.
 let rowWidth = 66;
 const restore: Array<() => void> = [];
 

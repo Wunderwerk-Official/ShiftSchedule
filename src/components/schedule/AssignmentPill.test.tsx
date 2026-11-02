@@ -1,7 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AssignmentPill from "./AssignmentPill";
-import { buildNameLabels } from "../../lib/personName";
+import { buildNameLabels, type PersonNameLabels } from "../../lib/personName";
 import { buildPersonPillStyles } from "./teamColors";
 
 // Person colors pick the name's abbreviation from canvas text widths.
@@ -50,12 +50,12 @@ const personStyle = buildPersonPillStyles([
   { id: "c1", name: "Sarah Neumann", qualifiedClassIds: [], preferredClassIds: [], vacations: [] },
 ]).get("c1");
 
-const renderPerson = (name: string, width: number, labels?: readonly string[]) => {
+const renderPerson = (name: string, width: number, labels?: PersonNameLabels) => {
   rowWidth = width;
-  render(
+  const { container } = render(
     <AssignmentPill name={name} labels={labels} personStyle={personStyle} isLocked onToggleLock={() => {}} />,
   );
-  return screen.getByText(/./, { selector: "span.min-w-0" });
+  return within(container).getByText(/./, { selector: "span.min-w-0" });
 };
 
 describe("AssignmentPill with person colors", () => {
@@ -88,9 +88,39 @@ describe("AssignmentPill with person colors", () => {
     const labels = buildNameLabels([
       { id: "a", name: "Mehmet Yildirim" },
       { id: "b", name: "Mehmet Yılmaz" },
-    ]).get("a")?.levels;
+    ]).get("a");
     const name = renderPerson("Mehmet Yildirim", 96, labels);
     expect(name.textContent).toBe("Mehmet Yild.");
+  });
+
+  describe("two people whose cut names would read the same", () => {
+    const team = buildNameLabels([
+      { id: "wagner", name: "Sophie Wagner" },
+      { id: "weber", name: "Sophie Weber" },
+      { id: "neumann", name: "Sarah Neumann" },
+    ]);
+
+    it("show their team-unique \"F. L.\" instead of \"Sophie…\" (review: 'SW Sophie …' twice)", () => {
+      // 66 - 24 = 42 px: "Sophie Wa." (60 px) misses, and the ellipsis would
+      // leave "Sophie…" for both; "S. Wa." / "S. We." (36 px) fit.
+      const wagner = renderPerson("Sophie Wagner", 66, team.get("wagner"));
+      expect(wagner.textContent).toBe("S. Wa.");
+      const weber = renderPerson("Sophie Weber", 66, team.get("weber"));
+      expect(weber.textContent).toBe("S. We.");
+    });
+
+    it("leave other people's cut \"First L.\" alone", () => {
+      // "Sa…" already tells Sarah Neumann apart from both Sophies.
+      expect(renderPerson("Sarah Neumann", 66, team.get("neumann")).textContent).toBe("Sarah N.");
+    });
+
+    it("keep the cut \"First L.\" when not even \"F. L.\" fits", () => {
+      // 58 - 24 = 34 px: "S. Wa." (36 px) misses too; the full name stays on hover.
+      const wagner = renderPerson("Sophie Wagner", 58, team.get("wagner"));
+      expect(wagner.textContent).toBe("Sophie Wa.");
+      expect(wagner.className).toContain("truncate");
+      expect(wagner.className).not.toContain("sr-only");
+    });
   });
 
   it("shortens 'Last, First' names with titles to the given name and the family initial", () => {

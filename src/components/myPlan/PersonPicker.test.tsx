@@ -36,7 +36,8 @@ describe("PersonPicker", () => {
         .queryAllByRole("button")
         .map((button) => button.textContent ?? "");
     };
-    for (const query of ["muller", "mueller", "Jorg", "joerg"]) {
+    // Also by the name the app shows ("Jörg Müller"), words in any order.
+    for (const query of ["muller", "mueller", "Jorg", "joerg", "jörg müller", "jorg muller"]) {
       expect(found(query), query).toEqual([expect.stringContaining("Müller, Jörg; Dr.")]);
     }
     expect(found("zoe")).toEqual([expect.stringContaining("Zoë")]);
@@ -44,6 +45,7 @@ describe("PersonPicker", () => {
     expect(found("celik")).toEqual([expect.stringContaining("Çelik")]);
     expect(found("odegard")).toEqual([expect.stringContaining("Ødegård")]);
     expect(found("Lefevre")).toEqual([expect.stringContaining("Lefèvre")]);
+    expect(found("obrien")).toEqual([expect.stringContaining("O'Brien")]);
     expect(found("xyz")).toEqual([]);
   });
 
@@ -55,6 +57,8 @@ describe("PersonPicker", () => {
 
   it("names the linked person without titles in the footer", () => {
     expect(changeLinkLabel("Müller, Jörg; Dr.")).toBe("Not Jörg Müller? Change who you are");
+    // A note that tells two people apart stays (review: "Anna Schmidt (OA)" / "(AA)").
+    expect(changeLinkLabel("Anna Schmidt (OA)")).toBe("Not Anna Schmidt (OA)? Change who you are");
     expect(changeLinkLabel(undefined)).toBe("Not you? Change who you are");
   });
 });

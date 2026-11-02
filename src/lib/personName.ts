@@ -4,9 +4,10 @@ import { normalizeForSearch } from "./textSearch";
 // the clinic sheet's surnames, initials, My plan's first names and the order
 // of names in a cell. It reads "Last, First" ("Müller, Jörg; Dr."), academic
 // titles before or after the name ("Dr. med. dent.", "Prof. Dr.", "PD",
-// "Priv.-Doz.", "MD", "PhD", …), nicknames in quotes and parentheses, and
+// "Priv.-Doz.", "MD", "PhD", …), nicknames in quotes, notes in parentheses,
 // name particles ("van", "von der", "Freifrau von", …) as part of the family
-// name. Full names stay as entered wherever the UI shows a full name.
+// name, and degrees after a comma ("Anna Schmidt, MPH"). Full names stay as
+// entered wherever the UI shows a full name.
 
 export type PersonName = {
   /** Given names in order ("Hans-Joachim"; "Anna Maria" → ["Anna", "Maria"]). */
@@ -17,17 +18,29 @@ export type PersonName = {
   readonly familyCore: string;
   /** Academic titles as written ("Dr.", "med."). */
   readonly titles: readonly string[];
+  /** Nicknames in quotes as written ("„Hansi“"): not part of the name. */
+  readonly nicknames: readonly string[];
+  /** Notes in parentheses as written ("(OA)", "(geb. Meier)"): not part of the name. */
+  readonly notes: readonly string[];
 };
 
-// Titles and degrees, lowercase without the final dot.
+// Titles and degrees, lowercase without the final dot. Austrian ("Dr.in",
+// "Mag.", "Univ.-Doz."), Czech and Slovak ("MUDr.", "doc."), Italian and
+// Spanish ("Dott.ssa", "Dra.") forms included.
 const TITLES = new Set([
-  "dr", "dres", "prof", "pd", "doz", "priv.-doz", "privatdozent", "univ.-prof", "jun.-prof",
-  "apl", "md", "m.d", "phd", "ph.d", "dmd", "mba", "msc", "m.sc", "fmh", "jr", "sr",
+  "dr", "dres", "ddr", "dr.in", "prof", "pd", "doz", "priv.-doz", "privatdozent", "univ.-prof",
+  "univ.-doz", "jun.-prof", "apl", "md", "m.d", "phd", "ph.d", "dmd", "mba", "msc", "m.sc",
+  "fmh", "jr", "sr", "mag.a", "mudr", "mddr", "mvdr", "phdr", "rndr", "judr", "pharmdr",
+  "paeddr", "dott", "dott.ssa", "dr.ssa", "dra",
 ]);
-// Faculties and honours that follow a title: "Dr. med. dent.", "Dr. rer. nat.", "Dr. h.c.".
+// Titles that read as a name without their dot ("Ing Chen"): titles only with it.
+const DOTTED_TITLES = new Set(["mag", "ing", "doc", "mgr", "bc"]);
+// Faculties and honours that follow a title: "Dr. med. dent.", "Dr. rer. nat.",
+// "Dr. h.c.", "Prof. em.", "Mag. pharm.".
 const TITLE_PARTS = new Set([
   "med", "dent", "vet", "rer", "nat", "phil", "hum", "biol", "pharm", "sc", "habil", "h.c",
-  "univ", "mult", "jur", "oec", "pol", "theol", "ing", "techn", "soc", "medic", "paed",
+  "univ", "mult", "jur", "oec", "pol", "theol", "ing", "techn", "soc", "medic", "paed", "em",
+  "emer", "emerit",
 ]);
 // Particles and German noble titles: part of the family name, never its
 // initial. Short forms leave the noble titles out ("M. von Hohenzollern").
@@ -40,12 +53,15 @@ const NOBLE_TITLES = new Set([
   "freiherr", "freifrau", "freiin", "graf", "gräfin", "baron", "baronin", "prinz", "prinzessin",
   "fürst", "fürstin", "edler", "edle", "ritter",
 ]);
-// "Hans "Hansi" Müller", „Hansi“, »Hansi«, "(geb. Meier)": not part of the name.
-const NICKNAME = /["“„«»][^"“”„«»]*["”“»«]|\([^)]*\)/g;
+// "Hans "Hansi" Müller", „Hansi“, »Hansi«: a nickname; "(OA)", "(geb. Meier)":
+// a note. Neither is part of the name; full names keep them.
+const NICKNAME = /["“„«»][^"“”„«»]*["”“»«]/g;
+const NOTE = /\([^)]*\)/g;
 
 function isTitle(token: string): boolean {
   const key = token.toLowerCase().replace(/\.$/, "");
   if (TITLES.has(key) || /^(?:dipl|dr)\.-\p{L}+$/u.test(key)) return true;
+  if (DOTTED_TITLES.has(key)) return token.endsWith(".");
   // Written without spaces: "Dr.med.", "Dr.rer.nat.", "Prof.Dr."
   const parts = key.split(".");
   return (
@@ -62,6 +78,21 @@ const isTitlePart = (token: string) =>
 
 const isNobleTitle = (token: string) => NOBLE_TITLES.has(token.toLowerCase());
 const isParticle = (token: string) => PARTICLES.has(token.toLowerCase()) || isNobleTitle(token);
+
+// A degree after a comma that is not in TITLES: "MPH", "FRCR", "EDiR",
+// "MBChB", "M.A.", "B.Sc." (capitals at least as many as small letters).
+function isDegree(token: string): boolean {
+  const capitals = token.match(/\p{Lu}/gu)?.length ?? 0;
+  const small = token.match(/\p{Ll}/gu)?.length ?? 0;
+  return /^[\p{L}.]+$/u.test(token) && capitals >= 2 && capitals >= small;
+}
+
+// "Anna Schmidt": a whole name before a comma, so what follows can be degrees.
+// Not "van Berg" (one name and a particle) or "VAN DER BERG" (a name in
+// capitals: "JAN" after it is a given name, not a degree).
+const isWholeName = (words: readonly string[]) =>
+  words.filter((word) => !isParticle(word)).length >= 2 &&
+  words.some((word) => word !== word.toUpperCase());
 
 function wordsWithoutTitles(segment: string, titles: string[]): string[] {
   const words: string[] = [];
@@ -82,12 +113,26 @@ export function parsePersonName(name: string): PersonName {
   const cached = parsed.get(name);
   if (cached) return cached;
   const titles: string[] = [];
-  const segments = name
+  const nicknames: string[] = [];
+  const notes: string[] = [];
+  const segments: string[][] = [];
+  const plain = name
     .normalize("NFC")
-    .replace(NICKNAME, " ")
-    .split(/[,;]/)
-    .map((segment) => wordsWithoutTitles(segment, titles))
-    .filter((words) => words.length > 0);
+    .replace(NICKNAME, (nickname) => {
+      nicknames.push(nickname);
+      return " ";
+    })
+    .replace(NOTE, (note) => {
+      notes.push(note);
+      return " ";
+    });
+  for (const segment of plain.split(/[,;]/)) {
+    const words = wordsWithoutTitles(segment, titles);
+    if (words.length === 0) continue;
+    // "Anna Schmidt, MPH", "Lisa Wolf, M.A.": degrees, not "Last, First".
+    if (segments.length > 0 && isWholeName(segments[0]) && words.every(isDegree)) titles.push(...words);
+    else segments.push(words);
+  }
   let given: string[];
   let family: string[];
   if (segments.length >= 2) {
@@ -113,17 +158,23 @@ export function parsePersonName(name: string): PersonName {
     given = name.trim().split(/\s+/).filter(Boolean);
     family = [];
     titles.length = 0;
+    nicknames.length = 0;
+    notes.length = 0;
   }
   const core = family.find((word) => !isParticle(word)) ?? family[family.length - 1] ?? "";
-  const result: PersonName = { given, family: family.join(" "), familyCore: core, titles };
+  const result: PersonName = { given, family: family.join(" "), familyCore: core, titles, nicknames, notes };
   parsed.set(name, result);
   return result;
 }
 
-/** "Dr. med. Anna Schmidt" → "Anna Schmidt", "Müller, Jörg; Dr." → "Jörg Müller" (titles dropped). */
+/**
+ * The full name without titles, given names first: "Dr. med. Anna Schmidt" →
+ * "Anna Schmidt", "Müller, Jörg; Dr." → "Jörg Müller". Nicknames and notes
+ * stay ("Anna Schmidt (OA)"): they may be what tells two people apart.
+ */
 export function displayName(name: string): string {
-  const { given, family } = parsePersonName(name);
-  return [...given, family].filter(Boolean).join(" ") || name.trim();
+  const { given, family, nicknames, notes } = parsePersonName(name);
+  return [...given, ...nicknames, family, ...notes].filter(Boolean).join(" ") || name.trim();
 }
 
 /** First given name: "Müller, Jörg; Dr." → "Jörg". */
@@ -343,9 +394,29 @@ function teamTexts(style: LabelStyle, names: readonly string[], folded: readonly
 export type PersonNameLabels = {
   /** Pill text per abbreviation level (NAME_LABEL_LEVELS), each standing for one person of the team. */
   readonly levels: readonly string[];
+  /**
+   * Characters of "First L." (levels[1]) a pill must show when it cuts the
+   * label with an ellipsis: any fewer could be someone else ("Sophie W…" for
+   * Sophie Wagner beside Sophie Weber). One more than the label's length when
+   * no cut is safe.
+   */
+  readonly distinctLength: number;
   /** Clinic sheet text: the family name, "J. Müller" while another person shares it. */
   readonly surname: string;
 };
+
+// How many characters `label` needs before none of the other people's texts
+// starts the same way (compared without case and accents).
+function distinctLength(label: string, others: readonly string[]): number {
+  const chars = Array.from(label);
+  let rivals = others;
+  for (let length = 1; length <= chars.length; length += 1) {
+    const start = fold(chars.slice(0, length).join(""));
+    rivals = rivals.filter((other) => other.startsWith(start));
+    if (rivals.length === 0) return length;
+  }
+  return chars.length + 1;
+}
 
 /**
  * Short names for a whole team, by person id: no label of any level could
@@ -359,11 +430,15 @@ export function buildNameLabels(
   const folded = names.map(foldName);
   const styles: LabelStyle[] = [1, 2, 3, 4, "surname"];
   const [first, second, third, fourth, surname] = styles.map((style) => teamTexts(style, names, folded));
+  // What a reader could take a cut "First L." for: the other people's names
+  // (as entered and without titles) and their own "First L.".
+  const known = names.map((name, index) => [name, displayName(name), first[index]].map(fold));
   return new Map(
     people.map((person, index) => [
       person.id,
       {
         levels: [person.name, first[index], second[index], third[index], fourth[index]],
+        distinctLength: distinctLength(first[index], known.filter((_, other) => other !== index).flat()),
         surname: surname[index],
       },
     ]),

@@ -883,7 +883,7 @@ function RowSection({
       <AssignmentPill
         key={assignment.id}
         name={getClinicianName(assignment.clinicianId)}
-        labels={nameLabels?.get(assignment.clinicianId)?.levels}
+        labels={nameLabels?.get(assignment.clinicianId)}
         assignmentKey={violationKey}
         personStyle={personPillStyles?.get(assignment.clinicianId)}
         isMe={!!myClinicianId && assignment.clinicianId === myClinicianId}

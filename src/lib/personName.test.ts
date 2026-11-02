@@ -35,6 +35,31 @@ describe("parsePersonName", () => {
     ["Anna Maria Schmidt", ["Anna", "Maria"], "Schmidt", []],
     ["Dr. Nat King", ["Nat"], "King", ["Dr."]],
     ["Hans \"Hansi\" Müller (geb. Meier)", ["Hans"], "Müller", []],
+    // Austrian, Czech, Italian and Spanish titles (review: "Dr.in M.", "em. Hans Meier").
+    ["Dr.in Eva Maier", ["Eva"], "Maier", ["Dr.in"]],
+    ["Mag. pharm. Eva Maier", ["Eva"], "Maier", ["Mag.", "pharm."]],
+    ["Mag.a Eva Maier", ["Eva"], "Maier", ["Mag.a"]],
+    ["Univ.-Doz. Dr. Hans Meier", ["Hans"], "Meier", ["Univ.-Doz.", "Dr."]],
+    ["Prof. em. Dr. Hans Meier", ["Hans"], "Meier", ["Prof.", "em.", "Dr."]],
+    ["doc. MUDr. Jan Novák", ["Jan"], "Novák", ["doc.", "MUDr."]],
+    ["Ing. Jan Novák", ["Jan"], "Novák", ["Ing."]],
+    ["Ing Chen", ["Ing"], "Chen", []],
+    ["Dott.ssa Giulia Rossi", ["Giulia"], "Rossi", ["Dott.ssa"]],
+    ["Dra. Carmen López", ["Carmen"], "López", ["Dra."]],
+    // Degrees after a comma are not "Last, First" (review: "MPH A.").
+    ["Anna Schmidt, MPH", ["Anna"], "Schmidt", ["MPH"]],
+    ["Jörg Müller, FRCR", ["Jörg"], "Müller", ["FRCR"]],
+    ["Anna Schmidt, EDiR", ["Anna"], "Schmidt", ["EDiR"]],
+    ["Jörg Müller, Dr. med., MHBA", ["Jörg"], "Müller", ["Dr.", "med.", "MHBA"]],
+    ["Lisa Wolf, M.A.", ["Lisa"], "Wolf", ["M.A."]],
+    ["Paul Kern, B.Sc.", ["Paul"], "Kern", ["B.Sc."]],
+    ["Jean DUPONT, MPH", ["Jean"], "DUPONT", ["MPH"]],
+    // … while a name before the comma that is one word, or in capitals, is "Last, First".
+    ["SCHMIDT, ANNA", ["ANNA"], "SCHMIDT", []],
+    ["SCHMIDT MÜLLER, ANNA", ["ANNA"], "SCHMIDT MÜLLER", []],
+    ["VAN DER BERG, JAN", ["JAN"], "VAN DER BERG", []],
+    ["van Berg, J.", ["J."], "van Berg", []],
+    ["García López, María José", ["María", "José"], "García López", []],
   ])("%s", (name, given, family, titles) => {
     expect(parts(name)).toMatchObject({ given, family, titles });
   });
@@ -73,7 +98,17 @@ describe("name helpers", () => {
     expect(displayName("Dr. Lena Hoffmann")).toBe("Lena Hoffmann");
     expect(displayName("Müller, Jörg; Dr.")).toBe("Jörg Müller");
     expect(displayName("van Beethoven, Ludwig")).toBe("Ludwig van Beethoven");
+    expect(displayName("Anna Schmidt, MPH")).toBe("Anna Schmidt");
+    expect(displayName("Prof. em. Dr. Hans Meier")).toBe("Hans Meier");
     expect(displayName("Dr.")).toBe("Dr.");
+  });
+
+  it("keeps nicknames and notes in the full name (review: two lanes 'Anna Schmidt')", () => {
+    expect(displayName("Anna Schmidt (OA)")).toBe("Anna Schmidt (OA)");
+    expect(displayName("Schmidt, Anna (AA); Dr.")).toBe("Anna Schmidt (AA)");
+    expect(displayName("Hans \"Hansi\" Müller (geb. Meier)")).toBe("Hans \"Hansi\" Müller (geb. Meier)");
+    expect(displayName("Müller, Hans „Hansi“")).toBe("Hans „Hansi“ Müller");
+    expect(displayName("\"Quote\"")).toBe("\"Quote\"");
   });
 
   it("finds the first given name", () => {
@@ -142,6 +177,14 @@ describe("nameLabelsOf (one person)", () => {
     // A family name that is only an initial needs the given name.
     expect(nameLabelsOf("Marion P.").surname).toBe("Marion P.");
     expect(nameLabelsOf("Jonas").surname).toBe("Jonas");
+  });
+
+  it("shortens the review's titled names to the name", () => {
+    expect(nameLabelsOf("Dr.in Eva Maier").levels.slice(1)).toEqual(["Eva M.", "E. Maier", "E. M.", "EM"]);
+    expect(nameLabelsOf("Anna Schmidt, MPH").levels.slice(1)).toEqual(["Anna S.", "A. Schmidt", "A. S.", "AS"]);
+    expect(nameLabelsOf("Anna Schmidt, MPH").surname).toBe("Schmidt");
+    expect(initialsOf("MUDr. Jan Novák")).toBe("JN");
+    expect(givenNameOf("Prof. em. Dr. Hans Meier")).toBe("Hans");
   });
 
   it("never shortens a word to something as long as the word", () => {
@@ -222,6 +265,25 @@ describe("buildNameLabels (team-wide)", () => {
       expect(new Set(keys).size, `level ${level}: ${keys.join(", ")}`).toBe(names.length);
     }
     expect(new Set(labels.map((entry) => entry.surname)).size).toBe(names.length);
+  });
+
+  it("counts the characters of \"First L.\" a cut must keep to stay one person's", () => {
+    const [wagner, weber, sarah] = labelsOf(["Sophie Wagner", "Sophie Weber", "Sarah Neumann"]);
+    // "Sophie W…" could be either Sophie; "Sa…" is only Sarah.
+    expect(wagner.distinctLength).toBe(Array.from("Sophie Wa").length);
+    expect(weber.distinctLength).toBe(Array.from("Sophie We").length);
+    expect(sarah.distinctLength).toBe(2);
+    const [yildirim, yilmaz] = labelsOf(["Mehmet Yildirim", "Mehmet Yılmaz"]);
+    expect(yildirim.distinctLength).toBe(Array.from("Mehmet Yild").length);
+    expect(yilmaz.distinctLength).toBe(Array.from("Mehmet Yılm").length);
+    // "Andrea…" could be Andreas; the people's names count, not only their labels.
+    const [andrea, andreas] = labelsOf(["Schulz, Andrea", "Andreas Schulz"]);
+    expect(andrea.distinctLength).toBe(Array.from("Andrea S").length);
+    expect(andreas.distinctLength).toBe(Array.from("Andreas").length);
+    // Identical names: no cut is safe.
+    const [first] = labelsOf(["Anna Schmidt", "Anna Schmidt"]);
+    expect(first.distinctLength).toBe(Array.from("Anna Schmidt").length + 1);
+    expect(nameLabelsOf("Sophie Weber").distinctLength).toBe(1);
   });
 
   it("matches the labels of a lone person when nobody collides", () => {
