@@ -462,7 +462,10 @@ const pillOf = (page: Page, rowId: string, dateISO: string, clinicianId: string)
 const galileoPill = (page: Page) => pillOf(page, THU_CT, "2026-01-08", FIRST);
 /** Anchored: a cell's accessible name contains its pills' button labels. */
 const findSwapIn = (pill: Locator) => pill.getByRole("button", { name: /^Find swap for / });
-const drawer = (page: Page) => page.getByRole("dialog");
+// The swap drawer, not the page's "Updating calendar…" overlay (also a modal
+// dialog), which a handover can show for a moment while the drawer closes.
+const drawer = (page: Page) =>
+  page.getByRole("dialog").filter({ hasNot: page.locator("#calendar-transition-status") });
 /** Chromium moves focus to <body> when it disables or removes the focused button. */
 const focusInDrawer = (page: Page) => page.evaluate(() => document.activeElement?.closest('[role="dialog"]') != null);
 
