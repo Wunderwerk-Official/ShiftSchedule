@@ -12,9 +12,16 @@ import {
   readDragPayload,
   type DateIntervalIndex,
   type DragPayload,
+  type MoveRestDayArgs,
 } from "../../lib/clinicianSlotOptions";
 import { formatDayHeader, toISODate } from "../../lib/date";
-import { formatTimeRangeLabel, sortAssignmentsBySurname } from "../../lib/schedule";
+import type { PersonNameLabels } from "../../lib/personName";
+import {
+  formatTimeRangeLabel,
+  REST_DAY_POOL_ID,
+  sortAssignmentsBySurname,
+  VACATION_POOL_ID,
+} from "../../lib/schedule";
 import { getDayType } from "../../lib/dayTypes";
 import {
   buildStackedTeamLayout,
@@ -22,7 +29,7 @@ import {
   slotTimeLabel,
   type StackedRowMeta,
 } from "../../lib/stackedTeamLayout";
-import AssignmentPill from "./AssignmentPill";
+import AssignmentPill, { printPersonPillWidth } from "./AssignmentPill";
 import EmptySlotPill from "./EmptySlotPill";
 import PlanIcon from "../myPlan/PlanIcons";
 import RowLabel, { STACKED_DIVIDER, StackedLabelCells, stackedDividerLevel } from "./RowLabel";
@@ -102,15 +109,19 @@ type ScheduleGridProps = {
   onAddAssignment?: (args: { rowId: string; dateISO: string; clinicianId: string }) => void;
   onToggleAssignmentLock?: (assignment: AssignmentIdentity) => void;
   onRemoveAssignment?: (args: { rowId: string; dateISO: string; assignmentId: string; clinicianId: string }) => void;
-  /** Person colors of the team grid by clinician id (absent = section look: print and public pages). */
+  /** A Rest Day pill dropped on the Rest Day row of another day (other drops on another day remove). */
+  onMoveRestDay?: (args: MoveRestDayArgs) => void;
+  /** Person colors of the team grid (and its PDF) by clinician id (absent = section look: the public page). */
   personPillStyles?: Map<string, PersonPillStyle>;
+  /** Short names by clinician id, unique in the whole team (lib/personName buildNameLabels). */
+  nameLabels?: Map<string, PersonNameLabels>;
   /** Clinician whose pills get the "you" outline (the linked person, with person colors). */
   myClinicianId?: string | null;
   /**
    * Location colors by location id (team grid, v1.71): the label cells of a
    * location's row bands alternate between its two shades and its separator
    * row is a band in its strong color. Absent = section-colored labels in the
-   * stacked layout, plain ones side by side (print and public pages).
+   * stacked layout, plain ones side by side (the public page).
    */
   locationRowTints?: Map<string, LocationRowTint>;
   /**
@@ -119,6 +130,13 @@ type ScheduleGridProps = {
    * (compact week, see lib/stackedTeamLayout).
    */
   timeLayout?: TeamTimeLayout;
+  /**
+   * Print pages (PDF): times side by side get columns as wide as their
+   * widest word and tighter paddings, so the week shrinks less to fit the A4
+   * page and its text stays legible; names wrap onto two lines there instead
+   * of shortening. Labels wrap in print anyway (index.css .print-wrap).
+   */
+  print?: boolean;
   /** "Find swap" of a class pill (its ⇄ button and the S key); editable grids only. */
   onFindSwap?: (assignment: SwapAssignmentRef) => void;
   /** "Find cover…" in the picker of a slot with an open position. */
@@ -158,11 +176,14 @@ export default function ScheduleGrid({
   enforceSameLocationPerDay = true,
   onAddAssignment,
   onRemoveAssignment,
+  onMoveRestDay,
   onToggleAssignmentLock,
   personPillStyles,
+  nameLabels,
   myClinicianId,
   locationRowTints,
   timeLayout = "columns",
+  print = false,
   onFindSwap,
   onFindCover,
 }: ScheduleGridProps) {
@@ -285,7 +306,26 @@ export default function ScheduleGrid({
   const isSingleDay = uniqueDayCount === 1;
   // Stacked: day columns may shrink to 64 px (names abbreviate down to
   // initials), so the week fits next to the label, also on A4 portrait.
-  const dayColumnMin = isSingleDay ? 140 : stacked ? 64 : 120;
+  // Print, stacked week with person colors: wide enough for a circle beside
+  // the team's longest "First L." label (as on screen), at most 140 px; the
+  // page scales the wider week down to fit A4.
+  const printPersonDayMin = useMemo(() => {
+    if (!print || !stacked || !personPillStyles || !nameLabels || typeof window === "undefined") return null;
+    const family = window.getComputedStyle(document.body).fontFamily || "sans-serif";
+    let widest = 0;
+    for (const labels of nameLabels.values()) {
+      widest = Math.max(widest, printPersonPillWidth(labels.levels[1], family));
+    }
+    // The stacked cell's padding (px-1) and border around the pill, plus a
+    // little slack for the rendered font.
+    return Math.min(140, Math.max(64, widest + 16));
+  }, [print, stacked, personPillStyles, nameLabels]);
+  const dayColumnMin = isSingleDay ? 140 : stacked ? (printPersonDayMin ?? 64) : 120;
+  // Print, times side by side: a column is as wide as its widest word (a
+  // slot's time on one line, a section or name word; names and labels wrap),
+  // so the week shrinks no more than it must to fit A4 and no word is cut.
+  const dayColumnTrack =
+    print && !stacked ? "minmax(min-content, 1fr)" : `minmax(${dayColumnMin}px, 1fr)`;
   // Stacked week: the label column is three columns (row band | section |
   // time), so names and times line up and a row band or section cell can span
   // its lanes. A single day (phone) keeps one label cell per lane. The three
@@ -299,7 +339,11 @@ export default function ScheduleGrid({
       ? "minmax(112px, 168px)"
       : "minmax(96px, 140px)"
     : splitLabels
-      ? "repeat(3, auto)"
+      ? // Print with person colors: the labels keep their one-line width (up
+        // to their max width, as on screen) and the page scales the week.
+        printPersonDayMin
+        ? "repeat(3, max-content)"
+        : "repeat(3, auto)"
       : "max-content";
   const shiftIntervalsByRowId = useMemo(() => buildShiftIntervalsByRowId(rows), [rows]);
   const { assignedIntervalsByDate, unknownIntervalsByDate } = useMemo(
@@ -419,7 +463,10 @@ export default function ScheduleGrid({
     : "";
 
   return (
-    <div className="schedule-grid mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10 print:max-w-none print:px-0 print:pb-0">
+    // Print: never narrower than the grid's columns (whole words in the
+    // wrapped labels need their room), so nothing is cut off at the right;
+    // the print page shrinks the wider week to fit instead.
+    <div className="schedule-grid mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10 print:min-w-min print:max-w-none print:px-0 print:pb-0">
       <div
         data-schedule-shell="true"
         className="relative mt-4 rounded-2xl border-2 border-slate-900/80 bg-white p-[2px] shadow-sm dark:border-slate-700 dark:bg-slate-900 sm:mt-6 sm:rounded-3xl"
@@ -465,8 +512,10 @@ export default function ScheduleGrid({
                           if (isCell) return;
                           e.preventDefault();
                           // A malformed payload (e.g. a cross-tab drop) is ignored.
+                          // A Vacation pill dropped on a header, label or gap
+                          // keeps its day: vacation ends only outside the calendar.
                           const payload = readDragPayload(e.dataTransfer);
-                          if (payload && onRemoveAssignment) {
+                          if (payload && payload.rowId !== VACATION_POOL_ID && onRemoveAssignment) {
                             onRemoveAssignment(payload);
                           }
                           setDragging(null);
@@ -476,7 +525,7 @@ export default function ScheduleGrid({
                     gridTemplateColumns: `${leftColumn} repeat(${Math.max(
                       columns.length,
                       1,
-                    )}, minmax(${dayColumnMin}px, 1fr))`,
+                    )}, ${dayColumnTrack})`,
                   }}
                 >
                   <div
@@ -503,10 +552,12 @@ export default function ScheduleGrid({
                   return (
                     <div
                       key={`day-${dateISO}`}
+                      // The holiday name is clipped to the column: full name on hover.
+                      title={holidayName}
                       className={cx(
                         "sticky top-0 z-30 relative border-b border-r-2 border-slate-300 px-2 py-1 text-center overflow-visible dark:border-slate-700 sm:px-3",
                         isHoliday
-                          ? "bg-[#F3E8FF] dark:bg-slate-800"
+                          ? "bg-[#F3E8FF] dark:bg-[#2E1F47]"
                           : isWeekend
                             ? "bg-[#F3F4F6] dark:bg-slate-800"
                             : "bg-slate-50 dark:bg-slate-900",
@@ -525,7 +576,8 @@ export default function ScheduleGrid({
                           </div>
                           <div className="text-[11px] font-normal tracking-wide text-slate-900 dark:text-slate-100">
                             {isToday ? (
-                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-900 text-slate-900 dark:border-slate-100 dark:text-slate-100">
+                              // A printout does not mark the day it was printed.
+                              <span className="inline-flex h-5 w-5 items-center justify-center rounded-full border border-slate-900 text-slate-900 dark:border-slate-100 dark:text-slate-100 print:border-transparent">
                                 {dayOfMonth}
                               </span>
                             ) : (
@@ -534,7 +586,7 @@ export default function ScheduleGrid({
                           </div>
                         </div>
                         {holidayName ? (
-                          <div className="max-w-[12ch] truncate text-[8px] font-normal leading-tight text-purple-700 dark:text-purple-200">
+                          <div className="print-wrap max-w-[12ch] truncate text-[8px] font-normal leading-tight text-purple-700 dark:text-purple-200 print:max-w-none">
                             {holidayName}
                           </div>
                         ) : null}
@@ -599,6 +651,7 @@ export default function ScheduleGrid({
                         enableSlotOverrides={enableSlotOverrides}
                         onMoveWithinDay={onMoveWithinDay}
                         onRemoveAssignment={onRemoveAssignment}
+                        onMoveRestDay={onMoveRestDay}
                         onToggleAssignmentLock={onToggleAssignmentLock}
                         onFindSwap={onFindSwap}
                         dragging={dragging}
@@ -621,12 +674,14 @@ export default function ScheduleGrid({
                         rowKindById={rowKindById}
                         onEmptySlotClick={onAddAssignment ? handleEmptySlotClick : undefined}
                         personPillStyles={personPillStyles}
+                        nameLabels={nameLabels}
                         myClinicianId={myClinicianId}
                         labelTint={labelTint}
                         stackedMeta={stackedMeta}
                         splitLabels={splitLabels}
                         groupDivider={splitLabels ? spanDivider(stackedMeta?.groupSpan) : undefined}
                         sectionDivider={splitLabels ? spanDivider(stackedMeta?.sectionSpan) : undefined}
+                        print={print}
                       />
                     </Fragment>
                   );
@@ -678,6 +733,7 @@ function RowSection({
   enableSlotOverrides,
   onMoveWithinDay,
   onRemoveAssignment,
+  onMoveRestDay,
   onToggleAssignmentLock,
   onFindSwap,
   dragging,
@@ -700,12 +756,14 @@ function RowSection({
   rowKindById,
   onEmptySlotClick,
   personPillStyles,
+  nameLabels,
   myClinicianId,
   labelTint,
   stackedMeta,
   splitLabels = false,
   groupDivider,
   sectionDivider,
+  print,
 }: {
   row: ScheduleRow;
   dayColumns: {
@@ -741,6 +799,7 @@ function RowSection({
     assignmentId: string;
     clinicianId: string;
   }) => void;
+  onMoveRestDay?: (args: MoveRestDayArgs) => void;
   dragging: DragPayload | null;
   setDragging: (next: DragPayload | null) => void;
   hoveredClassCell: { rowId: string; dateISO: string } | null;
@@ -767,6 +826,7 @@ function RowSection({
     openCount: number,
   ) => void;
   personPillStyles?: Map<string, PersonPillStyle>;
+  nameLabels?: Map<string, PersonNameLabels>;
   myClinicianId?: string | null;
   /** Location color of the label cell: its row band's shade and the text on it. */
   labelTint?: { background: string; ink: string };
@@ -777,6 +837,8 @@ function RowSection({
   /** Bottom borders of the row band and section cells that span lanes from here. */
   groupDivider?: string;
   sectionDivider?: string;
+  /** Print pages: tighter paddings, wrapped names (see ScheduleGrid). */
+  print: boolean;
 }) {
   const rowBg =
     row.id === "pool-vacation"
@@ -856,9 +918,11 @@ function RowSection({
       unknownIntervalsByDate,
     });
   // Drop on a pool or class cell: a same-day drop moves the pill, a drop on
-  // its own cell is a no-op. A drop from another day, onto an inactive cell
-  // or onto a slot that clashes with another shift of the person removes the
-  // assignment. A malformed payload is ignored.
+  // its own cell is a no-op. A Rest Day pill dropped on the Rest Day row of
+  // another day moves there. Any other drop from another day, onto an
+  // inactive cell or onto a slot that clashes with another shift of the
+  // person removes the assignment; a Vacation pill stays (a vacation day ends
+  // only when its pill leaves the calendar). A malformed payload is ignored.
   const handleCellDrop = (
     event: ReactDragEvent<HTMLElement>,
     targetRowId: string,
@@ -869,13 +933,25 @@ function RowSection({
     const payload = readDragPayload(event.dataTransfer);
     setDragging(null);
     if (!payload) return;
+    const removeOnMissedDrop = () => {
+      if (payload.rowId !== VACATION_POOL_ID) onRemoveAssignment?.(payload);
+    };
     if (payload.dateISO !== dateISO) {
-      onRemoveAssignment?.(payload);
+      if (isRestDayMove(payload.rowId, targetRowId) && onMoveRestDay) {
+        onMoveRestDay({
+          fromDateISO: payload.dateISO,
+          toDateISO: dateISO,
+          assignmentId: payload.assignmentId,
+          clinicianId: payload.clinicianId,
+        });
+      } else {
+        removeOnMissedDrop();
+      }
       return;
     }
     if (payload.rowId === targetRowId) return;
     if (isInactiveTarget || !canDropAssignment(payload, targetRowId, dateISO)) {
-      onRemoveAssignment?.(payload);
+      removeOnMissedDrop();
       return;
     }
     onMoveWithinDay({
@@ -888,12 +964,7 @@ function RowSection({
   };
   // One pill of a pool or class cell; slotRowId is the row it lives in. Only
   // class rows show the lock, the eligibility warning and the highlights.
-  const renderPill = (
-    assignment: RenderedAssignment,
-    slotRowId: string,
-    dateISO: string,
-    siblingNames: string[],
-  ) => {
+  const renderPill = (assignment: RenderedAssignment, slotRowId: string, dateISO: string) => {
     const isClassRow = row.kind === "class";
     const isDraggingAssignment =
       dragging?.assignmentId === assignment.id &&
@@ -908,11 +979,12 @@ function RowSection({
       <AssignmentPill
         key={assignment.id}
         name={getClinicianName(assignment.clinicianId)}
-        siblingNames={siblingNames}
+        labels={nameLabels?.get(assignment.clinicianId)}
         assignmentKey={violationKey}
         personStyle={personPillStyles?.get(assignment.clinicianId)}
         isMe={!!myClinicianId && assignment.clinicianId === myClinicianId}
         compact={!!stackedMeta}
+        print={print}
         showNoEligibilityWarning={!getHasEligibleClasses(assignment.clinicianId)}
         showIneligibleWarning={
           isClassRow && !getIsQualified(assignment.clinicianId, slotRowId)
@@ -974,6 +1046,10 @@ function RowSection({
         className={cx(
           !readOnly && "cursor-grab active:cursor-grabbing",
           isDraggingAssignment && "opacity-0",
+          // Print, times side by side (splitLabels = the compact week, whose
+          // 64 px names keep shortening): "Laurent / Catel" on two lines
+          // instead of "L. C."; the column fits the name's widest word.
+          print && !splitLabels && "[&_span]:whitespace-normal",
         )}
       />
     );
@@ -1008,7 +1084,7 @@ function RowSection({
                 : null),
           }}
         >
-          <RowLabel row={row} ink={labelTint?.ink} stacked={stackedMeta} />
+          <RowLabel row={row} ink={labelTint?.ink} stacked={stackedMeta} readOnly={readOnly} />
         </div>
       )}
       {row.kind === "pool"
@@ -1019,9 +1095,12 @@ function RowSection({
             const cellKey = `${row.id}__${dateISO}__pool`;
             const assignments = assignmentMap.get(`${row.id}__${dateISO}`) ?? [];
             const sortedAssignments = sortAssignmentsBySurname(assignments, getClinicianName);
-            // For unique abbreviations within the cell.
-            const siblingNames = sortedAssignments.map((a) => getClinicianName(a.clinicianId));
-            const isOtherDay = !!dragging && dragging.dateISO !== dateISO;
+            // A dragged Rest Day pill can move to another day's Rest Day
+            // cell: those stay bright, the rest of the other days greys out.
+            const isOtherDay =
+              !!dragging &&
+              dragging.dateISO !== dateISO &&
+              !(onMoveRestDay && isRestDayMove(dragging.rowId, row.id));
             const cellBgClass = isOtherDay
               ? "bg-slate-200/70 text-slate-400 opacity-60"
               : rowBg;
@@ -1041,7 +1120,7 @@ function RowSection({
                     : (e) => {
                         if (!dragging) return;
                         e.preventDefault();
-                        if (dragging.dateISO === dateISO) e.dataTransfer.dropEffect = "move";
+                        if (!isOtherDay) e.dataTransfer.dropEffect = "move";
                       }
                 }
                 onDrop={readOnly ? undefined : (e) => handleCellDrop(e, row.id, dateISO, false)}
@@ -1050,7 +1129,8 @@ function RowSection({
                 data-row-kind={row.kind}
                 data-date-iso={dateISO}
                 className={cx(
-                  "row group relative border-r border-slate-200 p-0.5 text-left dark:border-slate-800 sm:p-1",
+                  "row group relative border-r border-slate-200 p-0.5 text-left dark:border-slate-800",
+                  !print && "sm:p-1",
                   borderBottomClass,
                   cellBgClass,
                   isDayDivider && "border-r-2 border-slate-300 dark:border-slate-700",
@@ -1064,7 +1144,7 @@ function RowSection({
                 {sortedAssignments.length > 0 ? (
                   <div className="flex flex-col gap-1">
                     {sortedAssignments.map((assignment) =>
-                      renderPill(assignment, row.id, dateISO, siblingNames),
+                      renderPill(assignment, row.id, dateISO),
                     )}
                   </div>
                 ) : null}
@@ -1118,8 +1198,6 @@ function RowSection({
           ? assignmentMap.get(`${activeRow.id}__${dateISO}`) ?? []
           : [];
         const sortedAssignments = sortAssignmentsBySurname(assignments, getClinicianName);
-        // For unique abbreviations within the cell.
-        const siblingNames = sortedAssignments.map((a) => getClinicianName(a.clinicianId));
         const targetSlots = isCellActive
           ? Math.max(0, baseRequired + slotOverride)
           : 0;
@@ -1236,7 +1314,7 @@ function RowSection({
             }
             className={cx(
               "row group relative border-r border-slate-200 text-left dark:border-slate-800",
-              stackedMeta ? "px-1 py-1" : "p-0.5 sm:p-1",
+              stackedMeta ? "px-1 py-1" : print ? "p-0.5" : "p-0.5 sm:p-1",
               borderBottomClass,
               stackedMeta ? stackedBgClass : cellBgClass,
               stackedMeta && showQualified && "ring-2 ring-inset ring-slate-900 dark:ring-slate-100",
@@ -1260,7 +1338,7 @@ function RowSection({
                 <>
                   {sortedAssignments.length > 0
                     ? sortedAssignments.map((assignment) =>
-                        renderPill(assignment, activeRow.id, dateISO, siblingNames),
+                        renderPill(assignment, activeRow.id, dateISO),
                       )
                     : null}
                   {emptySlots > 0
@@ -1330,7 +1408,8 @@ function RowSection({
                   // the user hovered a drop-eligible cell during a drag.
                   // Only the color/dash style changes now.
                   className={cx(
-                    "h-full w-full min-h-[48px] rounded-lg border-2 bg-white/95 px-2 py-0.5 shadow-sm dark:bg-slate-950",
+                    "h-full w-full min-h-[48px] rounded-lg border-2 bg-white/95 py-0.5 shadow-sm dark:bg-slate-950",
+                    print ? "px-1" : "px-2",
                     showQualified
                       ? "border-slate-900 dark:border-slate-100"
                       : "border-slate-200 dark:border-slate-700",
@@ -1343,11 +1422,11 @@ function RowSection({
                     const textColors = getContrastTextColor(sectionFill);
                     return (
                       <div className={cx("flex flex-col gap-0.5 text-[10px] font-semibold", textColors.primary)}>
-                        <span className="truncate">
+                        <span className="print-wrap truncate">
                           {activeRow.sectionName ?? activeRow.name}
                         </span>
                         {effectiveRowTimeLabel ? (
-                          <span className={cx("text-[10px] font-medium", textColors.secondary)}>
+                          <span className={cx("text-[10px] font-medium print:whitespace-nowrap", textColors.secondary)}>
                             {effectiveRowTimeLabel}
                           </span>
                         ) : null}
@@ -1365,6 +1444,11 @@ function RowSection({
       })}
     </>
   );
+}
+
+/** A Rest Day pill dropped on the Rest Day row (of another day: a move). */
+function isRestDayMove(fromRowId: string, toRowId: string) {
+  return fromRowId === REST_DAY_POOL_ID && toRowId === REST_DAY_POOL_ID;
 }
 
 function SeparatorRow() {
@@ -1417,7 +1501,7 @@ function LocationSeparatorRow({
     tint && locationName ? (
       <span
         data-location-band="true"
-        className="block max-w-full truncate text-[10px] font-bold uppercase leading-4 tracking-[0.08em]"
+        className="print-wrap block max-w-full truncate text-[10px] font-bold uppercase leading-4 tracking-[0.08em]"
         style={{ color: tint.bandInk }}
         title={locationName}
       >
@@ -1437,7 +1521,7 @@ function LocationSeparatorRow({
       >
         {tintLabel ?? (
           <span
-            className="inline-block max-w-full truncate rounded-full bg-slate-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase leading-3 tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200"
+            className="print-wrap inline-block max-w-full truncate rounded-full bg-slate-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase leading-3 tracking-wide text-slate-600 dark:bg-slate-700 dark:text-slate-200"
             title={locationName}
           >
             {locationName}
@@ -1513,7 +1597,7 @@ function LocationSeparatorRow({
             className={cx(
               "row border-t-2 border-r-2 border-slate-300 px-1 py-0.5 text-center text-[8px] font-medium text-slate-700 dark:text-slate-200 dark:border-slate-700",
               isHoliday
-                ? "bg-[#F3E8FF] dark:bg-slate-800"
+                ? "bg-[#F3E8FF] dark:bg-[#2E1F47]"
                 : isWeekend
                   ? "bg-[#F3F4F6] dark:bg-slate-800"
                   : "bg-slate-50 dark:bg-slate-900",

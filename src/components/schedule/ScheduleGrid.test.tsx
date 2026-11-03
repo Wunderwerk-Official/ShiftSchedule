@@ -72,6 +72,25 @@ describe("ScheduleGrid", () => {
     expect(container.querySelector('[style*="background-color"]')).toBeNull();
   });
 
+  it("names a clipped holiday in full in the day header's tooltip, in its own color in dark mode", () => {
+    const name = "Betriebsausflug, Teil 1; intern";
+    renderGrid({
+      weekDays: [new Date(2026, 10, 11), new Date(2026, 10, 14)],
+      holidayDates: new Set(["2026-11-11"]),
+      holidayNameByDate: { "2026-11-11": name },
+    });
+    const label = screen.getByText(name);
+    expect(label.className).toContain("truncate");
+    const header = label.closest<HTMLElement>("[title]")!;
+    expect(header.title).toBe(name);
+    // Light lavender as before; in dark mode no longer the weekend gray.
+    expect(header.className).toContain("bg-[#F3E8FF]");
+    expect(header.className).toContain("dark:bg-[#2E1F47]");
+    const weekend = screen.getByText("SAT").closest<HTMLElement>(".sticky")!;
+    expect(weekend.className).toContain("dark:bg-slate-800");
+    expect(weekend.hasAttribute("title")).toBe(false);
+  });
+
   it("gives an uncolored location its automatic color: band, label shade and ink", () => {
     renderGrid({
       rows: [locatedRow],
@@ -148,7 +167,7 @@ describe("ScheduleGrid", () => {
     expect(pill.classList).not.toContain("min-h-7");
     const name = screen.getByText("Dr. Alice");
     expect(name.className).toBe("whitespace-nowrap text-center");
-    expect(name.parentElement?.className).toContain("justify-center");
+    expect(name.parentElement?.className).toContain("[justify-content:safe_center]");
     expect(name.parentElement?.getAttribute("title")).toBeNull();
     expect(pill.getAttribute("title")).toBeNull();
     // The lock glyph, no initials circle (no inline-styled spans at all).
@@ -224,6 +243,64 @@ describe("ScheduleGrid", () => {
   });
 });
 
+describe("ScheduleGrid print pages", () => {
+  const week = Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 5 + i));
+  const gridColumns = () =>
+    (document.querySelector('[data-schedule-grid="true"]') as HTMLElement).style.gridTemplateColumns;
+  const firstCell = () =>
+    document.querySelector('[data-schedule-cell="true"][data-row-kind="class"]') as HTMLElement;
+
+  it("sizes the side-by-side print columns by their widest word, with tighter paddings", () => {
+    renderGrid({ weekDays: week, print: true, rows: [{ ...baseRow, dayType: "mon" }] });
+    // No fixed 120 px minimum: a column is as wide as its slot time (kept on
+    // one line), its widest section or name word.
+    expect(gridColumns()).toContain("minmax(min-content, 1fr)");
+    expect(screen.getAllByText("08:00 - 16:00")[0].className).toContain("print:whitespace-nowrap");
+    expect(firstCell().className).not.toContain("sm:p-1");
+    expect(firstCell().querySelector(".rounded-lg.border-2")?.className).toContain("px-1");
+    cleanup();
+    renderGrid({ weekDays: week });
+    expect(gridColumns()).toContain("minmax(120px, 1fr)");
+    expect(firstCell().className).toContain("sm:p-1");
+  });
+
+  it("keeps the compact week's columns in print", () => {
+    renderGrid({ weekDays: week, print: true, timeLayout: "stacked" });
+    expect(gridColumns()).toContain("minmax(64px, 1fr)");
+  });
+
+  it("wraps names onto two lines in the side-by-side print week instead of shortening them", () => {
+    const pill = () => screen.getByText("Dr. Alice").closest('[data-assignment-pill="true"]') as HTMLElement;
+    renderGrid({ weekDays: week, print: true });
+    expect(pill().className).toContain("[&_span]:whitespace-normal");
+    cleanup();
+    // The compact week keeps its one-line names (they shorten to fit 64 px).
+    renderGrid({ weekDays: week, print: true, timeLayout: "stacked" });
+    expect(pill().className).not.toContain("whitespace-normal");
+    cleanup();
+    renderGrid({ weekDays: week });
+    expect(pill().className).not.toContain("whitespace-normal");
+  });
+
+  it("lets labels wrap in print instead of cutting them off", () => {
+    renderGrid({
+      weekDays: week,
+      print: true,
+      rows: [{ ...locatedRow, sectionName: "Interventionelle Radiologie Kardio" }],
+      holidayNameByDate: { "2026-01-06": "Heilige Drei Könige" },
+    });
+    for (const text of ["Interventionelle Radiologie Kardio", "Heilige Drei Könige", "MRI", "Berlin"]) {
+      expect(screen.getAllByText(text)[0].className).toContain("print-wrap");
+    }
+  });
+
+  it("does not mark today in print", () => {
+    renderGrid({ weekDays: [new Date()] });
+    const today = document.querySelector(".rounded-full.border-slate-900") as HTMLElement;
+    expect(today.className).toContain("print:border-transparent");
+  });
+});
+
 describe("ScheduleGrid drag and drop", () => {
   const MON = "2026-01-05";
   const TUE = "2026-01-06";
@@ -246,6 +323,7 @@ describe("ScheduleGrid drag and drop", () => {
     // Only active on Tuesdays: the Monday cell is inactive.
     slot("tue-only", "08:00", "09:00", { dayType: "tue", colBandOrder: 1 }),
     { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" },
+    { id: "pool-vacation", name: "Vacation", kind: "pool", dotColorClass: "bg-slate-200" },
   ];
   const entry = (rowId: string, dateISO: string, clinicianId: string): [string, RenderedAssignment[]] => [
     `${rowId}__${dateISO}`,
@@ -255,12 +333,15 @@ describe("ScheduleGrid drag and drop", () => {
     entry("early", MON, "x"),
     [`late__${MON}`, [{ id: `late-${MON}-y`, rowId: "late", dateISO: MON, clinicianId: "y" }]],
     entry("broken", MON, "z"),
+    entry("pool-rest-day", MON, "r"),
+    entry("pool-vacation", MON, "v"),
   ]);
   dndMap.get(`early__${MON}`)!.push({ id: `early-${MON}-y`, rowId: "early", dateISO: MON, clinicianId: "y" });
 
   const renderDnd = () => {
     const onMoveWithinDay = vi.fn();
     const onRemoveAssignment = vi.fn();
+    const onMoveRestDay = vi.fn();
     render(
       <ScheduleGrid
         leftHeaderTitle="Week"
@@ -273,10 +354,11 @@ describe("ScheduleGrid drag and drop", () => {
         onCellClick={vi.fn()}
         onMoveWithinDay={onMoveWithinDay}
         onRemoveAssignment={onRemoveAssignment}
+        onMoveRestDay={onMoveRestDay}
         onAddAssignment={vi.fn()}
       />,
     );
-    return { onMoveWithinDay, onRemoveAssignment };
+    return { onMoveWithinDay, onRemoveAssignment, onMoveRestDay };
   };
   // Scoped to the grid: the drag image clone of an earlier drag (removed on a
   // timer) carries the same data attributes.
@@ -348,6 +430,73 @@ describe("ScheduleGrid drag and drop", () => {
       clinicianId: "x",
     });
     expect(onMoveWithinDay).not.toHaveBeenCalled();
+  });
+
+  it("moves a Rest Day pill to the Rest Day row of another day", () => {
+    const { onMoveWithinDay, onRemoveAssignment, onMoveRestDay } = renderDnd();
+    dragTo(pill("pool-rest-day", MON, "r"), cell("pool-rest-day", TUE));
+    expect(onMoveRestDay).toHaveBeenCalledWith({
+      fromDateISO: MON,
+      toDateISO: TUE,
+      assignmentId: `pool-rest-day-${MON}-r`,
+      clinicianId: "r",
+    });
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+    expect(onMoveWithinDay).not.toHaveBeenCalled();
+  });
+
+  it("removes a Rest Day pill dropped outside the grid or on another day's slot", () => {
+    const { onRemoveAssignment, onMoveRestDay } = renderDnd();
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(pill("pool-rest-day", MON, "r"), { dataTransfer });
+    fireEvent.drop(document.body, { dataTransfer });
+    expect(onRemoveAssignment).toHaveBeenCalledWith({
+      rowId: "pool-rest-day",
+      dateISO: MON,
+      assignmentId: `pool-rest-day-${MON}-r`,
+      clinicianId: "r",
+    });
+    dragTo(pill("pool-rest-day", MON, "r"), cell("late", TUE));
+    expect(onRemoveAssignment).toHaveBeenCalledTimes(2);
+    expect(onMoveRestDay).not.toHaveBeenCalled();
+  });
+
+  it("keeps the other days' Rest Day cells bright while a Rest Day pill is dragged", () => {
+    renderDnd();
+    const grey = "opacity-60";
+    fireEvent.dragStart(pill("pool-rest-day", MON, "r"), { dataTransfer: makeDataTransfer() });
+    expect(cell("pool-rest-day", TUE).className).not.toContain(grey);
+    expect(cell("late", TUE).className).toContain(grey);
+    fireEvent.dragEnd(pill("pool-rest-day", MON, "r"), { dataTransfer: makeDataTransfer() });
+    // A shift pill greys every other day out, the Rest Day row too.
+    fireEvent.dragStart(pill("early", MON, "x"), { dataTransfer: makeDataTransfer() });
+    expect(cell("pool-rest-day", TUE).className).toContain(grey);
+  });
+
+  it("keeps a Vacation pill dropped on a cell that cannot take it; out of the grid it leaves", () => {
+    const { onMoveWithinDay, onRemoveAssignment, onMoveRestDay } = renderDnd();
+    const vacation = () => pill("pool-vacation", MON, "v");
+    // Another day's Vacation cell or slot, an inactive cell of the same day.
+    dragTo(vacation(), cell("pool-vacation", TUE));
+    dragTo(vacation(), cell("late", TUE));
+    dragTo(vacation(), cell("tue-only", MON));
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+    expect(onMoveRestDay).not.toHaveBeenCalled();
+    expect(onMoveWithinDay).not.toHaveBeenCalled();
+    // Into a slot of the same day it still moves.
+    dragTo(vacation(), cell("late", MON));
+    expect(onMoveWithinDay).toHaveBeenCalledWith(
+      expect.objectContaining({ fromRowId: "pool-vacation", toRowId: "late", clinicianId: "v" }),
+    );
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(vacation(), { dataTransfer });
+    fireEvent.drop(document.body, { dataTransfer });
+    expect(onRemoveAssignment).toHaveBeenCalledWith({
+      rowId: "pool-vacation",
+      dateISO: MON,
+      assignmentId: `pool-vacation-${MON}-v`,
+      clinicianId: "v",
+    });
   });
 
   it("removes the assignment when the target overlaps another shift of that person", () => {
@@ -581,6 +730,18 @@ describe("ScheduleGrid stacked times", () => {
     expect(restMonday.nextElementSibling).toBe(cell("pool-rest-day", TUE));
   });
 
+  it("keeps every word of the row band and section labels whole in print", () => {
+    renderStacked({ rows: [rotating, restDay] });
+    // Never narrower than the longest word ("COMPUTERTOMOGRAPHIE" used to
+    // break inside its 128 px cap); the print page scales the week instead.
+    const band = labelCells("band")[0].firstElementChild as HTMLElement;
+    const section = labelCells("section")[1].firstElementChild as HTMLElement;
+    for (const label of [band, section]) {
+      expect(label.className).toContain("print-wrap");
+      expect(label.className).toContain("print:min-w-min");
+    }
+  });
+
   it("draws a hairline between the lanes of a section, a line between sections, a stronger one between rows", () => {
     renderStacked({ rows: [rotating, { ...groupRow, id: "group-loc-1__rb-mr", rowBandId: "rb-mr" }] });
     const classes = (rowId: string, dateISO: string) => cell(rowId, dateISO).className;
@@ -777,6 +938,26 @@ describe("ScheduleGrid stacked times", () => {
     expect(button).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(button);
     expect(onToggleAssignmentLock).toHaveBeenCalledWith(expect.objectContaining({ id: "a1", source: "manual" }));
+  });
+
+  it("shows the vacation editing hint only on editable grids (re-QA)", () => {
+    const hint = "Drag people in or out to update vacations automatically.";
+    const props = {
+      leftHeaderTitle: "Week",
+      weekDays: [new Date(2026, 0, 5)],
+      rows: [{ id: "pool-vacation", name: "Vacation", kind: "pool" as const, dotColorClass: "bg-slate-200" }],
+      assignmentMap: new Map(),
+      getClinicianName: (id: string) => id,
+      getIsQualified: () => true,
+      getHasEligibleClasses: () => true,
+      onCellClick: vi.fn(),
+      onMoveWithinDay: vi.fn(),
+    };
+    const { unmount } = render(<ScheduleGrid {...props} />);
+    expect(screen.getByText(hint)).toBeInTheDocument();
+    unmount();
+    render(<ScheduleGrid {...props} readOnly />);
+    expect(screen.queryByText(hint)).toBeNull();
   });
 
   it("shows no lock on read-only grids (print, public week)", () => {

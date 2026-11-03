@@ -169,3 +169,19 @@ describe("buildWorkingHoursYear", () => {
     expect(loose.people[0]).toMatchObject({ plannedMinutes: 480, targetMinutes: null });
   });
 });
+
+describe("buildWorkingHoursYear with real shift time (v1.82 merge)", () => {
+  it("counts a night across the October clock change with its real length", () => {
+    // 16:00–08:00 from Saturday 24.10.2026: 17 h in Europe/Berlin (the clocks go back).
+    const data = buildWorkingHoursYear({
+      year: 2026,
+      clinicians: [{ id: "n", vacations: [] }],
+      assignments: [{ id: "a", rowId: "duty", dateISO: "2026-10-24", clinicianId: "n" }],
+      slotMinutesById: new Map([["duty", 16 * 60]]),
+      minutesOf: (rowId, dateISO) => (rowId === "duty" && dateISO === "2026-10-24" ? 17 * 60 : undefined),
+    });
+    const week = data.people[0].weeks[weekIndexOf(data.weeks, "2026-10-24")];
+    expect(week.minutesByDate.get("2026-10-24")).toBe(17 * 60);
+    expect(week.plannedMinutes).toBe(17 * 60);
+  });
+});

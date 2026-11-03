@@ -61,6 +61,19 @@ export default function SnapshotPopover({
   const [renaming, setRenaming] = useState<{ id: string; value: string } | null>(
     null,
   );
+  // Row whose first enabled button gets focus once nothing is busy: the
+  // confirm row replaces the focused button, and the restore overlay hands
+  // focus back to <body> (the panel is not a modal).
+  const [focusRowId, setFocusRowId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!focusRowId || busyId !== null) return;
+    const row = panelRef.current?.querySelector<HTMLElement>(
+      `[data-snapshot-id="${CSS.escape(focusRowId)}"]`,
+    );
+    row?.querySelector<HTMLElement>("button:not(:disabled)")?.focus();
+    setFocusRowId(null);
+  }, [focusRowId, busyId, confirm, snapshots]);
 
   const refresh = async () => {
     try {
@@ -92,7 +105,9 @@ export default function SnapshotPopover({
       setOpen(false);
     };
     const handleKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
+      if (event.key !== "Escape") return;
+      setOpen(false);
+      triggerRef.current?.focus();
     };
     document.addEventListener("mousedown", handleClickOutside);
     document.addEventListener("keydown", handleKey);
@@ -129,6 +144,7 @@ export default function SnapshotPopover({
       setError(err instanceof Error ? err.message : "Failed to restore snapshot.");
     } finally {
       setBusyId(null);
+      setFocusRowId(snapshotId);
     }
   };
 
@@ -259,6 +275,7 @@ export default function SnapshotPopover({
                     return (
                       <div
                         key={snapshot.id}
+                        data-snapshot-id={snapshot.id}
                         className="rounded-lg border border-slate-100 px-2 py-1.5 dark:border-slate-700/60"
                       >
                         {isRenaming ? (
@@ -295,15 +312,20 @@ export default function SnapshotPopover({
                           <>
                             <div className="flex items-center justify-between gap-2">
                               <div className="min-w-0">
-                                <div className="truncate text-xs font-medium text-slate-700 dark:text-slate-200">
+                                {/* The whole name wraps: automatic backups differ only
+                                    at the end ("… before holiday change"). */}
+                                <div
+                                  className="break-words text-xs font-medium text-slate-700 dark:text-slate-200"
+                                  title={snapshot.name}
+                                >
                                   {snapshot.name}
+                                </div>
+                                <div className="flex items-center gap-1.5 text-[10px] text-slate-400 dark:text-slate-500">
                                   {snapshot.kind === "auto_backup" ? (
-                                    <span className="ml-1.5 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
+                                    <span className="rounded-full bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700 dark:bg-amber-900/50 dark:text-amber-300">
                                       Automatic
                                     </span>
                                   ) : null}
-                                </div>
-                                <div className="text-[10px] text-slate-400 dark:text-slate-500">
                                   {formatDate(snapshot.created_at)}
                                 </div>
                               </div>
@@ -319,9 +341,10 @@ export default function SnapshotPopover({
                                           ? CALENDAR_LOADING_HINT
                                           : undefined
                                     }
-                                    onClick={() =>
-                                      setConfirm({ id: snapshot.id, action: "restore" })
-                                    }
+                                    onClick={() => {
+                                      setConfirm({ id: snapshot.id, action: "restore" });
+                                      setFocusRowId(snapshot.id);
+                                    }}
                                     className={actionButtonClass}
                                   >
                                     Restore
@@ -341,9 +364,10 @@ export default function SnapshotPopover({
                                   <button
                                     type="button"
                                     disabled={busy}
-                                    onClick={() =>
-                                      setConfirm({ id: snapshot.id, action: "delete" })
-                                    }
+                                    onClick={() => {
+                                      setConfirm({ id: snapshot.id, action: "delete" });
+                                      setFocusRowId(snapshot.id);
+                                    }}
                                     className={cx(
                                       actionButtonClass,
                                       "text-rose-600 hover:bg-rose-50 dark:text-rose-400 dark:hover:bg-rose-950/40",
@@ -358,7 +382,7 @@ export default function SnapshotPopover({
                               <div className="mt-1.5 rounded-lg bg-slate-50 px-2 py-1.5 dark:bg-slate-900/50">
                                 <div className="text-[11px] text-slate-600 dark:text-slate-300">
                                   {confirm.action === "restore"
-                                    ? "Restores the entire calendar (assignments, template, clinicians, settings). Your current calendar is saved to 'Auto-backup before restore' first."
+                                    ? "Restores the entire calendar (assignments, template, clinicians, settings). Your current calendar is saved to 'Auto-backup before restore' first; this automatic backup replaces the previous one."
                                     : "Delete this snapshot? This cannot be undone."}
                                 </div>
                                 <div className="mt-1.5 flex items-center justify-end gap-2">
@@ -389,7 +413,10 @@ export default function SnapshotPopover({
                                   <button
                                     type="button"
                                     disabled={busy}
-                                    onClick={() => setConfirm(null)}
+                                    onClick={() => {
+                                      setConfirm(null);
+                                      setFocusRowId(snapshot.id);
+                                    }}
                                     className={actionButtonClass}
                                   >
                                     Cancel

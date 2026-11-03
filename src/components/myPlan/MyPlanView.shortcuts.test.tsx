@@ -27,6 +27,60 @@ describe("MyPlanView shortcuts", () => {
     expect(view.onScopeChange).toHaveBeenCalledWith("team");
   });
 
+  it("ignores single keys while focus is in the person picker or another popover", () => {
+    const view = renderPlan({ prefs: LENA });
+    fireEvent.click(screen.getByRole("button", { name: "Open the plan of another person" }));
+    const picker = screen.getByRole("dialog", { name: "Choose person" });
+    // Tabbed from the search field onto a name: the letter belongs to the list.
+    const name = within(picker).getByRole("button", { name: /Jonas Weber/ });
+    name.focus();
+    fireEvent.keyDown(name, { key: "m" });
+    expect(view.prefs().myPlanRange).toBe("week");
+    // Any listbox or menu, with or without aria-modal, keeps its keys too.
+    for (const role of ["listbox", "menu"]) {
+      const owner = document.createElement("div");
+      owner.setAttribute("role", role);
+      const item = document.createElement("button");
+      owner.append(item);
+      document.body.append(owner);
+      fireEvent.keyDown(item, { key: "m" });
+      owner.remove();
+    }
+    const editable = document.createElement("div");
+    editable.setAttribute("role", "textbox");
+    document.body.append(editable);
+    fireEvent.keyDown(editable, { key: "m" });
+    editable.remove();
+    expect(view.prefs().myPlanRange).toBe("week");
+  });
+
+  it("ignores single keys while focus is in the date picker", () => {
+    const view = renderPlan({ prefs: LENA });
+    fireEvent.click(screen.getByRole("button", { name: /^Pick a week/ }));
+    const picker = screen.getByRole("dialog", { name: "Select a week" });
+    // Browsing to another month puts focus on the picker's chevron.
+    const next = within(picker).getByRole("button", { name: "Next month" });
+    next.focus();
+    fireEvent.click(next);
+    fireEvent.keyDown(next, { key: "m" });
+    fireEvent.keyDown(next, { key: "t" });
+    expect(view.prefs().myPlanRange).toBe("week");
+    expect(screen.getByRole("dialog", { name: "Select a week" })).toHaveTextContent("November 2026");
+  });
+
+  it("ignores single keys in the open shift detail, but N / Shift+N step on from there", () => {
+    const view = renderPlan({ prefs: LENA });
+    fireEvent.keyDown(document.body, { key: "n" });
+    const detail = screen.getByRole("dialog", { name: "Nachtdienst" });
+    const inside = within(detail).getAllByRole("button")[0];
+    inside.focus();
+    fireEvent.keyDown(inside, { key: "t" });
+    expect(view.prefs().myPlanRange).toBe("week");
+    expect(screen.getByRole("dialog", { name: "Nachtdienst" })).toBeInTheDocument();
+    fireEvent.keyDown(inside, { key: "n" });
+    expect(screen.getByRole("dialog", { name: "Angiographie" })).toBeInTheDocument();
+  });
+
   it("phones remember their own orientation", () => {
     const view = renderPlan({ prefs: LENA, isMobile: true });
     // Week opens as the agenda on phones.

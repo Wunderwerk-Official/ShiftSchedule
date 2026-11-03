@@ -1,3 +1,4 @@
+import type { CSSProperties } from "react";
 import type { PdfLayout } from "../api/client";
 
 // Page geometry of the PDF print routes (/print/week, /print/weeks). The
@@ -41,5 +42,89 @@ export function printPagePx(layout: PdfLayout, marginMm: number) {
       height: (heightMm - marginMm * 2) * MM_TO_PX,
     },
     margin: marginMm * MM_TO_PX,
+  };
+}
+
+/**
+ * One printed page (`.print-page`): exactly one sheet, the margins as
+ * padding, a page break after it unless it is the last. Size containment
+ * makes the box monolithic, so Chromium never moves or splits its content
+ * at a page boundary. The week inside is shrunk with transform: scale(), and
+ * page breaking sees its unscaled height: without containment a week taller
+ * than the sheet was pushed to the next page and clipped there, so every
+ * page but the last came out blank. Rounded down, so the box never reaches
+ * into the next sheet.
+ */
+export function printPageStyle(layout: PdfLayout, marginMm: number, last: boolean): CSSProperties {
+  const { page, margin } = printPagePx(layout, marginMm);
+  return {
+    width: Math.floor(page.width),
+    height: Math.floor(page.height),
+    padding: margin,
+    boxSizing: "border-box",
+    overflow: "hidden",
+    contain: "strict",
+    breakAfter: last ? "auto" : "page",
+  };
+}
+
+/**
+ * Re-fits the print content whenever its layout size changes (names that
+ * wrap after the first frame make the week taller). The scale is a CSS
+ * transform, which does not change the observed layout box, so this cannot
+ * loop. Returns the cleanup.
+ */
+export function watchPrintContentSize(content: HTMLElement, fit: () => void): () => void {
+  let frame = window.requestAnimationFrame(fit);
+  const observer =
+    typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(() => {
+          window.cancelAnimationFrame(frame);
+          frame = window.requestAnimationFrame(fit);
+        });
+  observer?.observe(content);
+  return () => {
+    window.cancelAnimationFrame(frame);
+    observer?.disconnect();
+  };
+}
+
+/** Layout size of the print content, never its scaled (transformed) box. */
+export const unscaledSize = (content: HTMLElement) => ({
+  width: Math.max(content.scrollWidth, content.offsetWidth),
+  height: Math.max(content.scrollHeight, content.offsetHeight),
+});
+
+/**
+ * Calls `onSettled` once every print content box (`data-print-content`) has
+ * kept its size and scale for `frames` animation frames (12): the pills step
+ * through their abbreviation levels one per frame and may wrap at the end,
+ * and the page re-fits after that. The PDF must not be taken before.
+ * Returns a cancel function.
+ */
+export function whenPrintLayoutSettles(onSettled: () => void, frames = 12): () => void {
+  let last = "";
+  let stable = 0;
+  let frame = 0;
+  let done = false;
+  const signature = () =>
+    Array.from(document.querySelectorAll<HTMLElement>('[data-print-content="true"]'))
+      .map((element) => `${element.scrollWidth}x${element.scrollHeight}@${element.style.transform}`)
+      .join("|");
+  const tick = () => {
+    const current = signature();
+    stable = current === last ? stable + 1 : 0;
+    last = current;
+    if (stable >= frames) {
+      done = true;
+      onSettled();
+      return;
+    }
+    frame = window.requestAnimationFrame(tick);
+  };
+  frame = window.requestAnimationFrame(tick);
+  return () => {
+    if (!done) window.cancelAnimationFrame(frame);
   };
 }

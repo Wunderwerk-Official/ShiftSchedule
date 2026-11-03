@@ -3,10 +3,13 @@ import {
   adminDeleteRunFeedback,
   adminGetSolverRun,
   adminListRunFeedback,
+  createImportBackup,
   createUser,
   deleteUser,
   exportUserState,
+  getState,
   listUsers,
+  savedStateRevision,
   saveState,
   updateUser,
   type AuthUser,
@@ -15,6 +18,7 @@ import {
   type UserStateExport,
 } from "../../api/client";
 import { cx } from "../../lib/classNames";
+import { toISODate } from "../../lib/date";
 import { downloadTextFile } from "../../lib/download";
 import { buildRunLog, serverRunToHistoryEntry } from "../../lib/runLog";
 import { useConfirm } from "../ui/ConfirmDialog";
@@ -203,15 +207,17 @@ export default function AdminUsersPanel({
 
   // Load a COPY of another user's schedule into the admin's own account —
   // for reviewing their plan with the full calendar UI. The admin's own
-  // current state is replaced (after an explicit confirmation); the source
-  // user's state is never touched.
+  // calendar is saved as the automatic backup first (like before a restore
+  // or a shifts file import), then replaced; the source user's state is
+  // never touched.
   const handleLoadCopy = async (user: AuthUser) => {
     const confirmLoad = await confirm({
       title: "Load User Schedule",
       message:
         `Load a copy of "${user.username}"'s schedule into YOUR account? ` +
-        "Your own current schedule will be replaced. Export your state " +
-        "first if you want to keep it. The user's schedule is not changed.",
+        "Your own current schedule will be replaced. It is saved in Calendar " +
+        "snapshots first; this automatic backup replaces the previous one. " +
+        "The user's schedule is not changed.",
       confirmLabel: "Load copy",
       variant: "danger",
     });
@@ -220,12 +226,17 @@ export default function AdminUsersPanel({
     setLoadingCopyUser(user.username);
     try {
       const payload = await exportUserState(user.username);
+      // The own calendar as stored once this tab's saves have landed; the
+      // backup is refused (nothing loaded) if another tab changed it since.
+      const expectedRevision = await savedStateRevision();
+      await createImportBackup(await getState(), { reason: "load_copy", expectedRevision });
       await saveState(payload.state);
       // Full reload: every piece of page state (rows, clinicians,
       // assignments, template) must re-hydrate from the copied state.
       window.location.reload();
-    } catch {
-      setError("Could not load the user's schedule.");
+    } catch (err) {
+      const detail = err instanceof Error && err.message ? ` (${err.message})` : "";
+      setError(`Could not load the user's schedule; your own schedule was not changed.${detail}`);
       setLoadingCopyUser(null);
     }
   };
@@ -235,8 +246,8 @@ export default function AdminUsersPanel({
     setExportingUser(user.username);
     try {
       const payload = await exportUserState(user.username);
-      const exportedDate = payload.exportedAt?.slice(0, 10) ?? "export";
-      const fileName = `schedule-export-${user.username}-${exportedDate}.json`;
+      // The local date of the download (exportedAt is the server's UTC time).
+      const fileName = `schedule-export-${user.username}-${toISODate(new Date())}.json`;
       downloadTextFile(fileName, JSON.stringify(payload, null, 2), "application/json");
     } catch {
       setError("Could not export user.");
@@ -445,7 +456,7 @@ export default function AdminUsersPanel({
                       type="button"
                       onClick={() => handleLoadCopy(user)}
                       disabled={loadingCopyUser === user.username}
-                      title="Load a copy of this user's schedule into your own account to review it (your current schedule is replaced)."
+                      title="Load a copy of this user's schedule into your own account to review it (your current schedule is replaced and kept as the automatic backup)."
                       className={cx(
                         "rounded-lg border border-indigo-200 px-2 py-1 text-xs font-semibold text-indigo-600",
                         "hover:bg-indigo-50 disabled:cursor-not-allowed disabled:opacity-60",

@@ -11,6 +11,8 @@ type RowLabelProps = {
   ink?: string;
   /** Stacked single-day layout: one lane of a class row in one label cell. */
   stacked?: StackedRowMeta;
+  /** Read-only grid (public page, print): no editing hints. */
+  readOnly?: boolean;
 };
 
 const LABEL_FONT = { fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' };
@@ -118,7 +120,10 @@ export function StackedLabelCells({
             // breaks only as a last resort: when the grid's auto label
             // columns must give way (A4 portrait with long names), which
             // overflow-wrap: anywhere allows instead of an overflowing week.
-            className={cx(BAND_TEXT, "max-w-[128px] [overflow-wrap:anywhere]")}
+            // Print (.print-wrap) shows every line and keeps every word whole:
+            // the label is never narrower than its longest word (min-w-min);
+            // the page shrinks the week a little instead.
+            className={cx(BAND_TEXT, "print-wrap max-w-[128px] [overflow-wrap:anywhere] print:min-w-min")}
             title={meta.groupLabel}
             style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: bandLines }}
           >
@@ -135,7 +140,11 @@ export function StackedLabelCells({
         >
           {meta.title ? (
             <span
-              className={cx(SECTION_TEXT, "max-w-[112px] [overflow-wrap:anywhere] lg:max-w-[160px]")}
+              className={cx(
+                SECTION_TEXT,
+                // Print: whole words, like the row band above.
+                "print-wrap max-w-[112px] [overflow-wrap:anywhere] lg:max-w-[160px] print:min-w-min",
+              )}
               title={meta.title}
               style={{ ...LABEL_FONT, ...inkStyle, WebkitLineClamp: sectionLines }}
             >
@@ -213,9 +222,10 @@ function StackedRowLabel({ meta, ink }: { meta: StackedRowMeta; ink?: string }) 
   );
 }
 
-export default function RowLabel({ row, ink, stacked }: RowLabelProps) {
+export default function RowLabel({ row, ink, stacked, readOnly = false }: RowLabelProps) {
   if (stacked) return <StackedRowLabel meta={stacked} ink={ink} />;
-  const showVacationNote = row.id === "pool-vacation";
+  // An editing hint: not on read-only grids (public page, print).
+  const showVacationNote = row.id === "pool-vacation" && !readOnly;
   const locationLabel = row.locationName ?? "";
   const rowLabel = row.rowBandLabel?.trim() ?? "";
   return (
@@ -226,9 +236,10 @@ export default function RowLabel({ row, ink, stacked }: RowLabelProps) {
       )}
     >
       {row.kind === "class" ? (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-1">
+        // Print: the label wraps within 10rem instead of widening the column.
+        <div className="flex h-full w-full flex-col items-center justify-center gap-1 print:max-w-[10rem]">
           <span
-            className="block min-w-0 truncate text-[11px] font-normal uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs"
+            className="print-wrap block min-w-0 truncate text-[11px] font-normal uppercase tracking-wide text-slate-700 dark:text-slate-200 sm:text-xs print:text-center"
             title={rowLabel}
             style={{
               fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif',
@@ -238,7 +249,7 @@ export default function RowLabel({ row, ink, stacked }: RowLabelProps) {
             {rowLabel}
           </span>
           <span
-            className="w-full truncate text-center text-[9px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500"
+            className="print-wrap w-full truncate text-center text-[9px] font-semibold uppercase tracking-wide text-slate-400 dark:text-slate-500"
             title={locationLabel}
             style={{
               fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif',
@@ -251,7 +262,7 @@ export default function RowLabel({ row, ink, stacked }: RowLabelProps) {
       ) : (
         <div className="flex w-full items-center">
           <span
-            className="max-w-[16ch] truncate text-[11px] font-normal uppercase tracking-wide text-slate-600 dark:text-slate-300 sm:max-w-[20ch] sm:text-xs"
+            className="print-wrap max-w-[16ch] truncate text-[11px] font-normal uppercase tracking-wide text-slate-600 dark:text-slate-300 sm:max-w-[20ch] sm:text-xs"
             title={row.name}
             style={{ fontFamily: '"Inter", ui-sans-serif, system-ui, sans-serif' }}
           >

@@ -102,8 +102,13 @@ async function openCalendar(
     return route.fulfill({ json: { enabled: false } });
   });
   await page.goto("/");
-  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
-  if (!stateGate) await waitForMockedCalendar(page, state);
+  if (stateGate) {
+    // Until the calendar has loaded the Team plan shows a loading card (v1.82).
+    await expect(page.getByRole("region", { name: "Team plan" }).getByText("Loading calendar…")).toBeVisible();
+  } else {
+    await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+    await waitForMockedCalendar(page, state);
+  }
   return { state: () => current, statePosts, errors, dialogs };
 }
 
@@ -160,7 +165,8 @@ test("items in the rule-violation and split-shift popovers can be clicked", asyn
   await page.mouse.click(5, 300);
   await expect(violations).toBeHidden();
 
-  await page.getByRole("button", { name: /^1 Split Shift$/ }).click();
+  await expect(page.getByRole("button", { name: /^1 rule violation/ })).toBeVisible();
+  await page.getByRole("button", { name: /^1 split shift$/ }).click();
   const splitShifts = page.getByText("Split shifts (gaps between assignments)");
   await expect(splitShifts).toBeVisible();
   const splitItem = page.getByRole("button", { name: /Gap between shifts/ });
@@ -214,6 +220,92 @@ test("moving a planner shift by hand locks it (v1.69)", async ({ page }) => {
   expect(api.errors).toEqual([]);
 });
 
+test("printed short names stand for one person of the team (v1.82)", async ({ page }) => {
+  // A PDF has no hover: two people may never print under one label, and
+  // "Last, First" names with titles must not shorten to "Müller, D." or "M. Dr.".
+  const state = structuredClone(defaultState);
+  state.clinicians[0].name = "Mehmet Yildirim";
+  state.clinicians[1].name = "Mehmet Yılmaz";
+  state.clinicians.push({ ...state.clinicians[0], id: "c-mueller", name: "Müller, Jörg; Dr." });
+  state.assignments = [
+    assignment("ct", "mon", "CT", FIRST),
+    assignment("mri", "mon", "MRI", SECOND),
+    assignment("sono", "mon", "Sonography", "c-mueller"),
+  ];
+  await page.addInitScript(() => localStorage.setItem("authToken", "test-token"));
+  await page.route("**/auth/me", (route) =>
+    route.fulfill({ json: { username: "test", role: "user", active: true } }),
+  );
+  await page.route("**/v1/**", (route) =>
+    new URL(route.request().url()).pathname.endsWith("/v1/state")
+      ? route.fulfill({ json: { ...state, revision: "r0" } })
+      : route.fulfill({ json: {} }),
+  );
+  const labelOf = (clinicianId: string) =>
+    page
+      // The pill's name (beside the circle, alone, or wrapped when even its last level is too wide).
+      .locator(`[data-assignment-key$="__${clinicianId}"] [data-pill-name]`)
+      .first()
+      .innerText();
+  for (const layout of ["", "&layout=portrait"]) {
+    await page.goto(`/print/week?start=2026-01-05${layout}`);
+    await page.waitForFunction("window.__PDF_READY__ === true");
+    const [yildirim, yilmaz, mueller] = [await labelOf(FIRST), await labelOf(SECOND), await labelOf("c-mueller")];
+    // Landscape prints whole names where they fit; the compact portrait week
+    // shortens them, never to one label for both.
+    if (layout) expect(yildirim).not.toBe("Mehmet Yildirim");
+    expect(yildirim).not.toBe(yilmaz);
+    expect([yildirim, yilmaz]).not.toContain("Mehmet Y.");
+    expect([yildirim, yilmaz]).not.toContain("M. Y.");
+    // A whole name prints as entered; a shortened one keeps the given name
+    // and drops the title.
+    if (layout) expect(mueller).not.toBe("Müller, Jörg; Dr.");
+    if (mueller !== "Müller, Jörg; Dr.") {
+      expect(mueller).toMatch(/J/);
+      expect(mueller).not.toMatch(/Dr\./);
+    }
+  }
+});
+
+test("team grid pills never show two people under one visible name (v1.82)", async ({ page }) => {
+  // Person colors cut a long "First L." with an ellipsis: "Sophie Wa." and
+  // "Sophie We." would both read "Sophie…", so those two show "S. Wa." /
+  // "S. We." where the full label does not fit.
+  const state = structuredClone(defaultState);
+  state.clinicians[0].name = "Sophie Wagner";
+  state.clinicians[1].name = "Sophie Weber";
+  state.assignments = [
+    assignment("ct", "mon", "CT", FIRST),
+    assignment("mri", "mon", "MRI", SECOND),
+    assignment("sono", "mon", "Sonography", FIRST, { locked: true }),
+    assignment("ctn", "mon", "CT Neuro", SECOND, { locked: true }),
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const shown = () =>
+    page.$$eval("[data-assignment-pill] span.min-w-0", (spans) =>
+      spans.map((span) => {
+        const text = span.textContent ?? "";
+        if (span.classList.contains("sr-only")) return { text, visible: "" };
+        // What the ellipsis leaves: the text up to the row's right edge.
+        const cut = span.scrollWidth > span.clientWidth + 1;
+        return { text, visible: cut ? `${text}…(cut)` : text };
+      }),
+    );
+  const times = page.getByRole("group", { name: "Times" });
+  for (const layout of ["Side by side", "Stacked"]) {
+    await times.getByRole("button", { name: layout }).click();
+    await page.waitForTimeout(300);
+    const pills = await shown();
+    expect(pills).toHaveLength(4);
+    for (const pill of pills) {
+      // Each pill shows a label of its own in full: the team-unique
+      // "Sophie Wa." where it fits, "S. Wa." where it does not.
+      expect(pill.visible, layout).toMatch(/^(Sophie Wagner|Sophie Weber|Sophie Wa\.|Sophie We\.|S\. Wa\.|S\. We\.)$/);
+    }
+  }
+  expect(api.errors).toEqual([]);
+});
+
 test("a locked shift moved into the Rest Day row becomes a plain rest day entry (v1.69)", async ({ page }) => {
   const state = structuredClone(defaultState);
   state.assignments = [assignment("ct", "mon", "CT", FIRST, { source: "solver", locked: true })];
@@ -232,6 +324,252 @@ test("a locked shift moved into the Rest Day row becomes a plain rest day entry 
   await page.getByRole("button", { name: /^Unlocked shifts and rest days/ }).click();
   await expect.poll(() => api.state().assignments.length).toBe(0);
   expect(api.errors).toEqual([]);
+});
+
+test("a hand-placed rest day moves to another day and leaves when dragged out; an automatic one explains itself", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    { id: "rest", rowId: "pool-rest-day", dateISO: "2026-01-05", clinicianId: FIRST, source: "manual" },
+    // On call on Wednesday: automatic rest days on Tuesday and Thursday.
+    { ...assignment("oncall", "wed", "On Call", SECOND), dateISO: "2026-01-07" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const cell = (rowId: string, dateISO: string) =>
+    page.locator(`[data-schedule-cell="true"][data-row-id="${rowId}"][data-date-iso="${dateISO}"]`);
+  const pillOf = (rowId: string, dateISO: string, clinicianId: string) =>
+    page.locator(`[data-schedule-grid="true"] [data-assignment-key="${rowId}__${dateISO}__${clinicianId}"]`);
+  const outside = page.getByRole("button", { name: "Open Vacation Planner" });
+  const restDays = () =>
+    api.state().assignments.filter((item) => item.rowId === "pool-rest-day").map((item) => item.dateISO);
+
+  // Hand-placed: onto Wednesday's Rest Day cell it moves, out of the grid it is removed.
+  await pillOf("pool-rest-day", "2026-01-05", FIRST).dragTo(cell("pool-rest-day", "2026-01-07"));
+  await expect.poll(restDays).toEqual(["2026-01-07"]);
+  await expect(pillOf("pool-rest-day", "2026-01-07", FIRST)).toBeVisible();
+  await pillOf("pool-rest-day", "2026-01-07", FIRST).dragTo(outside);
+  await expect.poll(restDays).toEqual([]);
+  await expect(pillOf("pool-rest-day", "2026-01-07", FIRST)).toHaveCount(0);
+
+  // Automatic (on-call rule): nothing changes, a notice says why.
+  const postsBefore = api.statePosts.length;
+  await pillOf("pool-rest-day", "2026-01-08", SECOND).dragTo(outside);
+  await expect(page.getByRole("status").filter({ hasText: "Automatic rest day" })).toHaveText(
+    "Automatic rest day after on-call duty on Wed 07.01. Change the on-call shift or the rest-day rule to change it.",
+  );
+  await pillOf("pool-rest-day", "2026-01-08", SECOND).dragTo(cell("pool-rest-day", "2026-01-09"));
+  await page.waitForTimeout(700);
+  expect(api.statePosts.length).toBe(postsBefore);
+  await expect(pillOf("pool-rest-day", "2026-01-08", SECOND)).toBeVisible();
+  await expect(pillOf("pool-rest-day", "2026-01-09", SECOND)).toHaveCount(0);
+
+  // Into a shift on that day: shown once, in the shift, and flagged.
+  await pillOf("pool-rest-day", "2026-01-08", SECOND).dragTo(cell(slotId("thu", "MRI"), "2026-01-08"));
+  await expect
+    .poll(() => api.state().assignments.filter((item) => item.dateISO === "2026-01-08").map((item) => item.rowId))
+    .toEqual([slotId("thu", "MRI")]);
+  await expect(pillOf(slotId("thu", "MRI"), "2026-01-08", SECOND)).toBeVisible();
+  await expect(pillOf("pool-rest-day", "2026-01-08", SECOND)).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /^1 rule violation/ })).toBeVisible();
+  expect(api.errors).toEqual([]);
+});
+
+test("a hand-placed rest day is not moved onto a vacation day (re-QA)", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    { id: "rest", rowId: "pool-rest-day", dateISO: "2026-01-05", clinicianId: FIRST, source: "manual" },
+  ];
+  state.clinicians[0].vacations = [{ id: "v1", startISO: "2026-01-06", endISO: "2026-01-06" }];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const restPill = page.locator(`[data-schedule-grid="true"] [data-assignment-key="pool-rest-day__2026-01-05__${FIRST}"]`);
+  await restPill.dragTo(
+    page.locator('[data-schedule-cell="true"][data-row-id="pool-rest-day"][data-date-iso="2026-01-06"]'),
+  );
+  // Vacation would hide it there: it stays where it was, and a notice says why.
+  await expect(page.getByRole("status").filter({ hasText: "is on vacation" })).toContainText(
+    "is on vacation on Tue 06.01. The rest day stays on Mon 05.01.",
+  );
+  await page.waitForTimeout(700);
+  expect(api.state().assignments.map((item) => `${item.rowId} ${item.dateISO}`)).toEqual(["pool-rest-day 2026-01-05"]);
+  await expect(restPill).toBeVisible();
+  expect(api.errors).toEqual([]);
+});
+
+test("a hand-placed rest day on an automatic one leaves it in its place, and the notice says why", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    // On call on Wednesday: automatic rest days on Tuesday and Thursday.
+    { ...assignment("oncall", "wed", "On Call", SECOND), dateISO: "2026-01-07" },
+    { id: "rest", rowId: "pool-rest-day", dateISO: "2026-01-06", clinicianId: SECOND, source: "manual" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const restPill = page.locator(
+    `[data-schedule-grid="true"] [data-assignment-key="pool-rest-day__2026-01-06__${SECOND}"]`,
+  );
+  await restPill.dragTo(page.getByRole("button", { name: "Open Vacation Planner" }));
+  await expect
+    .poll(() => api.state().assignments.filter((item) => item.rowId === "pool-rest-day"))
+    .toEqual([]);
+  await expect(restPill).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Automatic rest day" })).toHaveText(
+    "Automatic rest day before on-call duty on Wed 07.01. Change the on-call shift or the rest-day rule to change it.",
+  );
+  expect(api.errors).toEqual([]);
+});
+
+test("a vacation day ends only when its pill leaves the calendar", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [];
+  state.clinicians[0].vacations = [{ id: "v1", startISO: "2026-01-05", endISO: "2026-01-09" }];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const vacationPill = (dateISO: string) =>
+    page.locator(`[data-schedule-grid="true"] [data-assignment-key="pool-vacation__${dateISO}__${FIRST}"]`);
+  const vacations = () => api.state().clinicians[0].vacations.map(({ startISO, endISO }) => `${startISO}..${endISO}`);
+
+  // Onto another day's Vacation cell (like moving a rest day) or slot: nothing changes.
+  await vacationPill("2026-01-05").dragTo(
+    page.locator('[data-schedule-cell="true"][data-row-id="pool-vacation"][data-date-iso="2026-01-06"]'),
+  );
+  await vacationPill("2026-01-05").dragTo(
+    page.locator('[data-schedule-cell="true"][data-row-kind="class"][data-date-iso="2026-01-06"]').first(),
+  );
+  // Onto its row label or a day header (inside the calendar, not a cell): nothing changes (re-QA).
+  const grid = page.locator('[data-schedule-grid="true"]');
+  await vacationPill("2026-01-05").dragTo(grid.getByText("Vacation", { exact: true }).first());
+  await vacationPill("2026-01-05").dragTo(grid.getByText(/^tue/i).first());
+  await page.waitForTimeout(700);
+  expect(vacations()).toEqual(["2026-01-05..2026-01-09"]);
+  await expect(vacationPill("2026-01-05")).toBeVisible();
+
+  // Out of the calendar: that day's vacation ends.
+  await vacationPill("2026-01-05").dragTo(page.getByRole("button", { name: "Open Vacation Planner" }));
+  await expect.poll(vacations).toEqual(["2026-01-06..2026-01-09"]);
+  await expect(vacationPill("2026-01-05")).toHaveCount(0);
+  expect(api.errors).toEqual([]);
+});
+
+test("a shift on a rest day after on-call duty in the week before is still flagged", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    // On call on Sunday 04.01, the last day of the week before; MRI on Monday 05.01.
+    { ...assignment("oncall", "sun", "On Call", SECOND), dateISO: "2026-01-04" },
+    assignment("mri", "mon", "MRI", SECOND),
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const range = page.getByRole("button", { name: "Pick a week" });
+  const badge = page.getByRole("button", { name: /^1 rule violation/ });
+  // Shown once (in MRI, no Rest Day pill), and the badge names the conflict.
+  await expect(
+    page.locator(`[data-schedule-grid="true"] [data-assignment-key="pool-rest-day__2026-01-05__${SECOND}"]`),
+  ).toHaveCount(0);
+  await expect(badge).toBeVisible();
+  await page.getByTitle("Show the violation list").click();
+  await expect(
+    page.getByRole("button", { name: /Scheduled on 05\.01\.2026, but needs 1 rest day after On Call shift on 04\.01\.2026/ }),
+  ).toBeVisible();
+  // Picking it stays in this week (the on-call day is in the week before).
+  await page.getByRole("button", { name: /Scheduled on 05\.01\.2026/ }).click();
+  await expect(range).toHaveText(/05\.01\.2026 – 11\.01\.2026/);
+  await page.mouse.click(5, 300);
+  // The week before, with the on-call shift, flags it as well.
+  await page.getByRole("button", { name: "Previous week" }).click();
+  await expect(range).toHaveText(/29\.12\.2025 – 04\.01\.2026/);
+  await expect(badge).toBeVisible();
+  expect(api.errors).toEqual([]);
+});
+
+test("the clinic sheet marks a shift on an automatic rest day", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.solverSettings = { ...state.solverSettings, scheduleLayout: "clinicSheet" };
+  state.assignments = [
+    { ...assignment("oncall", "wed", "On Call", SECOND), dateISO: "2026-01-14" },
+    { ...assignment("mri", "thu", "MRI", SECOND), dateISO: "2026-01-15" },
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const name = page.locator(
+    `[data-schedule-cell="true"][data-row-id="${slotId("thu", "MRI")}"][data-date-iso="2026-01-15"] [data-sheet-name="true"]`,
+  );
+  await expect(name).toHaveAttribute("title", "Leonardo DaVinci — scheduled on a rest day");
+  await expect(
+    page.locator('[data-schedule-cell="true"][data-row-id="pool-rest-day"][data-date-iso="2026-01-15"]'),
+  ).not.toContainText("DaVinci");
+  expect(api.errors).toEqual([]);
+});
+
+test("a hand-placed rest day next to a shift that day is flagged as a rule violation", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [
+    { id: "rest", rowId: "pool-rest-day", dateISO: "2026-01-05", clinicianId: FIRST, source: "manual" },
+    assignment("ct", "mon", "CT", FIRST),
+  ];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  await page.getByTitle("Show the violation list").click();
+  await expect(page.getByRole("button", { name: /that day is a rest day \(Rest Day row\)/ })).toBeVisible();
+  // The rest day pill turns red with the shift.
+  await expect(
+    page.locator(`[data-schedule-grid="true"] [data-assignment-key="pool-rest-day__2026-01-05__${FIRST}"]`),
+  ).toHaveClass(/rose|red/);
+  expect(api.errors).toEqual([]);
+});
+
+test("the viewed week is kept in the address: reload, links, Today and invalid values", async ({ page }) => {
+  const state = structuredClone(defaultState);
+  state.assignments = [];
+  const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+  const range = page.getByRole("button", { name: "Pick a week" });
+  const search = () => page.evaluate(() => window.location.search);
+  await expect(range).toHaveText(/05\.01\.2026 – 11\.01\.2026/);
+  expect(await search()).toBe("");
+  await expect(page.getByRole("switch", { name: "Publish week 05.01.2026 – 11.01.2026" })).toBeVisible();
+
+  const historyLength = await page.evaluate(() => window.history.length);
+  await page.getByRole("button", { name: "Next week" }).click();
+  await page.getByRole("button", { name: "Next week" }).click();
+  await expect.poll(search).toBe("?week=2026-01-19");
+  // One history entry, replaced on every step.
+  expect(await page.evaluate(() => window.history.length)).toBe(historyLength);
+  await expect(page.getByRole("switch", { name: "Publish week 19.01.2026 – 25.01.2026" })).toBeVisible();
+
+  await page.reload();
+  await expect(range).toHaveText(/19\.01\.2026 – 25\.01\.2026/);
+  expect(await search()).toBe("?week=2026-01-19");
+
+  // The week navigator's Today (the planning panel below has one for its timeframe).
+  await page.getByRole("button", { name: "Today", exact: true }).first().click();
+  await expect(range).toHaveText(/05\.01\.2026 – 11\.01\.2026/);
+  await expect.poll(search).toBe("");
+
+  // A link to a day opens its week (and names its Monday); nonsense is ignored.
+  await page.goto("/?week=2026-03-25");
+  await expect(range).toHaveText(/23\.03\.2026 – 29\.03\.2026/);
+  await expect.poll(search).toBe("?week=2026-03-23");
+  await page.goto("/?week=2026-02-30");
+  await expect(range).toHaveText(/05\.01\.2026 – 11\.01\.2026/);
+  await expect.poll(search).toBe("");
+  expect(api.errors).toEqual([]);
+});
+
+test("the team plan shows a loading card instead of the demo calendar, and stops waiting when loading fails", async ({ page }) => {
+  await page.clock.setFixedTime(new Date("2026-01-05T08:00:00Z"));
+  await page.addInitScript(() => localStorage.setItem("authToken", "test-token"));
+  await page.route("**/auth/me", (route) =>
+    route.fulfill({ json: { username: "test", role: "user", active: true } }),
+  );
+  await page.route("**/v1/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path.endsWith("/v1/state")) return route.fulfill({ status: 500, json: { detail: "boom" } });
+    if (path.endsWith("/v1/me/preferences")) return route.fulfill({ json: {} });
+    return route.fulfill({ json: { runs: [] } });
+  });
+  await page.goto("/");
+  const card = page.getByRole("region", { name: "Team plan" });
+  await expect(card.getByRole("status")).toHaveText(/The calendar could not be loaded\./);
+  await expect(card.getByRole("button", { name: "Reload saved calendar" })).toBeVisible();
+  await expect(page.getByText("Loading calendar…")).toHaveCount(0);
+  // Neither the demo calendar nor its controls.
+  await expect(page.locator('[data-schedule-grid="true"]')).toHaveCount(0);
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Run", exact: true })).toBeHidden();
+  await expect(page.getByText("Berlin", { exact: true })).toHaveCount(0);
 });
 
 test("Times switches between side-by-side and stacked columns and stores the choice", async ({ page }) => {
@@ -314,9 +652,10 @@ test.describe("phone", () => {
     state.assignments = [];
     // Today is Wednesday; the first open slot of the week is on Monday.
     const api = await openCalendar(page, state, "2026-01-07T08:00:00Z");
-    await expect(page.getByText("Wed, Jan 7")).toBeVisible();
-    await page.getByRole("button", { name: /Open Slots$/ }).click();
-    await expect(page.getByText("Mon, Jan 5")).toBeVisible();
+    // The day in the desktop date style.
+    await expect(page.getByText("Wed 07.01.2026")).toBeVisible();
+    await page.getByRole("button", { name: /open slots?$/ }).click();
+    await expect(page.getByText("Mon 05.01.2026")).toBeVisible();
     expect(api.errors).toEqual([]);
   });
 });
@@ -346,10 +685,11 @@ test.describe("template above the column limit", () => {
       mimeType: "application/json",
       buffer: Buffer.from(JSON.stringify({ assignments: [assignment("ct", "mon", "CT", FIRST)] })),
     });
-    await page.getByRole("button", { name: "Replace shifts" }).click();
+    // Refused before the question to replace the shifts.
     await expect(
       page.getByText("The current calendar cannot be saved. Fix its template first."),
     ).toBeVisible();
+    await expect(page.getByRole("dialog")).toBeHidden();
     expect(api.statePosts).toEqual([]);
     expect(api.errors).toEqual([]);
   });
@@ -486,12 +826,18 @@ test("Reset → Unlocked shifts and rest days removes planner entries on vacatio
 
 test.describe("shifts file import", () => {
   const BACKUP_NAME = "Auto-backup before shifts file import";
-  const importFile = (page: Page) =>
+  const importFile = (
+    page: Page,
+    assignments: unknown[] = [assignment("new", "mon", "MRI", SECOND)],
+  ) =>
     page.locator('input[type="file"][accept="application/json"]').setInputFiles({
       name: "shifts.json",
       mimeType: "application/json",
-      buffer: Buffer.from(JSON.stringify({ assignments: [assignment("new", "mon", "MRI", SECOND)] })),
+      buffer: Buffer.from(JSON.stringify({ assignments })),
     });
+  const backupMeta = (at = "2026-01-05T08:00:00Z") => ({
+    id: "auto", name: BACKUP_NAME, kind: "auto_backup", created_at: at, updated_at: at, size_bytes: 1,
+  });
   const hasNew = (posted: AppState) => (posted.assignments ?? []).some((item) => item.id === "new");
 
   test("saves a backup of the shown calendar before replacing the shifts", async ({ page }) => {
@@ -499,25 +845,30 @@ test.describe("shifts file import", () => {
     state.assignments = [assignment("old", "mon", "CT", FIRST)];
     const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
     const backups: AppState[] = [];
+    const expectedRevisions: unknown[] = [];
     let postsAtBackup = -1;
     await page.route("**/v1/state/snapshots/import-backup", (route) => {
-      backups.push((route.request().postDataJSON() as { state: AppState }).state);
+      const body = route.request().postDataJSON() as { state: AppState; expectedRevision?: string };
+      backups.push(body.state);
+      expectedRevisions.push(body.expectedRevision);
       postsAtBackup = api.statePosts.length;
-      const at = "2026-01-05T08:00:00Z";
-      return route.fulfill({
-        status: 201,
-        json: { id: "auto", name: BACKUP_NAME, kind: "auto_backup", created_at: at, updated_at: at, size_bytes: 1 },
-      });
+      return route.fulfill({ status: 201, json: backupMeta() });
     });
 
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await importFile(page);
-    await expect(page.getByRole("dialog")).toContainText("The current calendar is saved in Calendar snapshots first.");
+    const dialog = page.getByRole("dialog");
+    await expect(dialog).toContainText("Replace all 1 current shift with 1 shift from “shifts.json”?");
+    await expect(dialog).toContainText(
+      "The current calendar is saved in Calendar snapshots first; this automatic backup replaces the previous one.",
+    );
     await page.getByRole("button", { name: "Replace shifts" }).click();
 
     await expect(page.getByText(`A backup of the previous calendar is in Calendar snapshots: “${BACKUP_NAME}”.`)).toBeVisible();
     expect(backups).toHaveLength(1);
     expect(backups[0].assignments?.map((item) => item.id)).toEqual(["old"]);
+    // The backup names the revision this tab's calendar is based on.
+    expect(expectedRevisions).toEqual([`r${postsAtBackup}`]);
     // The imported calendar is saved only after the backup.
     expect(api.statePosts.slice(0, postsAtBackup).some(hasNew)).toBe(false);
     await expect.poll(() => api.statePosts.slice(postsAtBackup).some(hasNew)).toBe(true);
@@ -543,6 +894,80 @@ test.describe("shifts file import", () => {
     await page.waitForTimeout(800);
     expect(api.statePosts.some(hasNew)).toBe(false);
     expect(api.state().assignments.map((item) => item.id)).toEqual(["old"]);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("imports nothing from a tab whose calendar changed elsewhere", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    await page.route("**/v1/state/snapshots/import-backup", (route) =>
+      route.fulfill({
+        status: 409,
+        json: { detail: { code: "state_changed", message: "The calendar changed in another tab or operation." } },
+      }),
+    );
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page);
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(page.getByText(/The calendar changed in another tab or operation\./)).toBeVisible();
+    await page.waitForTimeout(800);
+    expect(api.statePosts.some(hasNew)).toBe(false);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("refuses a file without shifts for this calendar before asking", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    let backups = 0;
+    await page.route("**/v1/state/snapshots/import-backup", (route) => {
+      backups += 1;
+      return route.fulfill({ status: 201, json: backupMeta() });
+    });
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+
+    for (const assignments of [
+      [],
+      [{ foo: 1 }, { bar: 2 }],
+      [assignment("foreign", "mon", "MRI", "someone-else")],
+    ]) {
+      await importFile(page, assignments);
+      await expect(
+        page.getByText("This file contains no shifts for this calendar. Nothing was changed."),
+      ).toBeVisible();
+      await expect(page.getByRole("dialog")).toBeHidden();
+    }
+    await page.waitForTimeout(800);
+    expect(backups).toBe(0);
+    expect(api.state().assignments.map((item) => item.id)).toEqual(["old"]);
+    expect(api.errors).toEqual([]);
+  });
+
+  test("keeps each shift once and reports duplicates and invalid entries", async ({ page }) => {
+    const state = structuredClone(defaultState);
+    state.assignments = [assignment("old", "mon", "CT", FIRST)];
+    const api = await openCalendar(page, state, "2026-01-05T08:00:00Z");
+    await page.route("**/v1/state/snapshots/import-backup", (route) =>
+      route.fulfill({ status: 201, json: backupMeta() }),
+    );
+
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await importFile(page, [
+      assignment("new", "mon", "MRI", SECOND),
+      assignment("new-copy", "mon", "MRI", SECOND),
+      assignment("new-copy-2", "mon", "MRI", SECOND),
+      { ...assignment("bad-date", "mon", "MRI", FIRST), dateISO: "2026-02-30" },
+    ]);
+    await expect(page.getByRole("dialog")).toContainText(
+      "Skipped from the file: 1 entry that is not a valid shift, 2 duplicates.",
+    );
+    await page.getByRole("button", { name: "Replace shifts" }).click();
+
+    await expect(page.getByText(/^Imported 1 shift\. Skipped 1 entry that is not a valid shift, 2 duplicates\./)).toBeVisible();
+    await expect.poll(() => api.state().assignments.map((item) => item.id)).toEqual(["new"]);
     expect(api.errors).toEqual([]);
   });
 });

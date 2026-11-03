@@ -10,6 +10,7 @@ from datetime import date, timedelta
 from typing import List, Optional
 
 from backend.models import (
+    STORED_STATE_CONTEXT,
     AppState,
     Assignment,
     Clinician,
@@ -235,7 +236,8 @@ def test_eligibility_vacation(basic_state):
 
 
 def test_eligibility_malformed_vacation_does_not_crash():
-    """A malformed vacation date (free-form str in the model) must not crash.
+    """A malformed vacation date (a calendar stored before dates were checked,
+    read without the checks) must not crash.
 
     The heuristic compares ISO strings like validation._is_on_vacation, so an
     empty startISO covers every date up to endISO, exactly as the validator
@@ -243,10 +245,10 @@ def test_eligibility_malformed_vacation_does_not_crash():
     """
     from .conftest import make_app_state, make_clinician, make_template_slot
 
-    clinician = make_clinician(
-        "X", "X", working_hours_per_week=40,
-        vacations=[VacationRange(id="v", startISO="", endISO="2026-01-09")],
+    malformed = VacationRange.model_validate(
+        {"id": "v", "startISO": "", "endISO": "2026-01-09"}, context=STORED_STATE_CONTEXT
     )
+    clinician = make_clinician("X", "X", working_hours_per_week=40, vacations=[malformed])
     state = make_app_state(
         clinicians=[clinician],
         slots=[

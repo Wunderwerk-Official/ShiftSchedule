@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { addDaysISO, dayDiff, isoWeekNumber, listDaysISO, localDateTime, parseISODate, weekStartISO } from "./dates";
+import { addDaysISO, dayDiff, isoWeekNumber, listDaysISO, parseISODate, weekStartISO } from "./dates";
 import {
   formatCountdown,
   formatDayLabel,
@@ -36,8 +36,6 @@ describe("local date helpers", () => {
     expect(dayDiff("2026-12-31", "2027-01-01")).toBe(1);
     expect(weekStartISO("2026-11-01")).toBe("2026-10-26");
     expect(parseISODate("2026-10-25").getDate()).toBe(25);
-    const end = localDateTime("2026-10-24", 1920); // night 17:00 → Sun 08:00
-    expect([end.getDate(), end.getHours(), end.getMinutes()]).toEqual([25, 8, 0]);
   });
 });
 

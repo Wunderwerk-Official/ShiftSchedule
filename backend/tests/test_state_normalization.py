@@ -741,3 +741,79 @@ def test_holiday_source_round_trips_through_save_and_load(state_db):
     _save_state(loaded, "u", check_revision=True, expected_revision=loaded.revision)
     assert _stored_data(state_db, "u") == stored_untagged
     assert _load_state("u").revision == untagged_revision
+
+
+# -----------------------------------------------------------------------------
+# Impossible dates and shifts of people no longer listed
+# -----------------------------------------------------------------------------
+
+
+def test_normalize_drops_entries_with_impossible_dates_instead_of_raising() -> None:
+    """Calendars stored before dates were checked load with the stored-state
+    context; normalizing must drop the impossible entries, never raise."""
+    from backend.models import STORED_STATE_CONTEXT
+    from backend.state import _parse_stored_state
+
+    blob = make_app_state(
+        assignments=[make_assignment("ok", "slot-a__mon", "2026-01-05", "clin-1")],
+        holidays=[Holiday(dateISO="2026-01-01", name="Neujahr")],
+        published_week_start_isos=["2026-01-05"],
+    ).model_dump()
+    blob["assignments"] += [
+        {"id": "slot-bad", "rowId": "slot-a__mon", "dateISO": "2026-02-30", "clinicianId": "clin-1"},
+        {"id": "legacy-bad", "rowId": "section-a", "dateISO": "garbage", "clinicianId": "clin-1"},
+        {"id": "pool-bad", "rowId": "pool-rest-day", "dateISO": "not-a-date", "clinicianId": "clin-1"},
+    ]
+    blob["holidays"].append({"dateISO": "2026-13-01", "name": "Broken"})
+    blob["publishedWeekStartISOs"].append("2026-02-30")
+    blob["slotOverridesByKey"] = {"slot-a__mon__2026-02-31": 1, "slot-a__mon__2026-01-05": 1}
+    blob["clinicians"][0]["vacations"] = [
+        {"id": "v-bad", "startISO": "2026-01-10", "endISO": "soon"},
+        {"id": "v-ok", "startISO": "2026-01-12", "endISO": "2026-01-16"},
+    ]
+    with pytest.raises(ValueError, match="'2026-02-30' is not a valid date"):
+        AppState.model_validate(blob)
+
+    normalized, changed = _normalize_state(_parse_stored_state(blob))
+
+    assert changed is True
+    assert [a.id for a in normalized.assignments] == ["ok"]
+    assert [h.name for h in normalized.holidays] == ["Neujahr"]
+    assert normalized.publishedWeekStartISOs == ["2026-01-05"]
+    assert normalized.slotOverridesByKey == {"slot-a__mon__2026-01-05": 1}
+    assert [v.id for v in normalized.clinicians[0].vacations] == ["v-ok"]
+    # The result passes the checks of a save and is stable.
+    AppState.model_validate(normalized.model_dump())
+    assert _normalize_state(normalized)[1] is False
+    assert AppState.model_validate(blob, context=STORED_STATE_CONTEXT).assignments[1].id == "slot-bad"
+
+
+def test_normalize_drops_shifts_of_people_no_longer_listed() -> None:
+    state = make_app_state(
+        clinicians=[make_clinician("clin-1", "Alice")],
+        assignments=[
+            make_assignment("kept", "slot-a__mon", "2026-01-05", "clin-1"),
+            make_assignment("orphan-slot", "slot-a__mon", "2026-01-05", "gone"),
+            make_assignment("orphan-pool", "pool-rest-day", "2026-01-06", "gone"),
+        ],
+    )
+
+    normalized, changed = _normalize_state(state)
+
+    assert changed is True
+    assert [a.id for a in normalized.assignments] == ["kept"]
+
+
+def test_imported_calendar_export_drops_impossible_dates_instead_of_failing() -> None:
+    """An exported calendar is stored data (new user with importState)."""
+    from backend.state import _parse_import_state
+
+    blob = make_app_state(
+        assignments=[make_assignment("ok", "slot-a__mon", "2026-01-05", "clin-1")],
+    ).model_dump()
+    blob["assignments"].append(
+        {"id": "bad", "rowId": "slot-a__mon", "dateISO": "2026-02-30", "clinicianId": "clin-1"}
+    )
+    for payload in (blob, {"exportedAt": "2026-01-01T00:00:00Z", "sourceUser": "old", "state": blob}):
+        imported = _parse_import_state(payload)
+        assert [a.id for a in imported.assignments] == ["ok"]

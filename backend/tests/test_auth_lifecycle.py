@@ -64,7 +64,8 @@ def seed_owned_data(username):
         conn.execute("INSERT INTO app_state VALUES (?, ?, ?)", (username, "{}", now))
         conn.execute("INSERT INTO ical_publications VALUES (?, ?, NULL, NULL, NULL, ?, ?)",
                      (username, f"ical-{username}", now, now))
-        conn.execute("INSERT INTO ical_clinician_publications VALUES (?, ?, ?, ?, ?)",
+        conn.execute("INSERT INTO ical_clinician_publications"
+                     " (username, clinician_id, token, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
                      (username, "clinician", f"ical-clinician-{username}", now, now))
         conn.execute("INSERT INTO web_publications VALUES (?, ?, ?, ?)",
                      (username, f"web-{username}", now, now))

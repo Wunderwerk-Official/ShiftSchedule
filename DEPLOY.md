@@ -248,6 +248,9 @@ JWT_EXPIRE_MINUTES=720
 # runs fall back to the heuristic seed plan. Admins can also set provider,
 # model and keys at runtime in Settings → Planning rules & AI.
 ANTHROPIC_API_KEY=
+
+# Optional — limit of one server-side PDF render in seconds (default 180).
+# PDF_RENDER_TIMEOUT_SECONDS=180
 ```
 
 Notes:
@@ -262,6 +265,9 @@ Notes:
   `docker-compose.yml` and the internal `http://frontend` in
   `docker-compose.proxied.yml`; it must be reachable *from inside* the
   backend container.
+- `PDF_RENDER_TIMEOUT_SECONDS` (optional, default 180, passed by all compose
+  files) bounds a whole PDF render; at the limit the backend kills the
+  render's browser and answers 504 "PDF render timed out.".
 - To change the admin password of an **existing** installation: set the new
   `ADMIN_PASSWORD`, additionally set `ADMIN_PASSWORD_RESET=true`, recreate
   the backend, then remove the flag again. On production, recreate it with
@@ -287,7 +293,8 @@ Notes:
   published in the app (`publishedWeekStartISOs`). Publish weeks in the UI
   for events to appear in subscribed calendars.
 - **PDF export times out**: the backend container must be able to resolve
-  and reach `FRONTEND_BASE_URL`.
+  and reach `FRONTEND_BASE_URL`. A render that exceeds
+  `PDF_RENDER_TIMEOUT_SECONDS` (default 180) answers 504.
 - **Redirect host certificate expired**: check that the DNS `A` record for
   `shiftplanner.wunderwerk.ai` still points to the Hetzner server
   (`dig +short shiftplanner.wunderwerk.ai`), then

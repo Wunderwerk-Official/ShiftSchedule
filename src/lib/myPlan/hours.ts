@@ -1,19 +1,25 @@
+import { elapsedMinutes } from "../planTimeZone";
 import { parseTimeToMinutes } from "../time";
-import { MINUTES_PER_DAY, dayDiff } from "./dates";
+import { MINUTES_PER_DAY } from "./dates";
 import type { PersonPlan, PlanAbsenceKind, PlanShift } from "./types";
 
-// Hours rule: gross slot duration (end − start, no break deduction), the
-// whole shift counted on its start day. Overlapping own shifts count once
-// (SPEC R4): the overlap belongs to the longer shift, so a 30-min meeting
-// inside a night adds nothing. Only shifts My plan shows are counted (none
-// on vacation days or in slots of another day type).
+// Hours rule: gross duration (end − start, no break deduction) as real
+// elapsed time in the plan's zone, the whole shift counted on its start day:
+// a night across a DST change lasts an hour more or less than on the wall
+// clock. Overlapping own shifts count once (SPEC R4): the overlap belongs to
+// the longer shift, so a 30-min meeting inside a night adds nothing. Only
+// shifts My plan shows are counted (none on vacation days or in slots of
+// another day type).
 // The Working hours overview (WorkingHoursOverviewModal) shares only
-// getSlotDurationMinutes: it adds the full duration of every non-pool
-// assignment, so its weekly total can be higher than My plan's.
+// getShiftMinutes: it adds the full duration of every non-pool assignment,
+// so its weekly total can be higher than My plan's. The solver keeps
+// wall-clock durations (getSlotDurationMinutes).
 
 const DEFAULT_SLOT_MINUTES = 8 * 60;
+/** Start assumed for a slot without a start time. */
+export const DEFAULT_START_MIN = 8 * 60;
 
-/** Gross slot minutes; 8 h when a time is missing, 0 when end ≤ start. */
+/** Wall clock slot minutes (end − start + endDayOffset days); 8 h when a time is missing, 0 when end ≤ start. */
 export function getSlotDurationMinutes(slot: {
   startTime?: string;
   endTime?: string;
@@ -29,6 +35,16 @@ export function getSlotDurationMinutes(slot: {
   return Math.max(0, end + offset * MINUTES_PER_DAY - start);
 }
 
+/** Real minutes of a slot worked from `dateISO` in the plan's zone: getSlotDurationMinutes with DST changes counted. */
+export function getShiftMinutes(
+  slot: { startTime?: string; endTime?: string; endDayOffset?: number },
+  dateISO: string,
+  timeZone: string,
+): number {
+  const start = parseTimeToMinutes(slot.startTime) ?? DEFAULT_START_MIN;
+  return Math.max(0, elapsedMinutes(dateISO, start, start + getSlotDurationMinutes(slot), timeZone));
+}
+
 /** Hours a shift adds to sums: countedHours when set (own plan), else its gross hours. */
 export function countedHours(shift: PlanShift): number {
   return shift.countedHours ?? shift.hours;
@@ -40,14 +56,11 @@ export function countedHours(shift: PlanShift): number {
  */
 export function withCountedHours(shifts: PlanShift[]): PlanShift[] {
   if (shifts.length === 0) return shifts;
-  const refISO = shifts[0].dateISO;
-  const spanOf = (shift: PlanShift) => {
-    const offset = dayDiff(refISO, shift.dateISO) * MINUTES_PER_DAY;
-    return { start: offset + shift.startMin, end: offset + shift.endMin };
-  };
+  // Real minutes, so overlaps and lengths stay right across DST changes.
+  const spanOf = (shift: PlanShift) => ({ start: shift.startsAt / 60_000, end: shift.endsAt / 60_000 });
   const byLength = [...shifts].sort((a, b) => {
-    const lengthDiff = b.endMin - b.startMin - (a.endMin - a.startMin);
-    return lengthDiff || spanOf(a).start - spanOf(b).start;
+    const lengthDiff = b.endsAt - b.startsAt - (a.endsAt - a.startsAt);
+    return lengthDiff || a.startsAt - b.startsAt;
   });
   const claimed: Array<{ start: number; end: number }> = [];
   const counted = new Map<string, number>();

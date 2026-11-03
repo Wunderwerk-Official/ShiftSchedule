@@ -53,10 +53,27 @@ it("describes the import backup and the regional holiday loading", () => {
   const text = (container.textContent ?? "").replace(/\s+/g, " ");
   expect(text).toContain("saved first as the latest automatic backup");
   expect(text).toContain("nothing is imported");
+  expect(text).toContain("a file without a single shift for this calendar (or larger than 10 MB) changes nothing");
+  expect(text).toContain("Load copy (Settings → Users) saves this backup first too");
   expect(text).not.toMatch(/without a backup|save a Calendar snapshot first/);
   expect(text).toContain("holidays you added by hand (date + name) stay");
   // Without a state every state's regional holidays are loaded (v1.72).
   expect(text).toContain("without one, the regional holidays of every state are loaded");
+});
+
+it("says that a holiday change removes the shifts of the changed days only after asking", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain(
+    "A day that becomes a holiday or stops being one (adding, removing or loading holidays) " +
+      "switches to the other day's columns, so the shifts planned on it no longer fit and are " +
+      "removed, locked ones too.",
+  );
+  expect(text).toContain("when you confirm, the calendar is saved as the automatic backup (see 10) before the change");
+  expect(text).toContain(
+    "Before a restore, a planning result, a shifts file import or a holiday change that removes " +
+      "shifts is applied, the current calendar is saved as an automatic backup.",
+  );
 });
 
 it("says that a name dragged into the Rest Day row keeps automatic planning away (v1.75)", () => {
@@ -67,6 +84,19 @@ it("says that a name dragged into the Rest Day row keeps automatic planning away
   );
 });
 
+it("explains moving and removing rest days and the week in the address (v1.82)", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain(
+    "Drag such a name to another day’s Rest Day row to move the day off, or out of the calendar to remove it.",
+  );
+  expect(text).toContain("Rest days from the on-call rule follow the on-call shift");
+  expect(text).toContain("the monthly sheet, which lists no violations, underlines the name in red");
+  expect(text).toContain("or out of the calendar, to end the vacation that day");
+  expect(text).toContain("A week you move to becomes part of the page address");
+  expect(text).toContain("The plain address, without a week, always opens the current week.");
+});
+
 it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () => {
   const { container } = render(<HelpView />);
   const text = (container.textContent ?? "").replace(/\s+/g, " ");
@@ -75,6 +105,21 @@ it("explains the stacked week: one workplace per row, no +N badge (v1.76)", () =
   expect(text).toContain("a small clock under the names gives that day’s time");
   expect(text).not.toContain("+N next to a row name");
   expect(text).not.toContain("names its own workplace");
+});
+
+it("describes what the public web link shows", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain("the same layout and Times (stacked or side by side)");
+  expect(text).toContain("On a phone it shows one day at a time, its times stacked.");
+});
+
+it("explains short names and the accent-insensitive person search", () => {
+  const { container } = render(<HelpView />);
+  const text = (container.textContent ?? "").replace(/\s+/g, " ");
+  expect(text).toContain("“muller” or “mueller” finds “Müller”");
+  expect(text).toContain("A short name always stands for one person of the team, also in PDFs and on the public page");
+  expect(text).toContain("shorten to “Jörg M.”; the clinic sheet lists the surname.");
 });
 
 it("explains Find a swap: the S key and Undo (v1.81)", () => {

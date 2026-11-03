@@ -1,7 +1,8 @@
 import { addDays, toISODate } from "./date";
 import type { SolverSettings } from "../api/client";
-import type { Assignment, Clinician } from "../api/client";
+import type { Assignment, Clinician, RestContextAssignment } from "../api/client";
 import type { ScheduleRow } from "./shiftRows";
+import { surnameSortKey } from "./personName";
 import { parseTimeToMinutes } from "./time";
 
 export const REST_DAY_POOL_ID = "pool-rest-day";
@@ -57,21 +58,71 @@ export function intervalsOverlap(a: TimeRange, b: TimeRange): boolean {
 }
 
 /**
- * Order of the people in a grid cell: by surname (the last word of the
- * name), then by the full name. Lists of fewer than two come back as is.
+ * Order of the people in a grid cell: by surname (the main family name, also
+ * for "Müller, Jörg; Dr." or "Ludwig van Beethoven"; lib/personName), then
+ * by the full name. Lists of fewer than two come back as is.
  */
 export function sortAssignmentsBySurname<T extends { clinicianId: string }>(
   assignments: T[],
   getName: (clinicianId: string) => string,
 ): T[] {
   if (assignments.length < 2) return assignments;
-  const surnameOf = (name: string) => name.trim().split(/\s+/).slice(-1)[0] ?? name;
   return [...assignments].sort((a, b) => {
     const nameA = getName(a.clinicianId);
     const nameB = getName(b.clinicianId);
-    const bySurname = surnameOf(nameA).localeCompare(surnameOf(nameB));
+    const bySurname = surnameSortKey(nameA).localeCompare(surnameSortKey(nameB));
     return bySurname !== 0 ? bySurname : nameA.localeCompare(nameB);
   });
+}
+
+/**
+ * Days off from the on-call rest rule ("Rest days around on-call duty"): the
+ * configured days before and after every on-call shift. Keyed by date, then
+ * by person, with the date of the on-call shift that causes the rest day.
+ * Vacation wins: an on-call shift on a vacation day causes no rest days, and
+ * no rest day falls on a vacation day. Also lists days on which the person
+ * still holds a shift (the team grid then hides the pill and flags the rule
+ * violation, the slot picker still warns). Empty while the rule is off.
+ */
+export function buildOnCallRestDays(
+  assignmentMap: Map<string, Assignment[]>,
+  clinicians: Clinician[],
+  options?: { scheduleRows?: ScheduleRow[]; solverSettings?: SolverSettings },
+): Map<string, Map<string, string>> {
+  const restDays = new Map<string, Map<string, string>>();
+  const settings = options?.solverSettings;
+  const daysBefore = Math.max(0, settings?.onCallRestDaysBefore ?? 0);
+  const daysAfter = Math.max(0, settings?.onCallRestDaysAfter ?? 0);
+  if (!settings?.onCallRestEnabled || (daysBefore === 0 && daysAfter === 0)) return restDays;
+  const onCallClassId = settings.onCallRestClassId ?? "";
+  const onCallRowIds = new Set(
+    (options?.scheduleRows ?? [])
+      .filter((row) => row.kind === "class" && (row.sectionId ?? row.id) === onCallClassId)
+      .map((row) => row.id),
+  );
+  if (onCallRowIds.size === 0) return restDays;
+  const vacationsById = new Map(clinicians.map((clinician) => [clinician.id, clinician.vacations]));
+  const isOnVacation = (clinicianId: string, dateISO: string) =>
+    vacationsById
+      .get(clinicianId)
+      ?.some((vacation) => vacation.startISO <= dateISO && dateISO <= vacation.endISO) ?? false;
+  for (const [key, list] of assignmentMap.entries()) {
+    const { rowId, dateISO } = splitAssignmentKey(key);
+    if (!dateISO || !onCallRowIds.has(rowId)) continue;
+    const onCallDate = new Date(`${dateISO}T00:00:00`);
+    for (const { clinicianId } of list) {
+      if (isOnVacation(clinicianId, dateISO)) continue;
+      for (let offset = -daysBefore; offset <= daysAfter; offset += 1) {
+        if (offset === 0) continue;
+        const restISO = toISODate(addDays(onCallDate, offset));
+        if (isOnVacation(clinicianId, restISO)) continue;
+        const byPerson = restDays.get(restISO) ?? new Map<string, string>();
+        if (!byPerson.has(clinicianId)) byPerson.set(clinicianId, dateISO);
+        restDays.set(restISO, byPerson);
+      }
+    }
+  }
+  return restDays;
 }
 
 export function buildRenderedAssignmentMap(
@@ -83,34 +134,20 @@ export function buildRenderedAssignmentMap(
     solverSettings?: SolverSettings;
     /** Unused. Still accepted because existing callers pass it. */
     holidayDates?: Set<string>;
+    /**
+     * Shifts that are not in the map but can cause rest days in it (the
+     * public page's on-call shifts just outside its week). They only feed
+     * the on-call rest days; they are never rendered.
+     */
+    restContextAssignments?: ReadonlyArray<RestContextAssignment>;
   },
 ) {
   const scheduleRows = options?.scheduleRows ?? [];
-  const solverSettings = options?.solverSettings ?? {
-    enforceSameLocationPerDay: true,
-    onCallRestEnabled: false,
-    onCallRestClassId: "",
-    onCallRestDaysBefore: 0,
-    onCallRestDaysAfter: 0,
-  };
   const displayDateSet = new Set(displayDays.map((date) => toISODate(date)));
   const rowKindById = new Map(scheduleRows.map((row) => [row.id, row.kind]));
   const rowKindOf = (rowId: string) =>
     rowKindById.get(rowId) ?? (rowId.startsWith("pool-") ? "pool" : "class");
-  const sectionByRowId = new Map(
-    scheduleRows
-      .filter((row) => row.kind === "class")
-      .map((row) => [row.id, row.sectionId ?? row.id]),
-  );
   const hasRestDayPoolRow = scheduleRows.some((row) => row.id === REST_DAY_POOL_ID);
-  const onCallRestClassId = solverSettings.onCallRestClassId ?? "";
-  const restDaysBefore = Math.max(0, solverSettings.onCallRestDaysBefore ?? 0);
-  const restDaysAfter = Math.max(0, solverSettings.onCallRestDaysAfter ?? 0);
-  const onCallShiftRowIds = new Set(
-    Array.from(sectionByRowId.entries())
-      .filter(([, sectionId]) => sectionId === onCallRestClassId)
-      .map(([rowId]) => rowId),
-  );
 
   const vacationByDate = new Map<string, Set<string>>();
   for (const clinician of clinicians) {
@@ -133,6 +170,16 @@ export function buildRenderedAssignmentMap(
   const next = new Map<string, RenderedAssignment[]>();
   const assignedShiftRowsByDate = new Map<string, Map<string, Set<string>>>();
   const restDayAssignmentsByDate = new Map<string, Set<string>>();
+  const addAssignedShiftRow = (dateISO: string, clinicianId: string, rowId: string) => {
+    let dayShiftRows = assignedShiftRowsByDate.get(dateISO);
+    if (!dayShiftRows) {
+      dayShiftRows = new Map();
+      assignedShiftRowsByDate.set(dateISO, dayShiftRows);
+    }
+    const assignedRows = dayShiftRows.get(clinicianId) ?? new Set<string>();
+    assignedRows.add(rowId);
+    dayShiftRows.set(clinicianId, assignedRows);
+  };
 
   // Stored pool entries (Rest Day) keep their own ids, even when the clinician
   // also holds a slot that day: dragging the pill out of Rest Day removes the
@@ -156,52 +203,48 @@ export function buildRenderedAssignmentMap(
     }
 
     if (rowKind !== "class") continue;
-    let dayShiftRows = assignedShiftRowsByDate.get(dateISO);
-    if (!dayShiftRows) {
-      dayShiftRows = new Map();
-      assignedShiftRowsByDate.set(dateISO, dayShiftRows);
-    }
-    for (const item of filtered) {
-      const assignedRows = dayShiftRows.get(item.clinicianId) ?? new Set<string>();
-      assignedRows.add(rowId);
-      dayShiftRows.set(item.clinicianId, assignedRows);
-    }
+    for (const item of filtered) addAssignedShiftRow(dateISO, item.clinicianId, rowId);
+  }
+  for (const item of options?.restContextAssignments ?? []) {
+    if (rowKindOf(item.rowId) !== "class") continue;
+    if (vacationByDate.get(item.dateISO)?.has(item.clinicianId)) continue;
+    addAssignedShiftRow(item.dateISO, item.clinicianId, item.rowId);
   }
 
+  // Who is off on a date: stored Rest Day entries, plus the on-call rest
+  // rule's days on which the person holds no shift. A shift on such a day
+  // wins: the computed pill is left out, so nobody shows up twice that day
+  // (the page flags the rule violation).
   const offByDate = new Map<string, Set<string>>();
   for (const [dateISO, cliniciansOff] of restDayAssignmentsByDate.entries()) {
-    const offSet = offByDate.get(dateISO) ?? new Set<string>();
-    cliniciansOff.forEach((clinicianId) => offSet.add(clinicianId));
-    offByDate.set(dateISO, offSet);
+    offByDate.set(dateISO, new Set(cliniciansOff));
   }
-  if (
-    solverSettings.onCallRestEnabled &&
-    onCallShiftRowIds.size > 0 &&
-    (restDaysBefore > 0 || restDaysAfter > 0)
-  ) {
-    const shiftDateISO = (dateISO: string, delta: number) =>
-      toISODate(addDays(new Date(`${dateISO}T00:00:00`), delta));
-    for (const [dateISO, clinicianMap] of assignedShiftRowsByDate.entries()) {
-      for (const [clinicianId, assignedRows] of clinicianMap.entries()) {
-        const hasOnCall = Array.from(assignedRows).some((rowId) =>
-          onCallShiftRowIds.has(rowId),
-        );
-        if (!hasOnCall) continue;
-        for (let offset = 1; offset <= restDaysBefore; offset += 1) {
-          const targetISO = shiftDateISO(dateISO, -offset);
-          if (!displayDateSet.has(targetISO)) continue;
-          const offSet = offByDate.get(targetISO) ?? new Set<string>();
-          offSet.add(clinicianId);
-          offByDate.set(targetISO, offSet);
-        }
-        for (let offset = 1; offset <= restDaysAfter; offset += 1) {
-          const targetISO = shiftDateISO(dateISO, offset);
-          if (!displayDateSet.has(targetISO)) continue;
-          const offSet = offByDate.get(targetISO) ?? new Set<string>();
-          offSet.add(clinicianId);
-          offByDate.set(targetISO, offSet);
-        }
-      }
+  // On-call shifts just outside the shown days (public page) cause rest days
+  // inside them too, so they join the map the rule reads (only here).
+  const restContext = options?.restContextAssignments ?? [];
+  let restSourceMap = assignmentMap;
+  if (restContext.length > 0) {
+    restSourceMap = new Map(assignmentMap);
+    for (const item of restContext) {
+      const key = `${item.rowId}__${item.dateISO}`;
+      const contextShift: Assignment = {
+        id: `rest-context-${item.clinicianId}-${key}`,
+        rowId: item.rowId,
+        dateISO: item.dateISO,
+        clinicianId: item.clinicianId,
+      };
+      restSourceMap.set(key, [...(restSourceMap.get(key) ?? []), contextShift]);
+    }
+  }
+  const onCallRestDays = buildOnCallRestDays(restSourceMap, clinicians, options);
+  for (const [dateISO, restByPerson] of onCallRestDays.entries()) {
+    if (!displayDateSet.has(dateISO)) continue;
+    const working = assignedShiftRowsByDate.get(dateISO);
+    for (const clinicianId of restByPerson.keys()) {
+      if (working?.has(clinicianId)) continue;
+      const offSet = offByDate.get(dateISO) ?? new Set<string>();
+      offSet.add(clinicianId);
+      offByDate.set(dateISO, offSet);
     }
   }
 

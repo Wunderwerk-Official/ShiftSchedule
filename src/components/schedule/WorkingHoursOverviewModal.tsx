@@ -1,9 +1,9 @@
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { Assignment, WeeklyCalendarTemplate } from "../../api/client";
+import type { Assignment, TemplateSlot, WeeklyCalendarTemplate } from "../../api/client";
 import { buttonPrimary, buttonSecondary } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
-import { personTone } from "../../lib/myPlan";
+import { getShiftMinutes, personTone } from "../../lib/myPlan";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { compactTimeLabel, slotTimeLabel } from "../../lib/stackedTeamLayout";
 import {
@@ -33,6 +33,8 @@ type WorkingHoursOverviewModalProps = {
   /** Slot rows of the calendar: names and times for the day tooltips. */
   scheduleRows?: ScheduleRow[];
   isDark?: boolean;
+  /** The plan's time zone: shift hours are real time in it (DST nights 1 h longer/shorter). */
+  timeZone?: string;
 };
 
 function Segmented<T extends string>({
@@ -76,6 +78,7 @@ export default function WorkingHoursOverviewModal({
   weeklyTemplate,
   scheduleRows,
   isDark = false,
+  timeZone,
 }: WorkingHoursOverviewModalProps) {
   const today = todayISO();
   const currentYear = Number(today.slice(0, 4));
@@ -100,9 +103,21 @@ export default function WorkingHoursOverviewModal({
   }, [open]);
 
   const slotMinutesById = useMemo(() => slotMinutesFromTemplate(weeklyTemplate), [weeklyTemplate]);
+  // Real minutes of a shift on its date in the plan's zone (DST changes).
+  const minutesOf = useMemo(() => {
+    if (!timeZone) return undefined;
+    const slotById = new Map<string, TemplateSlot>();
+    for (const location of weeklyTemplate?.locations ?? []) {
+      for (const slot of location.slots ?? []) slotById.set(slot.id, slot);
+    }
+    return (rowId: string, dateISO: string) => {
+      const slot = slotById.get(rowId);
+      return slot ? getShiftMinutes(slot, dateISO, timeZone) : undefined;
+    };
+  }, [weeklyTemplate, timeZone]);
   const data = useMemo(
-    () => (open ? buildWorkingHoursYear({ year, clinicians, assignments, slotMinutesById }) : null),
-    [open, year, clinicians, assignments, slotMinutesById],
+    () => (open ? buildWorkingHoursYear({ year, clinicians, assignments, slotMinutesById, minutesOf }) : null),
+    [open, year, clinicians, assignments, slotMinutesById, minutesOf],
   );
   const people = useMemo<HoursPerson[]>(
     () =>

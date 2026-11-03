@@ -53,3 +53,33 @@ describe("ConfirmDialog keyboard handling", () => {
     await waitFor(() => expect(results).toEqual([false]));
   });
 });
+
+describe("ConfirmDialog over another modal (re-QA)", () => {
+  it("keeps the dialog underneath inert, closes only itself on Escape and gives focus back", async () => {
+    const { createPortal } = await import("react-dom");
+    const outerEscape: string[] = [];
+    function Outer() {
+      return createPortal(
+        <div role="dialog" aria-modal="true" aria-label="Export" onKeyDown={(e) => e.key === "Escape" && outerEscape.push("closed")}>
+          <ConfirmDialogProvider>
+            <Opener results={[]} />
+          </ConfirmDialogProvider>
+          <button type="button">Close export</button>
+        </div>,
+        document.body,
+      );
+    }
+    render(<Outer />);
+    const user = userEvent.setup();
+    const opener = screen.getByText("Open");
+    await user.click(opener);
+    // The Export dialog's portal root is inert while the confirmation is open.
+    expect(screen.getByRole("button", { name: "Close export", hidden: true }).closest("[inert]")).not.toBeNull();
+    expect(screen.getByText("Confirm")).toHaveFocus();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByText("Delete user?")).not.toBeInTheDocument());
+    expect(outerEscape).toEqual([]);
+    expect(opener).toHaveFocus();
+    expect(document.querySelector("[inert]")).toBeNull();
+  });
+});

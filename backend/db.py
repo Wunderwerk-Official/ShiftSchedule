@@ -7,6 +7,9 @@ DB_PATH = os.environ.get("SCHEDULE_DB_PATH", "schedule.db")
 _SCHEMA_READY = False
 _SCHEMA_LOCK = threading.Lock()
 
+# Event format the iCal feeds serve (timed since v1.82).
+ICAL_FORMAT = "timed"
+
 
 def _utcnow() -> datetime:
     return datetime.now(timezone.utc).replace(microsecond=0)
@@ -92,6 +95,13 @@ def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    # v1.82: a person's link is revoked (not deleted) when they leave the plan,
+    # so a snapshot restore that brings the same person back revives it.
+    clinician_link_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(ical_clinician_publications)")
+    }
+    if "revoked_at" not in clinician_link_columns:
+        conn.execute("ALTER TABLE ical_clinician_publications ADD COLUMN revoked_at TEXT NULL")
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS web_publications (
@@ -216,6 +226,21 @@ def _ensure_schema_locked(conn: sqlite3.Connection) -> None:
             updated_at TEXT NOT NULL
         )
         """
+    )
+    # When this database first served each iCal event format. The previous
+    # version had stopped serving by then, so feed validators that start
+    # here never match a copy in the previous format (backend/ical_routes.py).
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ical_formats (
+            format TEXT PRIMARY KEY,
+            since TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO ical_formats (format, since) VALUES (?, ?)",
+        (ICAL_FORMAT, _utcnow_iso()),
     )
     # Swap assistant (v1.81): one row per swap with its exact patch for undo, an
     # append-only event log, and per-calendar swap rules. Columns that a later

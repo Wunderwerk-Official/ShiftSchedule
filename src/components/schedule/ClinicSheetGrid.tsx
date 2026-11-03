@@ -3,7 +3,12 @@ import AssignmentLockButton from "./AssignmentLockButton";
 import { Fragment, useEffect, useMemo, useState } from "react";
 import type { DragEvent as ReactDragEvent, ReactNode } from "react";
 import { cx } from "../../lib/classNames";
-import { sortAssignmentsBySurname, type RenderedAssignment } from "../../lib/schedule";
+import {
+  REST_DAY_POOL_ID,
+  sortAssignmentsBySurname,
+  VACATION_POOL_ID,
+  type RenderedAssignment,
+} from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import type { WeeklyHoursStatus } from "../../lib/weeklyHours";
 import { getLuminance } from "../../lib/shiftRows";
@@ -16,6 +21,7 @@ import {
   DRAG_MIME,
   readDragPayload,
   type DragPayload,
+  type MoveRestDayArgs,
   type SlotOptionClinician,
 } from "../../lib/clinicianSlotOptions";
 import {
@@ -28,6 +34,7 @@ import {
   type ClinicSheetRow,
 } from "../../lib/clinicSheet";
 import { toISODate } from "../../lib/date";
+import { nameLabelsOf, type PersonNameLabels } from "../../lib/personName";
 import { assignmentKey } from "../../lib/swaps/format";
 import type { SwapAssignmentRef, SwapSlotRef } from "../../lib/swaps/types";
 import PillSwapButton, { findSwapOnKey } from "../swaps/PillSwapButton";
@@ -40,38 +47,10 @@ import ClinicianPickerPopover from "./ClinicianPickerPopover";
 // have no faithful dark equivalents and fidelity is the point of this layout.
 
 const SHEET_FONT_FAMILY = '"Arial", "Helvetica Neue", Helvetica, sans-serif';
-const DAY_COLUMN_WIDTH = "minmax(252px, 1fr)";
+// Six name columns of 52px: an eight-letter surname fits one column.
+// Names never widen it (inline-size containment, renderName).
+const DAY_COLUMN_WIDTH = "minmax(312px, 1fr)";
 const LABEL_COLUMN_WIDTH = "minmax(150px, 190px)";
-
-// The Excel sheet lists people by surname only. Use the last name token and
-// fall back to an initial + surname when two people in the same cell collide.
-const surnameOf = (name: string) => {
-  const parts = name.trim().split(/\s+/);
-  return parts[parts.length - 1] || name;
-};
-
-const buildDisplayNames = (
-  assignments: RenderedAssignment[],
-  getClinicianName: (id: string) => string,
-): Map<string, string> => {
-  const surnameCounts = new Map<string, number>();
-  for (const assignment of assignments) {
-    const surname = surnameOf(getClinicianName(assignment.clinicianId));
-    surnameCounts.set(surname, (surnameCounts.get(surname) ?? 0) + 1);
-  }
-  const result = new Map<string, string>();
-  for (const assignment of assignments) {
-    const fullName = getClinicianName(assignment.clinicianId);
-    const surname = surnameOf(fullName);
-    if ((surnameCounts.get(surname) ?? 0) > 1) {
-      const first = fullName.trim().split(/\s+/)[0] ?? "";
-      result.set(assignment.id, first ? `${first[0]}. ${surname}` : surname);
-    } else {
-      result.set(assignment.id, surname);
-    }
-  }
-  return result;
-};
 
 const WEEKDAY_FORMAT = new Intl.DateTimeFormat("de-DE", { weekday: "long" });
 const WEEKDAY_SHORT_FORMAT = new Intl.DateTimeFormat("de-DE", { weekday: "short" });
@@ -84,6 +63,13 @@ const sheetTextClass = (bgColor: string | undefined) => {
   if (!bgColor) return "text-slate-900";
   return getLuminance(bgColor) < 0.3 ? "text-white" : "text-slate-900";
 };
+
+// Names share their area's columns: fewer names than columns get equal,
+// wider tracks, so an ordinary surname is not cut while columns next to it
+// stay empty. A full area keeps one name per column and wraps the rest to
+// extra lines, like the Excel sheet's continuation rows.
+const nameTracks = (columns: number, items: number) =>
+  `repeat(${Math.min(columns, Math.max(items, 1))}, minmax(0, 1fr))`;
 
 const formatSheetDate = (date: Date) => {
   const day = String(date.getDate()).padStart(2, "0");
@@ -100,6 +86,12 @@ type ClinicSheetGridProps = {
   header?: ReactNode;
   readOnly?: boolean;
   getClinicianName: (clinicianId: string) => string;
+  /**
+   * Short names by clinician id (lib/personName buildNameLabels). The Excel
+   * sheet lists people by surname; one shared by two people in the team gets
+   * given-name letters ("J. Müller"), everywhere.
+   */
+  nameLabels?: Map<string, PersonNameLabels>;
   getIsQualified: (clinicianId: string, rowId: string) => boolean;
   clinicians?: SlotOptionClinician[];
   getIsOnRestDay?: (clinicianId: string, dateISO: string) => boolean;
@@ -121,6 +113,8 @@ type ClinicSheetGridProps = {
     assignmentId: string;
     clinicianId: string;
   }) => void;
+  /** A Rest Day name dropped on the Rest Day row of another day (other drops on another day remove). */
+  onMoveRestDay?: (args: MoveRestDayArgs) => void;
   onClinicianClick?: (clinicianId: string) => void;
   /** "Find swap" of a slot name (its ⇄ button and the S key); editable sheets only. */
   onFindSwap?: (assignment: SwapAssignmentRef) => void;
@@ -135,6 +129,7 @@ export default function ClinicSheetGrid({
   header,
   readOnly = false,
   getClinicianName,
+  nameLabels,
   getIsQualified,
   clinicians = [],
   getIsOnRestDay,
@@ -144,6 +139,7 @@ export default function ClinicSheetGrid({
   onRemoveAssignment,
   onToggleAssignmentLock,
   onMoveWithinDay,
+  onMoveRestDay,
   onClinicianClick,
   onFindSwap,
   onFindCover,
@@ -210,22 +206,37 @@ export default function ClinicSheetGrid({
     };
   }, [dragging, onRemoveAssignment]);
 
-  // Shared drop handling for slot areas and pool cells: drops from another
-  // day (or onto an incompatible slot) remove the assignment, drops on the
-  // source cell are a no-op, valid same-day drops move.
+  // Shared drop handling for slot areas and pool cells: a Rest Day name
+  // dropped on the Rest Day row of another day moves there, other drops from
+  // another day (or onto an incompatible slot) remove the assignment, drops
+  // on the source cell are a no-op, valid same-day drops move. A Vacation
+  // name stays on such drops: a vacation day ends only when its name leaves
+  // the sheet.
   const handleCellDrop = (event: ReactDragEvent, targetRowId: string, dateISO: string) => {
     event.preventDefault();
     event.stopPropagation();
     const payload = readDragPayload(event.dataTransfer);
     setDragging(null);
     if (!payload) return;
+    const removeOnMissedDrop = () => {
+      if (payload.rowId !== VACATION_POOL_ID) onRemoveAssignment?.(payload);
+    };
     if (payload.dateISO !== dateISO) {
-      onRemoveAssignment?.(payload);
+      if (payload.rowId === REST_DAY_POOL_ID && targetRowId === REST_DAY_POOL_ID && onMoveRestDay) {
+        onMoveRestDay({
+          fromDateISO: payload.dateISO,
+          toDateISO: dateISO,
+          assignmentId: payload.assignmentId,
+          clinicianId: payload.clinicianId,
+        });
+      } else {
+        removeOnMissedDrop();
+      }
       return;
     }
     if (payload.rowId === targetRowId) return;
     if (!canDropAssignment(payload, targetRowId, dateISO, dropIndex)) {
-      onRemoveAssignment?.(payload);
+      removeOnMissedDrop();
       return;
     }
     onMoveWithinDay?.({
@@ -294,11 +305,19 @@ export default function ClinicSheetGrid({
     dateISO: string,
     textClass: string,
     isPoolCell: boolean,
-    displayName: string,
   ) => {
     const name = getClinicianName(assignment.clinicianId);
+    const surname = nameLabels?.get(assignment.clinicianId)?.surname ?? nameLabelsOf(name).surname;
     const isUnqualified =
       !isPoolCell && !getIsQualified(assignment.clinicianId, slotRowId);
+    // A shift on the person's rest day (on-call rule or Rest Day row): the
+    // sheet has no violation list, so the name itself is marked.
+    const isOnRestDay =
+      !isPoolCell && (getIsOnRestDay?.(assignment.clinicianId, dateISO) ?? false);
+    const warnings = [
+      isUnqualified && "not qualified for this slot",
+      isOnRestDay && "scheduled on a rest day",
+    ].filter(Boolean);
     const isBeingDragged =
       dragging?.assignmentId === assignment.id &&
       dragging.rowId === slotRowId &&
@@ -327,7 +346,7 @@ export default function ClinicSheetGrid({
         }
         onKeyDownCapture={findSwap ? findSwapOnKey(findSwap) : undefined}
         draggable={!readOnly}
-        title={isUnqualified ? `${name} — not qualified for this slot` : name}
+        title={warnings.length > 0 ? `${name} — ${warnings.join("; ")}` : name}
         onDragStart={
           readOnly
             ? undefined
@@ -349,7 +368,13 @@ export default function ClinicSheetGrid({
               }
         }
         className={cx(
-          "relative flex min-w-0 items-center px-0.5 text-[11px] leading-[24px]",
+          // Inline-size containment: a long name never widens the day
+          // columns (they would all grow to it, and the printed sheet shrink
+          // to fit). A name of several words wraps at a space or hyphen
+          // (screen and PDF), so the words that tell two people apart
+          // ("Andreas Schulz" / "Andrea Schulz") stay visible; only a single
+          // word that is still too wide is cut, the full name in the title.
+          "relative flex min-h-[24px] min-w-0 items-center px-0.5 text-[11px] leading-[24px] [contain:inline-size] [&>span]:whitespace-normal [&>span]:py-[3px] [&>span]:leading-[12px]",
           // Touch screens always show an unlocked name's lock (and the ⇄
           // button): keep their room. A locked name's room is a margin of
           // the name instead, so its in-row lock stays at the end.
@@ -357,7 +382,8 @@ export default function ClinicSheetGrid({
             ? !lockInRow && "[@media(hover:none)]:pr-10"
             : hasLock && !isLocked && "[@media(hover:none)]:pr-5",
           textClass,
-          isUnqualified && "underline decoration-amber-500 decoration-wavy",
+          (isUnqualified || isOnRestDay) && "underline decoration-wavy",
+          isOnRestDay ? "decoration-red-600" : isUnqualified && "decoration-amber-500",
           !readOnly && "cursor-grab active:cursor-grabbing hover:bg-black/5",
           isBeingDragged && "opacity-40",
         )}
@@ -372,7 +398,7 @@ export default function ClinicSheetGrid({
               : hasLock && !isLocked && "pill-lock-fade",
           )}
         >
-          {displayName}
+          {surname}
         </span>
         {/* The same lock as the weekly grid: a locked name shows it, an
             unlocked one on hover (index.css); hand-placed shifts start locked. */}
@@ -407,7 +433,6 @@ export default function ClinicSheetGrid({
       assignmentMap.get(`${area.slotId}__${day.dateISO}`) ?? [],
       getClinicianName,
     );
-    const displayNames = buildDisplayNames(assignments, getClinicianName);
     const areaBackground = day.isCyan
       ? undefined
       : area.areaIndex > 0
@@ -418,13 +443,13 @@ export default function ClinicSheetGrid({
       : "text-slate-900";
     const openSlots = Math.max(0, area.requiredSlots - assignments.length);
     const canEdit = !readOnly && Boolean(onAddAssignment);
+    // The open-slot "+" marks take tracks like names.
+    const areaTracks = nameTracks(area.colSpan, assignments.length + (canEdit ? openSlots : 0));
     const timeLabel =
       area.startTime && area.endTime ? `${area.startTime}–${area.endTime}` : undefined;
     const areaTitle = [area.sectionName ?? row.label, timeLabel, openSlots > 0 ? `${openSlots} offen` : undefined]
       .filter(Boolean)
       .join(" · ");
-    // Names occupy the area's fixed columns; overflow wraps to extra lines,
-    // like the Excel sheet's continuation rows.
     return (
       <div
         key={`${area.slotId}`}
@@ -463,17 +488,10 @@ export default function ClinicSheetGrid({
       >
         <div
           className="grid items-start"
-          style={{ gridTemplateColumns: `repeat(${area.colSpan}, minmax(0, 1fr))` }}
+          style={{ gridTemplateColumns: areaTracks }}
         >
           {assignments.map((assignment) =>
-            renderName(
-              assignment,
-              area.slotId,
-              day.dateISO,
-              textClass,
-              false,
-              displayNames.get(assignment.id) ?? getClinicianName(assignment.clinicianId),
-            ),
+            renderName(assignment, area.slotId, day.dateISO, textClass, false),
           )}
           {canEdit && openSlots > 0
             ? Array.from({ length: openSlots }, (_, idx) => (
@@ -504,7 +522,6 @@ export default function ClinicSheetGrid({
       assignmentMap.get(`${poolRow.id}__${day.dateISO}`) ?? [],
       getClinicianName,
     );
-    const displayNames = buildDisplayNames(assignments, getClinicianName);
     return (
       <div
         key={`${poolRow.id}__${day.dateISO}`}
@@ -521,16 +538,9 @@ export default function ClinicSheetGrid({
         )}
         style={{ backgroundColor: day.isCyan ? EXCEL_CYAN : undefined }}
       >
-        <div className="grid" style={{ gridTemplateColumns: `repeat(${SHEET_DAY_COLUMNS}, minmax(0, 1fr))` }}>
+        <div className="grid" style={{ gridTemplateColumns: nameTracks(SHEET_DAY_COLUMNS, assignments.length) }}>
           {assignments.map((assignment) =>
-            renderName(
-              assignment,
-              poolRow.id,
-              day.dateISO,
-              "text-slate-900",
-              true,
-              displayNames.get(assignment.id) ?? getClinicianName(assignment.clinicianId),
-            ),
+            renderName(assignment, poolRow.id, day.dateISO, "text-slate-900", true),
           )}
         </div>
       </div>
@@ -585,8 +595,10 @@ export default function ClinicSheetGrid({
                           const isCell = target?.closest?.('[data-schedule-cell="true"]');
                           if (isCell) return;
                           e.preventDefault();
+                          // A Vacation name dropped on a header or label keeps
+                          // its day: vacation ends only outside the calendar.
                           const payload = readDragPayload(e.dataTransfer);
-                          if (payload) {
+                          if (payload && payload.rowId !== VACATION_POOL_ID) {
                             onRemoveAssignment?.(payload);
                           }
                           setDragging(null);
@@ -619,14 +631,15 @@ export default function ClinicSheetGrid({
                         <div className="text-[13px] font-bold leading-tight">
                           <span
                             className={cx(
-                              isToday && "rounded-sm px-1 ring-2 ring-inset ring-sky-600",
+                              // A printout does not mark the day it was printed.
+                              isToday && "rounded-sm px-1 ring-2 ring-inset ring-sky-600 print:ring-0",
                             )}
                           >
                             {formatSheetDate(day.date)}
                           </span>
                         </div>
                         {day.holidayName ? (
-                          <div className="truncate text-[9px] font-semibold leading-tight text-slate-700">
+                          <div className="print-wrap truncate text-[9px] font-semibold leading-tight text-slate-700 [contain:inline-size]">
                             {day.holidayName}
                           </div>
                         ) : null}
@@ -659,7 +672,7 @@ export default function ClinicSheetGrid({
                             >
                               <div
                                 className={cx(
-                                  "truncate text-[11px] font-bold leading-[22px]",
+                                  "print-wrap truncate text-[11px] font-bold leading-[22px]",
                                   labelText,
                                 )}
                                 title={row.label}
@@ -725,7 +738,7 @@ export default function ClinicSheetGrid({
                               )}
                             >
                               <div
-                                className="truncate text-[11px] font-bold leading-[22px] text-slate-900"
+                                className="print-wrap truncate text-[11px] font-bold leading-[22px] text-slate-900"
                                 title={poolRow.name}
                               >
                                 {poolRow.name}

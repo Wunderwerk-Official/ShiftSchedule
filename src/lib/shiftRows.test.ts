@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import type { AppState, WorkplaceRow } from "../api/client";
+import type { AppState, Assignment, DayType, Holiday, WorkplaceRow } from "../api/client";
 import {
   buildShiftRowId,
   ensureLocations,
+  findAssignmentsDroppedByHolidayChange,
   normalizeAppState,
   normalizeSubShifts,
   parseShiftRowId,
@@ -601,5 +602,143 @@ describe("normalizeAppState", () => {
       // Solver settings should be identical
       expect(second.solverSettings).toEqual(first.solverSettings);
     });
+  });
+});
+
+describe("findAssignmentsDroppedByHolidayChange", () => {
+  const THU = "2026-12-24";
+  const SAT = "2026-10-31";
+  const SUN = "2026-11-01";
+  const dayTypes: DayType[] = ["thu", "sat", "sun", "holiday"];
+  // Template-builder slots ("slot-<uuid>"): one per day type, no day suffix.
+  const calendar = (assignments: Assignment[], holidays: Holiday[]): AppState => ({
+    locations: [{ id: "loc-default", name: "Default" }],
+    locationsEnabled: true,
+    rows: [
+      {
+        id: "section-a",
+        name: "MRI",
+        kind: "class",
+        dotColorClass: "bg-slate-400",
+        subShifts: [{ id: "s1", name: "Shift 1", order: 1, startTime: "08:00", endTime: "16:00" }],
+      },
+      { id: "pool-rest-day", name: "Rest Day", kind: "pool", dotColorClass: "bg-slate-200" },
+      { id: "pool-vacation", name: "Vacation", kind: "pool", dotColorClass: "bg-emerald-500" },
+    ],
+    clinicians: [],
+    assignments,
+    minSlotsByRowId: {},
+    slotOverridesByKey: {},
+    solverRules: [],
+    weeklyTemplate: {
+      version: 4,
+      blocks: [{ id: "block-a", sectionId: "section-a", requiredSlots: 0 }],
+      locations: [
+        {
+          locationId: "loc-default",
+          rowBands: [{ id: "row-1", label: "Row 1", order: 1 }],
+          colBands: dayTypes.map((dayType) => ({ id: `col-${dayType}`, label: "", order: 1, dayType })),
+          slots: dayTypes.map((dayType) => ({
+            id: `slot-${dayType}-6f1c`,
+            locationId: "loc-default",
+            rowBandId: "row-1",
+            colBandId: `col-${dayType}`,
+            blockId: "block-a",
+          })),
+        },
+      ],
+    },
+    holidays,
+  });
+  const shift = (id: string, dayType: DayType, dateISO: string, extra: Partial<Assignment> = {}): Assignment => ({
+    id,
+    rowId: `slot-${dayType}-6f1c`,
+    dateISO,
+    clinicianId: "c1",
+    source: "solver",
+    ...extra,
+  });
+  const ids = (assignments: Assignment[]) => assignments.map((assignment) => assignment.id);
+  const allSaints: Holiday = { dateISO: SUN, name: "Allerheiligen", source: "public" };
+  const reformation: Holiday = { dateISO: SAT, name: "Reformationstag", source: "public" };
+
+  it("finds every shift, locked ones too, on a date that becomes a holiday", () => {
+    const state = calendar(
+      [
+        shift("thu-1", "thu", THU),
+        shift("thu-locked", "thu", THU, { locked: true }),
+        shift("thu-manual", "thu", THU, { source: "manual" }),
+        shift("rest", "thu", THU, { rowId: "pool-rest-day" }),
+        shift("other-thu", "thu", "2026-12-17"),
+      ],
+      [],
+    );
+
+    const dropped = findAssignmentsDroppedByHolidayChange(state, [
+      { dateISO: THU, name: "Heiligabend", source: "manual" },
+    ]);
+
+    expect(ids(dropped)).toEqual(["thu-1", "thu-locked", "thu-manual"]);
+    // The same rule normalizeAppState applies on save (and the server too).
+    expect(ids(normalizeAppState({ ...state, holidays: [{ dateISO: THU, name: "x" }] }).state.assignments))
+      .toEqual(["rest", "other-thu"]);
+  });
+
+  it("finds the holiday-column shifts of a date that stops being a holiday", () => {
+    const state = calendar([shift("hol", "holiday", SUN), shift("hol-locked", "holiday", SUN, { locked: true })], [
+      allSaints,
+    ]);
+    expect(ids(findAssignmentsDroppedByHolidayChange(state, []))).toEqual(["hol", "hol-locked"]);
+  });
+
+  it("finds both directions when another state's holidays are loaded", () => {
+    const state = calendar(
+      [shift("sat-1", "sat", SAT), shift("sat-2", "sat", SAT), shift("sun-hol", "holiday", SUN, { locked: true })],
+      [allSaints],
+    );
+    expect(ids(findAssignmentsDroppedByHolidayChange(state, [reformation]))).toEqual([
+      "sat-1",
+      "sat-2",
+      "sun-hol",
+    ]);
+  });
+
+  it("finds nothing when the day types stay the same", () => {
+    const state = calendar([shift("hol", "holiday", SUN), shift("sat", "sat", SAT)], [allSaints]);
+    // Renamed, retagged or a second holiday on the same date: still a holiday.
+    expect(findAssignmentsDroppedByHolidayChange(state, [{ dateISO: SUN, name: "All Saints", source: "manual" }]))
+      .toEqual([]);
+    expect(
+      findAssignmentsDroppedByHolidayChange(state, [allSaints, { dateISO: SUN, name: "Clinic day" }]),
+    ).toEqual([]);
+    expect(findAssignmentsDroppedByHolidayChange(state, [allSaints, { dateISO: "2026-12-25", name: "X" }]))
+      .toEqual([]);
+  });
+
+  it("counts shifts sharing an id, date and person one by one", () => {
+    // Shifts files can repeat ids; one copy on the day's column, one in a pool.
+    const state = calendar(
+      [shift("dup", "thu", THU), shift("dup", "thu", THU, { rowId: "pool-rest-day" }), shift("dup", "thu", THU)],
+      [],
+    );
+    const dropped = findAssignmentsDroppedByHolidayChange(state, [{ dateISO: THU, name: "Heiligabend" }]);
+    expect(dropped.map((assignment) => assignment.rowId)).toEqual(["slot-thu-6f1c", "slot-thu-6f1c"]);
+  });
+
+  it("ignores shifts that do not fit their day already", () => {
+    // A Thursday-column shift on a Saturday is dropped by any save anyway.
+    const state = calendar([shift("misplaced", "thu", SAT)], []);
+    expect(findAssignmentsDroppedByHolidayChange(state, [reformation])).toEqual([]);
+  });
+
+  it("does not count migrated `<base>__<dayType>` shifts that move to the holiday slot", () => {
+    const migrated = normalizeAppState({
+      ...calendar([], []),
+      weeklyTemplate: undefined,
+    }).state;
+    const state = { ...migrated, assignments: [{ id: "m1", rowId: "section-a::s1__thu", dateISO: THU, clinicianId: "c1" }] };
+    expect(normalizeAppState(state).state.assignments).toHaveLength(1);
+
+    expect(findAssignmentsDroppedByHolidayChange(state, [{ dateISO: THU, name: "Heiligabend" }])).toEqual([]);
   });
 });

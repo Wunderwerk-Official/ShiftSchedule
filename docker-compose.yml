@@ -12,6 +12,8 @@ services:
       PUBLIC_BASE_URL: https://${DOMAIN}/api
       # Frontend base URL used for PDF rendering (Playwright).
       FRONTEND_BASE_URL: https://${DOMAIN}
+      # Limit of one PDF render in seconds (504 after it).
+      PDF_RENDER_TIMEOUT_SECONDS: ${PDF_RENDER_TIMEOUT_SECONDS:-180}
       ADMIN_USERNAME: ${ADMIN_USERNAME}
       ADMIN_PASSWORD: ${ADMIN_PASSWORD}
       # Set to "true" (plus a new ADMIN_PASSWORD) to reset an existing admin

@@ -60,14 +60,16 @@ export { deriveAbsenceShortLabel } from "./shifts";
 export { deriveLocationShortName } from "./shifts";
 
 // ── Hours ───────────────────────────────────────────────────────────────────
-/** Gross slot minutes (end − start, + endDayOffset days); 8 h when times are missing. */
+/** Wall clock slot minutes (end − start, + endDayOffset days); 8 h when times are missing. */
 export { getSlotDurationMinutes } from "./hours";
+/** Real minutes of a slot worked from a date in the plan's zone (DST included). */
+export { getShiftMinutes } from "./hours";
 /**
  * Counted hours of shifts STARTING in [fromISO, toISO] — e.g. the ISO week for the footer.
  * Overlapping own shifts count once, to the longer shift (SPEC R4).
  */
 export { sumHours } from "./hours";
-/** Hours a shift adds to sums (shift.countedHours ?? shift.hours); shift.hours stays the gross duration. */
+/** Hours a shift adds to sums (shift.countedHours ?? shift.hours); shift.hours stays the gross (real) duration. */
 export { countedHours } from "./hours";
 /** Days with a vacation/rest absence in [fromISO, toISO] ("Vacation · 5 days"). */
 export { countAbsenceDays } from "./hours";

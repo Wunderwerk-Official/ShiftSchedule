@@ -167,7 +167,7 @@
   }
 }
 /* A day without the lane's slot: hatched, so it never reads as an empty slot
-   (also in print and in the person look). */
+   (also in the person look; print uses a plain fill, see @media print). */
 .stacked-off-cell {
   background-color: rgb(248 250 252);
   background-image: repeating-linear-gradient(135deg, rgb(226 232 240 / 0.7) 0 1px, transparent 1px 6px);
@@ -253,6 +253,34 @@
   .sticky,
   .fixed {
     position: static !important;
+  }
+  /* Chromium's PDF writer draws every shadow, and every gradient with
+     see-through colors, as a page-sized raster image of its own: a week
+     became a 100-200 MB file that took minutes. Print keeps to plain vector
+     fills (rings are shadows too and go with them). */
+  *,
+  *::before,
+  *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+  /* "No slot" prints as a plain grey fill (an open slot stays white or in
+     its section's tint). */
+  .stacked-off-cell,
+  .dark .stacked-off-cell {
+    /* The screen's light hatching as one solid tone (v1.83: lighter, as the
+       hatching reads on screen; still apart from a white open slot). */
+    background-color: rgb(238 242 246);
+    background-image: none;
+  }
+  /* Labels wrap instead of being cut off: a PDF has no tooltips. A word
+     breaks only when it does not fit on a line by itself. */
+  .print-wrap {
+    overflow: visible !important;
+    white-space: normal !important;
+    text-overflow: clip !important;
+    overflow-wrap: break-word !important;
+    -webkit-line-clamp: none !important;
   }
   .row {
     break-inside: avoid;

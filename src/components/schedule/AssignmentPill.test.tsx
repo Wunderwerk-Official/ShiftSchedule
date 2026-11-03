@@ -1,6 +1,7 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import AssignmentPill from "./AssignmentPill";
+import { buildNameLabels, type PersonNameLabels } from "../../lib/personName";
 import { buildPersonPillStyles } from "./teamColors";
 
 // Person colors pick the name's abbreviation from canvas text widths.
@@ -49,10 +50,12 @@ const personStyle = buildPersonPillStyles([
   { id: "c1", name: "Sarah Neumann", qualifiedClassIds: [], preferredClassIds: [], vacations: [] },
 ]).get("c1");
 
-const renderPerson = (name: string, width: number) => {
+const renderPerson = (name: string, width: number, labels?: PersonNameLabels) => {
   rowWidth = width;
-  render(<AssignmentPill name={name} personStyle={personStyle} isLocked onToggleLock={() => {}} />);
-  return screen.getByText(/./, { selector: "span.min-w-0" });
+  const { container } = render(
+    <AssignmentPill name={name} labels={labels} personStyle={personStyle} isLocked onToggleLock={() => {}} />,
+  );
+  return within(container).getByText(/./, { selector: "span.min-w-0" });
 };
 
 describe("AssignmentPill with person colors", () => {
@@ -78,6 +81,128 @@ describe("AssignmentPill with person colors", () => {
     const name = renderPerson("Sarah Neumann", 50);
     expect(name.textContent).toBe("Sarah Neumann");
     expect(name.className).toContain("sr-only");
+  });
+
+  it("shows the team-wide label of its level", () => {
+    // 96 - 24 = 72 px: "Mehmet Yildirim" (90 px) misses, "Mehmet Yild." (72 px) fits.
+    const labels = buildNameLabels([
+      { id: "a", name: "Mehmet Yildirim" },
+      { id: "b", name: "Mehmet Yılmaz" },
+    ]).get("a");
+    const name = renderPerson("Mehmet Yildirim", 96, labels);
+    expect(name.textContent).toBe("Mehmet Yild.");
+  });
+
+  describe("two people whose cut names would read the same", () => {
+    const team = buildNameLabels([
+      { id: "wagner", name: "Sophie Wagner" },
+      { id: "weber", name: "Sophie Weber" },
+      { id: "neumann", name: "Sarah Neumann" },
+    ]);
+
+    it("show their team-unique \"F. L.\" instead of \"Sophie…\" (review: 'SW Sophie …' twice)", () => {
+      // 66 - 24 = 42 px: "Sophie Wa." (60 px) misses, and the ellipsis would
+      // leave "Sophie…" for both; "S. Wa." / "S. We." (36 px) fit.
+      const wagner = renderPerson("Sophie Wagner", 66, team.get("wagner"));
+      expect(wagner.textContent).toBe("S. Wa.");
+      const weber = renderPerson("Sophie Weber", 66, team.get("weber"));
+      expect(weber.textContent).toBe("S. We.");
+    });
+
+    it("leave other people's cut \"First L.\" alone", () => {
+      // "Sa…" already tells Sarah Neumann apart from both Sophies.
+      expect(renderPerson("Sarah Neumann", 66, team.get("neumann")).textContent).toBe("Sarah N.");
+    });
+
+    it("keep the cut \"First L.\" when not even \"F. L.\" fits", () => {
+      // 58 - 24 = 34 px: "S. Wa." (36 px) misses too; the full name stays on hover.
+      const wagner = renderPerson("Sophie Wagner", 58, team.get("wagner"));
+      expect(wagner.textContent).toBe("Sophie Wa.");
+      expect(wagner.className).toContain("truncate");
+      expect(wagner.className).not.toContain("sr-only");
+    });
+  });
+
+  it("keeps the distinguishing end when two names differ only by a degree or a note (final check)", () => {
+    const team = buildNameLabels([
+      { id: "a", name: "Anna Schmidt, MPH" },
+      { id: "b", name: "Anna Schmidt (OA)" },
+    ]);
+    // 84 - 24 = 60 px = 10 characters: the end cut would read "Anna Schm…" for both.
+    const mph = renderPerson("Anna Schmidt, MPH", 84, team.get("a"));
+    expect(mph.textContent).toBe("Anna S…MPH");
+    cleanup();
+    const oa = renderPerson("Anna Schmidt (OA)", 84, team.get("b"));
+    expect(oa.textContent).toBe("Anna…(OA)");
+    cleanup();
+    // Notes that differ just inside the parenthesis keep the whole note.
+    const notes = buildNameLabels([
+      { id: "aa", name: "Anna Schmidt (AA)" },
+      { id: "oa", name: "Anna Schmidt (OA)" },
+    ]);
+    expect(renderPerson("Anna Schmidt (AA)", 84, notes.get("aa")).textContent).toBe("Anna…(AA)");
+    cleanup();
+    expect(renderPerson("Anna Schmidt (OA)", 84, notes.get("oa")).textContent).toBe("Anna…(OA)");
+  });
+
+  it("shortens 'Last, First' names with titles to the given name and the family initial", () => {
+    // 66 - 24 = 42 px: "Jörg M." (42 px) fits; once "Müller, D." (QA).
+    const name = renderPerson("Müller, Jörg; Dr.", 66);
+    expect(name.textContent).toBe("Jörg M.");
+  });
+});
+
+describe("AssignmentPill in the section look (print, public page)", () => {
+  // The section look steps one level per frame while the name overflows its
+  // row: faked here as 6 px per character in a 38 px row (portrait print).
+  const undo: Array<() => void> = [];
+  beforeAll(() => {
+    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth")!;
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains("[justify-content:safe_center]")) return 38;
+        return client.get!.call(this);
+      },
+    });
+    const scroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollWidth");
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.tagName === "SPAN") return Array.from(this.textContent ?? "").length * 6;
+        return 0;
+      },
+    });
+    undo.push(() => {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", client);
+      if (scroll) Object.defineProperty(HTMLElement.prototype, "scrollWidth", scroll);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+    });
+  });
+  afterAll(() => undo.forEach((step) => step()));
+
+  it("wraps a last-level label that still does not fit instead of cutting it on both sides (re-QA)", async () => {
+    const labels = buildNameLabels([
+      { id: "a", name: "Andreas Schulz" },
+      { id: "b", name: "Schulz, Andrea" },
+    ]).get("a")!;
+    const { container } = render(<AssignmentPill name="Andreas Schulz" labels={labels} />);
+    const name = () => container.querySelector("span.text-center") as HTMLElement;
+    await waitFor(() => expect(name().className).toContain("whitespace-normal"));
+    expect(name().textContent).toBe(labels.levels[4]);
+    expect(name().className).not.toContain("whitespace-nowrap");
+    // "Andreas" (42 px at 6 px per character) is wider than the 38 px pill:
+    // the wrapped label gets a smaller font, so it wraps at the space instead
+    // of splitting the word (final check).
+    expect(name().style.fontSize).toBe("9.75px");
+  });
+
+  it("keeps a label that fits on one line", async () => {
+    const { container } = render(<AssignmentPill name="Ida Ek" />);
+    const name = container.querySelector("span.text-center") as HTMLElement;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(name.textContent).toBe("Ida Ek");
+    expect(name.className).toContain("whitespace-nowrap");
   });
 });
 
@@ -166,5 +291,67 @@ describe("AssignmentPill find swap", () => {
     const pill = pillOf(findSwapButton());
     expect(findSwapButton().className).toContain("right-0.5");
     expect(pill.classList).toContain("[@media(hover:none)]:pr-[22px]");
+  });
+});
+
+describe("AssignmentPill in print with person colors (v1.83)", () => {
+  // The section-look fakes of the block above are gone here: fake a 120 px
+  // or a 40 px row and 6 px per character, the circle 16 px wide.
+  const undo: Array<() => void> = [];
+  let row = 120;
+  beforeAll(() => {
+    const client = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "clientWidth")!;
+    Object.defineProperty(HTMLElement.prototype, "clientWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains("justify-start") || this.classList.contains("[justify-content:safe_center]")) return row;
+        return client.get!.call(this);
+      },
+    });
+    const offset = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "offsetWidth")!;
+    Object.defineProperty(HTMLElement.prototype, "offsetWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.classList.contains("h-4")) return 16;
+        return offset.get!.call(this);
+      },
+    });
+    const scroll = Object.getOwnPropertyDescriptor(Element.prototype, "scrollWidth");
+    Object.defineProperty(HTMLElement.prototype, "scrollWidth", {
+      configurable: true,
+      get(this: HTMLElement) {
+        if (this.tagName === "SPAN") return Array.from(this.textContent ?? "").length * 6;
+        return 0;
+      },
+    });
+    undo.push(() => {
+      Object.defineProperty(HTMLElement.prototype, "clientWidth", client);
+      Object.defineProperty(HTMLElement.prototype, "offsetWidth", offset);
+      if (scroll) Object.defineProperty(HTMLElement.prototype, "scrollWidth", scroll);
+      else Reflect.deleteProperty(HTMLElement.prototype, "scrollWidth");
+    });
+  });
+  afterAll(() => undo.forEach((step) => step()));
+
+  it("keeps the web look: colors and the initials circle beside the name", async () => {
+    row = 120;
+    const { container } = render(<AssignmentPill name="Sarah Neumann" personStyle={personStyle} print />);
+    const pill = container.querySelector('[data-assignment-pill="true"]') as HTMLElement;
+    expect(pill.style.backgroundColor).not.toBe("");
+    // 13 characters (78 px) + 16 px circle + 4 px gap fit in 120 px.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(within(container).getByText("SN")).toBeInTheDocument();
+    expect(within(container).getByText("Sarah Neumann")).toBeInTheDocument();
+  });
+
+  it("lets the circle give way to a readable name where the column is narrow", async () => {
+    row = 40;
+    const { container } = render(<AssignmentPill name="Sarah Neumann" personStyle={personStyle} print />);
+    await waitFor(() => expect(within(container).queryByText("SN")).toBeNull());
+    const pill = container.querySelector('[data-assignment-pill="true"]') as HTMLElement;
+    // Still the person's colors; the name (short form) shows, never initials alone.
+    expect(pill.style.backgroundColor).not.toBe("");
+    const name = container.querySelector("span.text-center") as HTMLElement;
+    expect(name.textContent?.length).toBeGreaterThan(2);
   });
 });

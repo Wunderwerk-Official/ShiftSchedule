@@ -174,11 +174,14 @@ export function buildWorkingHoursYear({
   clinicians,
   assignments,
   slotMinutesById,
+  minutesOf,
 }: {
   year: number;
   clinicians: HoursClinician[];
   assignments: Assignment[];
   slotMinutesById: Map<string, number>;
+  /** Real minutes of a shift on its date (the plan's zone, DST changes); falls back to slotMinutesById. */
+  minutesOf?: (rowId: string, dateISO: string) => number | undefined;
 }): WorkingHoursYear {
   const weeks = getWeeksInYear(year);
   const weekIndexByDate = new Map<string, number>();
@@ -209,7 +212,8 @@ export function buildWorkingHoursYear({
       if (assignment.rowId === REST_DAY_POOL_ID) person.restDates.add(assignment.dateISO);
       continue;
     }
-    const minutes = slotMinutesById.get(assignment.rowId) ?? DEFAULT_SLOT_MINUTES;
+    const minutes =
+      minutesOf?.(assignment.rowId, assignment.dateISO) ?? slotMinutesById.get(assignment.rowId) ?? DEFAULT_SLOT_MINUTES;
     person.minutesByWeek[weekIndex] += minutes;
     person.minutesByDate.set(assignment.dateISO, (person.minutesByDate.get(assignment.dateISO) ?? 0) + minutes);
     person.rowIdsByDate.set(assignment.dateISO, [...(person.rowIdsByDate.get(assignment.dateISO) ?? []), assignment.rowId]);

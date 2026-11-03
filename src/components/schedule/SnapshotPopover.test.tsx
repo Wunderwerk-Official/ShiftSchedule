@@ -77,6 +77,8 @@ describe("SnapshotPopover", () => {
     fireEvent.click(screen.getAllByText("Restore")[0]);
     expect(onRestoreSnapshot).not.toHaveBeenCalled();
     expect(screen.getByText(/Restores the entire calendar/)).toBeTruthy();
+    // There is one automatic backup slot: say that the previous one goes.
+    expect(screen.getByText(/this automatic backup replaces the previous one\.$/)).toBeTruthy();
     // The row's own action is replaced by the confirm box, whose primary
     // button is now the FIRST "Restore" in DOM order.
     fireEvent.click(screen.getAllByText("Restore")[0]);

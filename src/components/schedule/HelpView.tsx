@@ -47,6 +47,11 @@ export default function HelpView() {
               current date.
             </li>
             <li>On phones the team plan shows one day at a time.</li>
+            <li>
+              A week you move to becomes part of the page address: a reload keeps it,
+              and the address opens that week for anyone you send it to. The plain
+              address, without a week, always opens the current week.
+            </li>
           </ul>
         </Section>
 
@@ -128,7 +133,16 @@ export default function HelpView() {
                 <li>
                   <span className="font-medium">Rest Day row</span>: people resting around
                   on-call duty (filled by the on-call rest rule). A name you drag in marks a
-                  day off: automatic planning leaves that person free that day.
+                  day off: automatic planning leaves that person free that day. Drag such a
+                  name to another day&rsquo;s Rest Day row to move the day off, or out of the
+                  calendar to remove it.
+                </li>
+                <li>
+                  Rest days from the on-call rule follow the on-call shift: change that shift
+                  or the rule to change them. If you place the person in a shift on such a
+                  day anyway, they leave the Rest Day row and the shift counts as a rule
+                  violation (the monthly sheet, which lists no violations, underlines the
+                  name in red).
                 </li>
                 <li>
                   <span className="font-medium">Vacation row</span>: people on vacation;
@@ -171,10 +185,27 @@ export default function HelpView() {
               move it. Dragging a
               person into the Vacation row marks that day as vacation (their shifts that
               day are removed); drag them from the Vacation row to another row on the same
-              day to end the vacation.
+              day, or out of the calendar, to end the vacation that day.
             </li>
             <li>
               Drag a shift assignment out of the calendar to remove it.
+            </li>
+            <li>
+              Searching for a person ignores case, accents and word order: &ldquo;muller&rdquo;
+              or &ldquo;mueller&rdquo; finds &ldquo;Müller&rdquo;, &ldquo;celik&rdquo; finds
+              &ldquo;Çelik&rdquo;, &ldquo;jörg müller&rdquo; finds &ldquo;Müller, Jörg&rdquo;.
+            </li>
+            <li>
+              Where space is short, names shorten (&ldquo;Lena H.&rdquo;, &ldquo;L.
+              Hoffmann&rdquo;, &ldquo;L. H.&rdquo;) and point at the full name on hover.
+              A short name always stands for one person of the team, also in PDFs and on the
+              public page: when two people would share one, both get more letters
+              (&ldquo;Sophie Wa.&rdquo; and &ldquo;Sophie We.&rdquo;; in a narrow column
+              &ldquo;S. Wa.&rdquo; and &ldquo;S. We.&rdquo; rather than two cut-off
+              &ldquo;Sophie…&rdquo;). Names written
+              &ldquo;Müller, Jörg&rdquo; or with titles (&ldquo;Dr. med.&rdquo;,
+              &ldquo;Prof.&rdquo;) shorten to &ldquo;Jörg M.&rdquo;; the clinic sheet lists
+              the surname.
             </li>
           </ul>
           <p className="mt-2">
@@ -188,7 +219,10 @@ export default function HelpView() {
 
         <Section title="5. Highlighting While Dragging">
           <ul className="list-disc space-y-1 pl-5">
-            <li>While you drag a name, the other days are greyed out.</li>
+            <li>
+              While you drag a name, the other days are greyed out (a name from the Rest
+              Day row can still go to the Rest Day row of another day).
+            </li>
             <li>
               On the same day, shifts the person is qualified for and free for get a dark
               outline.
@@ -253,6 +287,14 @@ export default function HelpView() {
               every state are loaded, and the calendar plans those days with holiday
               staffing. Load again after changing it.
             </li>
+            <li>
+              A day that becomes a holiday or stops being one (adding, removing or loading
+              holidays) switches to the other day&apos;s columns, so the shifts planned on it
+              no longer fit and are removed, locked ones too. The app first says how many
+              shifts on which days and asks; when you confirm, the calendar is saved as the
+              automatic backup (see 10) before the change. Cancel keeps the holidays as they
+              were.
+            </li>
           </ul>
         </Section>
 
@@ -287,15 +329,20 @@ export default function HelpView() {
           <p>
             The <span className="font-medium">Calendar snapshots</span> button in the top
             bar saves the whole calendar under a name and restores it later. Before a
-            restore, a planning result or a shifts file import is applied, the current
-            calendar is saved as an automatic backup. There is one automatic backup: the
-            latest one replaces the previous.
+            restore, a planning result, a shifts file import or a holiday change that
+            removes shifts is applied, the current calendar is saved as an automatic
+            backup. There is one automatic backup: the latest one replaces the previous.
           </p>
           <p className="mt-2">
             Settings → <span className="font-medium">Shifts file</span> downloads all shifts
-            as a file; importing one replaces all shifts, locked ones too. The calendar
-            before the import is saved first as the latest automatic backup; if that backup
-            cannot be saved, nothing is imported.
+            as a file (shifts-<em>date</em>.json); importing one replaces all shifts, locked
+            ones too. The file is checked first: entries that are not shifts and repeats of
+            the same shift are skipped, and a file without a single shift for this calendar
+            (or larger than 10 MB) changes nothing. The question before the import says how
+            many shifts are replaced by how many. The calendar before the import is saved
+            first as the latest automatic backup; if that backup cannot be saved, nothing is
+            imported. An admin&rsquo;s <span className="font-medium">Load copy</span>{" "}
+            (Settings → Users) saves this backup first too.
           </p>
         </Section>
 
@@ -304,7 +351,10 @@ export default function HelpView() {
             <span className="font-medium">Open Export</span> below the calendar.{" "}
             <span className="font-medium">PDF</span> creates printable week exports, either in
             landscape with the times side by side or in portrait as the compact week (Times:
-            Stacked);{" "}
+            Stacked), in the colors of the team plan: each person&rsquo;s color and initials,
+            the locations&rsquo; colors in the label column. They always cover whole weeks from
+            Monday; a week that is not published is marked &quot;Draft – not published&quot;,
+            and a running export can be cancelled.{" "}
             <span className="font-medium">Web</span> creates a read-only public view link.
           </p>
           <p className="mt-2">
@@ -318,9 +368,19 @@ export default function HelpView() {
               <span className="font-medium">multiple events across many dates</span>.
             </li>
             <li>
+              Each event has the shift&rsquo;s <span className="font-medium">start and end time</span>{" "}
+              in the plan&rsquo;s time zone, which follows the holiday country (Germany:
+              Europe/Berlin). A night shift ends the next morning, and a shift across a
+              daylight saving change lasts its real time: one hour longer in October, one
+              hour shorter in March. A shift without times in the template shows on its day
+              without a time.
+            </li>
+            <li>
               In <span className="font-medium">Download</span>, you can export either{" "}
               <span className="font-medium">one file for all people</span> or{" "}
-              <span className="font-medium">individual files per person</span>.
+              <span className="font-medium">individual files per person</span>. Downloads
+              contain published weeks only; tick{" "}
+              <span className="font-medium">Include unpublished weeks</span> to add drafts.
             </li>
             <li>
               In <span className="font-medium">Subscribe / Publish</span>, you can publish a
@@ -332,9 +392,17 @@ export default function HelpView() {
             </li>
             <li>
               When published, you get one link for{" "}
-              <span className="font-medium">all people</span> and one link per person.
+              <span className="font-medium">all people</span> and one link per person. Removing
+              a person from the plan ends their link; restoring a snapshot that brings them back
+              (for example the automatic backup) brings their link back too.
             </li>
           </ul>
+          <p className="mt-2">
+            The <span className="font-medium">Web</span> link shows published weeks as you see
+            the team plan: the same layout and Times (stacked or side by side), and the Rest
+            Day row with the rest days of on-call shifts in the weeks around it. On a phone it
+            shows one day at a time, its times stacked.
+          </p>
         </Section>
 
         <Section title="12. My plan">
@@ -369,6 +437,12 @@ export default function HelpView() {
               Click a shift for its details (hours, who works with you, rest before).{" "}
               <span className="font-medium">Show in team plan</span> opens the team view at
               that date and briefly highlights your entry.
+            </li>
+            <li>
+              Hours (shift, day and week totals, rest before, Working hours overview) and the
+              Next up countdown are real time in the plan&rsquo;s time zone: a night across a
+              daylight saving change counts one hour more in October and one hour less in
+              March.
             </li>
             <li>
               Keyboard in My plan (not while typing): T / W / M day, week, month · H today ·

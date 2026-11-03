@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { listWeekStartsOverlappingMonth, toISODate } from "./date";
+import {
+  formatMonthLabel,
+  formatWeekdayDate,
+  listWeekStartsOverlappingMonth,
+  toISODate,
+} from "./date";
 
 describe("listWeekStartsOverlappingMonth", () => {
   it("lists five Monday starts for July 2026, beginning in June", () => {
@@ -36,5 +41,17 @@ describe("listWeekStartsOverlappingMonth", () => {
       "2027-02-15",
       "2027-02-22",
     ]);
+  });
+});
+
+describe("calendar labels", () => {
+  it("names months in English like the rest of the UI", () => {
+    expect(formatMonthLabel(new Date(2026, 11, 1))).toBe("December 2026");
+    expect(formatMonthLabel(new Date(2027, 0, 15))).toBe("January 2027");
+  });
+
+  it("formats a day like the week range label, with or without the year", () => {
+    expect(formatWeekdayDate(new Date(2026, 10, 2))).toBe("Mon 02.11.2026");
+    expect(formatWeekdayDate(new Date(2026, 10, 3), { withYear: false })).toBe("Tue 03.11.");
   });
 });

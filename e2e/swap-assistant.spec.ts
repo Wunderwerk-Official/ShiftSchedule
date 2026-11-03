@@ -364,8 +364,13 @@ async function openCalendar(
     return route.fulfill({ json: { enabled: false } });
   });
   await page.goto("/");
-  await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
-  if (!options.stateGate) await waitForMockedCalendar(page, state);
+  if (options.stateGate) {
+    // Until the calendar has loaded the Team plan shows a loading card (v1.82).
+    await expect(page.getByRole("region", { name: "Team plan" }).getByText("Loading calendar…")).toBeVisible();
+  } else {
+    await expect(page.locator('[data-schedule-grid="true"]')).toBeVisible();
+    await waitForMockedCalendar(page, state);
+  }
   /** Another tab saves the calendar: the revision this page holds goes stale. */
   const saveElsewhere = () => {
     current = { ...current, revision: "r-other" };
@@ -1222,36 +1227,16 @@ test("the swap assistant waits until the calendar has loaded", async ({ page }) 
   const calls = await mockSwapApi(page, api);
   const waitText = "Swaps are available once the calendar has loaded.";
   const toast = page.getByText(waitText);
-  /** The toast shows; it is gone before the next action, which must show it again. */
-  const expectToast = async () => {
-    await expect(toast).toBeVisible();
-    await expect
-      .poll(async () => {
-        await page.clock.fastForward(6_000);
-        return toast.isVisible();
-      })
-      .toBe(false);
-  };
   const historyButton = page.getByRole("button", { name: "Swap history" });
 
-  // The screen still holds the built-in demo calendar (src/data/mockData.ts:
-  // one open MRI slot on Monday, one person). A search would save it, which
-  // the server refuses, or look for its shifts on the server.
+  // Until the calendar has loaded the Team plan shows a loading card instead
+  // of the built-in demo calendar (v1.82): no shift or open slot to search a
+  // swap for, and the history waits too.
   await expect(historyButton).toBeDisabled();
   await expect(historyButton).toHaveAttribute("title", waitText);
-  const demoCell = page.locator('[data-schedule-cell="true"][data-row-id="slot-mri-mon-1"]');
-  await demoCell.click();
-  await page.getByRole("button", { name: "Find cover for this slot" }).click();
-  await expectToast();
-  await demoCell.click();
-  await page.getByRole("button", { name: /^Alex Hartmann/ }).click();
-  const demoPill = pillOf(page, "slot-mri-mon-1", "2026-01-05", "alex-hartmann");
-  await demoPill.hover();
-  await findSwapIn(demoPill).click();
-  await expectToast();
-  await demoPill.getByRole("button", { name: /^Lock assignment for/ }).focus();
+  await expect(page.locator('[data-schedule-grid="true"]')).toHaveCount(0);
+  await expect(page.locator("[data-assignment-key]")).toHaveCount(0);
   await page.keyboard.press("s");
-  await expectToast();
   await expect(drawer(page)).toHaveCount(0);
   expect(api.statePosts).toEqual([]);
   expect(calls).toEqual({ candidates: [], apply: [], undo: [], history: 0 });
@@ -1317,7 +1302,7 @@ test.describe("phone", () => {
     const api = await openCalendar(page, calendarState());
     const calls = await mockSwapApi(page, api);
     for (let day = 0; day < 3; day += 1) await page.getByRole("button", { name: "Next day" }).click();
-    await expect(page.getByText("Thu, Jan 8")).toBeVisible();
+    await expect(page.getByText("Thu 08.01.2026")).toBeVisible();
 
     await findSwapForGalileo(page);
     const sheet = drawer(page);

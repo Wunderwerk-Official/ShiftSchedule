@@ -39,10 +39,10 @@ function setup(overrides: Partial<ComponentProps<typeof SettingsView>> = {}) {
     onRenamePool: vi.fn(), onAddLocation: vi.fn(), onRenameLocation: vi.fn(), onRemoveLocation: vi.fn(),
     onReorderLocations: vi.fn(), onAddClinician: vi.fn(), onEditClinician: vi.fn(), onRemoveClinician: vi.fn(),
     onChangeHolidayCountry: vi.fn(), onChangeHolidayRegion: vi.fn(), onChangeHolidayYear: vi.fn(),
-    onFetchHolidays: vi.fn(), onAddHoliday: vi.fn(),
-    onRemoveHoliday: vi.fn(), onChangeSolverSettings: vi.fn(), onChangeWeeklyTemplate: vi.fn(),
+    onFetchHolidays: vi.fn().mockResolvedValue(0), onAddHoliday: vi.fn().mockResolvedValue(true),
+    onRemoveHoliday: vi.fn().mockResolvedValue(true), onChangeSolverSettings: vi.fn(), onChangeWeeklyTemplate: vi.fn(),
     onCreateSection: vi.fn().mockReturnValue("section"), onUpdateSectionColor: vi.fn(), onExportScheduleSnapshot: vi.fn(),
-    onImportScheduleSnapshot: vi.fn().mockResolvedValue({ imported: 0, droppedClinicians: 0, droppedSlots: 0 }),
+    onPrepareShiftsFileImport: vi.fn(),
     ...overrides,
   };
   render(<ConfirmDialogProvider><SettingsView {...props} /></ConfirmDialogProvider>);
@@ -278,6 +278,8 @@ it("adds a holiday picked in the date picker", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   expect(screen.getByText("Please select a date and enter a holiday name.")).toBeVisible();
   expect(props.onAddHoliday).not.toHaveBeenCalled();
+  // A missing date marks the date field.
+  expect(screen.getByRole("button", { name: "DD.MM.YYYY" }).className).toContain("border-rose-400");
 
   fireEvent.click(screen.getByRole("button", { name: "DD.MM.YYYY" }));
   const now = new Date();
@@ -286,6 +288,37 @@ it("adds a holiday picked in the date picker", async () => {
   fireEvent.click(screen.getByRole("button", { name: "Save" }));
   const month = String(now.getMonth() + 1).padStart(2, "0");
   expect(props.onAddHoliday).toHaveBeenCalledWith({ dateISO: `${now.getFullYear()}-${month}-15`, name: "Clinic day" });
+  await waitFor(() => expect(screen.queryByPlaceholderText("Holiday name")).toBeNull());
+});
+
+it("keeps the new holiday's form when adding it is cancelled or fails", async () => {
+  const onAddHoliday = vi.fn().mockResolvedValueOnce(false)
+    .mockRejectedValueOnce(new Error("The backup could not be saved, so the holidays were not changed."));
+  setup({ onAddHoliday });
+  fireEvent.click(screen.getByRole("button", { name: "Add Holiday" }));
+  fireEvent.click(screen.getByRole("button", { name: "DD.MM.YYYY" }));
+  fireEvent.click(screen.getByRole("button", { name: "15" }));
+  fireEvent.change(screen.getByPlaceholderText("Holiday name"), { target: { value: "Clinic day" } });
+
+  // Cancelled in the confirmation: nothing changed, the entries stay.
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  await waitFor(() => expect(onAddHoliday).toHaveBeenCalledTimes(1));
+  expect(screen.getByPlaceholderText("Holiday name")).toHaveValue("Clinic day");
+
+  fireEvent.click(screen.getByRole("button", { name: "Save" }));
+  expect(await screen.findByText("The backup could not be saved, so the holidays were not changed.")).toBeVisible();
+  expect(screen.getByPlaceholderText("Holiday name")).toHaveValue("Clinic day");
+  // The date is valid: a refused change does not mark the date field (re-QA).
+  const datePicker = screen.getAllByRole("button").find((button) => /\d{2}\.\d{2}\.\d{4}/.test(button.textContent ?? ""));
+  expect(datePicker?.className).not.toContain("border-rose-400");
+});
+
+it("shows why a holiday could not be removed", async () => {
+  const onRemoveHoliday = vi.fn().mockRejectedValue(new Error("Wait until the calendar has loaded before changing holidays."));
+  setup({ holidays: [{ dateISO: "2026-12-24", name: "Heiligabend", source: "manual" }], onRemoveHoliday });
+  fireEvent.click(screen.getByRole("button", { name: "Remove" }));
+  expect(await screen.findByText("Wait until the calendar has loaded before changing holidays.")).toBeVisible();
+  expect(onRemoveHoliday).toHaveBeenCalledWith({ dateISO: "2026-12-24", name: "Heiligabend", source: "manual" });
 });
 
 
@@ -318,48 +351,90 @@ it("keeps the database health check under a collapsed Advanced section", () => {
   expect(screen.getByText("Database Health Check")).toBeVisible();
 });
 
-it("warns before replacing all shifts from a file and reports skipped shifts and the backup", async () => {
-  const props = setup({
-    onImportScheduleSnapshot: vi.fn().mockResolvedValue({
-      imported: 3, droppedClinicians: 2, droppedSlots: 1, backupName: "Auto-backup before shifts file import",
-    }),
-  });
-  expect(screen.getByText(/the current calendar is saved in Calendar snapshots first/)).toBeVisible();
-  expect(screen.getByText("Shifts file")).toBeVisible();
-  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
+describe("shifts file import", () => {
+  const summary = {
+    imported: 434, invalid: 0, duplicates: 3, droppedClinicians: 0, droppedSlots: 1, droppedHolidays: 12, droppedDayPlan: 0,
+  };
+  const backupName = "Auto-backup before shifts file import";
   // jsdom's File has no text(); the import only reads the file through it.
-  const file = { name: "shifts.json", text: async () => JSON.stringify({ assignments: [] }) };
-  fireEvent.change(input, { target: { files: [file] } });
+  const chooseFile = (file: { name: string; size?: number; text: () => Promise<string> }) =>
+    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [file] },
+    });
+  const shiftsFile = { name: "shifts-2026-11-02.json", text: async () => JSON.stringify({ assignments: [] }) };
 
-  const dialog = await screen.findByRole("dialog");
-  expect(dialog).toHaveTextContent("Replace all shifts with this file?");
-  expect(dialog).toHaveTextContent("locked ones too");
-  expect(dialog).toHaveTextContent("The current calendar is saved in Calendar snapshots first.");
-  expect(dialog).not.toHaveTextContent(/no automatic backup/i);
-  expect(props.onImportScheduleSnapshot).not.toHaveBeenCalled();
-  fireEvent.click(within(dialog).getByRole("button", { name: "Replace shifts" }));
+  it("checks the file first, then asks with both counts and reports the result", async () => {
+    const apply = vi.fn().mockResolvedValue({ ...summary, backupName });
+    const props = setup({ onPrepareShiftsFileImport: vi.fn().mockReturnValue({ currentCount: 446, summary, apply }) });
+    expect(screen.getByText(/the current calendar is saved in Calendar snapshots first/)).toBeVisible();
+    chooseFile(shiftsFile);
 
-  expect(
-    await screen.findByText(
-      "Imported 3 shifts. Skipped 2 shift(s) of people no longer listed and 1 in slots that no longer exist. " +
-        "A backup of the previous calendar is in Calendar snapshots: “Auto-backup before shifts file import”.",
-    ),
-  ).toBeVisible();
-  expect(props.onImportScheduleSnapshot).toHaveBeenCalledWith({ assignments: [] });
-});
+    const dialog = await screen.findByRole("dialog");
+    expect(props.onPrepareShiftsFileImport).toHaveBeenCalledWith({ assignments: [] });
+    expect(dialog).toHaveTextContent("Replace all shifts?");
+    expect(dialog).toHaveTextContent(
+      "Replace all 446 current shifts with 434 shifts from “shifts-2026-11-02.json”?",
+    );
+    expect(dialog).toHaveTextContent("locked shifts too");
+    expect(dialog).toHaveTextContent(
+      "Skipped from the file: 3 duplicates, 1 in slots that no longer exist, 12 on days that are now holidays.",
+    );
+    expect(dialog).toHaveTextContent(
+      "The current calendar is saved in Calendar snapshots first; this automatic backup replaces the previous one.",
+    );
+    expect(apply).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace shifts" }));
 
-it("shows why nothing was imported when the backup fails", async () => {
-  setup({
-    onImportScheduleSnapshot: vi.fn().mockRejectedValue(
-      new Error("The backup could not be saved, so nothing was imported."),
-    ),
+    expect(
+      await screen.findByText(
+        "Imported 434 shifts. Skipped 3 duplicates, 1 in slots that no longer exist, 12 on days that are now holidays. " +
+          `A backup of the previous calendar is in Calendar snapshots: “${backupName}”.`,
+      ),
+    ).toBeVisible();
+    expect(apply).toHaveBeenCalledTimes(1);
   });
-  const input = document.querySelector('input[type="file"]') as HTMLInputElement;
-  const file = { name: "shifts.json", text: async () => JSON.stringify({ assignments: [] }) };
-  fireEvent.change(input, { target: { files: [file] } });
-  fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Replace shifts" }));
-  expect(await screen.findByText("The backup could not be saved, so nothing was imported.")).toBeVisible();
-  expect(screen.queryByText(/^Imported/)).toBeNull();
+
+  it("changes nothing when the question is cancelled", async () => {
+    const apply = vi.fn();
+    setup({ onPrepareShiftsFileImport: vi.fn().mockReturnValue({ currentCount: 2, summary, apply }) });
+    chooseFile(shiftsFile);
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it("refuses a file without shifts for this calendar before asking anything", async () => {
+    setup({
+      onPrepareShiftsFileImport: vi.fn(() => {
+        throw new Error("This file contains no shifts for this calendar. Nothing was changed.");
+      }),
+    });
+    chooseFile(shiftsFile);
+    expect(
+      await screen.findByText("This file contains no shifts for this calendar. Nothing was changed."),
+    ).toBeVisible();
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("does not read a file larger than 10 MB", async () => {
+    const props = setup();
+    const text = vi.fn(async () => "{}");
+    chooseFile({ name: "huge.json", size: 10 * 1024 * 1024 + 1, text });
+    expect(
+      await screen.findByText("This file is larger than 10 MB, so it was not read. Nothing was changed."),
+    ).toBeVisible();
+    expect(text).not.toHaveBeenCalled();
+    expect(props.onPrepareShiftsFileImport).not.toHaveBeenCalled();
+  });
+
+  it("shows why nothing was imported when the backup fails", async () => {
+    const apply = vi.fn().mockRejectedValue(new Error("The backup could not be saved, so nothing was imported."));
+    setup({ onPrepareShiftsFileImport: vi.fn().mockReturnValue({ currentCount: 2, summary, apply }) });
+    chooseFile(shiftsFile);
+    fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Replace shifts" }));
+    expect(await screen.findByText("The backup could not be saved, so nothing was imported.")).toBeVisible();
+    expect(screen.queryByText(/^Imported/)).toBeNull();
+  });
 });
 
 describe("holidays: state and holidays added by hand", () => {
@@ -430,6 +505,17 @@ describe("holidays: state and holidays added by hand", () => {
     fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
     expect(await screen.findByText("Loaded 10 public holidays for 2026.")).toBeVisible();
     expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, "DE-NW");
+  });
+
+  it("keeps the list and its note when loading is cancelled", async () => {
+    const props = setup({ onFetchHolidays: vi.fn().mockResolvedValue(null) });
+    fireEvent.click(screen.getByRole("button", { name: "State: All states" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sachsen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Load holidays for 2026" }));
+    await waitFor(() => expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, undefined));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Load holidays for 2026" })).toBeEnabled());
+    expect(screen.getByText(/unchanged until you load holidays again/)).toBeVisible();
+    expect(screen.queryByText(/^Loaded/)).toBeNull();
   });
 });
 

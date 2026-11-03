@@ -1,15 +1,17 @@
 """Publication credentials must remain bound to the account they came from."""
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from threading import Event
 
 import pytest
 from fastapi import HTTPException, Request
 from fastapi.testclient import TestClient
 
-from backend import auth, db, ical_routes, web
+from backend import auth, db, ical_routes, publication, web
 from backend.main import app
-from backend.state import _save_state
+from backend.state import _load_state, _save_state
 from .conftest import make_app_state, make_assignment, make_clinician
 
 MON = "2026-01-05"
@@ -33,6 +35,13 @@ def seed(name):
     web_status = web.publish_web(user)
     ical_status = ical_routes.publish_ical(REQUEST, user)
     return user, web_status, ical_status
+
+
+@pytest.fixture
+def settled_clock(monkeypatch):
+    """Requests arrive after the second of the last change (Last-Modified is sent)."""
+    later = publication._utcnow() + timedelta(seconds=2)
+    monkeypatch.setattr(publication, "_utcnow", lambda: later)
 
 
 def publication_rows():
@@ -152,21 +161,75 @@ def test_ical_feeds_serve_non_latin1_account_names(username):
         assert response.headers["content-type"].startswith("text/calendar")
 
 
-@pytest.mark.parametrize("username, plain, encoded", [
-    ("alice", "shift-planner-alice.ics", "shift-planner-alice.ics"),
-    ("łukasz", "shift-planner.ics", "shift-planner-%C5%82ukasz.ics"),
-    ('dr "x"', "shift-planner.ics", "shift-planner-dr%20%22x%22.ics"),
-])
-def test_ical_filename_keeps_account_name_when_ascii_safe(username, plain, encoded):
+@pytest.mark.parametrize("username", ["alice", "łukasz", 'dr "x"'])
+def test_ical_names_never_show_the_account_name(username):
     user = auth._create_user(username, "password", "user")
-    _save_state(make_app_state(published_week_start_isos=[MON]), username)
+    _save_state(make_app_state(
+        clinicians=[make_clinician(name="Müller, Jörg; Dr.")],
+        published_week_start_isos=[MON],
+    ), username)
     status = ical_routes.publish_ical(REQUEST, user)
-    response = TestClient(app).get(f"/v1/ical/{ical_token(status.all)}.ics")
-    assert response.headers["content-disposition"] == (
-        f"inline; filename=\"{plain}\"; filename*=UTF-8''{encoded}")
+    client = TestClient(app)
+    feeds = {
+        "all": client.get(f"/v1/ical/{ical_token(status.all)}.ics"),
+        "person": client.get(f"/v1/ical/{ical_token(status.clinicians[0])}.ics"),
+    }
+    assert feeds["all"].headers["content-disposition"] == 'inline; filename="shift-planner-all.ics"'
+    assert feeds["person"].headers["content-disposition"] == (
+        'inline; filename="shift-planner-mueller-joerg-dr.ics"')
+    assert "X-WR-CALNAME:Shift Planner – All people\r\n" in feeds["all"].text
+    assert "X-WR-CALNAME:Shift Planner – Müller\\, Jörg\\; Dr.\r\n" in feeds["person"].text
+    for response in feeds.values():
+        assert username not in response.text
+        assert username not in response.headers["content-disposition"]
 
 
-def test_ical_feed_answers_head_like_get():
+def test_deleted_persons_link_is_revoked_and_a_reused_id_gets_a_new_one():
+    user, _, first = seed("Dr. A")
+    old_token = ical_token(first.clinicians[0])
+    client = TestClient(app)
+    assert client.get(f"/v1/ical/{old_token}.ics").status_code == 200
+    state = _load_state("same")
+    removed = state.clinicians.pop()
+    state.assignments = []
+    _save_state(state, "same")
+    assert client.get(f"/v1/ical/{old_token}.ics").status_code == 404
+    # Revoked, not deleted: a snapshot restore can bring the same person back.
+    [row] = publication_rows()["ical_clinician_publications"]
+    assert row["token"] == old_token and row["revoked_at"]
+    state.clinicians.append(make_clinician(removed.id, name="New Hire"))
+    _save_state(state, "same")
+    status = ical_routes.get_ical_publication_status(REQUEST, user)
+    assert ical_token(status.clinicians[0]) != old_token
+    assert client.get(f"/v1/ical/{old_token}.ics").status_code == 404
+
+
+def test_personal_feed_of_a_removed_person_is_404_even_with_a_leftover_token():
+    # Token rows from before revocation on save existed after a person was removed.
+    _, _, first = seed("Dr. A")
+    token = ical_token(first.clinicians[0])
+    with closing(db._get_connection()) as conn, conn:
+        conn.execute(
+            "UPDATE app_state SET data = json_set(data, '$.clinicians', json('[]')) WHERE id = 'same'"
+        )
+    assert TestClient(app).get(f"/v1/ical/{token}.ics").status_code == 404
+
+
+def test_publish_status_removes_leftover_tokens_of_removed_people():
+    user, _, first = seed("Dr. A")
+    with closing(db._get_connection()) as conn, conn:
+        conn.execute(
+            "INSERT INTO ical_clinician_publications (username, clinician_id, token, created_at, updated_at)"
+            " VALUES ('same', 'gone', 'leftover', 'x', 'x')"
+        )
+    status = ical_routes.get_ical_publication_status(REQUEST, user)
+    assert [link.clinicianId for link in status.clinicians] == [first.clinicians[0].clinicianId]
+    rows = {row["clinician_id"]: row for row in publication_rows()["ical_clinician_publications"]}
+    assert rows["gone"]["revoked_at"]
+    assert TestClient(app).get("/v1/ical/leftover.ics").status_code == 404
+
+
+def test_ical_feed_answers_head_like_get(settled_clock):
     _, _, ical_status = seed("Dr. A")
     client = TestClient(app)
     url = f"/v1/ical/{ical_token(ical_status.all)}.ics"
@@ -177,6 +240,36 @@ def test_ical_feed_answers_head_like_get():
     assert head.headers["Last-Modified"] == got.headers["Last-Modified"]
     assert client.head(url, headers={"If-None-Match": got.headers["ETag"]}).status_code == 304
     assert client.head("/v1/ical/unknown-token.ics").status_code == 404
+
+
+def test_all_day_copies_never_revalidate_after_the_switch_to_timed_events(monkeypatch):
+    _, _, ical_status = seed("Dr. A")
+    # Database as the all-day version left it, saved shortly before the deploy.
+    saved = datetime(2026, 11, 2, 15, 8, 55, tzinfo=timezone.utc)
+    with closing(db._get_connection()) as conn, conn:
+        conn.execute("DROP TABLE ical_formats")
+        conn.execute("UPDATE app_state SET updated_at = ?", (saved.isoformat(),))
+        conn.execute("UPDATE ical_publications SET updated_at = ?",
+                     ((saved - timedelta(days=30)).isoformat(),))
+
+    def start_server(at):
+        monkeypatch.setattr(db, "_SCHEMA_READY", False)
+        monkeypatch.setattr(db, "_utcnow", lambda: at)
+        monkeypatch.setattr(publication, "_utcnow", lambda: at + timedelta(hours=1))
+
+    deployed = saved + timedelta(hours=18)
+    start_server(deployed)
+    client = TestClient(app)
+    url = f"/v1/ical/{ical_token(ical_status.all)}.ics"
+    # An If-Modified-Since-only client holding the all-day copy gets the timed one.
+    fresh = client.get(url, headers={"If-Modified-Since": format_datetime(saved, usegmt=True)})
+    assert fresh.status_code == 200
+    assert "DTSTART:20260105T070000Z" in fresh.text
+    assert fresh.headers["Last-Modified"] == format_datetime(deployed, usegmt=True)
+    # Later restarts keep the moment, so the timed copy keeps validating.
+    start_server(deployed + timedelta(days=7))
+    assert client.get(url, headers={"If-None-Match": fresh.headers["ETag"]}).status_code == 304
+    assert client.get(url, headers={"If-Modified-Since": fresh.headers["Last-Modified"]}).status_code == 304
 
 
 def test_republishing_ical_keeps_tokens_and_feed_validators(monkeypatch):
@@ -190,7 +283,7 @@ def test_republishing_ical_keeps_tokens_and_feed_validators(monkeypatch):
     assert client.get(url).headers["ETag"] == etag
 
 
-def test_republishing_web_keeps_token_and_week_validators(monkeypatch):
+def test_republishing_web_keeps_token_and_week_validators(monkeypatch, settled_clock):
     user, first, _ = seed("Dr. A")
     client = TestClient(app)
     url = f"/v1/web/{first.token}/week?start={MON}"
@@ -215,3 +308,55 @@ def test_status_adds_link_for_new_clinician_and_keeps_existing_tokens():
     assert by_id[first.clinicians[0].clinicianId] == first.clinicians[0]
     assert "clin-new" in by_id
     assert ical_token(by_id["clin-new"]) not in {ical_token(first.all), ical_token(first.clinicians[0])}
+
+
+def test_public_readers_drop_stored_entries_with_impossible_dates():
+    """A vacation stored with an impossible date before v1.82 hid a real shift
+    from the public week and the iCal feeds (string comparison), while the
+    admin calendar (GET /v1/state cleans it) showed the shift."""
+    import json
+
+    _, web_status, ical_status = seed("Dr. A")
+    with closing(db._get_connection()) as conn:
+        blob = json.loads(conn.execute("SELECT data FROM app_state WHERE id = 'same'").fetchone()[0])
+        clinician_id = blob["assignments"][0]["clinicianId"]
+        person = next(c for c in blob["clinicians"] if c["id"] == clinician_id)
+        person["vacations"] = [{"id": "bad", "startISO": "2026-01-00", "endISO": "2026-01-10"}]
+        blob["holidays"].append({"dateISO": "2026-02-30", "name": "Broken"})
+        conn.execute("UPDATE app_state SET data = ? WHERE id = 'same'", (json.dumps(blob),))
+        conn.commit()
+
+    client = TestClient(app)
+    week = client.get(f"/v1/web/{web_status.token}/week?start={MON}").json()
+    assert [a["id"] for a in week["assignments"]] == ["saved"]
+    assert all(h["name"] != "Broken" for h in week["holidays"])
+    assert all(not c["vacations"] for c in week["clinicians"])
+    for link in (ical_status.all, ical_status.clinicians[0]):
+        feed = client.get(f"/v1/ical/{ical_token(link)}.ics")
+        assert feed.status_code == 200
+        assert "UID:saved@shiftschedule" in feed.text
+    # Nothing was written back by the readers.
+    with closing(db._get_connection()) as conn:
+        stored = json.loads(conn.execute("SELECT data FROM app_state WHERE id = 'same'").fetchone()[0])
+    assert stored == blob
+
+
+def test_restoring_a_snapshot_revives_the_links_of_the_people_it_brings_back():
+    """Load copy (or a restore of an older snapshot) removes people; undoing it
+    with the automatic backup must give their subscribers the same links."""
+    from backend import snapshots
+
+    user, _, first = seed("Dr. A")
+    old_token = ical_token(first.clinicians[0])
+    client = TestClient(app)
+    before = _load_state("same")
+    meta = snapshots.create_snapshot(snapshots.SnapshotCreateRequest(name="before", state=before), user)
+    # A Load copy: another calendar without this person replaces the own one.
+    _save_state(make_app_state(clinicians=[make_clinician("other", name="Someone Else")]), "same")
+    assert client.get(f"/v1/ical/{old_token}.ics").status_code == 404
+    snapshots.restore_snapshot(meta.id, snapshots.SnapshotRestoreRequest(), user)
+    feed = client.get(f"/v1/ical/{old_token}.ics")
+    assert feed.status_code == 200
+    assert "UID:saved@shiftschedule" in feed.text
+    status = ical_routes.get_ical_publication_status(REQUEST, user)
+    assert ical_token(status.clinicians[0]) == old_token

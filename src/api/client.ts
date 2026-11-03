@@ -251,6 +251,9 @@ export type WebPublishStatus = {
   token?: string;
 };
 
+/** An on-call shift outside a public week, reduced to who, when and where. */
+export type RestContextAssignment = Pick<Assignment, "clinicianId" | "dateISO" | "rowId">;
+
 export type PublicWebWeekResponse = {
   published: boolean;
   weekStartISO: string;
@@ -266,6 +269,13 @@ export type PublicWebWeekResponse = {
   holidays?: Holiday[];
   solverSettings?: SolverSettings;
   solverRules?: SolverRule[];
+  /**
+   * On-call shifts just outside the week, only for deriving the rest days
+   * they cause inside it (never shown).
+   */
+  restContextAssignments?: RestContextAssignment[];
+  /** The owner's Times choice for the team week; absent = side by side. */
+  teamTimeLayout?: TeamTimeLayout;
 };
 
 const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -547,10 +557,21 @@ export async function getState(): Promise<AppState> {
 
 const stateSaves = new StateSaveQueue<AppState>();
 export const adoptSavedState = (state: AppState) => stateSaves.adopt(state);
+/** Whether this exact calendar (revision aside) is the last one sent by this tab and nothing failed. */
+export const isStateSaveQueued = (state: AppState) => stateSaves.isQueued(state);
 export const flushStateSaves = () => stateSaves.drain();
+/** This tab's calendar revision once its queued saves have landed (throws when one failed). */
+export async function savedStateRevision(): Promise<string | null | undefined> {
+  await stateSaves.drain();
+  return stateSaves.baseRevision;
+}
 export const retryStateSaves = () => stateSaves.retry();
-/** The last revision the save queue saved or adopted (what the server holds for this screen). */
-export const savedStateRevision = () => stateSaves.currentRevision();
+/**
+ * The last revision the save queue saved or adopted (what the server holds
+ * for this screen), right now, without waiting for queued saves (see
+ * savedStateRevision for that).
+ */
+export const currentStateRevision = () => stateSaves.currentRevision();
 
 export function saveState(state: AppState): Promise<AppState> {
   const headers = buildHeaders();
@@ -587,6 +608,13 @@ async function throwWithDetail(res: Response, fallback: string): Promise<never> 
     const body = await res.json();
     if (typeof body?.detail === "string") detail = body.detail;
     else if (typeof body?.detail?.message === "string") detail = body.detail.message;
+    else if (Array.isArray(body?.detail) && typeof body.detail[0]?.msg === "string") {
+      // A rejected request body (422): the first problem and where it is,
+      // e.g. "Value error, … (assignments.3.dateISO)".
+      const first = body.detail[0] as { msg: string; loc?: unknown[] };
+      const where = Array.isArray(first.loc) ? first.loc.filter((part) => part !== "body").join(".") : "";
+      detail = `${fallback}: ${first.msg}${where ? ` (${where})` : ""}`;
+    }
   } catch {
     /* non-JSON error body */
   }
@@ -620,16 +648,31 @@ export async function createSnapshot(
   return res.json();
 }
 
+/** What replaces the shifts after the backup; names it in Calendar snapshots. */
+export type BackupReason = "shifts_file_import" | "holiday_change" | "load_copy";
+
 /**
  * Save the calendar as shown into the auto-backup slot before a shifts file
- * replaces its shifts ("Auto-backup before shifts file import"). The slot is
- * shared with the backup made before a restore; the newest one wins.
+ * ("Auto-backup before shifts file import", the default), a holiday change
+ * ("Auto-backup before holiday change") or an admin's Load copy ("Auto-backup
+ * before loading a copy") replaces its shifts. The slot is shared with the
+ * backup made before a restore; the newest one wins. With `expectedRevision`
+ * (the revision this tab's calendar is based on) the server refuses with 409
+ * and keeps the previous backup when the stored calendar has changed since.
  */
-export async function createImportBackup(state: AppState): Promise<SnapshotMeta> {
+export async function createImportBackup(
+  state: AppState,
+  options: { reason?: BackupReason; expectedRevision?: string | null } = {},
+): Promise<SnapshotMeta> {
   const res = await fetch(`${API_BASE}/v1/state/snapshots/import-backup`, {
     method: "POST",
     headers: buildHeaders(),
-    body: JSON.stringify({ state }),
+    // Without a reason the server names it after a shifts file import.
+    body: JSON.stringify({
+      state,
+      reason: options.reason,
+      ...(options.expectedRevision ? { expectedRevision: options.expectedRevision } : {}),
+    }),
   });
   if (res.status === 401) handleUnauthorized();
   if (!res.ok) {
@@ -1468,11 +1511,13 @@ export async function exportWeekPdf(
   startISO: string,
   revision?: string,
   layout: PdfLayout = "landscape",
+  signal?: AbortSignal,
 ): Promise<Blob> {
   const res = await fetch(
     `${API_BASE}/v1/pdf/week?start=${encodeURIComponent(startISO)}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}${pdfLayoutQuery(layout)}`,
     {
       headers: buildHeaders(),
+      signal,
     },
   );
   if (res.status === 401) handleUnauthorized();
@@ -1553,6 +1598,7 @@ export async function exportWeeksPdf(
   weeks: number,
   revision?: string,
   layout: PdfLayout = "landscape",
+  signal?: AbortSignal,
 ): Promise<Blob> {
   const res = await fetch(
     `${API_BASE}/v1/pdf/weeks?start=${encodeURIComponent(startISO)}&weeks=${encodeURIComponent(
@@ -1560,6 +1606,7 @@ export async function exportWeeksPdf(
     )}${revision ? `&expected_revision=${encodeURIComponent(revision)}` : ""}${pdfLayoutQuery(layout)}`,
     {
       headers: buildHeaders(),
+      signal,
     },
   );
   if (res.status === 401) handleUnauthorized();

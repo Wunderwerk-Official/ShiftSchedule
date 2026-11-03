@@ -1,11 +1,28 @@
 import { createPortal } from "react-dom";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { getPillToggleClasses } from "../../lib/buttonStyles";
 import { cx } from "../../lib/classNames";
 import type { IcalPublishStatus, PdfLayout } from "../../api/client";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { useModalFocus } from "../../lib/useModalFocus";
 import CustomNumberInput from "./CustomNumberInput";
 import CustomDatePicker from "./CustomDatePicker";
+
+type IcalDownloadOptions = { startISO?: string; endISO?: string; includeUnpublished: boolean };
+
+/** A running PDF export: one file for all weeks, or one file per week (k of N). */
+export type PdfProgress =
+  | { mode: "combined"; total: number }
+  | { mode: "individual"; current: number; total: number };
+
+/** Progress text of a PDF export (dialog and full-screen overlay). */
+export const formatPdfProgress = (progress: PdfProgress) =>
+  progress.mode === "combined"
+    ? `Creating PDF for ${progress.total} ${progress.total === 1 ? "week" : "weeks"}…`
+    : `Exporting ${progress.current} of ${progress.total} ${progress.total === 1 ? "week" : "weeks"}…`;
+
+const DOWNLOAD_NOTICE_CLASS =
+  "mt-2 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/40 dark:text-amber-100";
 
 type IcalExportModalProps = {
   open: boolean;
@@ -14,11 +31,11 @@ type IcalExportModalProps = {
   defaultStartISO: string;
   defaultEndISO: string;
   defaultPdfStartISO: string;
-  onDownloadAll: (range: { startISO?: string; endISO?: string }) => void;
-  onDownloadClinician: (
-    clinicianId: string,
-    range: { startISO?: string; endISO?: string },
-  ) => void;
+  /** The plan's time zone (from the holiday country); iCal event times are in it. */
+  timeZone: string;
+  /** Downloads the file, or returns why nothing was downloaded (shown in the dialog). */
+  onDownloadAll: (options: IcalDownloadOptions) => string | null | void;
+  onDownloadClinician: (clinicianId: string, options: IcalDownloadOptions) => string | null | void;
   publishStatus: IcalPublishStatus | null;
   publishLoading: boolean;
   publishError: string | null;
@@ -36,7 +53,7 @@ type IcalExportModalProps = {
   /** The compact portrait page exists for the standard week grid only. */
   offerPdfPortrait?: boolean;
   pdfExporting: boolean;
-  pdfProgress?: { current: number; total: number } | null;
+  pdfProgress?: PdfProgress | null;
   pdfError?: string | null;
   webStatus: { published: boolean; token?: string } | null;
   webLoading: boolean;
@@ -53,6 +70,7 @@ export default function IcalExportModal({
   defaultStartISO,
   defaultEndISO,
   defaultPdfStartISO,
+  timeZone,
   onDownloadAll,
   onDownloadClinician,
   publishStatus,
@@ -77,6 +95,21 @@ export default function IcalExportModal({
   const confirm = useConfirm();
   const [startText, setStartText] = useState<string>("");
   const [endText, setEndText] = useState<string>("");
+  const [includeUnpublished, setIncludeUnpublished] = useState(false);
+  // Why a download produced no file, shown where it was clicked ("all" or a
+  // person's id) and read out by a live region that stays mounted.
+  // seq changes on every click so the same text is announced again.
+  const [downloadNotice, setDownloadNoticeState] = useState<{ text: string; target: string; seq: number } | null>(null);
+  const noticeSeq = useRef(0);
+  const noticeRef = useRef<HTMLDivElement | null>(null);
+  const setDownloadNotice = (text: string | null | void, target = "all") =>
+    setDownloadNoticeState(text ? { text, target, seq: ++noticeSeq.current } : null);
+  useEffect(() => {
+    if (downloadNotice) noticeRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [downloadNotice]);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  useModalFocus(open, dialogRef, closeButtonRef);
   const [tab, setTab] = useState<"pdf" | "ical" | "web">("pdf");
   const [icalTab, setIcalTab] = useState<"download" | "subscribe">("subscribe");
   const [pdfStartText, setPdfStartText] = useState<string>("");
@@ -129,6 +162,8 @@ export default function IcalExportModal({
     setCopyState({ status: "idle" });
     setStartText(isoToEuropean(defaultStartISO));
     setEndText(isoToEuropean(defaultEndISO));
+    setIncludeUnpublished(false);
+    setDownloadNotice(null);
     setPdfStartText(isoToEuropean(defaultPdfStartISO));
     setPdfWeeks(1);
     setPdfMode("combined");
@@ -145,6 +180,8 @@ export default function IcalExportModal({
     }
     return { startISO: start, endISO: end };
   }, [endText, startText]);
+  // A notice belongs to the range it was given for.
+  useEffect(() => setDownloadNotice(null), [range]);
 
   const validation = useMemo(() => {
     const parsedStart = parseDateInput(startText);
@@ -225,22 +262,39 @@ export default function IcalExportModal({
     <div className="fixed inset-0 z-50">
       <button
         type="button"
+        tabIndex={-1}
         className="absolute inset-0 cursor-default bg-slate-900/30 backdrop-blur-[1px] dark:bg-slate-950/50"
         onClick={onClose}
         aria-label="Close"
       />
       <div className="relative mx-auto mt-24 w-full max-w-2xl px-6">
-        <div className="flex max-h-[80vh] flex-col rounded-2xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
+        <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="export-dialog-title"
+          aria-describedby="export-dialog-description"
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            // While a PDF export runs, its overlay (on top) owns Escape.
+            if (event.key === "Escape" && !pdfExporting) {
+              event.stopPropagation();
+              onClose();
+            }
+          }}
+          className="flex max-h-[80vh] flex-col rounded-2xl border border-slate-200 bg-white shadow-xl outline-none dark:border-slate-700 dark:bg-slate-900"
+        >
           <div className="flex items-start justify-between gap-4 border-b border-slate-100 px-6 py-5 dark:border-slate-800">
             <div>
-              <div className="text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-100">
+              <h2 id="export-dialog-title" className="text-lg font-semibold tracking-tight text-slate-900 dark:text-slate-100">
                 Export
-              </div>
-              <div className="mt-1 text-sm text-slate-600 dark:text-slate-300">
+              </h2>
+              <div id="export-dialog-description" className="mt-1 text-sm text-slate-600 dark:text-slate-300">
                 Choose a format and configure your export.
               </div>
             </div>
             <button
+              ref={closeButtonRef}
               type="button"
               onClick={onClose}
               className={cx(
@@ -263,6 +317,7 @@ export default function IcalExportModal({
               <button
                 type="button"
                 onClick={() => setTab("pdf")}
+                aria-pressed={tab === "pdf"}
                 className={getPillToggleClasses(tab === "pdf")}
               >
                 PDF
@@ -270,6 +325,7 @@ export default function IcalExportModal({
               <button
                 type="button"
                 onClick={() => setTab("ical")}
+                aria-pressed={tab === "ical"}
                 className={getPillToggleClasses(tab === "ical")}
               >
                 iCal
@@ -277,6 +333,7 @@ export default function IcalExportModal({
               <button
                 type="button"
                 onClick={() => setTab("web")}
+                aria-pressed={tab === "web"}
                 className={getPillToggleClasses(tab === "web")}
               >
                 Web
@@ -288,14 +345,16 @@ export default function IcalExportModal({
                 <button
                   type="button"
                   onClick={() => setIcalTab("subscribe")}
-                  className={getPillToggleClasses(icalTab === "subscribe")}
+                  aria-pressed={icalTab === "subscribe"}
+                className={getPillToggleClasses(icalTab === "subscribe")}
                 >
                   Subscription
                 </button>
                 <button
                   type="button"
                   onClick={() => setIcalTab("download")}
-                  className={getPillToggleClasses(icalTab === "download")}
+                  aria-pressed={icalTab === "download"}
+                className={getPillToggleClasses(icalTab === "download")}
                 >
                   Download
                 </button>
@@ -369,10 +428,29 @@ export default function IcalExportModal({
                   </div>
                 ) : (
                   <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                    Leave Start/End empty to export everything. If Start is after End, the range
+                    Leave Start/End empty to export all dates. If Start is after End, the range
                     is automatically swapped.
                   </div>
                 )}
+                <label className="mt-3 flex items-center gap-2 text-sm text-slate-700 dark:text-slate-200">
+                  <input
+                    type="checkbox"
+                    checked={includeUnpublished}
+                    onChange={(event) => {
+                      setIncludeUnpublished(event.target.checked);
+                      setDownloadNotice(null);
+                    }}
+                    className="accent-sky-600"
+                  />
+                  Include unpublished weeks
+                </label>
+                <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
+                  {includeUnpublished
+                    ? "Draft weeks are included: imported events do not change when the plan does."
+                    : "Only weeks marked Published, like the subscription links."}{" "}
+                  Events have start and end times in the plan&rsquo;s time zone ({timeZone}, from the
+                  holiday country).
+                </div>
               </div>
             ) : tab === "ical" && icalTab === "subscribe" ? (
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
@@ -381,7 +459,9 @@ export default function IcalExportModal({
                 </div>
                 <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
                   This subscription feed contains only weeks marked{" "}
-                  <span className="font-semibold">Published</span> in the schedule view.
+                  <span className="font-semibold">Published</span> in the schedule view. Events
+                  have start and end times in the plan&rsquo;s time zone ({timeZone}, from the
+                  holiday country).
                 </div>
               </div>
             ) : null}
@@ -392,7 +472,8 @@ export default function IcalExportModal({
                   PDF export
                 </div>
                 <div className="mt-2 text-xs text-slate-500 dark:text-slate-400">
-                  Choose a starting week and how many weeks to export.
+                  Choose a starting week and how many weeks to export. Weeks run Monday to
+                  Sunday; a week that is not published prints as a draft.
                 </div>
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <div className="grid gap-1">
@@ -421,14 +502,16 @@ export default function IcalExportModal({
                   <button
                     type="button"
                     onClick={() => setPdfMode("combined")}
-                    className={getPillToggleClasses(pdfMode === "combined")}
+                    aria-pressed={pdfMode === "combined"}
+                className={getPillToggleClasses(pdfMode === "combined")}
                   >
                     Export as one large PDF file
                   </button>
                   <button
                     type="button"
                     onClick={() => setPdfMode("individual")}
-                    className={getPillToggleClasses(pdfMode === "individual")}
+                    aria-pressed={pdfMode === "individual"}
+                className={getPillToggleClasses(pdfMode === "individual")}
                   >
                     Export PDF as individual files
                   </button>
@@ -459,20 +542,23 @@ export default function IcalExportModal({
                   </div>
                 ) : null}
                 {pdfError ? (
-                  <div className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/40 dark:bg-rose-900/30 dark:text-rose-200">
+                  <div
+                    role="alert"
+                    className="mt-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700 dark:border-rose-500/40 dark:bg-rose-900/30 dark:text-rose-200"
+                  >
                     {pdfError}
                   </div>
                 ) : null}
                 {pdfProgress ? (
                   <div className="mt-3 text-xs font-semibold text-slate-600 dark:text-slate-300">
-                    Exporting {pdfProgress.current} of {pdfProgress.total} weeks…
+                    {formatPdfProgress(pdfProgress)}
                   </div>
                 ) : null}
                 <div className="mt-4 flex flex-wrap items-center gap-2">
                   <button
                     type="button"
                     onClick={() => {
-                      if (!pdfValidation.startISO) return;
+                      if (!pdfValidation.startISO || pdfExporting) return;
                       onExportPdf({
                         startISO: pdfValidation.startISO,
                         weeks: pdfValidation.weeks,
@@ -480,7 +566,11 @@ export default function IcalExportModal({
                         layout: offerPdfPortrait ? pdfLayout : "landscape",
                       });
                     }}
-                    disabled={pdfValidation.hasError || pdfExporting}
+                    // Not disabled while exporting: a disabled button loses
+                    // focus, which then could not return to it when the
+                    // export overlay (which blocks the dialog) closes.
+                    disabled={pdfValidation.hasError}
+                    aria-disabled={pdfExporting || undefined}
                     className={cx(
                       "inline-flex items-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900",
                       "hover:bg-slate-50 active:bg-slate-100",
@@ -500,12 +590,13 @@ export default function IcalExportModal({
             ) : tab === "web" ? (
               <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                  <div id="web-links-active-label" className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                     Links active
                   </div>
                   <button
                     type="button"
                     role="switch"
+                    aria-labelledby="web-links-active-label"
                     aria-checked={isWebPublished}
                     onClick={async () => {
                       if (webLoading) return;
@@ -611,7 +702,7 @@ export default function IcalExportModal({
                   </div>
                   <button
                     type="button"
-                    onClick={() => onDownloadAll(range)}
+                    onClick={() => setDownloadNotice(onDownloadAll({ ...range, includeUnpublished }), "all")}
                     disabled={validation.hasError}
                     className={cx(
                       "inline-flex items-center rounded-full border border-slate-300 bg-white px-4 py-2 text-sm font-semibold text-slate-900",
@@ -624,6 +715,13 @@ export default function IcalExportModal({
                   </button>
                 </div>
 
+                <div role="status" aria-live="polite" className="sr-only">
+                  {downloadNotice ? <span key={downloadNotice.seq}>{downloadNotice.text}</span> : null}
+                </div>
+                {downloadNotice?.target === "all" ? (
+                  <div ref={noticeRef} className={DOWNLOAD_NOTICE_CLASS}>{downloadNotice.text}</div>
+                ) : null}
+
                 <div className="mt-4 overflow-hidden rounded-2xl border border-slate-200 dark:border-slate-800">
                   <div className="bg-white px-4 py-2 text-xs font-semibold text-slate-500 dark:bg-slate-900 dark:text-slate-300">
                     Individual files
@@ -632,16 +730,19 @@ export default function IcalExportModal({
                     {clinicians.map((clinician) => (
                       <div
                         key={clinician.id}
-                        className="flex items-center justify-between gap-3 bg-white px-4 py-3 dark:bg-slate-900"
+                        className="flex flex-wrap items-center justify-between gap-x-3 bg-white px-4 py-3 dark:bg-slate-900"
                       >
-                        <div className="min-w-0">
+                        <div className="min-w-0 flex-1">
                           <div className="truncate text-sm font-medium text-slate-900 dark:text-slate-100">
                             {clinician.name}
                           </div>
                         </div>
                         <button
                           type="button"
-                          onClick={() => onDownloadClinician(clinician.id, range)}
+                          onClick={() =>
+                            setDownloadNotice(onDownloadClinician(clinician.id, { ...range, includeUnpublished }), clinician.id)
+                          }
+                          aria-label={`Download iCal file for ${clinician.name}`}
                           disabled={validation.hasError}
                           className={cx(
                             "inline-flex items-center rounded-full border border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-900",
@@ -652,6 +753,9 @@ export default function IcalExportModal({
                         >
                           Download
                         </button>
+                        {downloadNotice?.target === clinician.id ? (
+                          <div ref={noticeRef} className={cx(DOWNLOAD_NOTICE_CLASS, "basis-full")}>{downloadNotice.text}</div>
+                        ) : null}
                       </div>
                     ))}
                   </div>
@@ -666,12 +770,13 @@ export default function IcalExportModal({
               <>
                 <div className="mt-4 rounded-2xl border border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-900">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="text-sm font-semibold text-slate-900 dark:text-slate-100">
+                    <div id="ical-links-active-label" className="text-sm font-semibold text-slate-900 dark:text-slate-100">
                       Links active
                     </div>
                     <button
                       type="button"
                       role="switch"
+                      aria-labelledby="ical-links-active-label"
                       aria-checked={isPublished}
                       onClick={async () => {
                         if (publishLoading) return;
@@ -767,6 +872,7 @@ export default function IcalExportModal({
                                   <button
                                     type="button"
                                     onClick={() => copyToClipboard(clinician.subscribeUrl, key)}
+                                    aria-label={`${getCopyLabel(key)}: subscription link for ${clinician.clinicianName}`}
                                     className={cx(
                                       "shrink-0 rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm font-semibold text-slate-900",
                                       "hover:bg-slate-50 active:bg-slate-100",

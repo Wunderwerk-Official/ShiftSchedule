@@ -1,8 +1,8 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import { ConfirmDialogProvider } from "../ui/ConfirmDialog";
-import IcalExportModal from "./IcalExportModal";
+import IcalExportModal, { formatPdfProgress } from "./IcalExportModal";
 
 type Props = ComponentProps<typeof IcalExportModal>;
 
@@ -16,6 +16,7 @@ const renderModal = (overrides: Partial<Props> = {}) => {
     defaultPdfStartISO: "2026-03-02",
     onDownloadAll: vi.fn(),
     onDownloadClinician: vi.fn(),
+    timeZone: "Europe/Berlin",
     publishStatus: null,
     publishLoading: false,
     publishError: null,
@@ -77,6 +78,17 @@ describe("IcalExportModal PDF export", () => {
     expect(props.onExportPdf).toHaveBeenLastCalledWith(expect.objectContaining({ layout: "landscape" }));
   });
 
+  it("shows no fake counter for one combined file, and k of N for individual files", () => {
+    renderModal({ pdfExporting: true, pdfProgress: { mode: "combined", total: 3 } });
+    expect(screen.getByText("Creating PDF for 3 weeks…")).toBeInTheDocument();
+    expect(screen.queryByText(/0 of 3/)).toBeNull();
+    expect(formatPdfProgress({ mode: "combined", total: 1 })).toBe("Creating PDF for 1 week…");
+    expect(formatPdfProgress({ mode: "individual", current: 2, total: 5 })).toBe(
+      "Exporting 2 of 5 weeks…",
+    );
+    expect(formatPdfProgress({ mode: "individual", current: 1, total: 1 })).toBe("Exporting 1 of 1 week…");
+  });
+
   it("never sends portrait when the option is not offered", () => {
     const props = renderModal({ offerPdfPortrait: false, defaultPdfLayout: "portrait" });
     fireEvent.click(exportPdfButton());
@@ -93,6 +105,123 @@ describe("IcalExportModal iCal download", () => {
     expect(props.onDownloadAll).toHaveBeenCalledWith({
       startISO: "2026-03-02",
       endISO: "2026-03-08",
+      includeUnpublished: false,
     });
+  });
+
+  it("exports published weeks only unless unpublished weeks are included", () => {
+    const props = renderModal({ clinicians: [{ id: "c1", name: "Dr. A" }] });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    const checkbox = screen.getByRole("checkbox", { name: "Include unpublished weeks" }) as HTMLInputElement;
+    expect(checkbox.checked).toBe(false);
+    expect(screen.getByText(/Only weeks marked Published/)).toBeInTheDocument();
+    expect(screen.getByText(/Europe\/Berlin, from the\s+holiday country/)).toBeInTheDocument();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole("button", { name: "All people (one file)" }));
+    expect(props.onDownloadAll).toHaveBeenLastCalledWith(expect.objectContaining({ includeUnpublished: true }));
+    fireEvent.click(screen.getByRole("button", { name: "Download iCal file for Dr. A" }));
+    expect(props.onDownloadClinician).toHaveBeenLastCalledWith(
+      "c1",
+      expect.objectContaining({ includeUnpublished: true }),
+    );
+  });
+
+  it("shows why nothing was downloaded instead of saving an empty file (re-QA)", () => {
+    const notice = "Nothing was downloaded: the shifts in this range are in weeks that are not published.";
+    renderModal({ clinicians: [{ id: "c1", name: "Dr. A" }], onDownloadAll: vi.fn(() => notice) });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    fireEvent.click(screen.getByRole("button", { name: "All people (one file)" }));
+    expect(screen.getByRole("status")).toHaveTextContent(notice);
+    // Ticking the checkbox clears it.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Include unpublished weeks" }));
+    expect(screen.queryByText(notice)).toBeNull();
+  });
+
+  it("shows a person's notice in that person's row (final check)", () => {
+    const notice = "Nothing was downloaded: there are no shifts in this range.";
+    const clinicians = Array.from({ length: 20 }, (_, index) => ({ id: `c${index}`, name: `Person ${index}` }));
+    renderModal({ clinicians, onDownloadClinician: vi.fn(() => notice) });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    const liveRegion = screen.getByRole("status");
+    expect(liveRegion).toHaveTextContent("");
+    fireEvent.click(screen.getByRole("button", { name: "Download iCal file for Person 19" }));
+    expect(liveRegion).toHaveTextContent(notice);
+    const row = screen.getByRole("button", { name: "Download iCal file for Person 19" }).parentElement as HTMLElement;
+    expect(within(row).getByText(notice)).toBeInTheDocument();
+    // The same text again (another person) replaces the live region's node so it is announced again.
+    const before = liveRegion.firstChild;
+    fireEvent.click(screen.getByRole("button", { name: "Download iCal file for Person 18" }));
+    expect(liveRegion).toHaveTextContent(notice);
+    expect(liveRegion.firstChild).not.toBe(before);
+  });
+});
+
+describe("IcalExportModal iCal subscription", () => {
+  it("names the plan's time zone of the event times", () => {
+    renderModal({ timeZone: "Europe/London" });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    expect(screen.getByText(/Europe\/London, from the\s+holiday country/)).toBeInTheDocument();
+    expect(screen.queryByText(/all-day/i)).toBeNull();
+  });
+});
+
+describe("IcalExportModal as a dialog (re-QA)", () => {
+  it("is a labelled modal dialog that takes focus and closes on Escape", () => {
+    const props = renderModal();
+    const dialog = screen.getByRole("dialog", { name: "Export" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(document.activeElement).toBe(within(dialog).getByRole("button", { name: "Close" }));
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("leaves Escape to the export overlay while a PDF is being created", () => {
+    const props = renderModal({ pdfExporting: true, pdfProgress: { mode: "combined", total: 2 } });
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Export" }), { key: "Escape" });
+    expect(props.onClose).not.toHaveBeenCalled();
+  });
+
+  it("names every person's download button", () => {
+    renderModal({ clinicians: [{ id: "c1", name: "Dr. A" }, { id: "c2", name: "Dr. B" }] });
+    fireEvent.click(screen.getByRole("button", { name: "iCal" }));
+    fireEvent.click(screen.getByRole("button", { name: "Download" }));
+    expect(screen.getByRole("button", { name: "Download iCal file for Dr. A" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Download iCal file for Dr. B" })).toBeInTheDocument();
+  });
+});
+
+describe("IcalExportModal inner popups (re-QA)", () => {
+  it("Escape in the start-week picker closes only the picker", () => {
+    const props = renderModal();
+    const dialog = screen.getByRole("dialog", { name: "Export" });
+    const trigger = within(dialog).getByRole("button", { name: "02.03.2026" });
+    fireEvent.click(trigger);
+    expect(screen.getByRole("button", { name: "Previous month" })).toBeInTheDocument();
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByRole("button", { name: "Previous month" })).toBeNull();
+    expect(props.onClose).not.toHaveBeenCalled();
+    // A second Escape (picker closed) closes the dialog.
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(props.onClose).toHaveBeenCalled();
+  });
+
+  it("keeps Export PDF focusable while exporting, so focus can come back to it", () => {
+    renderModal({ pdfExporting: true, pdfProgress: { mode: "combined", total: 2 } });
+    const button = screen.getByRole("button", { name: "Export PDF" });
+    expect(button).not.toBeDisabled();
+    expect(button).toHaveAttribute("aria-disabled", "true");
+  });
+});
+
+describe("IcalExportModal controls for assistive technology (final check)", () => {
+  it("names the Links active switches and exposes the selected tab and mode", () => {
+    renderModal({ webStatus: { published: true, token: "t" } });
+    expect(screen.getByRole("button", { name: "PDF" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "iCal" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Web" }));
+    expect(screen.getByRole("switch", { name: "Links active" })).toHaveAttribute("aria-checked", "true");
   });
 });

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RenderedAssignment } from "../../lib/schedule";
 import type { ScheduleRow } from "../../lib/shiftRows";
 import { EXCEL_CYAN, buildClinicSheetModel, buildMonthDays } from "../../lib/clinicSheet";
+import { buildNameLabels } from "../../lib/personName";
 import type { ComponentProps } from "react";
 import ClinicSheetGrid from "./ClinicSheetGrid";
 
@@ -143,6 +144,73 @@ describe("ClinicSheetGrid", () => {
     expect(cell.className).toContain("[@media(hover:none)]:pr-5");
   });
 
+  it("never lets a long name widen the day columns: it is cut, the full name in the title", () => {
+    setup();
+    const name = screen.getAllByText("Bergmann")[0].closest("[data-sheet-name]") as HTMLElement;
+    // Inline-size containment: the name adds no width to the max-content
+    // sized sheet grid, so every column keeps its width (screen and PDF).
+    expect(name.className).toContain("[contain:inline-size]");
+    expect(name.querySelector(".truncate")).not.toBeNull();
+    expect(name.getAttribute("title")).toBe("Anna Bergmann");
+    // A name of several words wraps (screen and PDF), so "Andreas Schulz" and
+    // "Andrea Schulz" are never both cut to "Andrea…" (re-QA).
+    expect(name.className).toContain("[&>span]:whitespace-normal");
+    expect(name.className).not.toContain("print:[&>span]:whitespace-normal");
+  });
+
+  it("keeps day columns at a fixed width an ordinary surname fits", () => {
+    setup();
+    const grid = document.querySelector('[data-schedule-grid="true"]') as HTMLElement;
+    // 6 name columns of 52px; never minmax(0, …) or max-content.
+    expect(grid.style.gridTemplateColumns).toContain("minmax(312px, 1fr)");
+  });
+
+  it("gives names the free columns of their area instead of one column each", () => {
+    const { slotRow } = setup({ readOnly: true });
+    // One area spans all 6 columns of the day; its one name takes them all.
+    const names = sheetCell(slotRow.id, "2026-07-06").firstElementChild as HTMLElement;
+    expect(names.style.gridTemplateColumns).toBe("repeat(1, minmax(0, 1fr))");
+  });
+
+  it("keeps a track for each open-slot mark while the sheet is editable", () => {
+    const { slotRow } = setup();
+    // 2 required: the name and one "+" share the area.
+    const names = sheetCell(slotRow.id, "2026-07-06").firstElementChild as HTMLElement;
+    expect(names.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
+  it("puts one name per column in a full area and wraps the rest", () => {
+    const slotRow = makeSlotRow({ requiredSlots: 1 });
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const days = buildMonthDays(new Date(2026, 6, 1), new Set());
+    const model = buildClinicSheetModel({ calendarRows: [groupedRow, poolRow], days });
+    const people = Array.from({ length: 8 }, (_, idx) => `clin-${idx}`);
+    const assignmentMap = new Map<string, RenderedAssignment[]>([
+      [
+        `${slotRow.id}__2026-07-06`,
+        people.map((id) => ({ id: `a-${id}`, rowId: slotRow.id, dateISO: "2026-07-06", clinicianId: id })),
+      ],
+      [
+        "pool-vacation__2026-07-06",
+        people.slice(0, 2).map((id) => ({ id: `v-${id}`, rowId: "pool-vacation", dateISO: "2026-07-06", clinicianId: id })),
+      ],
+    ]);
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={assignmentMap}
+        rows={[groupedRow, poolRow]}
+        readOnly
+        getClinicianName={(id) => `Person ${id}`}
+        getIsQualified={() => true}
+      />,
+    );
+    const area = sheetCell(slotRow.id, "2026-07-06").firstElementChild as HTMLElement;
+    expect(area.style.gridTemplateColumns).toBe("repeat(6, minmax(0, 1fr))");
+    const pool = sheetCell("pool-vacation", "2026-07-06").firstElementChild as HTMLElement;
+    expect(pool.style.gridTemplateColumns).toBe("repeat(2, minmax(0, 1fr))");
+  });
+
   it("renders assignments as plain surname text, not pills", () => {
     setup();
     const name = screen.getAllByText("Bergmann")[0];
@@ -261,6 +329,122 @@ describe("ClinicSheetGrid", () => {
     expect(onMoveWithinDay).not.toHaveBeenCalled();
   });
 
+  it("moves a Rest Day name to the Rest Day row of another day, like the weekly grid", () => {
+    const slotRow = makeSlotRow();
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const restRow: ScheduleRow = { id: "pool-rest-day", kind: "pool", name: "Ruhetag", dotColorClass: "" };
+    const days = buildMonthDays(new Date(2026, 6, 1), new Set());
+    const model = buildClinicSheetModel({ calendarRows: [groupedRow, restRow], days });
+    const rest: RenderedAssignment = {
+      id: "rest-1",
+      rowId: "pool-rest-day",
+      dateISO: "2026-07-06",
+      clinicianId: "clin-1",
+    };
+    const onMoveRestDay = vi.fn();
+    const onRemoveAssignment = vi.fn();
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={new Map([["pool-rest-day__2026-07-06", [rest]]])}
+        rows={[groupedRow, restRow]}
+        getClinicianName={() => "Anna Bergmann"}
+        getIsQualified={() => true}
+        onMoveWithinDay={vi.fn()}
+        onRemoveAssignment={onRemoveAssignment}
+        onMoveRestDay={onMoveRestDay}
+      />,
+    );
+    const name = screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(name, { dataTransfer });
+    fireEvent.drop(sheetCell("pool-rest-day", "2026-07-08"), { dataTransfer });
+    expect(onMoveRestDay).toHaveBeenCalledWith({
+      fromDateISO: "2026-07-06",
+      toDateISO: "2026-07-08",
+      assignmentId: "rest-1",
+      clinicianId: "clin-1",
+    });
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+  });
+
+  it("marks a name scheduled on the person's rest day (the sheet lists no rule violations)", () => {
+    const slotRow = makeSlotRow();
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const days = buildMonthDays(new Date(2026, 6, 1), new Set());
+    const model = buildClinicSheetModel({ calendarRows: [groupedRow], days });
+    const shift = (id: string, dateISO: string): RenderedAssignment => ({
+      id,
+      rowId: slotRow.id,
+      dateISO,
+      clinicianId: "clin-1",
+    });
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={
+          new Map([
+            [`${slotRow.id}__2026-07-06`, [shift("a", "2026-07-06")]],
+            [`${slotRow.id}__2026-07-13`, [shift("b", "2026-07-13")]],
+          ])
+        }
+        rows={[groupedRow]}
+        getClinicianName={() => "Anna Bergmann"}
+        getIsQualified={() => true}
+        getIsOnRestDay={(clinicianId, dateISO) => clinicianId === "clin-1" && dateISO === "2026-07-13"}
+      />,
+    );
+    const [free, resting] = screen
+      .getAllByText("Bergmann")
+      .map((element) => element.closest('[data-sheet-name="true"]') as HTMLElement);
+    expect(resting.title).toBe("Anna Bergmann — scheduled on a rest day");
+    expect(resting.className).toContain("decoration-red-600");
+    expect(free.title).toBe("Anna Bergmann");
+    expect(free.className).not.toContain("decoration-wavy");
+  });
+
+  it("keeps a Vacation name dropped on another day; out of the sheet it leaves", () => {
+    const slotRow = makeSlotRow();
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const vacationRow: ScheduleRow = { id: "pool-vacation", kind: "pool", name: "Urlaub", dotColorClass: "" };
+    const days = buildMonthDays(new Date(2026, 6, 1), new Set());
+    const model = buildClinicSheetModel({ calendarRows: [groupedRow, vacationRow], days });
+    const vacation: RenderedAssignment = {
+      id: "pool-pool-vacation-clin-1-2026-07-06",
+      rowId: "pool-vacation",
+      dateISO: "2026-07-06",
+      clinicianId: "clin-1",
+    };
+    const onRemoveAssignment = vi.fn();
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={new Map([["pool-vacation__2026-07-06", [vacation]]])}
+        rows={[groupedRow, vacationRow]}
+        getClinicianName={() => "Anna Bergmann"}
+        getIsQualified={() => true}
+        onMoveWithinDay={vi.fn()}
+        onRemoveAssignment={onRemoveAssignment}
+        onMoveRestDay={vi.fn()}
+      />,
+    );
+    const name = () => screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;
+    // Another day's Vacation cell, a slot on another (Monday) day.
+    for (const target of [sheetCell("pool-vacation", "2026-07-08"), sheetCell(slotRow.id, "2026-07-13")]) {
+      expect(target).not.toBeNull();
+      const dataTransfer = makeDataTransfer();
+      fireEvent.dragStart(name(), { dataTransfer });
+      fireEvent.drop(target, { dataTransfer });
+    }
+    expect(onRemoveAssignment).not.toHaveBeenCalled();
+    const dataTransfer = makeDataTransfer();
+    fireEvent.dragStart(name(), { dataTransfer });
+    fireEvent.drop(document.body, { dataTransfer });
+    expect(onRemoveAssignment).toHaveBeenCalledWith(
+      expect.objectContaining({ rowId: "pool-vacation", dateISO: "2026-07-06", clinicianId: "clin-1" }),
+    );
+  });
+
   it("ignores a malformed drag payload", () => {
     const { onMoveWithinDay, onRemoveAssignment } = setup();
     const name = screen.getByText("Bergmann").closest('[data-sheet-name="true"]') as HTMLElement;
@@ -269,6 +453,49 @@ describe("ClinicSheetGrid", () => {
     fireEvent.drop(sheetCell("pool-vacation", "2026-07-06"), { dataTransfer: broken });
     expect(onMoveWithinDay).not.toHaveBeenCalled();
     expect(onRemoveAssignment).not.toHaveBeenCalled();
+  });
+
+  it("lists 'Last, First' and titled names by their surname, unique in the team", () => {
+    const slotRow = makeSlotRow({ requiredSlots: 4 });
+    const groupedRow: ScheduleRow = { ...slotRow, id: "group-loc-default__band-1", slotRows: [slotRow] };
+    const model = buildClinicSheetModel({
+      calendarRows: [groupedRow, poolRow],
+      days: buildMonthDays(new Date(2026, 6, 1), new Set()),
+    });
+    const team = [
+      { id: "jm", name: "Müller, Jörg; Dr." },
+      { id: "as", name: "Dr. med. Anna Schmidt" },
+      { id: "mp", name: "Marion P." },
+      { id: "tm", name: "Thomas Müller" },
+    ];
+    const assignments: RenderedAssignment[] = ["jm", "as", "mp"].map((clinicianId) => ({
+      id: `a-${clinicianId}`,
+      rowId: slotRow.id,
+      dateISO: "2026-07-06",
+      clinicianId,
+    }));
+    // Thomas Müller works the next Monday: his surname still counts.
+    assignments.push({ id: "a-tm", rowId: slotRow.id, dateISO: "2026-07-13", clinicianId: "tm" });
+    const assignmentMap = new Map<string, RenderedAssignment[]>([
+      [`${slotRow.id}__2026-07-06`, assignments.slice(0, 3)],
+      [`${slotRow.id}__2026-07-13`, assignments.slice(3)],
+    ]);
+    render(
+      <ClinicSheetGrid
+        model={model}
+        assignmentMap={assignmentMap}
+        rows={[groupedRow, poolRow]}
+        readOnly
+        getClinicianName={(id) => team.find((person) => person.id === id)?.name ?? "Unknown"}
+        nameLabels={buildNameLabels(team)}
+        getIsQualified={() => true}
+      />,
+    );
+    const names = Array.from(document.querySelectorAll('[data-sheet-name="true"]')).map(
+      (element) => element.textContent,
+    );
+    // Once "Dr.", "P." and "Müller" for both Müllers.
+    expect(names).toEqual(["J. Müller", "Marion P.", "Schmidt", "T. Müller"]);
   });
 
   it("uses the sheet cyan constant for weekend blocks", () => {

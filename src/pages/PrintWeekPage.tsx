@@ -11,12 +11,24 @@ import {
   WorkplaceRow,
   locations as defaultLocations,
 } from "../data/mockData";
-import { addDays, startOfWeek, formatRangeLabel } from "../lib/date";
+import { addDays, startOfWeek, formatRangeLabel, toISODate } from "../lib/date";
 import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
+import { buildNameLabels } from "../lib/personName";
+import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState } from "../lib/shiftRows";
-import { PORTRAIT_PAGE_CSS, portraitContentWidth, printPagePx, readPrintLayout } from "./printPage";
+import {
+  PORTRAIT_PAGE_CSS,
+  portraitContentWidth,
+  printPagePx,
+  printPageStyle,
+  readPrintLayout,
+  unscaledSize,
+  watchPrintContentSize,
+  whenPrintLayoutSettles,
+} from "./printPage";
+import PrintWeekHeader from "./PrintWeekHeader";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -54,6 +66,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
   );
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [solverSettings, setSolverSettings] = useState(defaultSolverSettings);
+  const [publishedWeeks, setPublishedWeeks] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [printLayout, setPrintLayout] = useState({
@@ -70,7 +83,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     () => readPrintLayout(typeof window !== "undefined" ? window.location.search : ""),
     [],
   );
-  const { page: fullPage, area: printArea, margin: marginPx } = useMemo(
+  const { area: printArea } = useMemo(
     () => printPagePx(layout, PRINT_PAGE_MARGIN_MM),
     [layout],
   );
@@ -125,6 +138,11 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     [weekDays, weeklyTemplate, holidayDates, columnTimeMetaByKey],
   );
   const rowById = useMemo(() => new Map(scheduleRows.map((row) => [row.id, row])), [scheduleRows]);
+  // A PDF has no hover: every short name must stand for one person of the team.
+  const nameLabels = useMemo(() => buildNameLabels(clinicians), [clinicians]);
+  // The team grid's colors (light theme): person pills and location labels.
+  const personPillStyles = useMemo(() => buildPersonPillStyles(clinicians, false), [clinicians]);
+  const locationRowTints = useMemo(() => buildLocationRowTints(locations, false), [locations]);
 
   const renderAssignmentMap = useMemo(
     () =>
@@ -196,6 +214,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
           });
         }
         if (normalized.holidays) setHolidays(normalized.holidays);
+        setPublishedWeeks(new Set(normalized.publishedWeekStartISOs ?? []));
       })
       .catch(() => {
         if (!alive) return;
@@ -213,11 +232,10 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
   useEffect(() => {
     if (loading || !printLayout.width || !printLayout.height) return;
     if (typeof window === "undefined") return;
-    const markReady = () => {
+    // Ready only once the names have settled and the page has re-fitted.
+    window.__PDF_READY__ = false;
+    return whenPrintLayoutSettles(() => {
       window.__PDF_READY__ = true;
-    };
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(markReady);
     });
   }, [
     loading,
@@ -236,9 +254,8 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     if (!content) return;
     const updateScale = () => {
       const available = printArea;
-      const contentRect = content.getBoundingClientRect();
-      const contentWidth = Math.max(content.scrollWidth, contentRect.width);
-      const contentHeight = Math.max(content.scrollHeight, contentRect.height);
+      // The layout box: the scale is applied to this element itself.
+      const { width: contentWidth, height: contentHeight } = unscaledSize(content);
       if (!contentWidth || !contentHeight) return;
       // Calculate scale to fit within printable area, allow scaling up to MAX_SCALE_UP
       const fitScale = Math.min(available.width / contentWidth, available.height / contentHeight);
@@ -256,8 +273,8 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
         offsetY: 0,
       });
     };
-    const frame = window.requestAnimationFrame(updateScale);
-    return () => window.cancelAnimationFrame(frame);
+    // Again whenever the content changes size (wrapped names), not only once.
+    return watchPrintContentSize(content, updateScale);
   }, [loading, rows, clinicians, assignmentMap, minSlotsByRowId, slotOverridesByKey, printArea]);
 
   if (loading) {
@@ -276,24 +293,18 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
     );
   }
 
+  const header = (
+    <PrintWeekHeader
+      rangeLabel={formatRangeLabel(weekStart, weekEndInclusive)}
+      draft={!publishedWeeks.has(toISODate(weekStart))}
+    />
+  );
+
   return (
     <div className={cx("bg-white", theme === "dark" && "dark")}>
       {layout === "portrait" ? <style>{PORTRAIT_PAGE_CSS}</style> : null}
       {/* Full A4 page container */}
-      <div
-        className="print-page"
-        style={{
-          width: fullPage.width,
-          height: fullPage.height,
-          padding: marginPx,
-          boxSizing: "border-box",
-          overflow: "hidden",
-          breakInside: "avoid",
-          pageBreakInside: "avoid",
-          breakAfter: "auto",
-          pageBreakAfter: "auto",
-        }}
-      >
+      <div className="print-page" style={printPageStyle(layout, PRINT_PAGE_MARGIN_MM, true)}>
         {/* Printable area within margins - use absolute positioning for centering */}
         <div
           style={{
@@ -305,6 +316,7 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
         >
           <div
             ref={printContentRef}
+            data-print-content="true"
             style={{
               position: "absolute",
               left: printLayout.width ? (printArea.width - printLayout.width) / 2 : 0,
@@ -332,16 +344,11 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                   assignmentMap={renderAssignmentMap}
                   rows={calendarRows}
                   readOnly
-                  header={
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                        {formatRangeLabel(weekStart, weekEndInclusive)}
-                      </div>
-                    </div>
-                  }
+                  header={header}
                   getClinicianName={(id) =>
                     clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                   }
+                  nameLabels={nameLabels}
                   getIsQualified={(clinicianId, rowId) => {
                     const scheduleRow = rowById.get(rowId);
                     const classId =
@@ -365,18 +372,16 @@ export default function PrintWeekPage({ theme }: PrintWeekPageProps) {
                 locationSeparatorRowIds={locationSeparatorRowIds}
                 timeLayout={layout === "portrait" ? "stacked" : "columns"}
                 readOnly
-                header={
-                  <div className="flex items-center justify-between">
-                    <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                      {formatRangeLabel(weekStart, weekEndInclusive)}
-                    </div>
-                  </div>
-                }
+                print
+                header={header}
                 separatorBeforeRowIds={poolsSeparatorId ? [poolsSeparatorId] : []}
                 minSlotsByRowId={minSlotsByRowId}
                 getClinicianName={(id) =>
                   clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                 }
+                nameLabels={nameLabels}
+                personPillStyles={personPillStyles}
+                locationRowTints={locationRowTints}
                 getHasEligibleClasses={(id) => {
                   const clinician = clinicians.find((item) => item.id === id);
                   return clinician ? clinician.qualifiedClassIds.length > 0 : false;

@@ -23,14 +23,14 @@ import CustomDatePicker from "./CustomDatePicker";
 import DatabaseHealthCheck from "./DatabaseHealthCheck";
 import ToggleSwitch from "./ToggleSwitch";
 import { useConfirm } from "../ui/ConfirmDialog";
-
-type ScheduleSnapshotImportResult = {
-  imported: number;
-  droppedClinicians: number;
-  droppedSlots: number;
-  /** Name of the auto-backup of the calendar shown before the import. */
-  backupName?: string;
-};
+import {
+  describeShiftsImportQuestion,
+  describeShiftsImportResult,
+  MAX_SHIFTS_FILE_BYTES,
+  SHIFTS_FILE_TOO_LARGE_MESSAGE,
+  type PreparedShiftsImport,
+  type ShiftsImportResult,
+} from "../../lib/shiftsFileImport";
 
 type SettingsViewProps = {
   classRows: WorkplaceRow[];
@@ -56,17 +56,22 @@ type SettingsViewProps = {
   onChangeHolidayCountry: (countryCode: string) => void;
   onChangeHolidayRegion: (region: string | undefined) => void;
   onChangeHolidayYear: (year: number) => void;
-  /** Loads the public holidays; resolves to how many were added. */
-  onFetchHolidays: (countryCode: string, year: number, region?: string) => Promise<number | void>;
-  onAddHoliday: (holiday: Holiday) => void;
-  onRemoveHoliday: (holiday: Holiday) => void;
+  // Holiday changes ask first when they remove shifts that no longer fit
+  // their day; they reject when the change could not be applied.
+  /** Loads the public holidays; resolves to how many were added, null when cancelled. */
+  onFetchHolidays: (countryCode: string, year: number, region?: string) => Promise<number | null>;
+  /** Resolves to false when cancelled. */
+  onAddHoliday: (holiday: Holiday) => Promise<boolean>;
+  /** Resolves to false when cancelled. */
+  onRemoveHoliday: (holiday: Holiday) => Promise<boolean>;
   onChangeSolverSettings: (settings: SolverSettings) => void;
   onChangeWeeklyTemplate: (template: WeeklyCalendarTemplate) => void;
   onCreateSection: (name: string) => string;
   onUpdateSectionColor: (sectionId: string, color: string | null) => void;
   onRemoveSection?: (sectionId: string) => void;
   onExportScheduleSnapshot: () => void;
-  onImportScheduleSnapshot: (payload: unknown) => Promise<ScheduleSnapshotImportResult>;
+  /** Checks a shifts file (throws with a message); the result's `apply` imports it. */
+  onPrepareShiftsFileImport: (payload: unknown) => PreparedShiftsImport;
   isAdmin?: boolean;
 };
 
@@ -102,7 +107,7 @@ export default function SettingsView({
   onUpdateSectionColor,
   onRemoveSection,
   onExportScheduleSnapshot,
-  onImportScheduleSnapshot,
+  onPrepareShiftsFileImport,
   isAdmin = false,
 }: SettingsViewProps) {
   const confirm = useConfirm();
@@ -126,9 +131,13 @@ export default function SettingsView({
   const [holidayError, setHolidayError] = useState<string | null>(null);
   const [holidayNotice, setHolidayNotice] = useState<string | null>(null);
   const [holidayInputError, setHolidayInputError] = useState<string | null>(null);
+  // Only a missing date or name marks the date field: a refused change (busy,
+  // failed backup) keeps a valid date unmarked.
+  const [holidayDateInvalid, setHolidayDateInvalid] = useState(false);
+  const [holidayListError, setHolidayListError] = useState<string | null>(null);
   const [snapshotImportError, setSnapshotImportError] = useState<string | null>(null);
   const [snapshotImportResult, setSnapshotImportResult] =
-    useState<ScheduleSnapshotImportResult | null>(null);
+    useState<ShiftsImportResult | null>(null);
   const [snapshotImporting, setSnapshotImporting] = useState(false);
   const countryOptions = [
     { code: "FR", label: "France 🇫🇷" },
@@ -235,10 +244,16 @@ export default function SettingsView({
     onChangeWeeklyTemplate({ ...weeklyTemplate, blocks: nextBlocks });
   };
 
+  // The file is read and checked first; only an import that would bring
+  // shifts asks to replace the current ones (with both counts).
   const handleSnapshotImport = async (file: File) => {
     setSnapshotImportError(null);
     setSnapshotImportResult(null);
 
+    if (file.size > MAX_SHIFTS_FILE_BYTES) {
+      setSnapshotImportError(SHIFTS_FILE_TOO_LARGE_MESSAGE);
+      return;
+    }
     let payload: unknown;
     try {
       payload = JSON.parse(await file.text());
@@ -249,12 +264,17 @@ export default function SettingsView({
       return;
     }
 
+    let prepared: PreparedShiftsImport;
+    try {
+      prepared = onPrepareShiftsFileImport(payload);
+    } catch (error) {
+      setSnapshotImportError(error instanceof Error ? error.message : "Import failed.");
+      return;
+    }
+
     const confirmed = await confirm({
-      title: "Replace all shifts with this file?",
-      message:
-        "Every shift in every week, locked ones too, is replaced by the file. " +
-        "Shifts of people or slots that no longer exist are skipped. " +
-        "The current calendar is saved in Calendar snapshots first.",
+      title: "Replace all shifts?",
+      message: describeShiftsImportQuestion(prepared, file.name),
       confirmLabel: "Replace shifts",
       cancelLabel: "Cancel",
       variant: "warning",
@@ -263,8 +283,7 @@ export default function SettingsView({
 
     setSnapshotImporting(true);
     try {
-      const result = await onImportScheduleSnapshot(payload);
-      setSnapshotImportResult(result);
+      setSnapshotImportResult(await prepared.apply());
     } catch (error) {
       setSnapshotImportError(
         error instanceof Error ? error.message : "Import failed.",
@@ -856,12 +875,12 @@ export default function SettingsView({
                       holidayYear,
                       selectedRegion,
                     );
+                    // Cancelled: the list (and the note about it) stays.
+                    if (added === null) return;
                     setHolidayRegionChanged(false);
-                    if (typeof added === "number") {
-                      setHolidayNotice(
-                        `Loaded ${added} public holiday${added === 1 ? "" : "s"} for ${holidayYear}.`,
-                      );
-                    }
+                    setHolidayNotice(
+                      `Loaded ${added} public holiday${added === 1 ? "" : "s"} for ${holidayYear}.`,
+                    );
                   } catch (error) {
                     setHolidayError(
                       error instanceof Error
@@ -933,7 +952,16 @@ export default function SettingsView({
                   </div>
                   <button
                     type="button"
-                    onClick={() => onRemoveHoliday(holiday)}
+                    onClick={async () => {
+                      setHolidayListError(null);
+                      try {
+                        await onRemoveHoliday(holiday);
+                      } catch (error) {
+                        setHolidayListError(
+                          error instanceof Error ? error.message : "The holiday could not be removed.",
+                        );
+                      }
+                    }}
                     className={buttonSmall.base}
                   >
                     Remove
@@ -942,6 +970,11 @@ export default function SettingsView({
               ))
             )}
             </div>
+            {holidayListError ? (
+              <div className="text-xs font-semibold text-rose-600 dark:text-rose-200">
+                {holidayListError}
+              </div>
+            ) : null}
           </div>
           <div className="mt-4">
             <button
@@ -964,9 +997,10 @@ export default function SettingsView({
                     onChange={(value) => {
                       setNewHolidayDate(value);
                       setHolidayInputError(null);
+                      setHolidayDateInvalid(false);
                     }}
                     placeholder="DD.MM.YYYY"
-                    hasError={!!holidayInputError}
+                    hasError={holidayDateInvalid}
                   />
                 </div>
                 <input
@@ -981,19 +1015,31 @@ export default function SettingsView({
                 />
                 <button
                   type="button"
-                  onClick={() => {
+                  onClick={async () => {
                     const trimmedName = newHolidayName.trim();
                     const parsedDate = parseHolidayDate(newHolidayDate);
                     if (!parsedDate || !trimmedName) {
                       setHolidayInputError(
                         "Please select a date and enter a holiday name.",
                       );
+                      setHolidayDateInvalid(true);
                       return;
                     }
-                    onAddHoliday({ dateISO: parsedDate, name: trimmedName });
+                    setHolidayInputError(null);
+                    setHolidayDateInvalid(false);
+                    let added: boolean;
+                    try {
+                      added = await onAddHoliday({ dateISO: parsedDate, name: trimmedName });
+                    } catch (error) {
+                      setHolidayInputError(
+                        error instanceof Error ? error.message : "The holiday could not be added.",
+                      );
+                      return;
+                    }
+                    // Cancelled: the form stays open with its entries.
+                    if (!added) return;
                     setNewHolidayDate("");
                     setNewHolidayName("");
-                    setHolidayInputError(null);
                     setShowNewHoliday(false);
                   }}
                   className={buttonPrimary.base}
@@ -1007,6 +1053,7 @@ export default function SettingsView({
                     setNewHolidayDate("");
                     setNewHolidayName("");
                     setHolidayInputError(null);
+                    setHolidayDateInvalid(false);
                   }}
                   className={buttonSecondary.base}
                 >
@@ -1162,12 +1209,7 @@ export default function SettingsView({
         </div>
         {snapshotImportResult ? (
           <div className="mt-3 text-xs text-emerald-600 dark:text-emerald-400">
-            Imported {snapshotImportResult.imported} shifts. Skipped{" "}
-            {snapshotImportResult.droppedClinicians} shift(s) of people no longer listed and{" "}
-            {snapshotImportResult.droppedSlots} in slots that no longer exist.
-            {snapshotImportResult.backupName
-              ? ` A backup of the previous calendar is in Calendar snapshots: “${snapshotImportResult.backupName}”.`
-              : null}
+            {describeShiftsImportResult(snapshotImportResult)}
           </div>
         ) : null}
         {snapshotImportError ? (

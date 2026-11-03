@@ -11,12 +11,29 @@ import {
   locations as defaultLocations,
   WorkplaceRow,
 } from "../data/mockData";
-import { addDays, addWeeks, formatRangeLabel, startOfWeek } from "../lib/date";
+import { addDays, addWeeks, formatRangeLabel, startOfWeek, toISODate } from "../lib/date";
 import { buildClinicSheetModel, buildSheetDays } from "../lib/clinicSheet";
+import { buildNameLabels, type PersonNameLabels } from "../lib/personName";
+import {
+  buildLocationRowTints,
+  buildPersonPillStyles,
+  type LocationRowTint,
+  type PersonPillStyle,
+} from "../components/schedule/teamColors";
 import { buildRenderedAssignmentMap } from "../lib/schedule";
 import { cx } from "../lib/classNames";
 import { buildScheduleRows, normalizeAppState, type ScheduleRow } from "../lib/shiftRows";
-import { PORTRAIT_PAGE_CSS, portraitContentWidth, printPagePx, readPrintLayout } from "./printPage";
+import {
+  PORTRAIT_PAGE_CSS,
+  portraitContentWidth,
+  printPagePx,
+  printPageStyle,
+  readPrintLayout,
+  unscaledSize,
+  watchPrintContentSize,
+  whenPrintLayoutSettles,
+} from "./printPage";
+import PrintWeekHeader from "./PrintWeekHeader";
 import {
   buildCalendarRows,
   buildColumnTimeMetaByKey,
@@ -41,6 +58,11 @@ type PrintableWeekProps = {
   calendarRows: ReturnType<typeof buildCalendarRows>;
   assignmentMap: Map<string, Assignment[]>;
   clinicians: Clinician[];
+  /** Short names unique in the team, shared by all weeks. */
+  nameLabels: Map<string, PersonNameLabels>;
+  /** The team grid's colors (light theme), shared by all weeks. */
+  personPillStyles: Map<string, PersonPillStyle>;
+  locationRowTints: Map<string, LocationRowTint>;
   holidayDates: Set<string>;
   holidayNameByDate: Record<string, string>;
   weeklyTemplate?: WeeklyCalendarTemplate;
@@ -52,6 +74,8 @@ type PrintableWeekProps = {
   slotOverridesByKey: Record<string, number>;
   columnTimeMetaByKey: ReturnType<typeof buildColumnTimeMetaByKey>;
   rangeLabel: string;
+  /** Not published: the page header marks the week as a draft. */
+  draft: boolean;
   /** Portrait: the compact week ("Times: Stacked") at the page width. */
   layout: PdfLayout;
   onReady?: (weekIndex: number) => void;
@@ -65,6 +89,9 @@ const PrintableWeek = ({
   calendarRows,
   assignmentMap,
   clinicians,
+  nameLabels,
+  personPillStyles,
+  locationRowTints,
   holidayDates,
   holidayNameByDate,
   weeklyTemplate,
@@ -76,6 +103,7 @@ const PrintableWeek = ({
   slotOverridesByKey,
   columnTimeMetaByKey,
   rangeLabel,
+  draft,
   layout,
   onReady,
 }: PrintableWeekProps) => {
@@ -87,7 +115,7 @@ const PrintableWeek = ({
     offsetY: 0,
   });
   const printContentRef = useRef<HTMLDivElement | null>(null);
-  const { area: printArea, margin: marginPx } = useMemo(
+  const { area: printArea } = useMemo(
     () => printPagePx(layout, PRINT_PAGE_MARGIN_MM),
     [layout],
   );
@@ -131,9 +159,8 @@ const PrintableWeek = ({
     if (!content) return;
     const updateScale = () => {
       const available = printArea;
-      const contentRect = content.getBoundingClientRect();
-      const contentWidth = Math.max(content.scrollWidth, contentRect.width);
-      const contentHeight = Math.max(content.scrollHeight, contentRect.height);
+      // The layout box: the scale is applied to this element itself.
+      const { width: contentWidth, height: contentHeight } = unscaledSize(content);
       if (!contentWidth || !contentHeight) return;
       // Calculate scale to fit within printable area, allow scaling up to MAX_SCALE_UP
       const fitScale = Math.min(available.width / contentWidth, available.height / contentHeight);
@@ -152,8 +179,8 @@ const PrintableWeek = ({
         offsetY: 0,
       });
     };
-    const frame = window.requestAnimationFrame(updateScale);
-    return () => window.cancelAnimationFrame(frame);
+    // Again whenever the content changes size (wrapped names), not only once.
+    return watchPrintContentSize(content, updateScale);
   }, [weekIndex, scheduleRows, calendarRows, assignmentMap, clinicians, holidayDates, printArea]);
 
   useEffect(() => {
@@ -162,19 +189,12 @@ const PrintableWeek = ({
     }
   }, [printLayout.height, printLayout.width, weekIndex, onReady]);
 
+  const header = <PrintWeekHeader rangeLabel={rangeLabel} draft={draft} />;
+
   return (
     <div
       className="print-page"
-      style={{
-        // Left/top page margin (the pages have none of their own); the block
-        // stays shorter than the page, so page breaks do not move.
-        paddingLeft: marginPx,
-        paddingTop: marginPx,
-        breakInside: "avoid",
-        pageBreakInside: "avoid",
-        breakAfter: weekIndex === totalWeeks - 1 ? "auto" : "page",
-        pageBreakAfter: weekIndex === totalWeeks - 1 ? "auto" : "always",
-      }}
+      style={printPageStyle(layout, PRINT_PAGE_MARGIN_MM, weekIndex === totalWeeks - 1)}
     >
       <div
         className="relative overflow-hidden"
@@ -192,6 +212,7 @@ const PrintableWeek = ({
         >
           <div
             ref={printContentRef}
+            data-print-content="true"
             style={{
               width:
                 layout === "portrait" && !isClinicSheet
@@ -211,16 +232,11 @@ const PrintableWeek = ({
                   assignmentMap={weekAssignments}
                   rows={calendarRows}
                   readOnly
-                  header={
-                    <div className="flex items-center justify-between">
-                      <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                        {rangeLabel}
-                      </div>
-                    </div>
-                  }
+                  header={header}
                   getClinicianName={(id) =>
                     clinicians.find((c) => c.id === id)?.name ?? "Unknown"
                   }
+                  nameLabels={nameLabels}
                   getIsQualified={(clinicianId, rowId) => {
                     const scheduleRow = rowById.get(rowId);
                     const classId =
@@ -244,18 +260,16 @@ const PrintableWeek = ({
               locationSeparatorRowIds={locationSeparatorRowIds}
               timeLayout={layout === "portrait" ? "stacked" : "columns"}
               readOnly
-              header={
-                <div className="flex items-center justify-between">
-                  <div className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                    {rangeLabel}
-                  </div>
-                </div>
-              }
+              print
+              header={header}
               separatorBeforeRowIds={poolId ? [poolId] : []}
               minSlotsByRowId={minSlotsByRowId}
               getClinicianName={(id) =>
                 clinicians.find((c) => c.id === id)?.name ?? "Unknown"
               }
+              nameLabels={nameLabels}
+              personPillStyles={personPillStyles}
+              locationRowTints={locationRowTints}
               getHasEligibleClasses={(id) => {
                 const clinician = clinicians.find((item) => item.id === id);
                 return clinician ? clinician.qualifiedClassIds.length > 0 : false;
@@ -313,6 +327,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
   );
   const [holidays, setHolidays] = useState<Holiday[]>([]);
   const [solverSettings, setSolverSettings] = useState(defaultSolverSettings);
+  const [publishedWeeks, setPublishedWeeks] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [printReadyWeeks, setPrintReadyWeeks] = useState<Set<number>>(new Set());
@@ -357,6 +372,10 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
     [scheduleRows],
   );
   const rowById = useMemo(() => new Map(scheduleRows.map((row) => [row.id, row])), [scheduleRows]);
+  const nameLabels = useMemo(() => buildNameLabels(clinicians), [clinicians]);
+  // The team grid's colors (light theme): person pills and location labels.
+  const personPillStyles = useMemo(() => buildPersonPillStyles(clinicians, false), [clinicians]);
+  const locationRowTints = useMemo(() => buildLocationRowTints(locations, false), [locations]);
 
   // Stable per-week arrays, so each PrintableWeek's memos (rendered assignment
   // map, columns, sheet model) do not recompute on every parent render.
@@ -407,6 +426,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
           });
         }
         if (normalized.holidays) setHolidays(normalized.holidays);
+        setPublishedWeeks(new Set(normalized.publishedWeekStartISOs ?? []));
       })
       .catch(() => {
         if (!alive) return;
@@ -425,11 +445,10 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
     if (loading) return;
     if (typeof window === "undefined") return;
     if (printReadyWeeks.size < totalWeeks) return;
-    const markReady = () => {
+    // Ready only once every week's names have settled and its page re-fitted.
+    window.__PDF_READY__ = false;
+    return whenPrintLayoutSettles(() => {
       window.__PDF_READY__ = true;
-    };
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(markReady);
     });
   }, [
     loading,
@@ -486,6 +505,9 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
               calendarRows={calendarRows}
               assignmentMap={assignmentMap}
               clinicians={clinicians}
+              nameLabels={nameLabels}
+              personPillStyles={personPillStyles}
+              locationRowTints={locationRowTints}
               holidayDates={holidayDates}
               holidayNameByDate={holidayNameByDate}
               weeklyTemplate={weeklyTemplate}
@@ -497,6 +519,7 @@ export default function PrintWeeksPage({ theme }: PrintWeeksPageProps) {
               slotOverridesByKey={slotOverridesByKey}
               columnTimeMetaByKey={columnTimeMetaByKey}
               rangeLabel={formatRangeLabel(rangeStart, rangeEnd)}
+              draft={!publishedWeeks.has(toISODate(rangeStart))}
               layout={layout}
               onReady={handleWeekReady}
             />

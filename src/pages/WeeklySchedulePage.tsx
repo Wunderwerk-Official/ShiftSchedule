@@ -14,7 +14,10 @@ import ClinicianEditModal from "../components/schedule/ClinicianEditModal";
 import AutomatedPlanningPanel from "../components/schedule/AutomatedPlanningPanel";
 import SolverOverlay, { type LiveSolution, type StatsHistoryEntry } from "../components/schedule/SolverOverlay";
 import HelpView from "../components/schedule/HelpView";
-import IcalExportModal from "../components/schedule/IcalExportModal";
+import IcalExportModal, {
+  formatPdfProgress,
+  type PdfProgress,
+} from "../components/schedule/IcalExportModal";
 import ScheduleGrid from "../components/schedule/ScheduleGrid";
 import SettingsView from "../components/schedule/SettingsView";
 import TopBar from "../components/schedule/TopBar";
@@ -30,6 +33,7 @@ import CalendarPlaceholder from "../components/schedule/CalendarPlaceholder";
 import { buildLocationRowTints, buildPersonPillStyles } from "../components/schedule/teamColors";
 import MyPlanView, { type TeamPlanTarget } from "../components/myPlan/MyPlanView";
 import Toast, { useToast } from "../components/myPlan/Toast";
+import CalendarTransitionOverlay from "../components/schedule/CalendarTransitionOverlay";
 import SwapAssistantDrawer from "../components/swaps/SwapAssistantDrawer";
 import SwapHistoryButton from "../components/swaps/SwapHistoryButton";
 import { parseISODate } from "../lib/myPlan";
@@ -52,8 +56,10 @@ import { useUserPreferences } from "../lib/userPreferences";
 import { scrollToTeamAssignment } from "./scrollToTeamAssignment";
 import { runSwapApply, runSwapSearch, runSwapUndo, type SwapFlowDeps } from "./swapFlow";
 import { usePlanScope } from "./usePlanScope";
+import { readWeekParam, useWeekParam } from "./weekParam";
 import AdminUsersPanel from "../components/auth/AdminUsersPanel";
-import { ChevronLeftIcon, ChevronRightIcon } from "../components/schedule/icons";
+import MobileDayNavigator from "../components/schedule/MobileDayNavigator";
+import { useMediaQuery } from "../lib/useMediaQuery";
 import {
   exportWeekPdf,
   exportWeeksPdf,
@@ -61,8 +67,10 @@ import {
   getWebPublishStatus,
   getState,
   adoptSavedState,
+  isStateSaveQueued,
   flushStateSaves,
   retryStateSaves,
+  savedStateRevision,
   ApplyRunError,
   HttpError,
   publishIcal,
@@ -77,7 +85,7 @@ import {
   listSwapHistory,
   rotateIcalToken,
   saveState,
-  savedStateRevision,
+  currentStateRevision,
   sendRunFeedback,
   solveRange,
   rotateWeb,
@@ -124,19 +132,35 @@ import {
 import { cx } from "../lib/classNames";
 import { calculateSolverLiveStats } from "../lib/solverStats";
 import { normalizePreferredWorkingTimes } from "../lib/clinicianPreferences";
-import { addDays, addMonths, addWeeks, startOfMonth, startOfWeek, toISODate } from "../lib/date";
+import {
+  addDays,
+  addMonths,
+  addWeeks,
+  formatRangeLabel,
+  formatWeekdayDate,
+  startOfMonth,
+  startOfWeek,
+  toISODate,
+} from "../lib/date";
 import { downloadTextFile } from "../lib/download";
 import {
   holidayRegionForCountry,
   mergeLoadedHolidays,
   type NagerPublicHoliday,
 } from "../lib/holidays";
+import type { MoveRestDayArgs } from "../lib/clinicianSlotOptions";
 import { computeOpenSlots } from "../lib/openSlots";
+import { buildNameLabels } from "../lib/personName";
 import { buildGateMinutesByRowId, buildWeeklyMinutesIndex, checkWeeklyHours } from "../lib/weeklyHours";
 import { countTemplateColBands, MAX_TOTAL_COLBANDS } from "../lib/templateLimits";
 import { parseTimeToMinutes } from "../lib/time";
 import { insertVacationRange } from "../lib/vacations";
-import { saveShiftsFileImport } from "../lib/shiftsFileImport";
+import {
+  prepareShiftsImport,
+  saveShiftsFileImport,
+  shiftsFileName,
+  type PreparedShiftsImport,
+} from "../lib/shiftsFileImport";
 import { buildClinicSheetModel, buildMonthDays } from "../lib/clinicSheet";
 import { resetSolverAssignments, resetUnfixedAssignments } from "./resetSolverAssignments";
 import {
@@ -244,6 +268,8 @@ function scrollToGridCell(rowId: string, dateISO: string, maxWaitMs: number = 10
   };
   requestAnimationFrame(tick);
 }
+import { buildShiftCalendar, type ShiftCalendarOptions } from "../lib/ical";
+import { planTimeZone } from "../lib/planTimeZone";
 
 /** Width of the desktop swap drawer (SwapAssistantDrawer `w-[440px]`). */
 const SWAP_DRAWER_WIDTH = 440;
@@ -346,8 +372,8 @@ function revealBesideSwapDrawer(key: string): void {
   const dy = nearestScrollDelta(rect.top, rect.bottom, 0, window.innerHeight);
   if (dy !== 0) window.scrollTo({ top: window.scrollY + dy, behavior: "smooth" });
 }
-import { buildICalendar, type ICalEvent } from "../lib/ical";
 import {
+  buildOnCallRestDays,
   buildRenderedAssignmentMap,
   buildShiftInterval,
   intervalsOverlap,
@@ -360,17 +386,12 @@ import {
   buildScheduleRows,
   buildShiftRowId,
   DEFAULT_LOCATION_ID,
+  findAssignmentsDroppedByHolidayChange,
   normalizeAppState,
   type ScheduleRow,
 } from "../lib/shiftRows";
-
-type ScheduleSnapshotImportResult = {
-  imported: number;
-  droppedClinicians: number;
-  droppedSlots: number;
-  /** Name of the auto-backup of the calendar shown before the import. */
-  backupName?: string;
-};
+import { HOLIDAY_CHANGE_BUSY_MESSAGE } from "../lib/holidayChange";
+import { backupBeforeHolidayChange, useConfirmHolidayChange } from "./useConfirmHolidayChange";
 
 const defaultAppState = normalizeAppState({
   locations: defaultLocations,
@@ -411,73 +432,6 @@ const SECTION_BLOCK_COLORS = [
   "#E8E1F5",
 ];
 
-function useMediaQuery(query: string) {
-  const [matches, setMatches] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.matchMedia?.(query).matches ?? false;
-  });
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    const media = window.matchMedia(query);
-    const update = () => setMatches(media.matches);
-    update();
-    media.addEventListener("change", update);
-    return () => media.removeEventListener("change", update);
-  }, [query]);
-
-  return matches;
-}
-
-function MobileDayNavigator({
-  date,
-  onPrevDay,
-  onNextDay,
-  onToday,
-}: {
-  date: Date;
-  onPrevDay: () => void;
-  onNextDay: () => void;
-  onToday: () => void;
-}) {
-  const label = new Intl.DateTimeFormat("en-US", {
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-  }).format(date);
-
-  return (
-    <div className="flex flex-wrap items-center gap-2">
-      <button
-        type="button"
-        onClick={onPrevDay}
-        className="grid h-8 w-8 place-items-center rounded-md border border-slate-200/70 bg-white text-slate-600 hover:bg-slate-50 active:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800"
-        aria-label="Previous day"
-      >
-        <ChevronLeftIcon className="h-4 w-4" />
-      </button>
-      <div className="min-w-[96px] text-center text-sm font-normal tracking-tight text-slate-700 dark:text-slate-200">
-        {label}
-      </div>
-      <button
-        type="button"
-        onClick={onNextDay}
-        className="grid h-8 w-8 place-items-center rounded-md border border-slate-200/70 bg-white text-slate-600 hover:bg-slate-50 active:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-300 dark:hover:bg-slate-800"
-        aria-label="Next day"
-      >
-        <ChevronRightIcon className="h-4 w-4" />
-      </button>
-      <button
-        type="button"
-        onClick={onToday}
-        className="h-8 rounded-md border border-slate-200/70 bg-white px-3 text-sm font-normal text-slate-700 hover:bg-slate-50 active:bg-slate-100 dark:border-slate-700 dark:bg-slate-900/60 dark:text-slate-200 dark:hover:bg-slate-800"
-      >
-        Today
-      </button>
-    </div>
-  );
-}
-
 type WeeklySchedulePageProps = {
   currentUser: AuthUser;
   onLogout: () => void;
@@ -507,11 +461,14 @@ export default function WeeklySchedulePage({
   const [webPublishLoading, setWebPublishLoading] = useState(false);
   const [webPublishError, setWebPublishError] = useState<string | null>(null);
   const [pdfExporting, setPdfExporting] = useState(false);
-  const [pdfProgress, setPdfProgress] = useState<{ current: number; total: number } | null>(
-    null,
-  );
+  const [pdfProgress, setPdfProgress] = useState<PdfProgress | null>(null);
   const [pdfError, setPdfError] = useState<string | null>(null);
-  const [anchorDate, setAnchorDate] = useState<Date>(new Date());
+  // Cancel of the running PDF export (overlay button).
+  const pdfAbortRef = useRef<AbortController | null>(null);
+  // A week opened by link or kept over a reload (?week=, see weekParam.ts).
+  const [anchorDate, setAnchorDate] = useState<Date>(
+    () => readWeekParam(window.location.search) ?? new Date(),
+  );
   const [assignmentMap, setAssignmentMap] = useState<Map<string, Assignment[]>>(() =>
     buildAssignmentMap(defaultAppState.assignments ?? []),
   );
@@ -575,6 +532,8 @@ export default function WeeklySchedulePage({
   }, [swapsWaitForCalendar]);
   const closeSwap = useCallback(() => setSwapTarget(null), []);
   const [hasLoaded, setHasLoaded] = useState(false);
+  // The loading card stops waiting when GET /v1/state fails (saveError explains).
+  const [loadFailed, setLoadFailed] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [calendarTransition, setCalendarTransition] = useState(false);
   const calendarTransitionRef = useRef(false);
@@ -670,6 +629,11 @@ export default function WeeklySchedulePage({
   const runStatsRef = useRef<Map<string, StatsHistoryEntry[]>>(new Map());
   const [solverInfoOpen, setSolverInfoOpen] = useState(false);
   const [holidays, setHolidays] = useState<Holiday[]>(defaultAppState.holidays ?? []);
+  const confirmHolidayChange = useConfirmHolidayChange();
+  // Set while a holiday change waits for its confirmation and backup.
+  const holidayChangePendingRef = useRef(false);
+  // Counts loads, restores and applied plans (hydrateStateSlices).
+  const calendarReplacedCountRef = useRef(0);
   const [holidayCountry, setHolidayCountry] = useState(
     defaultAppState.holidayCountry ?? "DE",
   );
@@ -709,11 +673,13 @@ export default function WeeklySchedulePage({
     flush: flushPrefs,
   } = useUserPreferences(currentUser.username);
   const { planScope, setPlanScope } = usePlanScope();
-  // My plan reads people and assignments from the calendar. Until this
-  // user's state has loaded they are the built-in demo data, and My plan
-  // would call the linked person "no longer in the plan" and offer the demo
-  // people instead: it waits behind the placeholder.
-  const myPlanDataReady = hasLoaded && loadedUserId === currentUser.username;
+  // Until this user's calendar has loaded the page holds the built-in demo
+  // data: both plans wait behind the loading card (edits made to the demo
+  // calendar would be lost, and My plan would call the linked person "no
+  // longer in the plan" and offer the demo people instead).
+  const calendarReady = hasLoaded && loadedUserId === currentUser.username;
+  // Short notices of the team plan (e.g. why an automatic rest day stays).
+  const { toast: teamToast, show: showTeamNotice, dismiss: dismissTeamNotice } = useToast();
   useEffect(() => {
     if (!ruleViolationsOpen) return;
     const handleClick = (event: MouseEvent) => {
@@ -954,15 +920,12 @@ export default function WeeklySchedulePage({
     },
     [scheduleRows],
   );
-  const clinicianById = useMemo(
-    () => new Map(clinicians.map((clinician) => [clinician.id, clinician])),
-    [clinicians],
-  );
   // Team grid colors (plan §2.9): every person has their own color and the
   // linked person ("That's me") gets an outline. Since v1.71 the label column
   // is colored by location (its own color or an automatic one, alternating
   // shades per row band); side by side shows neutral section blocks.
-  // Print/public pages keep the section look.
+  // The print pages use the same colors (v1.83); the public page keeps the
+  // section look.
   const linkedClinicianIndex = prefs.clinicianId
     ? clinicians.findIndex((clinician) => clinician.id === prefs.clinicianId)
     : -1;
@@ -971,6 +934,8 @@ export default function WeeklySchedulePage({
     () => buildPersonPillStyles(clinicians, isDark),
     [clinicians, isDark],
   );
+  // Short names unique in the whole team: pills and the clinic sheet's surnames.
+  const nameLabels = useMemo(() => buildNameLabels(clinicians), [clinicians]);
   const outlinedClinicianId = linkedClinician?.id ?? null;
   // Without locations every row belongs to the default location: its color.
   const locationRowTints = useMemo(
@@ -1072,46 +1037,17 @@ export default function WeeklySchedulePage({
     assignments: toAssignments(),
   });
 
-  const extractAssignmentsFromSnapshot = (payload: unknown): Assignment[] | null => {
-    if (!payload || typeof payload !== "object") return null;
-    const maybePayload = payload as { assignments?: Assignment[]; state?: { assignments?: Assignment[] } };
-    if (Array.isArray(maybePayload.assignments)) return maybePayload.assignments;
-    if (Array.isArray(maybePayload.state?.assignments)) return maybePayload.state.assignments;
-    return null;
-  };
-
   const handleExportScheduleSnapshot = () => {
-    const snapshot = buildScheduleSnapshot();
-    const dateStamp = snapshot.exportedAt.slice(0, 10);
     downloadTextFile(
-      `schedule-snapshot-${dateStamp}.json`,
-      `${JSON.stringify(snapshot, null, 2)}\n`,
+      shiftsFileName(),
+      `${JSON.stringify(buildScheduleSnapshot(), null, 2)}\n`,
       "application/json",
     );
   };
 
-  const handleImportScheduleSnapshot = async (
-    payload: unknown,
-  ): Promise<ScheduleSnapshotImportResult> => {
-    const assignments = extractAssignmentsFromSnapshot(payload);
-    if (!assignments) {
-      throw new Error("No shifts found in this file.");
-    }
-
-    const clinicianIds = new Set(clinicians.map((clinician) => clinician.id));
-    const filteredByClinician = assignments.filter((assignment) =>
-      clinicianIds.has(assignment.clinicianId),
-    );
-    const droppedClinicians = assignments.length - filteredByClinician.length;
-
-    const normalized = buildCurrentStatePayload(filteredByClinician);
-    if (!normalized) {
-      throw new Error("The current calendar cannot be saved. Fix its template first.");
-    }
-
-    const normalizedAssignments = normalized.assignments ?? [];
-    const droppedSlots = filteredByClinician.length - normalizedAssignments.length;
-
+  // Settings → Import shifts file: the file is checked here (refused with a
+  // message, nothing changed) before Settings asks to replace the shifts.
+  const handlePrepareShiftsFileImport = (payload: unknown): PreparedShiftsImport => {
     if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
       // A pending save failure would reject the import's save right after the
       // backup replaced the only auto-backup: refuse before writing anything.
@@ -1123,24 +1059,31 @@ export default function WeeklySchedulePage({
     if (!current) {
       throw new Error("The current calendar cannot be saved. Fix its template first.");
     }
-
-    let backupName: string;
-    pauseCalendarSaving();
-    try {
-      ({ backupName } = await saveShiftsFileImport(current, normalized, {
-        createBackup: createImportBackup,
-        saveState,
-      }));
-      setAssignmentMap(buildAssignmentMap(normalizedAssignments));
-    } finally {
-      resumeCalendarSaving();
-    }
-
+    const { next, summary } = prepareShiftsImport(payload, {
+      clinicianIds: new Set(clinicians.map((clinician) => clinician.id)),
+      slotIds: new Set(
+        weeklyTemplate?.locations.flatMap((location) => location.slots.map((slot) => slot.id)),
+      ),
+      holidayDates,
+      buildState: buildCurrentStatePayload,
+    });
     return {
-      imported: normalizedAssignments.length,
-      droppedClinicians,
-      droppedSlots,
-      backupName,
+      currentCount: current.assignments.length,
+      summary,
+      apply: async () => {
+        pauseCalendarSaving();
+        try {
+          const { backupName } = await saveShiftsFileImport(current, next, {
+            currentRevision: savedStateRevision,
+            createBackup: (state, expectedRevision) => createImportBackup(state, { expectedRevision }),
+            saveState,
+          });
+          setAssignmentMap(buildAssignmentMap(next.assignments));
+          return { ...summary, backupName };
+        } finally {
+          resumeCalendarSaving();
+        }
+      },
     };
   };
 
@@ -1168,101 +1111,26 @@ export default function WeeklySchedulePage({
     return out;
   }, [assignmentMap, autoPlanDateRange]);
 
-  const collectClassAssignments = () => {
-    const items: Assignment[] = [];
-    for (const list of assignmentMap.values()) {
-      for (const assignment of list) {
-        const row = rowById.get(assignment.rowId);
-        if (!row || row.kind !== "class") continue;
-        // Vacations override assignments everywhere else (rendered grid,
-        // published web page, subscribed feed) — the local .ics download
-        // must not resurrect them.
-        if (isOnVacation(assignment.clinicianId, assignment.dateISO)) continue;
-        items.push(assignment);
-      }
+  // The plan's time zone (from the holiday country): iCal event times and
+  // real shift durations (My plan, working hours overview).
+  const planZone = planTimeZone(holidayCountry);
+
+  // The .ics download: the subscription feed's events (published weeks unless
+  // the dialog includes unpublished ones), built in src/lib/ical.ts.
+  // Returns a notice for the dialog instead of saving an empty file.
+  const handleDownloadIcal = (options: ShiftCalendarOptions): string | null => {
+    const file = buildShiftCalendar(
+      { assignments: toAssignments(), rowById, clinicians, publishedWeekStartISOs, holidayCountry },
+      options,
+    );
+    if (!file) return "This person is no longer in the plan.";
+    if (file.eventCount === 0) {
+      return file.unpublishedSkipped > 0
+        ? "Nothing was downloaded: the shifts in this range are in weeks that are not published. Tick “Include unpublished weeks” to download them."
+        : "Nothing was downloaded: there are no shifts in this range.";
     }
-    return items;
-  };
-
-  const withinRange = (
-    dateISO: string,
-    range: { startISO?: string; endISO?: string },
-  ) => {
-    if (range.startISO && dateISO < range.startISO) return false;
-    if (range.endISO && dateISO > range.endISO) return false;
-    return true;
-  };
-
-  const buildIcalEventsForAssignments = (
-    assignments: Assignment[],
-    options: { includeClinicianInSummary: boolean },
-  ): ICalEvent[] => {
-    return assignments
-      .map((assignment): ICalEvent | null => {
-        const row = rowById.get(assignment.rowId);
-        const clinician = clinicianById.get(assignment.clinicianId);
-        if (!row || row.kind !== "class" || !clinician) return null;
-        const sectionName = row.sectionName ?? row.name;
-        const slotLabel = row.slotLabel;
-        const label = slotLabel ? `${sectionName} (${slotLabel})` : sectionName;
-        const summary = `${label} - ${clinician.name}`;
-        const description = options.includeClinicianInSummary
-          ? undefined
-          : `Person: ${clinician.name}`;
-        return {
-          uid: `${assignment.id}@shift-planner`,
-          dateISO: assignment.dateISO,
-          ...(row.endDayOffset ? { endDayOffset: row.endDayOffset } : {}),
-          summary,
-          ...(description ? { description } : {}),
-        };
-      })
-      .filter((item): item is ICalEvent => item !== null)
-      .sort((a, b) => a.dateISO.localeCompare(b.dateISO));
-  };
-
-  const handleDownloadIcalAll = (range: { startISO?: string; endISO?: string }) => {
-    const classAssignments = collectClassAssignments().filter((assignment) =>
-      withinRange(assignment.dateISO, range),
-    );
-    const events = buildIcalEventsForAssignments(classAssignments, {
-      includeClinicianInSummary: true,
-    });
-    const ics = buildICalendar({
-      calendarName: "Shift Planner (All people)",
-      events,
-    });
-    downloadTextFile("shift-planner-all.ics", ics, "text/calendar;charset=utf-8");
-  };
-
-  const handleDownloadIcalClinician = (
-    clinicianId: string,
-    range: { startISO?: string; endISO?: string },
-  ) => {
-    const clinician = clinicianById.get(clinicianId);
-    if (!clinician) return;
-    const classAssignments = collectClassAssignments().filter(
-      (assignment) =>
-        assignment.clinicianId === clinicianId &&
-        withinRange(assignment.dateISO, range),
-    );
-    const events = buildIcalEventsForAssignments(classAssignments, {
-      includeClinicianInSummary: false,
-    });
-    const safeName = clinician.name
-      .trim()
-      .replaceAll(/[^\w\- ]+/g, "")
-      .replaceAll(/\s+/g, "-")
-      .toLowerCase();
-    const ics = buildICalendar({
-      calendarName: `Shift Planner (${clinician.name})`,
-      events,
-    });
-    downloadTextFile(
-      `shift-planner-${safeName || clinician.id}.ics`,
-      ics,
-      "text/calendar;charset=utf-8",
-    );
+    downloadTextFile(file.fileName, file.ics, "text/calendar;charset=utf-8");
+    return null;
   };
 
   const openExportModal = () => {
@@ -1420,6 +1288,11 @@ export default function WeeklySchedulePage({
     setPdfError(null);
     setPdfExporting(true);
     pauseCalendarSaving();
+    const abort = new AbortController();
+    pdfAbortRef.current = abort;
+    // The print pages show whole weeks: request and file names start on the
+    // Monday of the chosen date.
+    const firstMonday = startOfWeek(new Date(`${args.startISO}T00:00:00`), 1);
     let exportedWeeks = 0;
     try {
       if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
@@ -1430,27 +1303,35 @@ export default function WeeklySchedulePage({
       const saved = await saveState(current);
       if (!saved.revision) throw new Error("The saved calendar has no revision. Reload before exporting.");
       if (args.mode === "combined") {
-        setPdfProgress({ current: 0, total: args.weeks });
-        const pdfBlob = await exportWeeksPdf(args.startISO, args.weeks, saved.revision, args.layout);
-        const endISO = toISODate(addDays(addWeeks(new Date(`${args.startISO}T00:00:00`), args.weeks), -1));
-        downloadBlob(`shift-planner-${args.startISO}-to-${endISO}.pdf`, pdfBlob);
+        setPdfProgress({ mode: "combined", total: args.weeks });
+        const startISO = toISODate(firstMonday);
+        const pdfBlob = await exportWeeksPdf(
+          startISO, args.weeks, saved.revision, args.layout, abort.signal,
+        );
+        const endISO = toISODate(addDays(addWeeks(firstMonday, args.weeks), -1));
+        downloadBlob(`shift-planner-${startISO}-to-${endISO}.pdf`, pdfBlob);
       } else {
-        const baseDate = startOfWeek(new Date(`${args.startISO}T00:00:00`), 1);
-        for (let i = 0; i < args.weeks; i += 1) {
-          const weekStartDate = addWeeks(baseDate, i);
-          const weekStartISO = toISODate(weekStartDate);
-          setPdfProgress({ current: i + 1, total: args.weeks });
-          const pdfBlob = await exportWeekPdf(weekStartISO, saved.revision, args.layout);
+        for (let i = 0; i < args.weeks && !abort.signal.aborted; i += 1) {
+          const weekStartISO = toISODate(addWeeks(firstMonday, i));
+          setPdfProgress({ mode: "individual", current: i + 1, total: args.weeks });
+          const pdfBlob = await exportWeekPdf(weekStartISO, saved.revision, args.layout, abort.signal);
           downloadBlob(`shift-planner-${weekStartISO}.pdf`, pdfBlob);
           exportedWeeks += 1;
           await new Promise((resolve) => setTimeout(resolve, 400));
         }
       }
     } catch (error) {
-      const reason = error instanceof Error ? error.message : "PDF export failed.";
-      setPdfError(exportedWeeks > 0
-        ? `${exportedWeeks} of ${args.weeks} weeks downloaded. Export stopped: ${reason}` : reason);
+      if (!abort.signal.aborted) {
+        const reason = error instanceof Error ? error.message : "PDF export failed.";
+        setPdfError(exportedWeeks > 0
+          ? `${exportedWeeks} of ${args.weeks} weeks downloaded. Export stopped: ${reason}` : reason);
+      }
     } finally {
+      // Cancelled: the files downloaded so far stay, the running one is dropped.
+      if (abort.signal.aborted && exportedWeeks > 0 && exportedWeeks < args.weeks) {
+        setPdfError(`${exportedWeeks} of ${args.weeks} weeks downloaded. Export cancelled.`);
+      }
+      pdfAbortRef.current = null;
       resumeCalendarSaving();
       setPdfExporting(false);
       setPdfProgress(null);
@@ -1502,13 +1383,20 @@ export default function WeeklySchedulePage({
     );
   };
 
-  const isOnRestDay = (clinicianId: string, dateISO: string) => {
-    const restAssignments = renderAssignmentMap.get(
-      `${REST_DAY_POOL_ID}__${dateISO}`,
-    );
-    if (!restAssignments || restAssignments.length === 0) return false;
-    return restAssignments.some((assignment) => assignment.clinicianId === clinicianId);
-  };
+  // On-call rest days by date and person, with the on-call date behind each.
+  const onCallRestDays = useMemo(
+    () => buildOnCallRestDays(assignmentMap, clinicians, { scheduleRows, solverSettings }),
+    [assignmentMap, clinicians, scheduleRows, solverSettings],
+  );
+  // "Rest day" in the slot picker: the Rest Day row as shown, plus automatic
+  // rest days on which the person already holds a shift (the grid hides that
+  // pill and flags the rule violation, but the day stays a rest day).
+  const isRestDayIn =
+    (rendered: Map<string, RenderedAssignment[]>) => (clinicianId: string, dateISO: string) =>
+      (rendered.get(`${REST_DAY_POOL_ID}__${dateISO}`) ?? []).some(
+        (assignment) => assignment.clinicianId === clinicianId,
+      ) || (onCallRestDays.get(dateISO)?.has(clinicianId) ?? false);
+  const isOnRestDay = isRestDayIn(renderAssignmentMap);
 
   // Weekly hours per person and ISO week, from ALL stored assignments (also
   // those the grid hides on vacation days): the planner's gate counts them
@@ -1536,6 +1424,22 @@ export default function WeeklySchedulePage({
   const isClinicSheet =
     (solverSettings.scheduleLayout ?? "classic") === "clinicSheet" && !isMobile;
   const monthStart = useMemo(() => startOfMonth(anchorDate), [anchorDate]);
+  // The viewed period in the address (?week=): the team week's Monday, the
+  // phone's day or the sheet's month; My plan's own day (its day, week and
+  // month views all start from it, and the team week follows from it). None
+  // for the period around today. Written once the calendar (and with it its
+  // layout) has loaded.
+  const periodStart = (date: Date) =>
+    planScope === "me" || isMobile
+      ? date
+      : isClinicSheet
+        ? startOfMonth(date)
+        : startOfWeek(date, 1);
+  const viewedPeriodISO = toISODate(periodStart(anchorDate));
+  useWeekParam(
+    viewedPeriodISO === toISODate(periodStart(new Date())) ? null : viewedPeriodISO,
+    calendarReady,
+  );
   const clinicSheetDays = useMemo(
     () =>
       isClinicSheet ? buildMonthDays(monthStart, holidayDates, holidayNameByDate) : [],
@@ -1574,13 +1478,7 @@ export default function WeeklySchedulePage({
         : null,
     [isClinicSheet, calendarRows, clinicSheetDays, slotOverridesByKey, minSlotsByRowId],
   );
-  const isOnRestDayInSheet = (clinicianId: string, dateISO: string) => {
-    const restAssignments = clinicSheetAssignmentMap.get(
-      `${REST_DAY_POOL_ID}__${dateISO}`,
-    );
-    if (!restAssignments || restAssignments.length === 0) return false;
-    return restAssignments.some((assignment) => assignment.clinicianId === clinicianId);
-  };
+  const isOnRestDayInSheet = isRestDayIn(clinicSheetAssignmentMap);
 
   const shiftDateISO = (dateISO: string, delta: number) =>
     toISODate(addDays(new Date(`${dateISO}T00:00:00`), delta));
@@ -2066,15 +1964,51 @@ export default function WeeklySchedulePage({
     });
   };
 
+  // A Rest Day pill without a stored entry comes from the on-call rest rule:
+  // dragging it changes nothing, a short notice says where it comes from.
+  const notifyAutomaticRestDay = (clinicianId: string, dateISO: string) => {
+    const onCallISO = onCallRestDays.get(dateISO)?.get(clinicianId);
+    // "… on Tue 03.11." – the short date ends the sentence.
+    const what = onCallISO
+      ? `Automatic rest day ${onCallISO < dateISO ? "after" : "before"} on-call duty on ${formatWeekdayDate(
+          new Date(`${onCallISO}T00:00:00`),
+          { withYear: false },
+        )}`
+      : "Automatic rest day.";
+    showTeamNotice(`${what} Change the on-call shift or the rest-day rule to change it.`);
+  };
+  const findStoredRestDay = (dateISO: string, assignmentId: string) =>
+    assignmentMap
+      .get(`${REST_DAY_POOL_ID}__${dateISO}`)
+      ?.find((assignment) => assignment.id === assignmentId);
+
+  // Dragged out of the calendar (or dropped on another day): a shift or a
+  // hand-placed rest day is removed, a vacation day ends (the grids send a
+  // Vacation pill only when it leaves the calendar).
   const handleRemoveAssignment = (args: {
     rowId: string;
     dateISO: string;
     assignmentId: string;
     clinicianId: string;
   }) => {
-    const { rowId, dateISO, assignmentId } = args;
+    const { rowId, dateISO, assignmentId, clinicianId } = args;
     const targetRow = rowById.get(rowId);
-    if (!targetRow || targetRow.kind !== "class") return;
+    if (!targetRow) return;
+    if (rowId === VACATION_POOL_ID) {
+      removeVacationDay(clinicianId, dateISO);
+      return;
+    }
+    if (rowId === REST_DAY_POOL_ID) {
+      const stored = findStoredRestDay(dateISO, assignmentId);
+      // An automatic rest day stays. So does the pill of a hand-placed one
+      // on an automatic rest day (the automatic one takes its place).
+      if (!stored || onCallRestDays.get(dateISO)?.has(clinicianId)) {
+        notifyAutomaticRestDay(clinicianId, dateISO);
+      }
+      if (!stored) return;
+    } else if (targetRow.kind !== "class") {
+      return;
+    }
     setAssignmentMap((prev) => {
       const key = `${rowId}__${dateISO}`;
       const existing = prev.get(key) ?? [];
@@ -2083,6 +2017,41 @@ export default function WeeklySchedulePage({
       const next = new Map(prev);
       if (filtered.length === 0) next.delete(key);
       else next.set(key, filtered);
+      return next;
+    });
+  };
+
+  // A hand-placed rest day dropped on the Rest Day row of another day moves
+  // there (an automatic one stays and explains itself, also when a
+  // hand-placed one leaves an automatic rest day).
+  const handleMoveRestDay = ({ fromDateISO, toDateISO, assignmentId, clinicianId }: MoveRestDayArgs) => {
+    const stored = findStoredRestDay(fromDateISO, assignmentId);
+    if (stored && isOnVacation(clinicianId, toDateISO)) {
+      // Vacation hides a rest day: the entry would vanish but stay stored.
+      const name = clinicians.find((item) => item.id === clinicianId)?.name ?? "This person";
+      const short = (dateISO: string) => formatWeekdayDate(new Date(`${dateISO}T00:00:00`), { withYear: false });
+      // "… on Tue 03.11." – the short date ends the sentence.
+      showTeamNotice(`${name} is on vacation on ${short(toDateISO)} The rest day stays on ${short(fromDateISO)}`);
+      return;
+    }
+    if (!stored || onCallRestDays.get(fromDateISO)?.has(clinicianId)) {
+      notifyAutomaticRestDay(clinicianId, fromDateISO);
+    }
+    if (!stored) return;
+    setAssignmentMap((prev) => {
+      const fromKey = `${REST_DAY_POOL_ID}__${fromDateISO}`;
+      const toKey = `${REST_DAY_POOL_ID}__${toDateISO}`;
+      const fromList = prev.get(fromKey) ?? [];
+      const moving = fromList.find((assignment) => assignment.id === assignmentId);
+      if (!moving) return prev;
+      const next = new Map(prev);
+      const remaining = fromList.filter((assignment) => assignment.id !== assignmentId);
+      if (remaining.length === 0) next.delete(fromKey);
+      else next.set(fromKey, remaining);
+      const toList = next.get(toKey) ?? [];
+      if (!toList.some((assignment) => assignment.clinicianId === clinicianId)) {
+        next.set(toKey, [...toList, { ...moving, dateISO: toDateISO }]);
+      }
       return next;
     });
   };
@@ -2276,20 +2245,29 @@ export default function WeeklySchedulePage({
     scrollToGridCell(target.rowId, target.dateISO);
   };
 
+  // The pill to show for a violation: one on screen if there is one (a
+  // violation across the week's edge, on call on Sunday and a shift on
+  // Monday, has one day on screen), else the first, whose day then opens.
+  const violationTarget = (assignmentKeys: string[]) => {
+    const displayedISOs = new Set(displayDays.map(toISODate));
+    const dated = assignmentKeys.flatMap((key) => {
+      const dateISO = extractDateFromAssignmentKey(key);
+      return dateISO ? [{ key, dateISO }] : [];
+    });
+    return dated.find(({ dateISO }) => displayedISOs.has(dateISO)) ?? dated[0];
+  };
+
   const handleCycleRuleViolations = () => {
     if (ruleViolations.length === 0) return;
     const violation = ruleViolations[violationCycleRef.current % ruleViolations.length];
     violationCycleRef.current += 1;
     setActiveRuleViolationId(violation.id);
-    const targetDateISO = violation.assignmentKeys
-      .map(extractDateFromAssignmentKey)
-      .find((d): d is string => d !== null);
-    if (targetDateISO) revealDate(targetDateISO);
+    const target = violationTarget(violation.assignmentKeys);
+    if (target) revealDate(target.dateISO);
     scrollToAssignmentKeys(violation.assignmentKeys);
-    const firstKey = violation.assignmentKeys[0];
-    if (firstKey && targetDateISO) {
-      const rowId = firstKey.slice(0, firstKey.indexOf(`__${targetDateISO}__`));
-      if (rowId) scrollToGridCell(rowId, targetDateISO);
+    if (target) {
+      const rowId = target.key.slice(0, target.key.indexOf(`__${target.dateISO}__`));
+      if (rowId) scrollToGridCell(rowId, target.dateISO);
     }
   };
 
@@ -2396,11 +2374,21 @@ export default function WeeklySchedulePage({
   const ruleAssignmentContext = useMemo(() => {
     const dateISOs = fullWeekDays.map(toISODate);
     const dateSet = new Set(dateISOs);
+    // Rest days around on-call duty reach across the week's edges (on call
+    // on Sunday, rest day on Monday): shifts that many days before and after
+    // the week are read too, for that rule only.
+    const reach = solverSettings.onCallRestEnabled
+      ? Math.max(0, solverSettings.onCallRestDaysBefore ?? 0, solverSettings.onCallRestDaysAfter ?? 0)
+      : 0;
+    const reachDateISOs = Array.from({ length: fullWeekDays.length + 2 * reach }, (_, index) =>
+      toISODate(addDays(fullWeekDays[0], index - reach)),
+    );
+    const reachDateSet = new Set(reachDateISOs);
     const rowKindById = new Map(scheduleRows.map((row) => [row.id, row.kind]));
     const assignmentsByClinicianDate = new Map<string, Map<string, Set<string>>>();
     for (const [key, list] of assignmentMap.entries()) {
       const { rowId, dateISO } = splitAssignmentKey(key);
-      if (!rowId || !dateISO || !dateSet.has(dateISO)) continue;
+      if (!rowId || !dateISO || !reachDateSet.has(dateISO)) continue;
       if (rowKindById.get(rowId) !== "class") continue;
       for (const assignment of list) {
         if (isOnVacation(assignment.clinicianId, dateISO)) continue;
@@ -2417,11 +2405,11 @@ export default function WeeklySchedulePage({
         rowSet.add(rowId);
       }
     }
-    return { dateISOs, dateSet, rowKindById, assignmentsByClinicianDate };
-  }, [fullWeekDays, scheduleRows, assignmentMap, clinicians]);
+    return { dateISOs, dateSet, reachDateISOs, rowKindById, assignmentsByClinicianDate };
+  }, [fullWeekDays, scheduleRows, assignmentMap, clinicians, solverSettings]);
 
   const ruleViolations = useMemo(() => {
-    const { dateISOs, dateSet, assignmentsByClinicianDate } = ruleAssignmentContext;
+    const { dateISOs, dateSet, reachDateISOs, assignmentsByClinicianDate } = ruleAssignmentContext;
     const classLabelById = new Map(classRows.map((row) => [row.id, row.name]));
     const violations: Array<{
       id: string;
@@ -2468,7 +2456,9 @@ export default function WeeklySchedulePage({
       for (const clinician of clinicians) {
         const clinicianDates = assignmentsByClinicianDate.get(clinician.id);
         if (!clinicianDates) continue;
-        for (const dateISO of dateISOs) {
+        // The on-call shift or the day it needs free lies in this week (the
+        // other one may lie just outside it).
+        for (const dateISO of reachDateISOs) {
           const assigned = clinicianDates.get(dateISO);
           if (!assigned) continue;
           const hasOnCall = Array.from(assigned).some((rowId) =>
@@ -2477,7 +2467,7 @@ export default function WeeklySchedulePage({
           if (!hasOnCall) continue;
           for (let offset = 1; offset <= restBefore; offset += 1) {
             const targetISO = shiftDateISO(dateISO, -offset);
-            if (!dateSet.has(targetISO)) continue;
+            if (!dateSet.has(dateISO) && !dateSet.has(targetISO)) continue;
             const targetAssigned = clinicianDates.get(targetISO);
             if (!targetAssigned || targetAssigned.size === 0) continue;
             const assignmentKeys = [
@@ -2495,7 +2485,7 @@ export default function WeeklySchedulePage({
           }
           for (let offset = 1; offset <= restAfter; offset += 1) {
             const targetISO = shiftDateISO(dateISO, offset);
-            if (!dateSet.has(targetISO)) continue;
+            if (!dateSet.has(dateISO) && !dateSet.has(targetISO)) continue;
             const targetAssigned = clinicianDates.get(targetISO);
             if (!targetAssigned || targetAssigned.size === 0) continue;
             const assignmentKeys = [
@@ -2515,6 +2505,25 @@ export default function WeeklySchedulePage({
       }
     }
 
+    // A hand-placed rest day (stored Rest Day row entry) is a day off for
+    // every planner (hard rule REST_DAY, v1.75): a shift that day is flagged,
+    // and the rest day pill turns red with it. Placing a shift through the
+    // picker or by dragging the rest day pill ends the rest day instead.
+    const restDayRowName = poolRows.find((row) => row.id === REST_DAY_POOL_ID)?.name || "Rest Day";
+    for (const dateISO of dateISOs) {
+      for (const entry of assignmentMap.get(`${REST_DAY_POOL_ID}__${dateISO}`) ?? []) {
+        const shiftKeys = buildAssignmentKeys(entry.clinicianId, dateISO);
+        if (shiftKeys.length === 0) continue;
+        violations.push({
+          id: `rest-day-${entry.clinicianId}-${dateISO}`,
+          clinicianId: entry.clinicianId,
+          clinicianName: clinicianNameById.get(entry.clinicianId) ?? entry.clinicianId,
+          summary: `Scheduled on ${formatEuropeanDate(dateISO)}, but that day is a rest day (${restDayRowName} row).`,
+          assignmentKeys: [...shiftKeys, `${REST_DAY_POOL_ID}__${dateISO}__${entry.clinicianId}`],
+        });
+      }
+    }
+
     // Note: The old "allowMultipleShiftsPerDay" check has been removed.
     // We now only flag actual time overlaps (handled below), not just having multiple shifts.
 
@@ -2523,7 +2532,7 @@ export default function WeeklySchedulePage({
         const clinicianDates = assignmentsByClinicianDate.get(clinician.id);
         if (!clinicianDates) continue;
         for (const [dateISO, rowSet] of clinicianDates.entries()) {
-          if (rowSet.size <= 1) continue;
+          if (rowSet.size <= 1 || !dateSet.has(dateISO)) continue;
           const locationIds = new Set<string>();
           for (const rowId of rowSet) {
             const row = rowById.get(rowId);
@@ -2552,7 +2561,7 @@ export default function WeeklySchedulePage({
       const clinicianDates = assignmentsByClinicianDate.get(clinician.id);
       if (!clinicianDates) continue;
       for (const [dateISO, rowSet] of clinicianDates.entries()) {
-        if (rowSet.size <= 1) continue;
+        if (rowSet.size <= 1 || !dateSet.has(dateISO)) continue;
         const rowIds = Array.from(rowSet);
         const overlapping = new Set<string>();
         for (let i = 0; i < rowIds.length; i += 1) {
@@ -2586,6 +2595,8 @@ export default function WeeklySchedulePage({
     solverSettings,
     scheduleRows,
     classRows,
+    poolRows,
+    assignmentMap,
     clinicians,
     clinicianNameById,
     rowById,
@@ -2695,6 +2706,7 @@ export default function WeeklySchedulePage({
   // hydrate identically. (normalizeAppState already guarantees the Rest Day
   // pool row.)
   const hydrateStateSlices = (normalized: AppState) => {
+    calendarReplacedCountRef.current += 1;
     adoptSavedState(normalized);
     if (normalized.locations?.length) setLocations(normalized.locations);
     setLocationsEnabled(normalized.locationsEnabled ?? true);
@@ -2745,6 +2757,7 @@ export default function WeeklySchedulePage({
   useEffect(() => {
     let alive = true;
     setHasLoaded(false);
+    setLoadFailed(false);
     setLoadedUserId("");
     getState()
       .then((state) => {
@@ -2756,7 +2769,9 @@ export default function WeeklySchedulePage({
         setHasLoaded(true);
       })
       .catch(() => {
-        if (alive) setSaveError("The calendar could not be loaded. Reload before editing.");
+        if (!alive) return;
+        setSaveError("The calendar could not be loaded. Reload before editing.");
+        setLoadFailed(true);
       });
     return () => {
       alive = false;
@@ -2855,12 +2870,14 @@ export default function WeeklySchedulePage({
   const buildCurrentStatePayloadRef = useRef(buildCurrentStatePayload);
   buildCurrentStatePayloadRef.current = buildCurrentStatePayload;
 
+  // Until the calendar has loaded the screen holds the demo calendar: a
+  // snapshot of it, or a restore that first saves it, would be wrong.
+  const requireLoadedCalendar = (action: string) => {
+    if (!calendarReady) throw new Error(`Wait until the calendar has loaded before ${action}.`);
+  };
+
   const handleSaveSnapshot = async (name: string) => {
-    // Until this user's calendar has loaded the screen holds the built-in demo
-    // calendar, which the snapshot would store (the popover waits too).
-    if (!hasLoaded || loadedUserId !== currentUser.username) {
-      throw new Error("Wait until the calendar has loaded before saving a snapshot.");
-    }
+    requireLoadedCalendar("saving a snapshot");
     const payload = buildCurrentStatePayload();
     if (!payload) {
       throw new Error(
@@ -2872,11 +2889,7 @@ export default function WeeklySchedulePage({
 
   // Flush pending edits and pause autosave while replacing calendar state.
   const handleRestoreSnapshot = async (snapshotId: string) => {
-    // A restore saves the calendar on screen first: the demo calendar until
-    // this user's has loaded.
-    if (!hasLoaded || loadedUserId !== currentUser.username) {
-      throw new Error("Wait until the calendar has loaded before restoring a snapshot.");
-    }
+    requireLoadedCalendar("restoring a snapshot");
     closeSwap();
     pauseCalendarSaving();
     try {
@@ -2940,6 +2953,20 @@ export default function WeeklySchedulePage({
       if (calendarTransitionRef.current) return;
       const normalized = buildCurrentStatePayload();
       if (!normalized) return;
+      // Already sent as it is (e.g. saving resumes after a refused import or
+      // holiday change in a tab whose calendar changed elsewhere): sending it
+      // again would only report a conflict for edits the tab never made. This
+      // generation counts as saved once that save has landed.
+      if (isStateSaveQueued(normalized)) {
+        flushStateSaves()
+          .then(() => {
+            savedGenRef.current = Math.max(savedGenRef.current, gen);
+          })
+          .catch(() => {
+            // The failed save itself shows the banner.
+          });
+        return;
+      }
       saveState(normalized)
         .then(() => {
           savedGenRef.current = Math.max(savedGenRef.current, gen);
@@ -2990,7 +3017,7 @@ export default function WeeklySchedulePage({
     const gen = editGenRef.current;
     if (savedGenRef.current !== gen) return { revision: (await ensureSavedForSwap()).revision ?? null, gen };
     await flushSavesForSwap();
-    return { revision: savedStateRevision() ?? null, gen };
+    return { revision: currentStateRevision() ?? null, gen };
   }, [ensureSavedForSwap, flushSavesForSwap]);
   const reloadCalendarFromServer = useCallback(async () => {
     hydrateStateSlicesRef.current(normalizeAppState(await getState()).state);
@@ -3032,7 +3059,7 @@ export default function WeeklySchedulePage({
     resume: resumeCalendarSaving,
     hasUnsavedEdits: () => savedGenRef.current !== editGenRef.current,
     flushSaves: flushSavesForSwap,
-    savedRevision: savedStateRevision,
+    savedRevision: currentStateRevision,
     ensureSaved: ensureSavedForSwap,
     reload: reloadCalendarFromServer,
     hydrate: (state) => {
@@ -3390,10 +3417,76 @@ export default function WeeklySchedulePage({
     setSolverSettings(settings);
   };
 
+  // Every change of the holiday list goes through here. A date that becomes
+  // or stops being a holiday switches to another day's plan, and its shifts
+  // no longer fit (normalizeAppState and the server drop them): they are
+  // removed only after a confirmation and an automatic backup, from the
+  // screen too, so it shows what is saved. Resolves to false when the user
+  // cancels; throws when the change cannot be applied.
+  const changeHolidays = async (update: (previous: Holiday[]) => Holiday[]) => {
+    // One at a time, and not while a restore, import or plan replaces the
+    // calendar: the list a change computes is applied after its confirmation
+    // and backup, and would undo a change made meanwhile (a loaded list
+    // arriving while the dialog is open).
+    if (holidayChangePendingRef.current || calendarTransitionRef.current) {
+      throw new Error(HOLIDAY_CHANGE_BUSY_MESSAGE);
+    }
+    const current = buildCurrentStatePayload();
+    if (!current) throw new Error("The current calendar cannot be saved. Fix its template first.");
+    const nextHolidays = update(holidays);
+    const dropped = findAssignmentsDroppedByHolidayChange(current, nextHolidays);
+    if (dropped.length === 0) {
+      setHolidays(nextHolidays);
+      return true;
+    }
+    if (!hasLoaded || loadedUserId !== currentUser.username || saveError) {
+      // Same guard as the shifts file import: before the load the screen is
+      // not the user's calendar, and with a failed save pending the change
+      // would not be stored after the backup replaced the previous one.
+      throw new Error(saveError ?? "Wait until the calendar has loaded before changing holidays.");
+    }
+    holidayChangePendingRef.current = true;
+    try {
+      const replacedCount = calendarReplacedCountRef.current;
+      if (!(await confirmHolidayChange(dropped))) return false;
+      // A plan applied while the dialog was open (a run applied when it
+      // finished) replaced the calendar the dialog counted.
+      if (calendarTransitionRef.current || calendarReplacedCountRef.current !== replacedCount) {
+        throw new Error(HOLIDAY_CHANGE_BUSY_MESSAGE);
+      }
+      // The screen is blocked until the change is applied, so nothing
+      // (another holiday change, a shift dragged onto the day) changes the
+      // calendar between the backup and the change.
+      pauseCalendarSaving();
+      try {
+        await backupBeforeHolidayChange(current);
+        // The screen keeps exactly what the next save stores.
+        setAssignmentMap((prev) =>
+          buildAssignmentMap(
+            normalizeAppState({
+              ...current,
+              holidays: nextHolidays,
+              assignments: Array.from(prev.values()).flat(),
+            }).state.assignments,
+          ),
+        );
+        setHolidays(nextHolidays);
+      } finally {
+        resumeCalendarSaving();
+      }
+      return true;
+    } finally {
+      holidayChangePendingRef.current = false;
+    }
+  };
+  // Loading holidays applies the list as it is once the request returns.
+  const changeHolidaysRef = useRef(changeHolidays);
+  changeHolidaysRef.current = changeHolidays;
+
   const handleAddHoliday = (holiday: Holiday) => {
     const trimmedName = holiday.name.trim();
-    if (!holiday.dateISO || !trimmedName) return;
-    setHolidays((prev) => {
+    if (!holiday.dateISO || !trimmedName) return Promise.resolve(false);
+    return changeHolidays((prev) => {
       const exists = prev.some(
         (item) => item.dateISO === holiday.dateISO && item.name === trimmedName,
       );
@@ -3401,13 +3494,12 @@ export default function WeeklySchedulePage({
       return [...prev, { dateISO: holiday.dateISO, name: trimmedName, source: "manual" }];
     });
   };
-  const handleRemoveHoliday = (holiday: Holiday) => {
-    setHolidays((prev) =>
+  const handleRemoveHoliday = (holiday: Holiday) =>
+    changeHolidays((prev) =>
       prev.filter(
         (item) => !(item.dateISO === holiday.dateISO && item.name === holiday.name),
       ),
     );
-  };
   const handleChangeHolidayCountry = (countryCode: string) => {
     setHolidayCountry(countryCode);
     // A region belongs to one country ("DE-NW"): another country starts without.
@@ -3417,7 +3509,8 @@ export default function WeeklySchedulePage({
   // without a region those of every region) and replaces this year's
   // previously loaded ones; holidays added by hand stay. Already loaded
   // lists are never rewritten when only the region changes; the user loads
-  // again. Resolves to how many holidays were added.
+  // again. Resolves to how many holidays were added, or null when the user
+  // cancelled removing the shifts the new list no longer fits.
   const handleFetchHolidays = async (countryCode: string, year: number, region?: string) => {
     const normalizedCountry = countryCode.trim().toUpperCase();
     const response = await fetch(
@@ -3429,10 +3522,14 @@ export default function WeeklySchedulePage({
     const data = (await response.json()) as NagerPublicHoliday[];
     const entries = Array.isArray(data) ? data : [];
     const regionForCountry = holidayRegionForCountry(normalizedCountry, region);
-    // The count comes from the list as shown; the update applies to the
-    // latest list (a holiday added while loading is kept).
-    const { added } = mergeLoadedHolidays(holidays, entries, year, regionForCountry);
-    setHolidays((prev) => mergeLoadedHolidays(prev, entries, year, regionForCountry).holidays);
+    // Merged into the latest list (a holiday added while loading is kept).
+    let added = 0;
+    const applied = await changeHolidaysRef.current((prev) => {
+      const merged = mergeLoadedHolidays(prev, entries, year, regionForCountry);
+      added = merged.added;
+      return merged.holidays;
+    });
+    if (!applied) return null;
     setHolidayCountry(normalizedCountry);
     setHolidayYear(year);
     return added;
@@ -3450,7 +3547,7 @@ export default function WeeklySchedulePage({
         openSlotsCount > 0 && "cursor-pointer hover:bg-yellow-100 dark:hover:bg-yellow-900/60",
       )}
     >
-      {openSlotsCount} Open Slots
+      {openSlotsCount} open slot{openSlotsCount === 1 ? "" : "s"}
     </button>
   );
   const ruleViolationsCount = ruleViolations.length;
@@ -3484,7 +3581,7 @@ export default function WeeklySchedulePage({
               "bg-red-50 text-red-700 ring-red-200 hover:bg-red-100 dark:bg-red-900/40 dark:text-red-200 dark:ring-red-500/40",
             )}
           >
-            {ruleViolationsCount} Rule Violations
+            {ruleViolationsCount} rule violation{ruleViolationsCount === 1 ? "" : "s"}
             <span
               role="button"
               tabIndex={0}
@@ -3528,10 +3625,8 @@ export default function WeeklySchedulePage({
                         // On a phone, show the violation's day first;
                         // scrollToAssignmentKeys polls via rAF until the
                         // pill appears in the DOM (up to 1s).
-                        const targetDateISO = violation.assignmentKeys
-                          .map(extractDateFromAssignmentKey)
-                          .find((d): d is string => d !== null);
-                        if (targetDateISO) revealDate(targetDateISO);
+                        const target = violationTarget(violation.assignmentKeys);
+                        if (target) revealDate(target.dateISO);
                         scrollToAssignmentKeys(violation.assignmentKeys);
                       }}
                       onMouseEnter={() => setHoveredRuleViolationId(violation.id)}
@@ -3590,7 +3685,7 @@ export default function WeeklySchedulePage({
             )}
             aria-expanded={nonConsecutiveShiftsOpen}
           >
-            {nonConsecutiveShiftsCount} Split Shift{nonConsecutiveShiftsCount !== 1 ? "s" : ""}
+            {nonConsecutiveShiftsCount} split shift{nonConsecutiveShiftsCount === 1 ? "" : "s"}
           </button>
         </div>
         {nonConsecutiveShiftsOpen
@@ -3645,6 +3740,7 @@ export default function WeeklySchedulePage({
         type="button"
         role="switch"
         aria-checked={isWeekPublished}
+        aria-label={`Publish week ${formatRangeLabel(weekStart, weekEndInclusive)}`}
         onClick={() => handleSetWeekPublished(currentWeekStartISO, !isWeekPublished)}
         className={cx(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
@@ -3753,14 +3849,18 @@ export default function WeeklySchedulePage({
       />
 
       {calendarTransition && (
-        <div role="status" aria-live="polite" className="fixed inset-0 z-[2000] flex items-center justify-center bg-white/70 text-sm font-medium text-slate-700 dark:bg-slate-950/70 dark:text-slate-200">
-          {pdfExporting ? pdfProgress ? `Exporting ${pdfProgress.current} of ${pdfProgress.total} weeks…` : "Saving calendar for export…" : "Updating calendar…"}
-        </div>
+        <CalendarTransitionOverlay
+          message={
+            pdfExporting ? pdfProgress ? formatPdfProgress(pdfProgress) : "Saving calendar for export…" : "Updating calendar…"
+          }
+          onCancel={pdfExporting && pdfProgress ? () => pdfAbortRef.current?.abort() : undefined}
+        />
       )}
       {saveError && (
         <div role="alert" className="border-b border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
           <p>{saveError}</p>
-          <p>Your local changes remain on screen. Save a snapshot before reloading if you want to keep them.</p>
+          {/* After a failed load there are no local changes to keep. */}
+          {hasLoaded && <p>Your local changes remain on screen. Save a snapshot before reloading if you want to keep them.</p>}
           <div className="mt-2 flex gap-3">
             {hasLoaded && <button type="button" className="underline" onClick={() => { retryStateSaves(); setSaveError(null); }}>Retry saving</button>}
             <button type="button" className="underline" onClick={() => window.location.reload()}>Reload saved calendar</button>
@@ -3827,8 +3927,14 @@ export default function WeeklySchedulePage({
 
       {viewMode === "calendar" ? (
         <>
-          {planScope === "me" && !myPlanDataReady ? (
-            <CalendarPlaceholder onScopeChange={setPlanScope} isMobile={isMobile} />
+          {!calendarReady ? (
+            <CalendarPlaceholder
+              scope={planScope}
+              onScopeChange={setPlanScope}
+              isMobile={isMobile}
+              loadFailed={loadFailed}
+              onReload={() => window.location.reload()}
+            />
           ) : planScope === "me" ? (
             <MyPlanView
               scheduleRows={scheduleRows}
@@ -3838,6 +3944,7 @@ export default function WeeklySchedulePage({
               holidays={holidays}
               publishedWeekStartISOs={publishedWeekStartISOs}
               solverSettings={solverSettings}
+              timeZone={planZone}
               anchorDate={anchorDate}
               onAnchorDateChange={setAnchorDate}
               isMobile={isMobile}
@@ -3887,6 +3994,7 @@ export default function WeeklySchedulePage({
                 </TeamPlanHeader>
               }
               getClinicianName={(id) => clinicianNameById.get(id) ?? "Unknown"}
+              nameLabels={nameLabels}
               getIsQualified={(clinicianId, rowId) => {
                 const scheduleRow = rowById.get(rowId);
                 const classId =
@@ -3905,6 +4013,7 @@ export default function WeeklySchedulePage({
               onRemoveAssignment={handleRemoveAssignment}
               onToggleAssignmentLock={handleToggleAssignmentLock}
               onMoveWithinDay={handleMoveWithinDay}
+              onMoveRestDay={handleMoveRestDay}
               onFindSwap={openSwapForAssignment}
               onFindCover={openSwapForSlot}
             />
@@ -3989,8 +4098,10 @@ export default function WeeklySchedulePage({
             onRemoveAssignment={handleRemoveAssignment}
               onToggleAssignmentLock={handleToggleAssignmentLock}
             onMoveWithinDay={handleMoveWithinDay}
+            onMoveRestDay={handleMoveRestDay}
             onCellClick={() => {}}
             personPillStyles={personPillStyles}
+            nameLabels={nameLabels}
             myClinicianId={outlinedClinicianId}
             locationRowTints={locationRowTints}
             onFindSwap={openSwapForAssignment}
@@ -3998,11 +4109,12 @@ export default function WeeklySchedulePage({
           />
           )}
           {/* Planning panels belong to the team plan: hidden (but kept
-              mounted, so their inputs survive) while My plan is shown. */}
+              mounted, so their inputs survive) while My plan is shown or
+              the calendar is still loading. */}
           <div
             className={cx(
               "mx-auto w-full max-w-7xl px-4 pb-8 sm:px-6 sm:pb-10",
-              planScope === "me" && "hidden",
+              (planScope === "me" || !calendarReady) && "hidden",
             )}
           >
             <div className="flex flex-col gap-6">
@@ -4105,7 +4217,7 @@ export default function WeeklySchedulePage({
                       Export
                     </div>
                     <div className="text-sm text-slate-600 dark:text-slate-300">
-                      Download PDFs, iCal feeds, or shareable web links for published weeks.
+                      Print weeks as PDF (drafts are marked), or share published weeks as iCal and web links.
                     </div>
                     <button
                       type="button"
@@ -4128,6 +4240,17 @@ export default function WeeklySchedulePage({
               </div>
             </div>
           </div>
+        </>
+      ) : viewMode === "settings" && !calendarReady ? (
+        <>
+          {/* Settings edit the calendar: not the demo one shown until it loads. */}
+          <CalendarPlaceholder
+            scope="settings"
+            isMobile={isMobile}
+            loadFailed={loadFailed}
+            onReload={() => window.location.reload()}
+          />
+          <AdminUsersPanel isAdmin={currentUser.role === "admin"} />
         </>
       ) : viewMode === "settings" ? (
         <>
@@ -4273,7 +4396,7 @@ export default function WeeklySchedulePage({
               );
             }}
             onExportScheduleSnapshot={handleExportScheduleSnapshot}
-            onImportScheduleSnapshot={handleImportScheduleSnapshot}
+            onPrepareShiftsFileImport={handlePrepareShiftsFileImport}
           />
           <AdminUsersPanel
             isAdmin={currentUser.role === "admin"}
@@ -4310,6 +4433,7 @@ export default function WeeklySchedulePage({
         clinicians={clinicians}
         assignments={renderedAssignmentList}
         weeklyTemplate={weeklyTemplate}
+        timeZone={planZone}
         scheduleRows={scheduleRows}
         isDark={isDark}
       />
@@ -4385,8 +4509,9 @@ export default function WeeklySchedulePage({
         clinicians={clinicians.map((clinician) => ({ id: clinician.id, name: clinician.name }))}
         defaultStartISO={toISODate(weekStart)}
         defaultEndISO={toISODate(weekEndInclusive)}
-        onDownloadAll={handleDownloadIcalAll}
-        onDownloadClinician={handleDownloadIcalClinician}
+        timeZone={planZone}
+        onDownloadAll={handleDownloadIcal}
+        onDownloadClinician={(clinicianId, options) => handleDownloadIcal({ ...options, clinicianId })}
         publishStatus={icalPublishStatus}
         publishLoading={icalPublishLoading}
         publishError={icalPublishError}
@@ -4476,6 +4601,8 @@ export default function WeeklySchedulePage({
           </div>
         </div>
       ) : null}
+
+      <Toast toast={teamToast} onDismiss={dismissTeamNotice} isMobile={isMobile} />
 
       <ViolationLinesOverlay
         violations={visibleViolationsForLines}

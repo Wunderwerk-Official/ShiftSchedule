@@ -25,7 +25,8 @@ from .auth import _get_current_user
 from .account_lifecycle import authenticated_account_connection
 from .db import _utcnow_iso
 from .models import AppState, UserPublic
-from .state import _load_state, _normalize_state, _save_state
+from .publication import _revive_clinician_publications
+from .state import _load_state, _normalize_state, _parse_stored_state, _save_state
 
 router = APIRouter()
 
@@ -35,6 +36,14 @@ MAX_NAMED_SNAPSHOTS_PER_USER = 30
 SNAPSHOT_NAME_MAX_CHARS = 100
 AUTO_BACKUP_NAME = "Auto-backup before restore"
 IMPORT_BACKUP_NAME = "Auto-backup before shifts file import"
+HOLIDAY_CHANGE_BACKUP_NAME = "Auto-backup before holiday change"
+LOAD_COPY_BACKUP_NAME = "Auto-backup before loading a copy"
+BackupReason = Literal["shifts_file_import", "holiday_change", "load_copy"]
+_BACKUP_NAME_BY_REASON = {
+    "shifts_file_import": IMPORT_BACKUP_NAME,
+    "holiday_change": HOLIDAY_CHANGE_BACKUP_NAME,
+    "load_copy": LOAD_COPY_BACKUP_NAME,
+}
 
 
 class SnapshotMeta(BaseModel):
@@ -67,6 +76,14 @@ class SnapshotBackupRequest(BaseModel):
     # The calendar as the client shows it, before it is replaced (same
     # payload as its auto-save; the stored row can lag by the debounce).
     state: AppState
+    # What replaces it (names the backup): a shifts file import, a holiday
+    # change that removes the shifts no longer fitting their day, or an
+    # admin loading a copy of another account's calendar.
+    reason: BackupReason = "shifts_file_import"
+    # The revision the client's calendar is based on. When the stored
+    # calendar has moved on (another tab), the backup is refused, so a
+    # replacement that would be refused anyway keeps the previous backup.
+    expectedRevision: Optional[str] = None
 
 
 def _clean_name(raw: str) -> str:
@@ -120,10 +137,23 @@ def create_import_backup(
     current_user: UserPublic = Depends(_get_current_user),
 ):
     """Save the calendar into the reserved auto-backup slot before a shifts
-    file replaces its shifts (like a restore does). It does not count against
-    the named-snapshot limit and can be restored from Calendar snapshots."""
+    file or a holiday change replaces its shifts (like a restore does). It
+    does not count against the named-snapshot limit and can be restored from
+    Calendar snapshots."""
     with authenticated_account_connection(current_user) as conn:
-        _write_auto_backup(conn, current_user.username, payload.state, name=IMPORT_BACKUP_NAME)
+        if (
+            payload.expectedRevision is not None
+            and payload.expectedRevision != _load_state(current_user.username, connection=conn).revision
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "state_changed",
+                "message": "The calendar changed in another tab or operation. "
+                           "Reload the current calendar and try again.",
+            })
+        _write_auto_backup(
+            conn, current_user.username, payload.state,
+            name=_BACKUP_NAME_BY_REASON[payload.reason],
+        )
         row = conn.execute(
             f"SELECT {_META_COLUMNS} FROM calendar_snapshots WHERE username = ? AND kind = 'auto_backup'",
             (current_user.username,),
@@ -207,10 +237,11 @@ def restore_snapshot(
         backup_basis = payload.currentState if payload.currentState is not None else live_state
         # Validate before replacing the one reserved backup; any write failure
         # rolls back both writes, preserving the previous calendar and backup.
-        restored = AppState.model_validate(json.loads(row["data"]))
+        restored = _parse_stored_state(json.loads(row["data"]))
         normalized, _ = _normalize_state(restored)
         _write_auto_backup(conn, username, backup_basis)
         _save_state(normalized, username, connection=conn)
+        _revive_clinician_publications(conn, username, (c.id for c in normalized.clinicians))
     return normalized
 
 

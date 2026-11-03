@@ -1,5 +1,6 @@
 import { saveTestState } from "./state-fixture";
 import { test, expect, Page, TestInfo } from "@playwright/test";
+import { applyNewestRun } from "./utils/run-inbox";
 
 /**
  * Full Workflow E2E Test - UI-ONLY VERSION
@@ -425,14 +426,18 @@ async function runSolver(page: Page) {
     console.log(`    -> Clicking "Run" button to start solver`);
     await runBtn.click();
 
-    // The current UI applies the solution automatically when the solve
-    // completes ("Apply Solution" only exists while aborting mid-run), so
-    // wait for solver-generated assignment pills to appear in the grid.
+    // A finished run waits in the run inbox; nothing reaches the calendar
+    // until it is applied (since v1.53). applyNewestRun accepts the partial
+    // draft confirmation and closes the inbox so the grid and week
+    // navigation are usable again.
+    console.log(`    -> Waiting for the run to land in the run inbox, then applying it`);
+    const confirms = await applyNewestRun(page, { timeout: 120000 });
+    console.log(`    -> Accepted ${confirms.length} apply confirmation(s)`);
     console.log(`    -> Waiting for solver assignments to appear in the grid`);
     await page
       .locator("[data-assignment-key]")
       .first()
-      .waitFor({ state: "attached", timeout: 120000 });
+      .waitFor({ state: "attached", timeout: 30000 });
 
     // Close the solver dashboard/overlay if it is open so the grid is usable.
     const overlayBack = page.locator('button:has-text("← Back")');

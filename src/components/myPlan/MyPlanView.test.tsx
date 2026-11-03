@@ -1,5 +1,5 @@
 import { fireEvent, screen, within } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { freezeClock, renderPlan } from "./testHarness";
 
 freezeClock();
@@ -24,6 +24,14 @@ describe("MyPlanView", () => {
     expect(screen.getByRole("group", { name: "Day, time runs down" })).toBeInTheDocument();
     // The chip stays mounted, so it keeps focus.
     expect(document.activeElement).toBe(nextUp);
+  });
+
+  it("counts down in the plan's zone when the browser is set to another zone", () => {
+    vi.stubEnv("TZ", "America/New_York"); // 08:32 there; the plan keeps Berlin time
+    renderPlan({ prefs: { clinicianId: "lh" } });
+    expect(
+      screen.getByRole("button", { name: /^Next up: Nachtdienst · today 17:00 – Thu 08:00 · Klinikum Mitte, in 2 h 28 min/ }),
+    ).toBeInTheDocument();
   });
 
   it("switches range and remembers the orientation per range", () => {

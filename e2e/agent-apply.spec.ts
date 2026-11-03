@@ -10,6 +10,8 @@ async function calendar(page: Page, options: {
   holdFirstSave?: boolean; confirmations?: boolean; emptyAbort?: boolean; saveConflict?: boolean;
   backgroundRun?: boolean;
   runError?: number; abortFails?: "http" | "force_kill_error"; changeAfterPdf?: boolean;
+  /** PDF requests from this one on (1-based) never answer, like a render that hangs. */
+  holdPdfFrom?: number;
 } = {}) {
   await mockProgressStream(page);
   let state = { ...structuredClone(defaultState), assignments: [], revision: "r0" } as AppState;
@@ -67,6 +69,9 @@ async function calendar(page: Page, options: {
     }
     if (url.pathname.includes("/v1/pdf/")) {
       pdfCalls.push(url.searchParams);
+      if (options.holdPdfFrom !== undefined && pdfCalls.length >= options.holdPdfFrom) {
+        return new Promise<void>(() => {});
+      }
       if (url.searchParams.get("expected_revision") !== state.revision) {
         return route.fulfill({ status: 409, json: { detail: "The calendar changed during export. Reload and start a new export." } });
       }
@@ -246,6 +251,62 @@ test("PDF export refuses unsaved conflicts", async ({ page }) => {
   await page.getByRole("button", { name: "Export PDF", exact: true }).click();
   await expect(page.getByText("The calendar changed in another window. Reload before saving.").last()).toBeVisible();
   expect(api.pdfCalls).toHaveLength(0);
+});
+
+test("PDF export from a mid-week date starts on its Monday and names the weeks it contains", async ({ page }) => {
+  const api = await calendar(page);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Open Export", exact: true }).click();
+  // Wednesday 07.01.2026, three weeks, one file.
+  await page.getByText("Start week (DD.MM.YYYY)").locator("..").getByRole("button", { name: "05.01.2026" }).click();
+  await page.getByRole("button", { name: "7", exact: true }).click();
+  await page.getByRole("button", { name: "1", exact: true }).click();
+  await page.getByRole("button", { name: "3", exact: true }).click();
+  const download = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export PDF", exact: true }).click();
+  expect((await download).suggestedFilename()).toBe("shift-planner-2026-01-05-to-2026-01-25.pdf");
+  expect(api.pdfCalls).toHaveLength(1);
+  expect(api.pdfCalls[0].get("start")).toBe("2026-01-05");
+  expect(api.pdfCalls[0].get("weeks")).toBe("3");
+});
+
+test("Cancel stops a combined PDF export at once, without a counter that never moves", async ({ page }) => {
+  const api = await calendar(page, { holdPdfFrom: 1 });
+  const aborted: string[] = [];
+  page.on("requestfailed", (request) => {
+    if (request.url().includes("/v1/pdf/")) aborted.push(request.failure()?.errorText ?? "");
+  });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Open Export", exact: true }).click();
+  await page.getByRole("button", { name: "1", exact: true }).click();
+  await page.getByRole("button", { name: "2", exact: true }).click();
+  await page.getByRole("button", { name: "Export PDF", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Creating PDF for 2 weeks…" })).toBeVisible();
+  await expect(page.getByText(/0 of 2/)).toHaveCount(0);
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByRole("status").filter({ hasText: "Creating PDF" })).toHaveCount(0);
+  await expect.poll(() => aborted.length).toBe(1);
+  expect(api.pdfCalls).toHaveLength(1);
+  // The dialog is usable again; nothing is reported as failed.
+  await expect(page.getByRole("button", { name: "Export PDF", exact: true })).toBeEnabled();
+  await expect(page.getByText(/Export stopped/)).toHaveCount(0);
+});
+
+test("Cancel stops individual PDF files and reports how many were downloaded", async ({ page }) => {
+  const api = await calendar(page, { holdPdfFrom: 2 });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Open Export", exact: true }).click();
+  await page.getByRole("button", { name: "Export PDF as individual files", exact: true }).click();
+  await page.getByRole("button", { name: "1", exact: true }).click();
+  await page.getByRole("button", { name: "3", exact: true }).click();
+  const firstFile = page.waitForEvent("download");
+  await page.getByRole("button", { name: "Export PDF", exact: true }).click();
+  expect((await firstFile).suggestedFilename()).toBe("shift-planner-2026-01-05.pdf");
+  await expect(page.getByRole("status").filter({ hasText: "Exporting 2 of 3 weeks…" })).toBeVisible();
+  await page.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(page.getByText("1 of 3 weeks downloaded. Export cancelled.")).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: "Exporting" })).toHaveCount(0);
+  expect(api.pdfCalls).toHaveLength(2);
 });
 
 test("individual PDF batch keeps one revision and stops clearly after an external edit", async ({ page }) => {

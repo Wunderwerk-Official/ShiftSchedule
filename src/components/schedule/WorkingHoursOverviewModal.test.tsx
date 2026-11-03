@@ -209,6 +209,7 @@ describe("WorkingHoursOverviewModal — year view", () => {
               { id: "s", rowId: "day", dateISO: toISODate(sunday), clinicianId: "tz" },
             ]}
             weeklyTemplate={template}
+            timeZone="Europe/Berlin"
           />,
         );
         fireEvent.click(within(screen.getByRole("group", { name: "View" })).getByRole("button", { name: "Year" }));
