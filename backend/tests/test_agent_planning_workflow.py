@@ -58,7 +58,7 @@ def test_cached_inspection_can_never_authorize_an_illegal_assignment():
 def paginated_rescue_fixture(*, repair_at_tail=True):
     # Sixteen impossible positions sort before a seventeenth repairable one.
     # B ranks above A: without Bob, moving Alice up from B is no strict
-    # improvement either (v1.82), so the day really has no rescue.
+    # improvement either (v1.84), so the day really has no rescue.
     sections = [f"impossible-{i:02}" for i in range(16)] + ["B", "A"]
     clinicians = [make_clinician("a", "Alice", ["A", "B"], working_hours_per_week=40)]
     if repair_at_tail:
@@ -285,7 +285,7 @@ def test_shallow_rescue_reports_search_scope_instead_of_infeasibility():
 
 
 def test_rescue_moves_a_person_up_to_a_higher_section_without_a_substitute():
-    """v1.82, strict section order: nobody can take over Alice's B slot, but
+    """v1.84, strict section order: nobody can take over Alice's B slot, but
     A ranks above B, so Alice moving up is an improvement that leaves B
     open (a 2-move batch, leaves_open)."""
     ex = chain_fixture()
@@ -457,7 +457,7 @@ def test_full_slot_candidate_list_does_not_claim_replacements_are_impossible():
 
 @pytest.mark.parametrize("profile", ["classic", "balanced"])
 def test_day_block_candidates_follow_the_strict_section_order(profile):
-    """v1.82: the selected slot X ranks below A. P's block also reaches A's
+    """v1.84: the selected slot X ranks below A. P's block also reaches A's
     open slot, Q's does not; Q is otherwise first (P's block misses the
     daily minimum by stretching into a short stint, Q's meets it). Both
     profiles list P first: A ranks above X's section."""
@@ -475,7 +475,7 @@ def test_day_block_candidates_follow_the_strict_section_order(profile):
 
 
 def test_classic_candidates_keep_the_day_order_inside_lower_sections():
-    """Review of v1.82: reaching more or other LOWER sections does not move a
+    """Review of v1.84: reaching more or other LOWER sections does not move a
     block ahead; the day-length and fairness order decides (ranking every
     reached section first cost short days in the first-offer baseline)."""
     clinicians = [make_clinician("p", "P (A+B)", ["A", "B"], working_hours_per_week=40),
@@ -492,7 +492,7 @@ def test_classic_candidates_keep_the_day_order_inside_lower_sections():
     # which ranks above C: both lie below the selected slot's section A.
     assert [c["clinicianId"] for c in out["candidates"]] == ["Q (A+C)", "P (A+B)"]
 def test_rescue_in_distribute_all_mode_moves_a_person_off_a_slot_above_its_target():
-    """Review of v1.82: when the vacated slot keeps its target without the
+    """Review of v1.84: when the vacated slot keeps its target without the
     person (distribute-all headroom), the 2-move rescue opens nothing: it is
     offered whatever the ranks are, and without leaves_open."""
     state = section_state([make_clinician("a", "Alice", ["A", "B"], working_hours_per_week=40),
@@ -509,7 +509,7 @@ def test_rescue_in_distribute_all_mode_moves_a_person_off_a_slot_above_its_targe
 
 
 def test_two_sections_of_one_day_are_worked_top_section_first():
-    """Review of v1.82: across two ordinary sections the section rank
+    """Review of v1.84: across two ordinary sections the section rank
     decides before scarcity and start time, in the tools, the open-slot list
     and the direct strategy's digest."""
     from backend.agent import direct
@@ -560,7 +560,7 @@ def upward_trap_fixture(*, second_b_holder):
 
 @pytest.mark.parametrize("second_b_holder", [False, True])
 def test_substitute_rescue_wins_over_upward_moves(second_b_holder):
-    """Review of v1.82: upward 2-moves (Cara, Dan) are offered only when no
+    """Review of v1.84: upward 2-moves (Cara, Dan) are offered only when no
     rescue with a substitute exists, and they never use up the two offers
     per slot, so Eve -> S with Finn on C1 is found and comes first."""
     ex = upward_trap_fixture(second_b_holder=second_b_holder)
@@ -581,7 +581,7 @@ def test_final_audit_takes_the_substitute_rescue_over_the_upward_move():
 
 
 def test_final_audit_fills_the_higher_section_first_when_its_blocks_are_apart():
-    """Review of v1.82: A's blocks are not next to each other in the
+    """Review of v1.84: A's blocks are not next to each other in the
     template (A-mon, B-tue, A-tue), so the instances of Tuesday come in block
     order B1, B2, A. The final audit still fills A first: [0, 2], not [1, 0]."""
     from threading import Event
@@ -609,7 +609,7 @@ def test_final_audit_fills_the_higher_section_first_when_its_blocks_are_apart():
 
 
 def test_classic_candidates_inside_one_section_keep_the_fairness_order():
-    """Review of v1.82: inside one section the number of filled positions does
+    """Review of v1.84: inside one section the number of filled positions does
     not decide first. Quinn (YTD 0 %) has a shorter block that meets her
     daily minimum; it beats Pat's longer block (YTD 140 %)."""
     from datetime import date, timedelta
@@ -634,7 +634,7 @@ def test_classic_candidates_inside_one_section_keep_the_fairness_order():
 
 
 def test_upward_rescues_open_the_lowest_ranked_slot_first():
-    """Review of v1.82: two people can move up to S (A) and nobody can take
+    """Review of v1.84: two people can move up to S (A) and nobody can take
     over their slots. Cara's move opens B1 (rank 2), Dan's opens C1 (rank 3):
     Dan's leaves the better plan, so it comes first, also for the final
     audit, which applies the first improving offer."""
@@ -658,7 +658,7 @@ def test_upward_rescues_open_the_lowest_ranked_slot_first():
 
 
 def test_rescue_staffs_a_higher_section_before_a_stuck_on_call_slot():
-    """Second review of v1.82: S > W > V > ON with on-call ranked last. S and
+    """Second review of v1.84: S > W > V > ON with on-call ranked last. S and
     ON are stuck, and Quinn is the only substitute for either rescue. The
     processing order put ON's rescue first, so the final audit left V open
     ([0, 0, 1, 0]). Stuck slots now go by section rank and offers by
@@ -689,7 +689,7 @@ def test_rescue_staffs_a_higher_section_before_a_stuck_on_call_slot():
 
 
 def test_headroom_move_competes_with_a_substitute_rescue():
-    """Second review of v1.82, distribute-all mode: Alice and Bob are on B
+    """Second review of v1.84, distribute-all mode: Alice and Bob are on B
     (target 1), A is stuck, Cara (B) is free. Moving Alice to A alone opens
     nothing and keeps Cara's short day away; it was hidden behind the
     substitute rescue. Both are offered now, the better plan first."""
@@ -715,7 +715,7 @@ def test_headroom_move_competes_with_a_substitute_rescue():
 
 
 def test_move_without_a_substitute_is_offered_when_the_substitute_fails_the_apply_check():
-    """Second review of v1.82: B is over its capacity (Bob fixed, Alice from
+    """Second review of v1.84: B is over its capacity (Bob fixed, Alice from
     the plan), so Cara's substitute rescue passes the hard rules but not the
     apply check. It no longer hides Alice's move to A, which needs no
     substitute; the day was reported complete with A open."""

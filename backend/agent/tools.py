@@ -677,7 +677,7 @@ class PlanToolExecutor:
         violations, weekly hours deviation minutes, -(preference fits +
         assignments)). The section vector is compared entry by entry from the
         top section, so one open position in a higher section is worse than
-        any number lower down (v1.82, strict section order); the count after
+        any number lower down (v1.84, strict section order); the count after
         it is its sum and only shown.
 
         Hard violations are the TOP tier so the agent is rewarded for
@@ -1596,7 +1596,7 @@ class PlanToolExecutor:
         then on-call/duty slots (their rest-day rules constrain the
         NEIGHBOURING days, so they must be fixed before the day fills up),
         then the section order (the admin's own ranking of what matters,
-        strict since v1.82), scarcest first within one section.
+        strict since v1.84), scarcest first within one section.
         Eligibility = number of clinicians who could legally take the slot
         against the CURRENT plan (the exact apply_moves gate)."""
         counts = self._counts_by_instance(self._working_list())
@@ -1687,7 +1687,7 @@ class PlanToolExecutor:
         out check is explicitly inconclusive, never evidence of completion.
         """
         counts = self._counts_by_instance(self._working_list())
-        # Strict section order (v1.82): the final audit and the day-end nudge
+        # Strict section order (v1.84): the final audit and the day-end nudge
         # fill the highest-ranked open slot first (on-call at its own rank).
         # Template block order could put a lower section first when a
         # section's blocks are not next to each other.
@@ -1965,7 +1965,7 @@ class PlanToolExecutor:
         clinician on the stuck slot. Only fully gate-validated batches that
         improve the plan are offered — a substitute covers the vacated slot,
         or, without one, the vacated slot keeps its target or ranks lower in
-        the section order (v1.82) — and the model applies them verbatim.
+        the section order (v1.84) — and the model applies them verbatim.
 
         This is what a human planner does before declaring a hole
         unfillable: 'X could do it if Y took over X's afternoon.'"""
@@ -2109,7 +2109,7 @@ class PlanToolExecutor:
                     # its target without this person (then nothing opens).
                     opens = self._counts_by_instance(self._working_list()).get(vacated_key, 0) - 1 < vac_inst.target
                     if not opens or self.section_rank(vac_inst.slot_id) > self.section_rank(inst.slot_id):
-                        # Strict section order (v1.82): the stuck slot ranks
+                        # Strict section order (v1.84): the stuck slot ranks
                         # higher than the vacated one, so moving the person
                         # up improves the plan although the vacated slot
                         # stays open (trial already passed the hard rules).

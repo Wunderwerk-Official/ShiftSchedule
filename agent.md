@@ -992,7 +992,7 @@ planner works, with four extra tools (`get_day_priorities`,
    budgets, so placed last they starve.
 2. **One fresh conversation per day**: slots are worked in PROCESSING
    order (single-candidate slots, then on-call, then the section rank from
-   Settings → Section priority, strict since v1.82 — never
+   Settings → Section priority, strict since v1.84 — never
    chronologically); `suggest_day_blocks` auto-selects
    the most urgent slot and returns pre-validated contiguous work blocks
    ("Anschlussverwendung") per candidate, with `overloaded=true` marking
@@ -1008,7 +1008,7 @@ planner works, with four extra tools (`get_day_priorities`,
    `suggest_rescue_moves` searches depth-1 rearrangements of the agent's
    OWN placements (blocker out, substitute in, freed clinician onto the
    stuck slot) as pre-validated batches before anything is declared
-   unfillable; since v1.82 also without a substitute when none exists and
+   unfillable; since v1.84 also without a substitute when none exists and
    the vacated slot ranks lower in the section order (`leaves_open`).
 4. **Final review** (v1.40): once the day is complete,
    `suggest_balance_moves` re-reads it like a human planner — over-long
@@ -1022,11 +1022,11 @@ planner works, with four extra tools (`get_day_priorities`,
    after the last day and before the final range review, when required
    places are still open and the model placed something, CP-SAT re-solves
    the whole range from the current plan (open required places section by
-   section from the top of the section order, strictly since v1.82, then
+   section from the top of the section order, strictly since v1.84, then
    fewest changed assignments, at most 60) and applies the result only
    through the gate (valid batch preview that improves the best plan). It
    trades weekly hours between days of one ISO week, which no per-day step
-   can (see v1.80 and v1.82).
+   can (see v1.80 and v1.84).
 6. **Zero-progress guard**: an empty day-by-day result never reaches the
    client — it falls back to a fresh heuristic draft
    (`AGENT_FALLBACK_SEED`).
@@ -1052,7 +1052,7 @@ score: `(hard_violations_in_range, open_by_section_order,
 open_required_slots, short_days, soft_rule_violations,
 hours_deviation_minutes, -(preference fits [+ assignments in distribute
 mode]))`, compared tier by tier — no weight can trade a required slot
-against preference wins. Since v1.82 the open required positions are
+against preference wins. Since v1.84 the open required positions are
 compared per section in the Settings order first (`open_by_section_order`,
 entry by entry from the top section): one open position in a higher section
 is worse than any number lower down; the count after it only shows the sum. Hard violations (in the solve
@@ -1109,7 +1109,7 @@ Day-by-day-only tools (the day pipeline):
 |---|---|---|
 | `get_day_priorities` | One day's unfilled slots in PROCESSING order (single-candidate first, then on-call, then section rank, scarcest first) | slot_key, section, time, missing, section_rank (1 = top), on_call, eligible_count, eligible_preview (≤20 shown + more_open_slots) |
 | `suggest_day_blocks` | For one open slot (auto-selected when only dateISO is passed): up to 6 legal candidates, each with their best contiguous work block starting there (chain capped at the contract workday, ≤10h; a mandatory window only bounds it; a PREFERENCE window also steers the chain's position — past its edge only until the daily minimum is met). `single: true` = duty mode, no chaining | block (slot keys), block_hours, day_hours_after, meets_daily_minimum + `daily_min_hours`, overloaded (>16h), `window_fit` + `preferred_window` (wish fit of the whole block; classic sort: a block reaching an open slot of a section above the selected one first, then the daily minimum, then this), week_hours(_max), ytd_worked_pct; `day_complete` + unfillable_slots when nothing fillable remains |
-| `suggest_rescue_moves` | Depth-1 rearrangement search for eligible_count-0 slots: free a qualified person by moving ONE own placement, substitute covers the vacated slot | ready-to-apply 3-move batches; only when a stuck slot has none, 2-move batches without a substitute when the vacated slot ranks lower (`leaves_open`, v1.82) or keeps its target (distribute-all); truly_unfillable, not_searched (cap/time cut) |
+| `suggest_rescue_moves` | Depth-1 rearrangement search for eligible_count-0 slots: free a qualified person by moving ONE own placement, substitute covers the vacated slot | ready-to-apply 3-move batches; only when a stuck slot has none, 2-move batches without a substitute when the vacated slot ranks lower (`leaves_open`, v1.84) or keeps its target (distribute-all); truly_unfillable, not_searched (cap/time cut) |
 | `suggest_balance_moves` | End-of-day review: over-long days (> preferred span +1h) and mini-stint days (below daily minimum), with pre-validated handovers that keep both days contiguous | offers (batch, donor/receiver hours before→after, `receiver_overshoot_hours` ≤1h tagged trade-offs), overlong_days, mini_stint_days, balanced flag |
 
 Long tool searches (rescue, balance) check the run's wall-clock deadline
@@ -3422,7 +3422,7 @@ See [DEPLOY.md](DEPLOY.md) (full) and [NOTES.md](NOTES.md) (runbook). Summary:
   slot or both lower ones, the repair fills the two; (c) the preference
   among equally full plans is a weighted sum, not strictly lexicographic
   (two gaps one tier down can outweigh one gap at the top). (a)-(c) are done
-  in v1.82 (strict section order). Arena round 9
+  in v1.84 (strict section order). Arena round 9
   ran before this rule.
 - **Merge review fixes** (four checks of the merge with main v1.74–v1.78):
   - Main reason per open slot: an absent person counts once, under the
@@ -3827,7 +3827,7 @@ server checking every option against all planning rules.
   Playwright specs of `ci-cd.yml` (it lacked `holiday-region` and
   `swap-assistant`). Version 1.81 (81).
 
-## v1.82 — The section order is strict for the AI planner
+## v1.84 — The section order is strict for the AI planner
 
 - **Decision** (admin, 2026-11-02, after v1.80's "Not done (b)"): the order
   in Settings ("If not every slot can be filled, sections higher in this
@@ -4057,5 +4057,5 @@ server checking every option against all planning rules.
   positional tuple assertions in `test_agent_planning_workflow.py`,
   `test_agent_tools.py` and `test_fixed_planning_tasks.py` read fields by
   name now; `HelpView.test.tsx` (strict rule).
-- Deploy notes: no schema or data change. Version 1.82 (82). Arena reports
+- Deploy notes: no schema or data change. Version 1.84 (84). Arena reports
   compare within one `QUALITY_VERSION`.

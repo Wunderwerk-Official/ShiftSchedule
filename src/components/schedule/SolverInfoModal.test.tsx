@@ -225,7 +225,7 @@ it("marks a run without open issues and folds the explanation away while runs ex
   expect(toggle).toHaveAttribute("aria-expanded", "false");
   fireEvent.click(toggle);
   expect(screen.getByText(/the way an experienced human planner does/)).toBeVisible();
-  // v1.82: the strict section order, on-call at its place in it.
+  // v1.84: the strict section order, on-call at its place in it.
   expect(screen.getByText(/sections higher in the section priority\s+are staffed first \(on-call counts at its place in that list\), even if more slots stay open\s+in total/)).toBeVisible();
 });
 

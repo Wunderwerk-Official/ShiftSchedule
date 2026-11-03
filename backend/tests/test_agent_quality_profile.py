@@ -68,7 +68,7 @@ def test_duty_burden_penalizes_concentration_with_same_coverage():
 def test_default_profile_preserves_existing_quality_contract():
     ex = executor()
     assert ex.ctx.settings.agentQualityProfile == "classic"
-    # v1.82: the strict section vector is the first coverage tier.
+    # v1.84: the strict section vector is the first coverage tier.
     assert len(ex.best_quality) == 7
     assert ex.quality_fields[:3] == ("hard_violations_in_range", "open_by_section_order", "open_required_slots")
     assert "short_days" in ex.quality_dict(ex.best_quality)
@@ -131,7 +131,7 @@ def test_quality_version_marks_the_strict_section_order():
 
 
 def test_quality_tuple_keeps_the_section_vector_out_of_the_display_score():
-    """v1.82: encode_quality (chart only) leaves the vector out; its sum is
+    """v1.84: encode_quality (chart only) leaves the vector out; its sum is
     the open count after it. The legend is in the overview."""
     from backend.agent.quality import BALANCED_FIELDS
     from backend.agent.tools import PlanToolExecutor

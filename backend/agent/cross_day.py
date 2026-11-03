@@ -18,7 +18,7 @@ higher-ranked position, fixed entries or rule compliance.
 
 The section order is strict (Settings → Section priority when
 short-staffed: "the AI staffs sections higher in this list first, even if
-that leaves more slots open in total"; v1.82): one open position
+that leaves more slots open in total"; v1.84): one open position
 in a higher section is worse than any number lower down, also when more
 positions stay open in total. The CP-SAT search optimizes the open
 positions section by section from the top, then the number of changes, and

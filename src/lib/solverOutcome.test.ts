@@ -165,7 +165,7 @@ describe("runStateLabel", () => {
       result_producer: "heuristic_v2", fallback: { producer: "heuristic_v2", model_stop_reason: "budget_exhausted" } };
     expect(runStateLabel(unstarted)).toBe("not started: this account's AI budget is used up");
     expect(heuristicFallbackNotice(debug(unstarted))).toContain("This account's AI budget is used up.");
-    // v1.82: the basic plan does not follow the strict section order.
+    // v1.84: the basic plan does not follow the strict section order.
     expect(heuristicFallbackNotice(debug(unstarted))).toContain("It does not follow the section priority.");
     expect(heuristicFallbackNotice(debug({ ...unstarted, iterations: 3 }))).toContain("planning budget was exhausted");
   });

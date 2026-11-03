@@ -128,7 +128,7 @@ it("warns that deleting a section removes it from everyone's Eligible Sections",
   expect(onChange).not.toHaveBeenCalled();
 });
 
-it("names the strict section order in the section priority help (v1.82)", () => {
+it("names the strict section order in the section priority help (v1.84)", () => {
   expect(SECTION_PRIORITY_HELP).toContain(
     "If not every slot can be filled, the AI staffs sections higher in this list first, even if that leaves more slots open in total.",
   );

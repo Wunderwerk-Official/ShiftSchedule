@@ -433,7 +433,7 @@ describe("holidays: state and holidays added by hand", () => {
   });
 });
 
-it("says that both planning goals follow the section priority strictly (v1.82)", () => {
+it("says that both planning goals follow the section priority strictly (v1.84)", () => {
   setup();
   expect(document.body.textContent).toMatch(/fill required slots first, strictly in the section priority\s+order below/);
 });

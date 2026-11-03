@@ -203,7 +203,7 @@ class ScoringContext:
                     order_weight=self.order_weight_by_slot_id[slot_id],
                 )
 
-        # Strict section order (v1.82): the sections of this range ranked by
+        # Strict section order (v1.84): the sections of this range ranked by
         # the position of their first block (0 = top of the Settings list);
         # every day and sub-shift of a section shares its rank.
         tier_by_slot_id = _section_tier_by_slot_id(
