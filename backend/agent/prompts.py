@@ -639,7 +639,7 @@ def build_problem_digest(
         )
     if seed_open:
         lines.append("")
-        lines.append("Top open slots (slot_key|section|time|missing):")
+        lines.append("Top open slots, highest section first (slot_key|section|time|missing):")
         for gap in seed_open[:15]:
             key = alias_slot_key(gap.slot_key) if alias_slot_key else gap.slot_key
             lines.append(
@@ -647,7 +647,7 @@ def build_problem_digest(
                 f"|{gap.start}-{gap.end}|{gap.missing}"
             )
         if len(seed_open) > 15:
-            lines.append(f"... and {len(seed_open) - 15} more (list_open_slots).")
+            lines.append(f"... and {len(seed_open) - 15} more (list_open_slots lists every open slot by date).")
     lines.append("")
     lines.append(
         f"You have up to {max_iterations} tool-use rounds. Improve the plan, "

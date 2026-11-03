@@ -31,6 +31,7 @@ it("describes the current planning panel and drop rules", () => {
   expect(text).toMatch(/The order under Settings → Planning rules\s+& AI → Section priority when short-staffed is strict: a required slot\s+in a section higher in the list comes before any number of slots further\s+down, even if more slots stay open in total/);
   expect(text).toMatch(/filling the\s+sections from the top of the list/);
   expect(text).toMatch(/The on-call section counts at\s+its own place in that list/);
+  expect(text).toMatch(/slots only one person can take\s+and on-call duties first, then the sections in their order/);
   expect(text).toMatch(/The basic plan without AI \(no key, budget used up, AI error\) does not\s+follow the order/);
   expect(text).not.toContain("prefers to leave the");
   expect(text).toContain("46/45 h in 2026-W45");

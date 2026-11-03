@@ -74,8 +74,9 @@ export default function HelpView() {
 
         <Section title="3. Automated Planning (AI)">
           <p>
-            The AI plans the selected timeframe day by day: on-call slots first, then
-            the sections in their order, every person with a contiguous block of work.
+            The AI plans the selected timeframe day by day: slots only one person can take
+            and on-call duties first, then the sections in their order, every person with a
+            contiguous block of work.
             It fills required slots only. The order under Settings → Planning rules
             &amp; AI → Section priority when short-staffed is strict: a required slot
             in a section higher in the list comes before any number of slots further

@@ -745,12 +745,16 @@ REPAIR_MIN_STAGE_SECONDS = 2.0
 # 5 s budget: no plan at all).
 REPAIR_STAGE_PRESOLVE_ITERATIONS = 1
 REPAIR_FULL_PRESOLVE_MIN_SECONDS = 10.0
-# Seconds a stage needs at least to start; below that the time is left
-# unused rather than given to a stage that can only end after presolve.
+# Seconds a stage needs at least to start (one presolve round takes about
+# 0.1 s on one week, 0.5-0.8 s on four weeks); below that the time is left
+# unused.
 REPAIR_STAGE_START_SECONDS = 0.55
-# The repair note's words for a skipped fewest-changes stage (cross_day reads
-# them to say that the changes were not kept to a minimum).
+# The repair note's words for a fewest-changes stage that was skipped, or
+# that ran without proving the minimum and found no fewer changes than it
+# started from (too short on a large model); cross_day reads them to say
+# that the changes were not kept to a minimum.
 REPAIR_CHANGES_SKIPPED = "the fewest-changes stage skipped for lack of time"
+REPAIR_CHANGES_NOT_REDUCED = "the fewest-changes stage found no fewer changes in its time"
 
 
 def _repair_tiers(model, slack_by_instance, reference, var_map, tier_by_slot_id,
@@ -962,14 +966,18 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
                 "aborted": True, "infeasible": False}
     left = deadline - time.time()
     if left >= REPAIR_STAGE_START_SECONDS and change_terms:
+        changes_before = best_solver.Value(sum(change_terms)) if best_solver is not None else None
         started = time.time()
         solver, result = run(left, objective=sum(change_terms))
-        stages.append({"changes": True, "status": solver.StatusName(result),
-                       "seconds": round(time.time() - started, 2)})
+        stage = {"changes": True, "status": solver.StatusName(result), "seconds": round(time.time() - started, 2)}
         if result in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             best_solver, best_result = solver, result
         if result != cp_model.OPTIMAL:
             optimal = False
+            changes_after = solver.Value(sum(change_terms)) if result == cp_model.FEASIBLE else None
+            if changes_after is None or (changes_before is not None and changes_after >= changes_before):
+                stage["not_reduced"] = True
+        stages.append(stage)
     elif change_terms:
         optimal = False
         stages.append({"changes": True, "skipped": "no time"})
@@ -3036,11 +3044,13 @@ def _solve_range_impl(
         stage_count = sum(1 for stage in repair_search["stages"] if "status" in stage)
         skipped = sum(1 for stage in repair_search["stages"] if stage.get("skipped") and not stage.get("changes"))
         change_skipped = any(stage.get("skipped") and stage.get("changes") for stage in repair_search["stages"])
+        change_not_reduced = any(stage.get("not_reduced") for stage in repair_search["stages"])
         notes.append(
             f"Repair search: {len(repair_tiers)} section tier(s) in {stage_count} stage(s), "
             f"{'every stage optimal' if repair_search['optimal'] else 'not every stage proven optimal'}"
             + (f", {skipped} section stage(s) skipped for lack of time" if skipped else "")
             + (f", {REPAIR_CHANGES_SKIPPED}" if change_skipped else "")
+            + (f", {REPAIR_CHANGES_NOT_REDUCED}" if change_not_reduced else "")
             + "."
         )
         if repair_search["aborted"]:

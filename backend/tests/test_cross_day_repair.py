@@ -1115,9 +1115,21 @@ def test_strict_repair_gives_a_window_all_the_time_above_the_change_reserve(monk
     monkeypatch.setattr(solver_mod.cp_model, "CpSolver", _RecordingSolver)
     monkeypatch.setattr(_RecordingSolver, "calls", [])
     payload = SolveRangeRequest(startISO=MON_W45, endISO=MON_W45, only_fill_required=True, timeout_seconds=30)
+    searches = []
+    real_search = solver_mod._solve_repair_lexicographic
+
+    def recording_search(*args, **kwargs):
+        searches.append(real_search(*args, **kwargs))
+        return searches[-1]
+
+    monkeypatch.setattr(solver_mod, "_solve_repair_lexicographic", recording_search)
     _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
                       start_time=time.time(), state_override=state,
                       repair_reference={("slot-s19", MON_W45, "pat")}, repair_max_changes=cross_day.MAX_CHANGES)
+    # The change stage ran but found no plan: it counts as not reduced (the
+    # note then says so and cross_day adds its caveat).
+    assert searches[0]["stages"][-1] == {"changes": True, "status": "UNKNOWN",
+                                         "seconds": searches[0]["stages"][-1]["seconds"], "not_reduced": True}
     completion, *stages = _RecordingSolver.calls
     assert completion["fix_variables_to_their_hinted_value"] and "max_presolve_iterations" not in completion
     assert len(stages) == 4  # three windows, then the change stage
@@ -1153,9 +1165,10 @@ def test_repair_note_says_when_the_changes_were_not_kept_to_a_minimum(monkeypatc
     _plan, report, _executor = strict_repair(state, reference, MON_W45, FRI)
     assert report["applied"] and report["changes_minimized"] is False
     assert report["search"].startswith("Repair search:")
-    assert cross_day.repair_note(report).endswith(" No time was left to keep the number of changes to a minimum.")
+    assert cross_day.repair_note(report).endswith(
+        " The time ran out before the number of changes could be kept to a minimum.")
     report["changes_minimized"] = True
-    assert "No time was left" not in cross_day.repair_note(report)
+    assert "The time ran out" not in cross_day.repair_note(report)
 
 
 def test_strict_repair_keeps_one_presolve_round_for_a_short_first_window(monkeypatch):

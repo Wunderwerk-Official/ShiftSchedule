@@ -4627,8 +4627,9 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
   The order is strict, so time for a higher window comes first: a window
   may use all the time above that reserve and leaves what it does not need
   to the windows below. The first window gets CP-SAT's full presolve when
-  it has at least 10 s (`REPAIR_FULL_PRESOLVE_MIN_SECONDS`; in the app it
-  always has), the later stages one round
+  it has at least 10 s (`REPAIR_FULL_PRESOLVE_MIN_SECONDS`; in the app,
+  which sets no time limit, the repair gets 30-120 s, so it always has;
+  only a caller-set timeout near its end gives less), the later stages one round
   (`REPAIR_STAGE_PRESOLVE_ITERATIONS`); no stage
   gets the Python solution callback, so a proven optimum ends its stage at
   once. A stage starts only with at least `REPAIR_STAGE_START_SECONDS`
@@ -4735,11 +4736,14 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
     two-week stage took 6.9 s and ended with no plan). Measured on the
     arena fixture, 2 CP-SAT workers, the same plan for every pair of runs:
     at the app's budgets (90 s for a week, 120 s from ten days) the plans
-    were the same or better in 16 of 16 pairs: carnival week 2026-02-16 (7
+    were the same or better in 13 of 13 pairs: carnival week 2026-02-16 (7
     days, 3 runs each) always 27 open, where the equal split once left one
     more position open in a higher section (26 in total; 2 of 4 runs in the
     review); crunch week, understaffed week 2026-02-09, the two-week (75 ->
-    15) and the four-week plan (95 -> 57) identical. Short budgets: two
+    15) and the four-week plan (95 -> 57) identical (these pairs ran the
+    second review's rules: one presolve round everywhere, the callback on;
+    with the third review's rules the carnival, crunch and understaffed
+    weeks and both plans at 120 s gave the same vectors again). Short budgets: two
     weeks at 20 s 75 -> 15 instead of 75 -> 20 (3 of 3); 130 one-slot
     sections at 5 s 129 -> 77 instead of 129 -> 104 or no change, at 8 s
     129 -> 69 instead of no change; four weeks at 20 s varies from run to
@@ -4787,16 +4791,27 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
     searching after a worker had found a proven optimum (a two-week top
     window: optimum at 4.5-7.5 s, stage ended at its 17.4 s limit), and the
     top-first split gave that time away. The stages now run without it.
-  - The repair note mentions unminimized changes; a stage needs 0.55 s to
-    start, for coverage windows and the change stage alike.
+  - The repair note mentions unminimized changes: when the fewest-changes
+    stage was skipped, or ran without proving the minimum and found no
+    fewer changes than it started from (a 0.59 s stage on four weeks: 60
+    kept, 58 would do). A stage needs 0.55 s to start, for coverage windows
+    and the change stage alike.
+  - Final check (two lenses, a skeptic): no defect left above low. The
+    repair strategy's digest says its top 15 go highest section first and
+    that list_open_slots lists every slot by date; the run log keeps the seed
+    list in date order like the remaining list; Help names the processing
+    order as the modal does (slots only one person can take and on-call
+    duties first).
 - **Resolved from v1.80's "Not done"**: a pure 1:1 trade upwards is an
   improvement; a higher section is staffed even when more positions stay
   open in total; the order is lexicographic, not a weighted sum.
 - **Measured** (arena fixture, saved agent plans, 2 CP-SAT workers): one
   week (90 s budget) 29 -> 0 open, every stage optimal, 1.8 s (v1.80: 26-36
-  s); four weeks (120 s) 95 -> 55, 39 -> 29 and 64 -> 61 open, the top 12
-  section tiers fully staffed in all three (v1.80: 37, 24 and 48 open, with
-  gaps in the top tiers). Within 120 s not every 4-week stage is proven
+  s); four weeks (120 s) 95 -> 57 (the first version reached 55 but left
+  one more open in Section 30, lexicographically worse), and with the first
+  version 39 -> 29 and 64 -> 61 open; the top 9 sections (block positions
+  0-11) fully staffed in all three (v1.80: 37, 24 and 48 open, with gaps in
+  the top sections). Within 120 s not every 4-week stage is proven
   optimal, and the change cap (60) binds there. The order is now decisive:
   in the arena fixture On-call duty is the 5th section, so its duties
   outrank every section below it.

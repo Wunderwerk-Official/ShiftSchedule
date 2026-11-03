@@ -539,7 +539,7 @@ def agent_solve_range(
         """Open slots by section rank (the strict order), then date and start."""
         return (ctx.section_index_by_slot_id.get(gap.slot_id, len(ctx.section_order_ids)), gap.dateISO, gap.start)
 
-    seed_open = sorted(open_slots(ctx, seed_assignments), key=_rank_first)
+    seed_open = open_slots(ctx, seed_assignments)
 
     def _fmt_plan_line(a: Assignment, origin: str) -> str:
         inst = ctx.instances.get(f"{a.rowId}__{a.dateISO}")
@@ -2067,7 +2067,7 @@ def agent_solve_range(
         state,
         ctx,
         seed_stats,
-        seed_open,
+        sorted(seed_open, key=_rank_first),  # the digest lists the highest sections first
         new_hard_violation_count=0,  # seed violations ARE the baseline
         soft_violation_count=soft_count,
         max_iterations=config.max_iterations,

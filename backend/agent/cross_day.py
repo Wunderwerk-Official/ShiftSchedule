@@ -89,7 +89,7 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
     if cancel_event.is_set() or time_limit < MIN_SECONDS:
         return done("no_time")
 
-    from ..solver import REPAIR_CHANGES_SKIPPED, _solve_range_impl
+    from ..solver import REPAIR_CHANGES_NOT_REDUCED, REPAIR_CHANGES_SKIPPED, _solve_range_impl
 
     reference: Set[Tuple[str, str, str]] = {(a.rowId, a.dateISO, a.clinicianId) for a in working}
     payload = SolveRangeRequest(
@@ -165,7 +165,8 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
                   quality_after=ex.quality_dict(ex.best_quality),
                   # The solver's stage summary; False when no time was left
                   # to keep the changes to a minimum.
-                  search=search, changes_minimized=not (search and REPAIR_CHANGES_SKIPPED in search))
+                  search=search, changes_minimized=not (search and (REPAIR_CHANGES_SKIPPED in search
+                                                                   or REPAIR_CHANGES_NOT_REDUCED in search)))
     return done("applied", solver_status=status)
 
 
@@ -180,7 +181,7 @@ def repair_note(report: Optional[dict]) -> Optional[str]:
         shown += f" and {len(sections) - 4} more section(s)"
     detail = f"{before} -> {after} open" + (f"; {shown}" if shown else "")
     unminimized = ("" if report.get("changes_minimized", True)
-                   else " No time was left to keep the number of changes to a minimum.")
+                   else " The time ran out before the number of changes could be kept to a minimum.")
     if after < before:
         return (f"Cross-day repair filled {before - after} more required position(s) by changing "
                 f"{report['changes']} assignment(s) across days ({detail}).{unminimized}")
