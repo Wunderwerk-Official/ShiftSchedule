@@ -89,7 +89,7 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
     if cancel_event.is_set() or time_limit < MIN_SECONDS:
         return done("no_time")
 
-    from ..solver import _solve_range_impl
+    from ..solver import REPAIR_CHANGES_SKIPPED, _solve_range_impl
 
     reference: Set[Tuple[str, str, str]] = {(a.rowId, a.dateISO, a.clinicianId) for a in working}
     payload = SolveRangeRequest(
@@ -147,6 +147,7 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
                         changes_proposed=len(moves), section=ex.section_order[index])
         return done("rejected", reason="not an improvement", solver_status=status, changes_proposed=len(moves))
     by_section_before = list(ex._open_by_section_order(working))
+    search = next((note for note in (result.notes or []) if note.startswith("Repair search:")), None)
     proposal = ex.workflow.propose(moves, next_tool=None, next_args={}, preview=preview)
     applied = ex.workflow.apply({"proposal_id": proposal.get("proposal_id")}) if proposal else {}
     if not applied.get("applied"):
@@ -161,7 +162,10 @@ def coverage_repair(executor, *, cancel_event, time_limit: float,
                   # [section, open before, open after], top first.
                   sections_changed=[[ex.section_order[i], b, a]
                                     for i, (b, a) in enumerate(zip(by_section_before, by_section_after)) if b != a],
-                  quality_after=ex.quality_dict(ex.best_quality))
+                  quality_after=ex.quality_dict(ex.best_quality),
+                  # The solver's stage summary; False when no time was left
+                  # to keep the changes to a minimum.
+                  search=search, changes_minimized=not (search and REPAIR_CHANGES_SKIPPED in search))
     return done("applied", solver_status=status)
 
 
@@ -175,13 +179,15 @@ def repair_note(report: Optional[dict]) -> Optional[str]:
     if len(sections) > 4:
         shown += f" and {len(sections) - 4} more section(s)"
     detail = f"{before} -> {after} open" + (f"; {shown}" if shown else "")
+    unminimized = ("" if report.get("changes_minimized", True)
+                   else " No time was left to keep the number of changes to a minimum.")
     if after < before:
         return (f"Cross-day repair filled {before - after} more required position(s) by changing "
-                f"{report['changes']} assignment(s) across days ({detail}).")
+                f"{report['changes']} assignment(s) across days ({detail}).{unminimized}")
     if not sections:
         # Accepted for a later quality tier (e.g. a broken rule repaired).
         return (f"Cross-day repair changed {report['changes']} assignment(s) across days ({before} -> "
-                f"{after} open; the open positions per section did not change).")
+                f"{after} open; the open positions per section did not change).{unminimized}")
     # Strict section order: higher sections staffed, even if more stay open.
     return (f"Cross-day repair changed {report['changes']} assignment(s) across days to staff "
-            f"higher sections first ({detail}).")
+            f"higher sections first ({detail}).{unminimized}")

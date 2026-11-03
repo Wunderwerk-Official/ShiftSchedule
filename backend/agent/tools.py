@@ -756,17 +756,29 @@ class PlanToolExecutor:
             key.append(tuple(value) if isinstance(value, list) else value)
         return tuple(key)
 
+    def _has_headroom(self, counts: Dict[str, int], slot_key: str) -> bool:
+        """The slot keeps its target without one of its people (distribute-
+        all mode; nothing opens when one of them moves)."""
+        inst = self.ctx.instances.get(slot_key)
+        return inst is not None and counts.get(slot_key, 0) - 1 >= inst.target
+
     def _checked_rescues(self, candidates: List[dict], date_iso: str) -> List[dict]:
         """The candidates that pass the apply check, each with its proposal
         (quality_after, improves_best), best first, at most two."""
         checked = []
         for rescue in candidates:
+            preview = self._tool_apply_moves({"moves": rescue["batch"], "dry_run": True})
+            if preview.get("valid"):
+                checked.append((rescue, preview))
+        checked.sort(key=lambda pair: (not pair[1].get("improves_best"), self._quality_key(pair[1]["quality_after"])))
+        kept = []
+        for rescue, preview in checked[:2]:
+            # A proposal only for the offers returned: the store keeps 256,
+            # and many headroom candidates would evict the best ones.
             rescue.update(self.workflow.propose(
-                rescue["batch"], next_tool="suggest_day_blocks", next_args={"dateISO": date_iso}))
-            if rescue.get("proposal_id"):
-                checked.append(rescue)
-        checked.sort(key=lambda r: (not r.get("improves_best"), self._quality_key(r["quality_after"])))
-        return checked[:2]
+                rescue["batch"], next_tool="suggest_day_blocks", next_args={"dateISO": date_iso}, preview=preview))
+            kept.append(rescue)
+        return kept
 
     def quality_dict(self, quality: Tuple[int, ...]) -> dict:
         """By field name. The section vector renders as a JSON list (one
@@ -2007,6 +2019,7 @@ class PlanToolExecutor:
         rescues: List[dict] = []
         no_rescue: List[str] = []
         rescue_time_out = False
+        counts = self._counts_by_instance(self._working_list())  # the search changes no plan
         for entry_index, entry in enumerate(stuck):
             # Every candidate below costs full-plan gate validations; on a
             # bad day the search would otherwise overshoot the run's wall
@@ -2026,8 +2039,9 @@ class PlanToolExecutor:
             # fills both slots.
             upward: List[dict] = []
             for clinician in self.state.clinicians:
-                if len(found) >= 2:
-                    break
+                # After two substitute rescues only headroom moves can still
+                # compete (nothing opens); they are rare, so this stays cheap.
+                substitutes_done = len(found) >= 2
                 if inst.section_id not in (clinician.qualifiedClassIds or []):
                     continue
                 cid = clinician.id
@@ -2038,6 +2052,7 @@ class PlanToolExecutor:
                     key
                     for key in self.current
                     if key[2] == cid and key[1] == date_iso
+                    and (not substitutes_done or self._has_headroom(counts, f"{key[0]}__{date_iso}"))
                 ]
                 if not own_today:
                     continue  # blocked by something no same-day move can fix
@@ -2052,6 +2067,9 @@ class PlanToolExecutor:
                 if self._creates_new_hard(trial_free):
                     continue
                 for blocker in own_today:
+                    substitutes_done = len(found) >= 2
+                    if substitutes_done and not self._has_headroom(counts, f"{blocker[0]}__{date_iso}"):
+                        continue
                     trial = dict(self.current)
                     del trial[blocker]
                     trial[identity] = self._make_assignment(
@@ -2066,7 +2084,7 @@ class PlanToolExecutor:
                     # A substitute covers the vacated slot in the SAME batch;
                     # without one the hole only moves, which helps only when
                     # it moves to a lower-ranked section (below).
-                    for sub in self.state.clinicians:
+                    for sub in (self.state.clinicians if not substitutes_done else []):
                         if vac_inst.section_id not in (sub.qualifiedClassIds or []):
                             continue
                         sub_id = (blocker[0], date_iso, sub.id)
@@ -2107,8 +2125,9 @@ class PlanToolExecutor:
                         break  # one substitute per blocker is enough
                     # Distribute-all headroom: the vacated slot may stay at
                     # its target without this person (then nothing opens).
-                    opens = self._counts_by_instance(self._working_list()).get(vacated_key, 0) - 1 < vac_inst.target
-                    if not opens or self.section_rank(vac_inst.slot_id) > self.section_rank(inst.slot_id):
+                    opens = not self._has_headroom(counts, vacated_key)
+                    if not opens or (not substitutes_done
+                                     and self.section_rank(vac_inst.slot_id) > self.section_rank(inst.slot_id)):
                         # Strict section order (v1.84): the stuck slot ranks
                         # higher than the vacated one, so moving the person
                         # up improves the plan although the vacated slot
@@ -2138,8 +2157,6 @@ class PlanToolExecutor:
                                 ],
                             }
                         )
-                    if len(found) >= 2:
-                        break
             offers = self._checked_rescues(found + [r for r in upward if r["leaves_open"] is None], date_iso)
             if not offers:
                 # Both fill the same stuck slot: the lower the slot left

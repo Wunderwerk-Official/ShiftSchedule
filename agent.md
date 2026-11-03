@@ -4626,8 +4626,15 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
   minimizes the changes; 10 s (at most 10% of the budget) are kept for it.
   The order is strict, so time for a higher window comes first: a window
   may use all the time above that reserve and leaves what it does not need
-  to the windows below; the stages run with one presolve round
-  (`REPAIR_STAGE_PRESOLVE_ITERATIONS`).
+  to the windows below. The first window gets CP-SAT's full presolve when
+  it has at least 10 s (`REPAIR_FULL_PRESOLVE_MIN_SECONDS`; in the app it
+  always has), the later stages one round
+  (`REPAIR_STAGE_PRESOLVE_ITERATIONS`); no stage
+  gets the Python solution callback, so a proven optimum ends its stage at
+  once. A stage starts only with at least `REPAIR_STAGE_START_SECONDS`
+  left. The report carries the solver's stage summary (`search`) and
+  `changes_minimized`; when the fewest-changes stage had no time, the run
+  note says that the changes were not kept to a minimum.
   A stop ends the running stage within about 0.05 s (watcher thread); v1.80
   stopped only at its next solution. The status is OPTIMAL only when every
   stage proved it; a note says how many stages ran. `coverage_repair`
@@ -4758,6 +4765,30 @@ fixed) and the interplay of the packages. Its confirmed findings were fixed:
     whatever its section, so a block started from a lower slot can take
     short lower slots instead of a higher one; the cross-day repair fixes
     it with a few changes (a constructed case: 3).
+- **Third review** (a skeptic pass over the second review's fixes; two
+  of its three lenses finished before a container restart, the third was
+  run again):
+  - Every checked rescue candidate got a stored proposal; with many
+    headroom candidates in distribute-all mode (12 stuck slots x 24 people)
+    one call stored 288 and the store (256) evicted the best offers it
+    returned ("Unknown or expired proposal"). Candidates are now dry-run
+    first and only the two kept per slot get a proposal.
+  - Headroom moves were still only collected for people before the second
+    substitute rescue in the roster. After two substitute rescues the
+    search now goes on for blockers with headroom only (cheap: in
+    fill-required mode there are none).
+  - One presolve round on the first window lost CP-SAT's lower bound on
+    four weeks (0 instead of 4100) and at a 20 s budget left a higher
+    section open in 3 of 6 runs; the first window keeps the full presolve
+    when it has 10 s or more. Below that one round stays: with 5 s the full
+    presolve of 130 one-slot sections used up the window (no plan at all,
+    against all 53 top sections staffed with one round).
+  - With a Python solution callback attached, CP-SAT 9.11 often went on
+    searching after a worker had found a proven optimum (a two-week top
+    window: optimum at 4.5-7.5 s, stage ended at its 17.4 s limit), and the
+    top-first split gave that time away. The stages now run without it.
+  - The repair note mentions unminimized changes; a stage needs 0.55 s to
+    start, for coverage windows and the change stage alike.
 - **Resolved from v1.80's "Not done"**: a pure 1:1 trade upwards is an
   improvement; a higher section is staffed even when more positions stay
   open in total; the order is lexicographic, not a weighted sum.

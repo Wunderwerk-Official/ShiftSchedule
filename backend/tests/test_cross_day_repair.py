@@ -1091,7 +1091,7 @@ class _RecordingSolver(_StuckSolver):
 
     def Solve(self, model, callback=None):
         from ortools.sat.python import cp_model
-        _RecordingSolver.calls.append(dict(vars(self.parameters)))
+        _RecordingSolver.calls.append({**vars(self.parameters), "callback": callback is not None})
         return cp_model.UNKNOWN
 
 
@@ -1099,8 +1099,11 @@ def test_strict_repair_gives_a_window_all_the_time_above_the_change_reserve(monk
     """Second review of v1.84: an equal share per window cut the top window
     short (in a hard arena week one more position stayed open in a higher
     section in about half the runs). Now the first window may use everything
-    but the change stage's reserve (30 s budget: 3 s), the stages run with
-    one presolve round, the completion solve with CP-SAT's default."""
+    but the change stage's reserve (30 s budget: 3 s). Third review: the
+    first window keeps CP-SAT's full presolve (one round lost its lower bound
+    on four weeks), the later stages run with one round, and no stage gets
+    the Python solution callback (with one, CP-SAT kept searching after a
+    proven optimum)."""
     import backend.solver as solver_mod
 
     sections = [f"s{i:02}" for i in range(20)]  # three windows (see the short-budget test)
@@ -1119,4 +1122,59 @@ def test_strict_repair_gives_a_window_all_the_time_above_the_change_reserve(monk
     assert completion["fix_variables_to_their_hinted_value"] and "max_presolve_iterations" not in completion
     assert len(stages) == 4  # three windows, then the change stage
     assert stages[0]["max_time_in_seconds"] > 25  # not a third of the budget
-    assert all(stage["max_presolve_iterations"] == 1 for stage in stages)
+    assert "max_presolve_iterations" not in stages[0]
+    assert all(stage["max_presolve_iterations"] == 1 for stage in stages[1:])
+    assert not any(call["callback"] for call in _RecordingSolver.calls)
+
+
+def test_repair_note_says_when_the_changes_were_not_kept_to_a_minimum(monkeypatch):
+    """Third review: the solver's "Repair search" note never reached the run,
+    so 60 changes looked deliberate when the fewest-changes stage had no time
+    left. The report carries the note and the run note says so."""
+    import backend.solver as solver_mod
+    from backend.models import SolveRangeResponse
+    from backend.solver import REPAIR_CHANGES_SKIPPED
+
+    real = solver_mod._solve_range_impl
+
+    def skipped_change_stage(*args, **kwargs):
+        result = real(*args, **kwargs)
+        return SolveRangeResponse(startISO=result.startISO, endISO=result.endISO, assignments=result.assignments,
+                                  notes=[f"Repair search: 2 section tier(s) in 2 stage(s), not every stage proven "
+                                         f"optimal, {REPAIR_CHANGES_SKIPPED}."],
+                                  debugInfo=result.debugInfo)
+
+    monkeypatch.setattr(solver_mod, "_solve_range_impl", skipped_change_stage)
+    state = strict_state(["top", "low"], [("slot-top-fri", "top", "fri", "08:00", "16:00"),
+                                          ("slot-low-mon", "low", "mon", "08:00", "12:00"),
+                                          ("slot-low-tue", "low", "tue", "08:00", "12:00")],
+                         [("pat", ["top", "low"], 8, [])])
+    reference = {("slot-low-mon", MON_W45, "pat"), ("slot-low-tue", TUE_W45, "pat")}
+    _plan, report, _executor = strict_repair(state, reference, MON_W45, FRI)
+    assert report["applied"] and report["changes_minimized"] is False
+    assert report["search"].startswith("Repair search:")
+    assert cross_day.repair_note(report).endswith(" No time was left to keep the number of changes to a minimum.")
+    report["changes_minimized"] = True
+    assert "No time was left" not in cross_day.repair_note(report)
+
+
+def test_strict_repair_keeps_one_presolve_round_for_a_short_first_window(monkeypatch):
+    """Third review: below 10 s the first window keeps one presolve round
+    (the full presolve of a large model can use up a few seconds)."""
+    import backend.solver as solver_mod
+
+    sections = [f"s{i:02}" for i in range(20)]
+    state = strict_state(sections, [(f"slot-{sec}", sec, "mon", "08:00", "16:00") for sec in sections],
+                         [("pat", sections, 8, [])])
+    for location in state.weeklyTemplate.locations:
+        for template_slot in location.slots:
+            template_slot.requiredSlots = 40
+    monkeypatch.setattr(solver_mod.cp_model, "CpSolver", _RecordingSolver)
+    monkeypatch.setattr(_RecordingSolver, "calls", [])
+    payload = SolveRangeRequest(startISO=MON_W45, endISO=MON_W45, only_fill_required=True, timeout_seconds=8)
+    _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
+                      start_time=time.time(), state_override=state,
+                      repair_reference={("slot-s19", MON_W45, "pat")}, repair_max_changes=cross_day.MAX_CHANGES)
+    _completion, first, *_rest = _RecordingSolver.calls
+    assert first["max_time_in_seconds"] < solver_mod.REPAIR_FULL_PRESOLVE_MIN_SECONDS
+    assert first["max_presolve_iterations"] == 1

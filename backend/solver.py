@@ -734,11 +734,23 @@ REPAIR_LEX_BOUND = 2 ** 53
 REPAIR_CHANGE_STAGE_SECONDS = 10.0
 REPAIR_CHANGE_STAGE_SHARE = 0.1
 REPAIR_MIN_STAGE_SECONDS = 2.0
-# Presolve rounds per stage after the completion solve (None: CP-SAT's
-# default). The stages differ only by bounds, and a full presolve of a
-# tightly bounded model took 6.9 s on two weeks, so a short stage ended
-# after presolve with no plan at all.
+# Presolve rounds for the stages after the first coverage window (None:
+# CP-SAT's default). They differ from it only by bounds, and a full presolve
+# of a tightly bounded model took 6.9 s on two weeks, so a short stage ended
+# after presolve with no plan at all. The first window keeps the default
+# when it has at least REPAIR_FULL_PRESOLVE_MIN_SECONDS: with one round it
+# lost its lower bound on four weeks (0 instead of 4100) and, at a 20 s
+# budget, left a higher section open in 3 of 6 runs; with a few seconds,
+# the full presolve of a large model can use them all up (130 sections at a
+# 5 s budget: no plan at all).
 REPAIR_STAGE_PRESOLVE_ITERATIONS = 1
+REPAIR_FULL_PRESOLVE_MIN_SECONDS = 10.0
+# Seconds a stage needs at least to start; below that the time is left
+# unused rather than given to a stage that can only end after presolve.
+REPAIR_STAGE_START_SECONDS = 0.55
+# The repair note's words for a skipped fewest-changes stage (cross_day reads
+# them to say that the changes were not kept to a minimum).
+REPAIR_CHANGES_SKIPPED = "the fewest-changes stage skipped for lack of time"
 
 
 def _repair_tiers(model, slack_by_instance, reference, var_map, tier_by_slot_id,
@@ -827,7 +839,8 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
     the search goes on; a stop ends it at once (a watcher stops the running
     stage). Returns the solver holding the final plan (None when no stage
     produced one), its status, whether every stage proved optimality, and a
-    log per stage."""
+    log per stage. ``callback`` is only read for ``was_aborted``: the stages
+    run without a Python solution callback (see run())."""
     deadline = time.time() + max(0.0, time_limit)
     reserve = min(REPAIR_CHANGE_STAGE_SECONDS, REPAIR_CHANGE_STAGE_SHARE * max(0.0, time_limit))
     stages: List[Dict[str, Any]] = []
@@ -839,7 +852,7 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
 
     statuses: List[int] = []
 
-    def run(seconds: float, objective=None, fix_to_hint: bool = False):
+    def run(seconds: float, objective=None, fix_to_hint: bool = False, full_presolve: bool = False):
         if objective is not None:
             model.Minimize(objective)
         if hint is not None:
@@ -851,7 +864,7 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
         solver.parameters.num_search_workers = workers
         solver.parameters.relative_gap_limit = 0.0
         solver.parameters.fix_variables_to_their_hinted_value = fix_to_hint
-        if not fix_to_hint and REPAIR_STAGE_PRESOLVE_ITERATIONS is not None:
+        if not fix_to_hint and not full_presolve and REPAIR_STAGE_PRESOLVE_ITERATIONS is not None:
             solver.parameters.max_presolve_iterations = REPAIR_STAGE_PRESOLVE_ITERATIONS
         finished = threading.Event()
 
@@ -864,7 +877,12 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
         watcher = threading.Thread(target=watch, daemon=True)
         watcher.start()
         try:
-            result = solver.Solve(model, callback)
+            # No Python solution callback: with one attached, CP-SAT 9.11
+            # often keeps searching after a worker found a proven optimum
+            # (until its main worker ends or the time limit), which under the
+            # top-first split took the lower windows' time. Cancel is the
+            # watcher's job; cross_day ignores progress events.
+            result = solver.Solve(model)
         finally:
             finished.set()
             watcher.join(timeout=1.0)
@@ -893,6 +911,7 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
             best_solver, best_result = solver, result
 
     index = 0
+    first_window = True  # full presolve; the later stages differ only by bounds
     while index < len(tiers):
         if cancel_event.is_set() or callback.was_aborted:
             break
@@ -913,14 +932,16 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
             # Coverage comes before the change stage: a short window takes
             # its reserve too.
             share = min(REPAIR_MIN_STAGE_SECONDS, available - 0.05)
-        if share < 0.5:
+        if share < REPAIR_STAGE_START_SECONDS - 0.05:
             optimal = False
             stages.append({"tiers": len(window), "skipped": "no time"})
         else:
             weights, _largest = _lexicographic_weights(window)
             started = time.time()
             current = [incumbent[t["tier"]] for t in window]
-            solver, result = run(share, objective=sum(w * t["open"] for w, t in zip(weights, window)))
+            solver, result = run(share, objective=sum(w * t["open"] for w, t in zip(weights, window)),
+                                 full_presolve=first_window and share >= REPAIR_FULL_PRESOLVE_MIN_SECONDS)
+            first_window = False
             stage = {"tiers": len(window), "status": solver.StatusName(result),
                      "seconds": round(time.time() - started, 2)}
             if result in (cp_model.OPTIMAL, cp_model.FEASIBLE):
@@ -940,7 +961,7 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
         return {"solver": best_solver, "result": best_result, "optimal": False, "stages": stages,
                 "aborted": True, "infeasible": False}
     left = deadline - time.time()
-    if left >= 0.5 and change_terms:
+    if left >= REPAIR_STAGE_START_SECONDS and change_terms:
         started = time.time()
         solver, result = run(left, objective=sum(change_terms))
         stages.append({"changes": True, "status": solver.StatusName(result),
@@ -3019,7 +3040,7 @@ def _solve_range_impl(
             f"Repair search: {len(repair_tiers)} section tier(s) in {stage_count} stage(s), "
             f"{'every stage optimal' if repair_search['optimal'] else 'not every stage proven optimal'}"
             + (f", {skipped} section stage(s) skipped for lack of time" if skipped else "")
-            + (", the fewest-changes stage skipped for lack of time" if change_skipped else "")
+            + (f", {REPAIR_CHANGES_SKIPPED}" if change_skipped else "")
             + "."
         )
         if repair_search["aborted"]:

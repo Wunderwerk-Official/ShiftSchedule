@@ -734,3 +734,53 @@ def test_move_without_a_substitute_is_offered_when_the_substitute_fails_the_appl
     audit = ex.workflow.final_audit([MON], Event())
     assert audit["repairs"] == 1
     assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 0]
+
+
+def test_rescue_stores_proposals_only_for_the_offers_it_returns():
+    """Third review: every checked candidate got a stored proposal, and with
+    many headroom candidates (12 stuck slots x 24 people, distribute-all) one
+    call stored 288, so the store (256) evicted the best offers it returned
+    ("Unknown or expired proposal"). Only the returned offers are stored now."""
+    stuck = [f"A{i:02d}" for i in range(12)]
+    lower = [f"B{i:02d}" for i in range(12)]
+    order = stuck + lower
+    people = [make_clinician(f"p{i:02d}", f"P{i:02d}", order, working_hours_per_week=40) for i in range(24)]
+    slots = [make_template_slot(s, block_id=s, row_band_id=f"row-{i + 1}") for i, s in enumerate(order)]
+    state = section_state(people, slots, order)
+    seed = [make_assignment(f"d{i}", lower[i // 2], MON, f"p{i:02d}", source="solver") for i in range(24)]
+    ex = PlanToolExecutor(state, build_scoring_context(state, MON, MON, only_fill_required=False), seed)
+    rescues = run(ex, "suggest_rescue_moves", dateISO=MON)["rescues"]
+    assert len(rescues) == 24 and ex.workflow.proposal_counter == 24
+    assert all(r["proposal_id"] in ex.workflow.proposals for r in rescues)
+    assert run(ex, "apply_proposal", proposal_id=rescues[0]["proposal_id"])["applied"]
+
+
+def test_headroom_move_competes_whatever_the_roster_order():
+    """Third review: the search stopped at two substitute rescues, so a
+    headroom move by someone listed later (Alice after Bob and Carl) was
+    never offered. Moving Alice to A opens nothing and avoids Dan's short
+    day; it comes first in any order."""
+    from threading import Event
+
+    alice = make_clinician("alice", "Alice", ["A", "B"], working_hours_per_week=40)
+    people = [make_clinician("bob", "Bob", ["A", "C"], working_hours_per_week=40),
+              make_clinician("carl", "Carl", ["A", "C"], working_hours_per_week=40), alice,
+              make_clinician("zed", "Zed", ["B"], working_hours_per_week=40),
+              make_clinician("dan", "Dan", ["C"], working_hours_per_week=40),
+              make_clinician("eve", "Eve", ["C"], working_hours_per_week=40)]
+    slots = [make_template_slot(s, block_id=b, row_band_id=f"row-{i + 1}", start_time="08:00", end_time="10:00")
+             for i, (s, b) in enumerate([("A", "A"), ("B", "B"), ("C1", "C"), ("C2", "C")])]
+
+    def fixture():
+        state = section_state(people, slots, ["A", "B", "C"])
+        return PlanToolExecutor(state, build_scoring_context(state, MON, MON, only_fill_required=False),
+                                [make_assignment("d1", "B", MON, "alice", source="solver"),
+                                 make_assignment("d2", "B", MON, "zed", source="solver"),
+                                 make_assignment("d3", "C1", MON, "bob", source="solver"),
+                                 make_assignment("d4", "C2", MON, "carl", source="solver")])
+
+    rescues = run(fixture(), "suggest_rescue_moves", dateISO=MON)["rescues"]
+    assert (rescues[0]["frees"], rescues[0]["substitute"], rescues[0]["leaves_open"]) == ("Alice", None, None)
+    ex = fixture()
+    ex.workflow.final_audit([MON], Event())
+    assert ("A", "alice") in {(a.rowId, a.clinicianId) for a in ex.best_assignments}
