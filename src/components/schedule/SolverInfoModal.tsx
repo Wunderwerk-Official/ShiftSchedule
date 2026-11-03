@@ -919,11 +919,12 @@ export default function SolverInfoModal({
                     <div className="mt-2 flex flex-col gap-2 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
                       <p>
                         The agent builds each day the way an experienced human planner does: on-call duties
-                        and scarce slots are staffed first, every person is placed with a contiguous block
+                        and scarce slots are worked first, every person is placed with a contiguous block
                         of work (no short stints, no 24-hour double duties), hours are balanced towards people
                         behind on their yearly target, and the free-text instructions from Settings → Planning rules &amp; AI
                         are followed. When not every slot can be filled, sections higher in the section priority
-                        are staffed first, even if more slots stay open in total. The AI works with the plan data
+                        are staffed first (on-call counts at its place in that list), even if more slots stay open
+                        in total. The AI works with the plan data
                         including names, and the hard rules can never be broken.
                       </p>
                       <p className="text-xs text-slate-500 dark:text-slate-400">

@@ -16,8 +16,9 @@ executor like any other proposal: the full gate must accept it AND the
 active quality tuple must improve, so a repair never trades away a
 higher-ranked position, fixed entries or rule compliance.
 
-The section order is strict (Settings: "If not every slot can be filled,
-sections higher in this list are staffed first"; v1.82): one open position
+The section order is strict (Settings → Section priority when
+short-staffed: "the AI staffs sections higher in this list first, even if
+that leaves more slots open in total"; v1.82): one open position
 in a higher section is worse than any number lower down, also when more
 positions stay open in total. The CP-SAT search optimizes the open
 positions section by section from the top, then the number of changes, and

@@ -655,3 +655,82 @@ def test_upward_rescues_open_the_lowest_ranked_slot_first():
     ex = fixture()
     assert ex.workflow.final_audit([MON], Event())["repairs"] == 1
     assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 0, 1]
+
+
+def test_rescue_staffs_a_higher_section_before_a_stuck_on_call_slot():
+    """Second review of v1.82: S > W > V > ON with on-call ranked last. S and
+    ON are stuck, and Quinn is the only substitute for either rescue. The
+    processing order put ON's rescue first, so the final audit left V open
+    ([0, 0, 1, 0]). Stuck slots now go by section rank and offers by
+    quality: S's rescue comes first and leaves only ON open."""
+    from threading import Event
+
+    order = ["S", "W", "V", "ON"]
+
+    def fixture():
+        clinicians = [make_clinician("pia", "Pia", ["S", "V"], working_hours_per_week=40),
+                      make_clinician("xavi", "Xavi", ["W", "ON"], working_hours_per_week=40),
+                      make_clinician("quinn", "Quinn", ["W", "V"], working_hours_per_week=40)]
+        slots = [make_template_slot(s, block_id=s, row_band_id=f"row-{i + 1}") for i, s in enumerate(order)]
+        state = section_state(clinicians, slots, order)
+        state.solverSettings.update(onCallRestEnabled=True, onCallRestClassId="ON",
+                                    onCallRestDaysBefore=0, onCallRestDaysAfter=0)
+        return executor(state, [make_assignment("d1", "V", MON, "pia", source="solver"),
+                                make_assignment("d2", "W", MON, "xavi", source="solver")])
+
+    ex = fixture()
+    rescues = run(ex, "suggest_rescue_moves", dateISO=MON)["rescues"]
+    assert [(r["section"], r["quality_after"]["open_by_section_order"]) for r in rescues] == [
+        ("S", [0, 0, 0, 1]), ("ON", [1, 0, 0, 0])]
+    ex = fixture()
+    audit = ex.workflow.final_audit([MON], Event())
+    assert audit["repairs"] == 1 and audit["checks"][MON]["complete"]
+    assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 0, 0, 1]
+
+
+def test_headroom_move_competes_with_a_substitute_rescue():
+    """Second review of v1.82, distribute-all mode: Alice and Bob are on B
+    (target 1), A is stuck, Cara (B) is free. Moving Alice to A alone opens
+    nothing and keeps Cara's short day away; it was hidden behind the
+    substitute rescue. Both are offered now, the better plan first."""
+    from threading import Event
+
+    def fixture():
+        state = section_state([make_clinician("alice", "Alice", ["A", "B"], working_hours_per_week=40),
+                               make_clinician("bob", "Bob", ["B"], working_hours_per_week=40),
+                               make_clinician("cara", "Cara", ["B"], working_hours_per_week=40)],
+                              [make_template_slot("A", block_id="A", row_band_id="row-1", start_time="08:00", end_time="10:00"),
+                               make_template_slot("B", block_id="B", row_band_id="row-2", start_time="08:00", end_time="10:00")],
+                              ["A", "B"])
+        return PlanToolExecutor(state, build_scoring_context(state, MON, MON, only_fill_required=False),
+                                [make_assignment("d1", "B", MON, "alice", source="solver"),
+                                 make_assignment("d2", "B", MON, "bob", source="solver")])
+
+    rescues = run(fixture(), "suggest_rescue_moves", dateISO=MON)["rescues"]
+    assert [(r["frees"], r["substitute"]) for r in rescues] == [("Alice", None), ("Alice", "Cara")]
+    assert rescues[0]["quality_after"]["short_days"] < rescues[1]["quality_after"]["short_days"]
+    ex = fixture()
+    assert ex.workflow.final_audit([MON], Event())["repairs"] == 1
+    assert sorted((a.rowId, a.clinicianId) for a in ex.best_assignments) == [("A", "alice"), ("B", "bob")]
+
+
+def test_move_without_a_substitute_is_offered_when_the_substitute_fails_the_apply_check():
+    """Second review of v1.82: B is over its capacity (Bob fixed, Alice from
+    the plan), so Cara's substitute rescue passes the hard rules but not the
+    apply check. It no longer hides Alice's move to A, which needs no
+    substitute; the day was reported complete with A open."""
+    from threading import Event
+
+    state = section_state([make_clinician("alice", "Alice", ["A", "B"], working_hours_per_week=40),
+                           make_clinician("bob", "Bob", ["B"], working_hours_per_week=40),
+                           make_clinician("cara", "Cara", ["B"], working_hours_per_week=40)],
+                          [make_template_slot("A", block_id="A", row_band_id="row-1"),
+                           make_template_slot("B", block_id="B", row_band_id="row-2")], ["A", "B"])
+    state.assignments = [make_assignment("m2", "B", MON, "bob", source="manual")]
+    ex = executor(state, [make_assignment("d1", "B", MON, "alice", source="solver")])
+    result = run(ex, "suggest_rescue_moves", dateISO=MON)
+    assert [(r["frees"], r["substitute"], r["improves_best"]) for r in result["rescues"]] == [("Alice", None, True)]
+    assert result["no_rescue_found"] == []
+    audit = ex.workflow.final_audit([MON], Event())
+    assert audit["repairs"] == 1
+    assert ex.quality_dict(ex.best_quality)["open_by_section_order"] == [0, 0]

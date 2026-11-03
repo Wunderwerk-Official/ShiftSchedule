@@ -508,6 +508,8 @@ def main() -> None:
         "fallback": agent.get("fallback"),
         "stats": agent.get("stats"),
         "quality": agent.get("quality"),
+        # Metrics compare only within one QUALITY_VERSION (4: section vector first).
+        "quality_version": agent.get("quality_version"),
         "duration_seconds": round(duration, 1),
         "iterations": agent.get("iterations"),
         "moves_accepted": agent.get("moves_accepted"),

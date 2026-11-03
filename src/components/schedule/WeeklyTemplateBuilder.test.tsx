@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { WeeklyCalendarTemplate } from "../../api/client";
 import { DAY_TYPES } from "../../lib/dayTypes";
 import { ConfirmDialogProvider } from "../ui/ConfirmDialog";
-import WeeklyTemplateBuilder from "./WeeklyTemplateBuilder";
+import WeeklyTemplateBuilder, { SECTION_PRIORITY_HELP } from "./WeeklyTemplateBuilder";
 
 // One location and row; every day type has one column, Monday two. The slot
 // sits in Monday's first column, Monday's second column is empty.
@@ -126,4 +126,11 @@ it("warns that deleting a section removes it from everyone's Eligible Sections",
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(onChange).not.toHaveBeenCalled();
+});
+
+it("names the strict section order in the section priority help (v1.82)", () => {
+  expect(SECTION_PRIORITY_HELP).toContain(
+    "If not every slot can be filled, the AI staffs sections higher in this list first, even if that leaves more slots open in total.",
+  );
+  expect(SECTION_PRIORITY_HELP).toContain("A section counts at its first place in the list.");
 });

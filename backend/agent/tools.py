@@ -327,11 +327,13 @@ TOOL_SPECS_RAW = [
             "substitute taking the vacated slot. Returns ready-to-apply "
             "3-move batches (unassign the blocker, assign the substitute, "
             "assign the freed clinician to the stuck slot), each validated "
-            "against the exact apply gate. Only when no such batch exists for "
+            "against the exact apply gate. Only when no such batch passes for "
             "a stuck slot: a 2-move batch without a substitute when the vacated "
             "slot ranks lower in the section order than the stuck one "
             "(leaves_open: the strict section order makes that an "
-            "improvement). Apply its proposal_id with apply_proposal. "
+            "improvement). A 2-move batch is also offered when the vacated "
+            "slot keeps its target without the person (leaves_open null). "
+            "Offers come best first. Apply its proposal_id with apply_proposal. "
             "Searches up to 16 blocked slots per call; follow next_cursor to "
             "inspect the rest on the SAME unchanged plan. After a change start "
             "again without a cursor. Fixed/manual "
@@ -744,6 +746,28 @@ class PlanToolExecutor:
             + max(-4_999, neg_bonus)
         )
 
+    def _quality_key(self, quality: dict) -> tuple:
+        """quality_dict back to the comparable tuple (smaller is better)."""
+        key = []
+        for field in self.quality_fields:
+            value = quality[field]
+            if field == "preference_and_load_bonus" and self.ctx.settings.agentQualityProfile != "balanced":
+                value = -value
+            key.append(tuple(value) if isinstance(value, list) else value)
+        return tuple(key)
+
+    def _checked_rescues(self, candidates: List[dict], date_iso: str) -> List[dict]:
+        """The candidates that pass the apply check, each with its proposal
+        (quality_after, improves_best), best first, at most two."""
+        checked = []
+        for rescue in candidates:
+            rescue.update(self.workflow.propose(
+                rescue["batch"], next_tool="suggest_day_blocks", next_args={"dateISO": date_iso}))
+            if rescue.get("proposal_id"):
+                checked.append(rescue)
+        checked.sort(key=lambda r: (not r.get("improves_best"), self._quality_key(r["quality_after"])))
+        return checked[:2]
+
     def quality_dict(self, quality: Tuple[int, ...]) -> dict:
         """By field name. The section vector renders as a JSON list (one
         small int per entry of section_order); the classic bonus is shown
@@ -833,7 +857,8 @@ class PlanToolExecutor:
             "quality_version": QUALITY_VERSION,
             "quality_order": list(self.quality_fields),
             "plan_revision": self.workflow.revision,
-            "additional_quality_metrics": extra_metrics(self, working),
+            "additional_quality_metrics": {key: value for key, value in extra_metrics(self, working).items()
+                                           if key != "open_priority_points"},
             "quality": {
                 **self.quality_dict(quality),
                 "note": "strict priority order, improve the highest tier first; "
@@ -1955,7 +1980,11 @@ class PlanToolExecutor:
                 return {"error": "Invalid or stale rescue cursor. Start again with dateISO only."}
             offset = int(cursor[len(prefix):])
         entries = self._day_open_entries(date_iso)
-        stuck_all = [e for e in entries if e["eligible_count"] == 0]
+        # Strict section order: the highest-ranked stuck slot first (the
+        # processing order would put a stuck on-call slot first, and a
+        # search cut short only reaches the first slots).
+        stuck_all = sorted((e for e in entries if e["eligible_count"] == 0),
+                           key=lambda e: (e["section_rank"], e["start"], e["slot_key"]))
         if cursor is not None and (offset <= 0 or offset >= len(stuck_all)):
             return {"error": "Rescue cursor is outside the blocked-slot list. Start again with dateISO only."}
         stuck = stuck_all[offset:offset + 16]
@@ -1989,9 +2018,12 @@ class PlanToolExecutor:
                 break
             inst = self.ctx.instances[entry["raw_slot_key"]]
             found: List[dict] = []
-            # 2-move batches without a substitute: offered only when no
-            # substitute rescue fills both slots (one is always at least as
-            # good), and they never use up the two offers per slot.
+            # 2-move batches without a substitute (they never use up the two
+            # substitute rescues searched per slot): distribute-all headroom
+            # moves (nothing opens) compete with the substitute rescues; a
+            # move that leaves a lower-ranked slot open is offered only when
+            # no substitute rescue passes the apply check, as one that does
+            # fills both slots.
             upward: List[dict] = []
             for clinician in self.state.clinicians:
                 if len(found) >= 2:
@@ -2034,7 +2066,6 @@ class PlanToolExecutor:
                     # A substitute covers the vacated slot in the SAME batch;
                     # without one the hole only moves, which helps only when
                     # it moves to a lower-ranked section (below).
-                    substituted = False
                     for sub in self.state.clinicians:
                         if vac_inst.section_id not in (sub.qualifiedClassIds or []):
                             continue
@@ -2073,16 +2104,17 @@ class PlanToolExecutor:
                                 ],
                             }
                         )
-                        substituted = True
                         break  # one substitute per blocker is enough
                     # Distribute-all headroom: the vacated slot may stay at
                     # its target without this person (then nothing opens).
                     opens = self._counts_by_instance(self._working_list()).get(vacated_key, 0) - 1 < vac_inst.target
-                    if not substituted and (not opens or self.section_rank(vac_inst.slot_id) > self.section_rank(inst.slot_id)):
+                    if not opens or self.section_rank(vac_inst.slot_id) > self.section_rank(inst.slot_id):
                         # Strict section order (v1.82): the stuck slot ranks
                         # higher than the vacated one, so moving the person
                         # up improves the plan although the vacated slot
-                        # stays open (trial already passed the gate).
+                        # stays open (trial already passed the hard rules).
+                        # Offered after the loop only when no substitute
+                        # rescue passes the apply check.
                         upward.append(
                             {
                                 "fills": entry["slot_key"],
@@ -2108,26 +2140,29 @@ class PlanToolExecutor:
                         )
                     if len(found) >= 2:
                         break
-            if not found:
-                # Distribute-all headroom first (it opens nothing), then the
-                # moves that leave the lowest-ranked slot open: both fill the
-                # same stuck slot, so the lower the opened slot, the better
-                # the plan under the strict section order.
-                found = sorted(upward, key=lambda r: (
-                    r["leaves_open"] is not None,
-                    -self.section_rank(self.ctx.instances[r["vacated_key"]].slot_id),
-                ))[:2]
+            offers = self._checked_rescues(found + [r for r in upward if r["leaves_open"] is None], date_iso)
+            if not offers:
+                # Both fill the same stuck slot: the lower the slot left
+                # open, the better the plan under the strict section order.
+                opening = sorted((r for r in upward if r["leaves_open"] is not None),
+                                 key=lambda r: -self.section_rank(self.ctx.instances[r["vacated_key"]].slot_id))
+                offers = self._checked_rescues(opening[:2], date_iso)
             for rescue in upward:
                 del rescue["vacated_key"]  # internal sort key only
-            if found:
-                rescues.extend(found)
+            if offers:
+                rescues.extend(offers)
             else:
                 no_rescue.append(entry["slot_key"])
+        # Best checked improvement first: the final audit and the day-end
+        # nudge take the first one.
+        rescues.sort(key=lambda r: (not r.get("improves_best"), self._quality_key(r["quality_after"])))
         out = {
             "dateISO": date_iso,
-            "note": "Each rescue is a pre-validated batch that improves the "
-            "plan (a substitute takes the vacated slot, or, without one, the "
-            "vacated slot ranks lower in the section order: leaves_open): use "
+            "note": "Each rescue is a pre-validated batch, best first (a "
+            "substitute takes the vacated slot, or, without one, the vacated "
+            "slot ranks lower in the section order: leaves_open, or keeps its "
+            "target: leaves_open null); improves_best says whether it beats "
+            "the best plan so far: use "
             "apply_proposal with its proposal_id and use the returned next suggestions "
             "(other rescues may have gone "
             "stale — re-query instead of applying several at once). Slots "
@@ -2140,10 +2175,6 @@ class PlanToolExecutor:
             "search_status": "incomplete" if not_searched else "completed",
             "searched_slots": [e["slot_key"] for e in stuck[:next_offset - offset]],
         }
-        for rescue in rescues:
-            rescue.update(self.workflow.propose(
-                rescue["batch"], next_tool="suggest_day_blocks", next_args={"dateISO": date_iso}
-            ))
         if not_searched:
             out["not_searched"] = not_searched
             out["note"] += (

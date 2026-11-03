@@ -16,6 +16,16 @@ from backend.arena.run import FIXTURE, load_state, apply_scenario
 from backend.scoring import build_scoring_context, plan_stats
 
 
+def _quality_version():
+    """The checkout's QUALITY_VERSION (metrics compare only within one;
+    older checkouts have none)."""
+    try:
+        from backend.agent.quality import QUALITY_VERSION
+    except ImportError:
+        return None
+    return QUALITY_VERSION
+
+
 def evaluate(start, days, scenario="base", profile="classic", neighborhood=False, seconds=120):
     state = load_state()
     end = (date.fromisoformat(start)+timedelta(days=days-1)).isoformat()
@@ -128,7 +138,8 @@ def evaluate(start, days, scenario="base", profile="classic", neighborhood=False
               "fixture_version": json.loads(FIXTURE.read_text()).get("fixtureVersion", "legacy-export-v1"),
               "fixture_sha256": hashlib.sha256(FIXTURE.read_bytes()).hexdigest(),
               "neighborhood": neighborhood, "seconds": round(time.monotonic()-begun, 3),
-              "quality": ex.quality_dict(ex.best_quality), "stats": plan_stats(ctx, best).model_dump(),
+              "quality": ex.quality_dict(ex.best_quality), "quality_version": _quality_version(),
+              "stats": plan_stats(ctx, best).model_dump(),
               "new_hard_violations": sum(ex._is_new_hard(v) for v in hard),
               "fixed_unchanged": ex.fixed_assignments == state.assignments,
               "visited_days": len(visited), "incomplete_days": sorted(set(incomplete)),

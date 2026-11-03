@@ -535,7 +535,11 @@ def agent_solve_range(
     # Computed before finalize() can run: the provider-init failure path
     # finalizes before the LLM phase would otherwise compute these.
     seed_stats = plan_stats(ctx, seed_assignments)
-    seed_open = open_slots(ctx, seed_assignments)
+    def _rank_first(gap) -> tuple:
+        """Open slots by section rank (the strict order), then date and start."""
+        return (ctx.section_index_by_slot_id.get(gap.slot_id, len(ctx.section_order_ids)), gap.dateISO, gap.start)
+
+    seed_open = sorted(open_slots(ctx, seed_assignments), key=_rank_first)
 
     def _fmt_plan_line(a: Assignment, origin: str) -> str:
         inst = ctx.instances.get(f"{a.rowId}__{a.dateISO}")
@@ -631,7 +635,9 @@ def agent_solve_range(
         open required slots, short days, over-long days — as human-readable
         note lines (they end up in the run log and the run inbox) plus a
         structured block for debugInfo. Real names: browser-only data."""
-        remaining_open = open_slots(ctx, best)
+        # Highest-ranked gaps first (the strict section order): the report and
+        # the review digest list 12, the blocker explanations cover the first.
+        remaining_open = sorted(open_slots(ctx, best), key=_rank_first)
         # Why each slot stayed open (which hard rules block the qualified
         # people). Only when the working copy IS the returned plan and the
         # run was not stopped; bounded by the caller's slot/time budget.

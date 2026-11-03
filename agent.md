@@ -3868,10 +3868,15 @@ server checking every option against all planning rules.
   batch without a substitute when the vacated slot ranks lower than the
   stuck one (`substitute: null`, `leaves_open`): under the strict order that
   is an improvement, and no tool proposed it before. It is offered only when
-  no rescue with a substitute exists for that stuck slot (that one fills
-  both slots) and does not count toward the two offers per slot.
-  `next_fillable_slot` (final audit, day-end nudge) takes a day's open slots
-  by section rank, on-call at its own rank, not in template block order. `analyze_bottlenecks`,
+  no rescue with a substitute passes the apply check for that stuck slot
+  (that one fills both slots), the one opening the lowest-ranked slot
+  first, and does not count toward the two substitute rescues searched per
+  slot; a 2-move whose vacated slot keeps its target (headroom, distribute-
+  all) competes with the substitute rescues. A day's stuck slots are
+  searched by section rank (on-call at its own rank) and the offers come
+  best first by the full quality tuple. `next_fillable_slot` (final audit,
+  day-end nudge) takes a day's open slots by section rank as well, not in
+  template block order. `analyze_bottlenecks`,
   `list_open_slots` and the direct strategy (arena) use the rank too. The prompts' quality ladder,
   the arena's quality guidance and the WORSE warning name the rule.
 - **Cross-day repair**: `solver._solve_repair_lexicographic` replaces v1.80's
@@ -3885,6 +3890,10 @@ server checking every option against all planning rules.
   only when it is not lexicographically worse than the one it started from,
   and a tier is skipped when nothing in it can be filled. A last stage
   minimizes the changes; 10 s (at most 10% of the budget) are kept for it.
+  The order is strict, so time for a higher window comes first: a window
+  may use all the time above that reserve and leaves what it does not need
+  to the windows below; the stages run with one presolve round
+  (`REPAIR_STAGE_PRESOLVE_ITERATIONS`).
   A stop ends the running stage within about 0.05 s (watcher thread); v1.80
   stopped only at its next solution. The status is OPTIMAL only when every
   stage proved it; a note says how many stages ran. `coverage_repair`
@@ -3929,7 +3938,11 @@ server checking every option against all planning rules.
     open in the carnival week 2026-02-16 with 10 short days (v1.80: 32 and
     6). Now only a block reaching a section above the selected slot moves
     ahead: 30 open, 5 short days; base week 2026-02-02 0 open, 3 short days
-    (v1.80: 0 and 4); the weekly-hours deviation is 3-5% higher.
+    (v1.80: 0 and 4); the weekly-hours deviation is 3-5% higher. (Since
+    the upward-move order below the carnival week ends at 31 open before
+    the repair, one more at rank 15: the locally better move cost a later
+    substitute rescue; after the cross-day repair 27 instead of 28 open,
+    lexicographically better.)
   - Rescue in distribute-all mode: a 2-move batch whose vacated slot keeps
     its target opens nothing; it is offered whatever the ranks, without
     `leaves_open`.
@@ -3959,6 +3972,58 @@ server checking every option against all planning rules.
     better plan and the cross-day repair undoes it (in the arena's on-call
     week it used 57 of its 60 changes). Help says on-call counts at its own
     place in the list.
+- **Second review** (four lenses over the fixes and the merge, a skeptic
+  per serious finding; no defect from the merge):
+  - Rescue order: a day's stuck slots came in the processing order, so a
+    stuck on-call slot's rescue was offered first. When it and a higher
+    section's rescue needed the same substitute, the final audit (which runs
+    after the cross-day repair, nothing enforces the order after it) took
+    the on-call one (S > W > V > ON: [0, 0, 1, 0] instead of [0, 0, 0, 1]).
+    Stuck slots are now searched by section rank and the offers sorted by
+    the full quality tuple (`_quality_key`, the inverse of `quality_dict`).
+  - A substitute rescue that fails the apply check (a slot over its
+    capacity) hid the move without a substitute, and the day was reported
+    complete with the slot open; offers are now checked in the loop
+    (`_checked_rescues`) and the moves without a substitute come in when no
+    substitute rescue passes. In distribute-all mode a headroom move (the
+    vacated slot keeps its target) competes with the substitute rescues
+    instead of being hidden by them (it can avoid a short day).
+  - Repair time: an equal share per window cut the top window short. Now a
+    window may use all the time above the change stage's reserve and the
+    stages run with one presolve round (a fully presolved, tightly bounded
+    two-week stage took 6.9 s and ended with no plan). Measured on the
+    arena fixture, 2 CP-SAT workers, the same plan for every pair of runs:
+    at the app's budgets (90 s for a week, 120 s from ten days) the plans
+    were the same or better in 16 of 16 pairs: carnival week 2026-02-16 (7
+    days, 3 runs each) always 27 open, where the equal split once left one
+    more position open in a higher section (26 in total; 2 of 4 runs in the
+    review); crunch week, understaffed week 2026-02-09, the two-week (75 ->
+    15) and the four-week plan (95 -> 57) identical. Short budgets: two
+    weeks at 20 s 75 -> 15 instead of 75 -> 20 (3 of 3); 130 one-slot
+    sections at 5 s 129 -> 77 instead of 129 -> 104 or no change, at 8 s
+    129 -> 69 instead of no change; four weeks at 20 s varies from run to
+    run with either split (the top window does not converge). Stopping a
+    window after a stretch without a better plan (half its running time,
+    at least 5 s, or a quarter, at least 2 s) did worse: in the carnival
+    week one more open position in a higher section, in four weeks two
+    more; the improvements come after long plateaus. The repair note names
+    a skipped fewest-changes stage.
+  - The closing report and the review digest list open slots by section
+    rank (they show 12): Monday-Wednesday's lower gaps hid a higher
+    section's Thursday and Friday gaps. The repair strategy's digest lists
+    its top 15 the same way.
+  - Texts: "How the agent plans" names on-call's place in the order (as
+    Help and the planning panel); the rescue texts mention headroom moves
+    and that offers come best first; `get_plan_overview` no longer shows
+    `open_priority_points` (a per-slot template weight that can contradict
+    the order); arena reports carry `quality_version`; two docstrings
+    quoted the old Settings sentence. New frontend tests pin the strict
+    wording in `SECTION_PRIORITY_HELP`, the Planning goals, "How the agent
+    plans", the basic-plan notice and the planning panel.
+  - Known, not changed: day blocks chain into the shortest adjacent slot
+    whatever its section, so a block started from a lower slot can take
+    short lower slots instead of a higher one; the cross-day repair fixes
+    it with a few changes (a constructed case: 3).
 - **Resolved from v1.80's "Not done"**: a pure 1:1 trade upwards is an
   improvement; a higher section is staffed even when more positions stay
   open in total; the order is lexicographic, not a weighted sum.

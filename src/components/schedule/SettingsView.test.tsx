@@ -432,3 +432,8 @@ describe("holidays: state and holidays added by hand", () => {
     expect(props.onFetchHolidays).toHaveBeenCalledWith("DE", 2026, "DE-NW");
   });
 });
+
+it("says that both planning goals follow the section priority strictly (v1.82)", () => {
+  setup();
+  expect(document.body.textContent).toMatch(/fill required slots first, strictly in the section priority\s+order below/);
+});

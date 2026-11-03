@@ -1083,3 +1083,40 @@ def test_direct_legal_people_and_open_reasons_leave_out_a_rest_day():
     seno = blockers[f"slot-seno-fri__{FRI}"]
     assert (seno["blocked_by"], seno["main"]) == ({"REST_DAY": 1}, "REST_DAY")
     assert open_reasons.blocker_text(seno) == "1 qualified; blocked by rest day 1"
+
+
+class _RecordingSolver(_StuckSolver):
+    """Returns UNKNOWN at once and records each solve's parameters."""
+    calls: list = []
+
+    def Solve(self, model, callback=None):
+        from ortools.sat.python import cp_model
+        _RecordingSolver.calls.append(dict(vars(self.parameters)))
+        return cp_model.UNKNOWN
+
+
+def test_strict_repair_gives_a_window_all_the_time_above_the_change_reserve(monkeypatch):
+    """Second review of v1.82: an equal share per window cut the top window
+    short (in a hard arena week one more position stayed open in a higher
+    section in about half the runs). Now the first window may use everything
+    but the change stage's reserve (30 s budget: 3 s), the stages run with
+    one presolve round, the completion solve with CP-SAT's default."""
+    import backend.solver as solver_mod
+
+    sections = [f"s{i:02}" for i in range(20)]  # three windows (see the short-budget test)
+    state = strict_state(sections, [(f"slot-{sec}", sec, "mon", "08:00", "16:00") for sec in sections],
+                         [("pat", sections, 8, [])])
+    for location in state.weeklyTemplate.locations:
+        for template_slot in location.slots:
+            template_slot.requiredSlots = 40
+    monkeypatch.setattr(solver_mod.cp_model, "CpSolver", _RecordingSolver)
+    monkeypatch.setattr(_RecordingSolver, "calls", [])
+    payload = SolveRangeRequest(startISO=MON_W45, endISO=MON_W45, only_fill_required=True, timeout_seconds=30)
+    _solve_range_impl(payload, None, cancel_event=threading.Event(), on_progress=lambda *_: None,
+                      start_time=time.time(), state_override=state,
+                      repair_reference={("slot-s19", MON_W45, "pat")}, repair_max_changes=cross_day.MAX_CHANGES)
+    completion, *stages = _RecordingSolver.calls
+    assert completion["fix_variables_to_their_hinted_value"] and "max_presolve_iterations" not in completion
+    assert len(stages) == 4  # three windows, then the change stage
+    assert stages[0]["max_time_in_seconds"] > 25  # not a third of the budget
+    assert all(stage["max_presolve_iterations"] == 1 for stage in stages)

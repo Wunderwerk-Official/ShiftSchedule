@@ -694,11 +694,11 @@ def _collect_slot_contexts(state) -> List[Dict[str, Any]]:
 
 def _section_tier_by_slot_id(slot_contexts, blocks) -> Dict[str, int]:
     """Priority tier per slot: the position of its section's FIRST block in
-    the template's block list, the order Settings shows ("If not every slot
-    can be filled, sections higher in this list are staffed first"; 0 =
-    top). Every slot of a section shares it, on every day and sub-shift: a
-    pre-v4 template has one block per sub-shift and day type, and those
-    blocks must not rank Monday above Friday of the same section."""
+    the template's block list, the order Settings shows under "Section
+    priority when short-staffed" (0 = top; "A section counts at its first
+    place in the list"). Every slot of a section shares it, on every day and
+    sub-shift: a pre-v4 template has one block per sub-shift and day type,
+    and those blocks must not rank Monday above Friday of the same section."""
     first: Dict[str, int] = {}
     tier_by_block_id: Dict[str, int] = {}
     for index, block in enumerate(blocks or []):
@@ -720,11 +720,25 @@ def section_tier_by_slot_id(state) -> Dict[str, int]:
 # CP-SAT's LP relaxation and its reported bounds clean.
 REPAIR_LEX_BOUND = 2 ** 53
 # Seconds kept for the last stage (fewest changes), at most this share of
-# the budget; a stage shorter than REPAIR_MIN_STAGE_SECONDS is not started
-# (presolve alone takes 1-2 s on four weeks).
+# the budget. The order is strict, so time for a higher window comes first:
+# every coverage window may use all the time above that reserve and leaves
+# what it does not need (proven optimal early) to the windows below it, then
+# to the change stage. A window gets at least REPAIR_MIN_STAGE_SECONDS while
+# that much is left, from the change stage's reserve if need be (the change
+# stage then gets what is left, possibly nothing). (An equal
+# split cut the top window short: in a hard arena week it left a higher
+# section with one more open position in about half the runs at the
+# one-week budget, and lost the top window outright at short budgets.
+# Stopping a window after a stretch without a better plan did worse still:
+# its improvements come after long plateaus.)
 REPAIR_CHANGE_STAGE_SECONDS = 10.0
 REPAIR_CHANGE_STAGE_SHARE = 0.1
 REPAIR_MIN_STAGE_SECONDS = 2.0
+# Presolve rounds per stage after the completion solve (None: CP-SAT's
+# default). The stages differ only by bounds, and a full presolve of a
+# tightly bounded model took 6.9 s on two weeks, so a short stage ended
+# after presolve with no plan at all.
+REPAIR_STAGE_PRESOLVE_ITERATIONS = 1
 
 
 def _repair_tiers(model, slack_by_instance, reference, var_map, tier_by_slot_id,
@@ -799,15 +813,6 @@ def _tier_open(tier: Dict[str, Any], value) -> int:
                for missing, variables in tier["instances"])
 
 
-def _count_windows(tiers: List[Dict[str, Any]]) -> int:
-    """How many stages _lexicographic_window would cut ``tiers`` into."""
-    count, index = 0, 0
-    while index < len(tiers):
-        index = _lexicographic_window(tiers, index)
-        count += 1
-    return count
-
-
 def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: int,
                                 time_limit: float, cancel_event, callback) -> Dict[str, Any]:
     """Repair mode, strict section order: minimize the open positions tier by
@@ -846,6 +851,8 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
         solver.parameters.num_search_workers = workers
         solver.parameters.relative_gap_limit = 0.0
         solver.parameters.fix_variables_to_their_hinted_value = fix_to_hint
+        if not fix_to_hint and REPAIR_STAGE_PRESOLVE_ITERATIONS is not None:
+            solver.parameters.max_presolve_iterations = REPAIR_STAGE_PRESOLVE_ITERATIONS
         finished = threading.Event()
 
         def watch() -> None:
@@ -897,15 +904,16 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
             continue
         end = _lexicographic_window(tiers, index)
         window = tiers[index:end]
-        # An equal share for this window and the ones still to come, but
-        # the order is strict: a higher window takes at least the minimum
-        # stage time before any lower window or the change stage.
-        windows_left = 1 + _count_windows([t for t in tiers[end:] if incumbent[t["tier"]] > t["lower"]])
+        # The order is strict: this window may use all the time above the
+        # change stage's reserve and leaves what it does not need to the
+        # windows below.
         available = deadline - time.time()
-        share = (available - reserve) / windows_left
+        share = available - reserve
         if share < REPAIR_MIN_STAGE_SECONDS:
-            share = min(REPAIR_MIN_STAGE_SECONDS, available - 0.5)
-        if share < 1.0:
+            # Coverage comes before the change stage: a short window takes
+            # its reserve too.
+            share = min(REPAIR_MIN_STAGE_SECONDS, available - 0.05)
+        if share < 0.5:
             optimal = False
             stages.append({"tiers": len(window), "skipped": "no time"})
         else:
@@ -943,6 +951,7 @@ def _solve_repair_lexicographic(model, var_map, tiers, change_terms, workers: in
             optimal = False
     elif change_terms:
         optimal = False
+        stages.append({"changes": True, "skipped": "no time"})
     aborted = cancel_event.is_set() or callback.was_aborted
     return {"solver": best_solver, "result": best_result,
             "optimal": optimal and best_solver is not None and not aborted,
@@ -3004,11 +3013,14 @@ def _solve_range_impl(
         else:
             result = cp_model.INFEASIBLE if repair_search["infeasible"] else cp_model.UNKNOWN
         stage_count = sum(1 for stage in repair_search["stages"] if "status" in stage)
-        skipped = sum(1 for stage in repair_search["stages"] if stage.get("skipped"))
+        skipped = sum(1 for stage in repair_search["stages"] if stage.get("skipped") and not stage.get("changes"))
+        change_skipped = any(stage.get("skipped") and stage.get("changes") for stage in repair_search["stages"])
         notes.append(
             f"Repair search: {len(repair_tiers)} section tier(s) in {stage_count} stage(s), "
             f"{'every stage optimal' if repair_search['optimal'] else 'not every stage proven optimal'}"
-            + (f", {skipped} stage(s) skipped for lack of time." if skipped else ".")
+            + (f", {skipped} section stage(s) skipped for lack of time" if skipped else "")
+            + (", the fewest-changes stage skipped for lack of time" if change_skipped else "")
+            + "."
         )
         if repair_search["aborted"]:
             solution_callback.was_aborted = True

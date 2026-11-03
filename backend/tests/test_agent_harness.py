@@ -2098,3 +2098,66 @@ def test_quality_improvement_note_names_the_sections():
     assert _quality_improvement_note(many_seed, many_best, CLASSIC_FIELDS, ["A", "B", "C", "D", "E", "F"]) == (
         "open by section (A 1 -> 0, B 1 -> 0, C 1 -> 0, D 1 -> 0, E 1 -> 0 and 2 more), "
         "open required slots 7 -> 0")
+
+
+def test_closing_report_lists_the_highest_ranked_gaps_first():
+    """Second review of v1.82: the report and the review digest list 12 open
+    slots, by date before. Monday-Wednesday's 12 LOW gaps hid TOP's gaps on
+    Thursday and Friday behind "... and N more"; now the section rank comes
+    first."""
+    from backend.models import TemplateBlock, VacationRange
+    from .conftest import make_workplace_row
+
+    days = ["mon", "tue", "wed", "thu", "fri"]
+    dates = ["2026-01-05", "2026-01-06", "2026-01-07", "2026-01-08", "2026-01-09"]
+    slots = []
+    for day in days:
+        slots.append(make_template_slot(f"TOP__{day}", col_band_id=f"col-{day}-1", block_id="TOP",
+                                        start_time="08:00", end_time="16:00"))
+        for k, (start, end) in enumerate([("08:00", "10:00"), ("10:00", "12:00"), ("12:00", "14:00"), ("14:00", "16:00")]):
+            slots.append(make_template_slot(f"LOW{k}__{day}", col_band_id=f"col-{day}-1", block_id="LOW",
+                                            start_time=start, end_time=end))
+    alice = make_clinician("alice", "Alice", ["TOP"], working_hours_per_week=40,
+                           vacations=[VacationRange(id="v1", startISO="2026-01-08", endISO="2026-01-09")])
+    bob = make_clinician("bob", "Bob", ["LOW"], working_hours_per_week=40,
+                         vacations=[VacationRange(id="v2", startISO="2026-01-05", endISO="2026-01-09")])
+    state = make_app_state(clinicians=[alice, bob], slots=slots,
+                           rows=[make_workplace_row("TOP", "Top section"), make_workplace_row("LOW", "Low section")])
+    state.weeklyTemplate.blocks = [TemplateBlock(id="TOP", sectionId="TOP", requiredSlots=0),
+                                   TemplateBlock(id="LOW", sectionId="LOW", requiredSlots=0)]
+
+    class Scripted(LLMProvider):
+        def __init__(self):
+            self.review_digest = None
+            self.done = set()
+
+        def complete(self, *, system, messages, tools, timeout_seconds):
+            first = (messages[0].content if messages else "") or ""
+            if first.startswith("FINAL RANGE REVIEW"):
+                self.review_digest = self.review_digest or first
+                return ProviderResponse(text="Review done.", tool_calls=[], stop_reason="end_turn")
+            for day, date in zip(days[:3], dates[:3]):
+                if f": {date}" in first and date not in self.done:
+                    self.done.add(date)
+                    return ProviderResponse(text=None, stop_reason="tool_use", tool_calls=[ToolCall(
+                        id=f"c-{date}", name="apply_moves", arguments={"moves": [
+                            {"action": "assign", "slot_key": f"TOP__{day}__{date}", "clinicianId": "Alice"}]})])
+            return ProviderResponse(text="Day done.", tool_calls=[], stop_reason="end_turn")
+
+    provider = Scripted()
+    payload = SolveRangeRequest(startISO=dates[0], endISO=dates[-1], only_fill_required=True, timeout_seconds=600.0)
+    result = agent_solve_range(payload, state, _NeverCancelled(), lambda *_a: None, time.time(),
+                               provider=provider, config=AgentConfig(provider="mock", max_iterations=200))
+    open_lines = [n for n in result["notes"] if n.startswith("- open: ")]
+    assert len(open_lines) == 12
+    assert open_lines[0].startswith("- open: 2026-01-08 Top section")
+    assert open_lines[1].startswith("- open: 2026-01-09 Top section")
+    assert "- open: 2026-01-08 Top section" in (provider.review_digest or "")
+
+
+class _NeverCancelled:
+    def is_set(self):
+        return False
+
+    def set(self):
+        pass
